@@ -710,6 +710,9 @@ class ArchiveStructureContext(_JsonSafeContext):
     - ``"apfs_checkpoint"``: the newest APFS checkpoint is incomplete (a
       checkpoint-map block is missing or damaged), so an older one is read.
       ``offset`` is the disk offset of that newest container superblock.
+    - ``"link_count"``: an APFS file's sibling-link records (one per hard-link name)
+      disagree with its inode's link count; the directory records decide what is
+      listed. ``offset`` is the inode id.
     """
 
     kind: Literal["archive_structure"] = "archive_structure"

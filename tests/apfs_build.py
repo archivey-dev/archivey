@@ -48,7 +48,7 @@ T_NX, T_BTREE, T_BTREE_NODE, T_OMAP, T_CHECKPOINT_MAP, T_FS, T_FSTREE = (
     0xE,
 )
 PHYSICAL, EPHEMERAL = 0x40000000, 0x80000000
-INODE, XATTR, DSTREAM_ID, EXTENT, DIR_REC = 3, 4, 6, 8, 9
+INODE, XATTR, SIBLING_LINK, DSTREAM_ID, EXTENT, DIR_REC = 3, 4, 5, 6, 8, 9
 INO_EXT_NAME, INO_EXT_DSTREAM = 4, 8
 XATTR_STREAM, XATTR_EMBEDDED = 1, 2
 EMBEDDED_MAX = 3804  # XATTR_MAX_EMBEDDED_SIZE
@@ -590,6 +590,26 @@ def write_apfs(
                 uncompressed,
             )
             records.append(_Record(oid, INODE, (), key_head(oid, INODE), value, path))
+            if nlink > 1:
+                # One sibling link per name of a hard-linked file, as macOS writes
+                # them: its own id, then the name's parent and the name.
+                for link_path in [path, *links[path]]:
+                    sibling = next_inode[0]
+                    next_inode[0] += 1
+                    raw = link_path.rpartition("/")[2].encode() + b"\0"
+                    records.append(
+                        _Record(
+                            oid,
+                            SIBLING_LINK,
+                            (sibling,),
+                            key_head(oid, SIBLING_LINK) + struct.pack("<Q", sibling),
+                            struct.pack(
+                                "<QH", inode_ids[link_path.rpartition("/")[0]], len(raw)
+                            )
+                            + raw,
+                            path,
+                        )
+                    )
             key, sec = drec_key(parent, raw_name)
             records.append(
                 _Record(

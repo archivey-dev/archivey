@@ -785,6 +785,8 @@ class FsTree:
         # Per data stream: logical offset, length, block, flattened, in key order.
         self.extents: dict[int, array[int]] = {}
         self.encrypted_streams: set[int] = set()
+        # Per inode: how many sibling-link records (one per hard-link name) it has.
+        self.siblings: dict[int, int] = {}
         self.damage = DamageIndex()
 
     def damaged(self, oid: int, kind: int) -> Damage | None:
@@ -885,6 +887,7 @@ class ApfsVolume:
         children: list[tuple[int, Child]] = []
         xattrs: list[tuple[int, str, Xattr]] = []
         extents: list[tuple[int, int, int, int, int]] = []
+        siblings: list[int] = []
         for key, value in records:
             (word,) = struct.unpack_from("<Q", key)
             oid, kind = word & _OID_MASK, word >> 60
@@ -895,6 +898,8 @@ class ApfsVolume:
             elif kind == XATTR:
                 name, attr = _xattr(key, value)
                 xattrs.append((oid, self.container.context.decode_name(name), attr))
+            elif kind == SIBLING_LINK:
+                siblings.append(oid)
             elif kind == EXTENT:
                 if len(value) < _EXTENT.size:
                     raise CorruptionError("an APFS file extent value is too short")
@@ -909,6 +914,8 @@ class ApfsVolume:
             tree.children.setdefault(oid, []).append(child)
         for oid, name, attr in xattrs:
             tree.xattrs.setdefault(oid, {})[name] = attr
+        for oid in siblings:
+            tree.siblings[oid] = tree.siblings.get(oid, 0) + 1
         for oid, logical, length, block, crypto in extents:
             if crypto:
                 tree.encrypted_streams.add(oid)

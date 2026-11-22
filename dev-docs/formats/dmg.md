@@ -261,8 +261,9 @@ Choices made in Part E:
 - **The listing order is a directory at a time from the root**, entries sorted by
   stored name, not the tree's key order (which on a hashed volume is hash order).
 - **A damaged APFS container beside other volumes fails after them**, not at open.
-- **Sibling-link records are not cross-checked against `nlink`** yet (deferred to
-  Part D), nor are hashed-name hashes.
+- **Sibling-link records are cross-checked against `nlink`** for each listed file:
+  a mismatch is `ARCHIVE_STRUCTURE_INCONSISTENT` (`structure="link_count"`), not a
+  refusal (design §6A.5). Hashed-name hashes are not checked (optional in §6A.5).
 - **Extents and names are compared on (object id, type, offset) for damaged ranges**,
   so a damaged range's boundary counts as inside (conservative).
 

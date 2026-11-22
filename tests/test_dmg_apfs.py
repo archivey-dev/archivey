@@ -589,6 +589,29 @@ def test_a_record_in_a_directory_the_root_does_not_reach_is_corruption() -> None
     assert seen == ["a.txt", "z.txt"]
 
 
+def test_a_link_count_the_sibling_links_disagree_with_is_reported() -> None:
+    nodes = [
+        d.Node("a/first.txt", data=b"linked\n"),
+        d.Node("b/second.txt", kind="hardlink", target="a/first.txt"),
+    ]
+
+    def drop_one(records: list) -> None:
+        records.remove(_record(records, "a/first.txt", apfs.SIBLING_LINK))
+
+    for patch, expected in ((lambda r: None, 0), (drop_one, 1)):
+        with _open(_patched(patch, nodes)) as reader:
+            names = sorted(m.name for m in reader.members())
+            found = [
+                diag
+                for diag in reader.diagnostics.retained
+                if diag.code is DiagnosticCode.ARCHIVE_STRUCTURE_INCONSISTENT
+            ]
+        assert names == ["a/", "a/first.txt", "b/", "b/second.txt"]
+        assert len(found) == expected
+    assert found[0].context.structure == "link_count"
+    assert "has 1 hard-link records and its inode says 2 links" in found[0].message
+
+
 def _edit_extent(
     path: str, edit: Callable[[bytearray], None]
 ) -> Callable[[list], None]:

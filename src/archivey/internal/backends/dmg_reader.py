@@ -986,6 +986,7 @@ class _ApfsWalk:
                     continue
                 yield made
             stack.extend(reversed(below))
+        self._check_link_counts(first)
         orphans = sum(
             len(entries)
             for parent, entries in tree.children.items()
@@ -999,16 +1000,41 @@ class _ApfsWalk:
         if tree.damage:
             first_bad = tree.damage[0]
             unlisted = f"; {lost} members are not listed" if lost else ""
+            also = f"; also, {problems[0]}" if problems else ""
             self.failure = CorruptionError(
                 f"{len(tree.damage)} nodes of the filesystem tree of the APFS volume "
                 f"{quoted(name)} cannot be used (block {first_bad.address}: "
-                f"{first_bad.reason}){unlisted}"
+                f"{first_bad.reason}){unlisted}{also}"
             )
         elif problems:
             self.failure = CorruptionError(
                 f"the APFS volume {quoted(name)} is damaged: {problems[0]}"
                 + (f" ({len(problems) - 1} more problems)" if len(problems) > 1 else "")
             )
+
+    def _check_link_counts(self, first: dict[int, str]) -> None:
+        """Report a listed file whose sibling-link records (one per hard-link name)
+        disagree with its inode's link count (design §6A.5): reported, not refused,
+        since the directory records decide what is listed. A file with one name has
+        no sibling links; a count in a damaged range is not checked."""
+        tree = self._tree
+        for oid, path in first.items():
+            inode = tree.inodes[oid]
+            names = tree.siblings.get(oid, 0)
+            if (names or inode.nlink > 1) and names != inode.nlink:
+                if tree.damaged(oid, apfs.SIBLING_LINK) is not None:
+                    continue
+                self._context.report(
+                    DiagnosticCode.ARCHIVE_STRUCTURE_INCONSISTENT,
+                    (
+                        f"The APFS file {quoted(path)} has {names} hard-link records "
+                        f"and its inode says {inode.nlink} links; the directory "
+                        "records decide what is listed."
+                    ),
+                    ArchiveStructureContext(
+                        format="dmg", structure="link_count", offset=oid
+                    ),
+                )
 
     def _report_type(self, path: str, oid: int, mode: int, kind: int) -> None:
         self._context.report(

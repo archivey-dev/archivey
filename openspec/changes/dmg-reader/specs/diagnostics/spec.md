@@ -14,8 +14,10 @@ another filesystem than the partition holds; the filesystem decides),
 `"partition_start"` (the map and a run table place a partition at different sectors;
 the map's range is read), `"member_type"` (an HFS+ file's mode and Finder type
 disagree on whether it is a symlink, reported on the member, or an APFS directory
-entry's type disagrees with its inode's mode; the mode decides) or `"apfs_checkpoint"`
-(the newest APFS checkpoint is incomplete, and an older one is looked for). The
+entry's type disagrees with its inode's mode; the mode decides), `"apfs_checkpoint"`
+(the newest APFS checkpoint is incomplete, and an older one is looked for) or
+`"link_count"` (an APFS file's hard-link records disagree with its inode's link count;
+the directory records decide what is listed). The
 code SHALL be in `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` raises on it.
 
 A DMG image that holds, beside the volumes it lists, a partition with contents archivey
@@ -37,4 +39,5 @@ disk offset and `compressed_size` its length. A partition whose type holds no fi
 | An HFS volume (an HFS wrapper) beside an HFS+ one | `ARCHIVE_UNLISTED_DATA` naming that partition; the HFS+ volume is listed |
 | An encrypted APFS volume beside a readable one | `ARCHIVE_UNLISTED_DATA` naming the encrypted volume; the other is listed |
 | A newest APFS checkpoint with a missing checkpoint-map block | `structure="apfs_checkpoint"`; the older complete checkpoint is read |
+| An APFS hard-linked file with one sibling-link record for two links | `structure="link_count"`; both names are listed |
 | `DiagnosticPolicy.STRICT` and any of the above | The read raises |
