@@ -205,6 +205,27 @@ _VERIFIER_PROOFS = tuple(
 )
 
 
+def deferrable_failure(exc: BaseException) -> bool:
+    """Whether ``exc`` may wait for the next read at ``PartialDataRecovery.ALL``,
+    behind the bytes of the read that met it: a verdict that the member's data is
+    damaged (a ``CorruptionError``, or an error raised from one, such as a ZipCrypto
+    member's password-or-damage ``EncryptionError``).
+
+    Never a limit or a raised diagnostic, which stop the operation, nor the caller's
+    own ``on_source_read`` exception, nor an interrupt: those raise from the read
+    that meets them."""
+    if not isinstance(exc, Exception) or from_source_callback(exc):
+        return False
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, CorruptionError):
+            return True
+        seen.add(id(current))
+        current = current.__cause__
+    return False
+
+
 class MemberVerifier:
     """Incremental digest/length checker over bytes read from an inner stream.
 
@@ -645,11 +666,13 @@ class MemberVerifier:
         """Under :attr:`returns_failed_chunk`, keep ``exc`` for the next read to raise
         and tell the caller to return ``data``, the bytes of the read whose check
         failed. ``False`` when the read withholds them (the default), has none, or
-        was interrupted (an exception that is not an ``Exception``), or when ``exc``
-        is the caller's own ``on_source_read`` exception, a stop that is raised now."""
-        if not (self.returns_failed_chunk and data and isinstance(exc, Exception)):
-            return False
-        if from_source_callback(exc):
+        when ``exc`` is not a failure that may wait (:func:`deferrable_failure`)."""
+        if not (
+            self.returns_failed_chunk
+            and data
+            and isinstance(exc, Exception)
+            and deferrable_failure(exc)
+        ):
             return False
         # Without its traceback: the frames it names hold the chunk returned.
         self._deferred = exc.with_traceback(None)

@@ -412,8 +412,20 @@ def test_a_kept_member_counts_once_toward_the_ratio(tmp_path: Path, mode: str) -
     assert (dest / "good.txt").read_bytes() == b"good"
 
 
+class _SlottedOSError(OSError):
+    """An ``OSError`` that refuses new attributes, so nothing can mark it."""
+
+    __slots__ = ()
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError(name)
+
+
+@pytest.mark.parametrize("error", [OSError, _SlottedOSError])
 @pytest.mark.parametrize("mode", _MODES)
-def test_a_progress_callback_error_keeps_nothing(tmp_path: Path, mode: str) -> None:
+def test_a_progress_callback_error_keeps_nothing(
+    tmp_path: Path, mode: str, error: type[OSError]
+) -> None:
     # The caller's on_progress raises OSError part-way through a member's copy. That
     # says nothing about the member's data, so nothing lands: the existing file stays.
     buf = io.BytesIO()
@@ -431,7 +443,7 @@ def test_a_progress_callback_error_keeps_nothing(tmp_path: Path, mode: str) -> N
         # Once, from inside the copy loop (after the first full chunk).
         if getattr(progress, "member_bytes_written", 0) and not raised:
             raised.append(True)
-            raise OSError("disk of the progress log is full")
+            raise error("disk of the progress log is full")
 
     source, streaming = _source(src, mode)
     report = open_and_extract(

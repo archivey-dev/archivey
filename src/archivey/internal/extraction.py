@@ -165,22 +165,6 @@ _WINDOWS = os.name == "nt"
 _DIRECTORY_LINKS = _WINDOWS
 
 
-_FROM_PROGRESS = "_archivey_raised_by_on_progress"
-
-
-def _mark_progress_callback(exc: BaseException) -> None:
-    """Mark ``exc`` as raised by the caller's ``on_progress`` callback."""
-    try:
-        setattr(exc, _FROM_PROGRESS, True)
-    except AttributeError:  # an exception type that refuses new attributes
-        pass
-
-
-def _from_progress_callback(exc: BaseException) -> bool:
-    """Whether ``exc`` was raised by the caller's ``on_progress`` callback."""
-    return getattr(exc, _FROM_PROGRESS, False) is True
-
-
 def _dir_mode_as_stored(mode: int) -> int:
     """The mode ``os.stat`` reports for a directory after ``os.chmod(path, mode)``.
 
@@ -967,6 +951,8 @@ class ExtractionCoordinator:
         self._on_error = on_error
         self._abort_on = frozenset(abort_on)
         self._on_progress = on_progress
+        # What ``on_progress`` last raised, until ``_keeps_partial`` reads it.
+        self._progress_error: BaseException | None = None
         # A predicate, never the caller's raw ``members=``: that argument may be a
         # one-shot iterable, so only the public entry point reads it, and the caller
         # passes the normalized result here.
@@ -2908,8 +2894,14 @@ class ExtractionCoordinator:
                 exc, (FilterRejectionError, ResourceLimitError, DiagnosticRaisedError)
             )
             and not from_source_callback(exc)
-            and not _from_progress_callback(exc)
+            and not self._raised_by_progress(exc)
         )
+
+    def _raised_by_progress(self, exc: BaseException) -> bool:
+        """Whether ``exc`` is what the caller's ``on_progress`` last raised, and forget
+        it: the record is only for the copy that the callback stopped."""
+        raised, self._progress_error = self._progress_error, None
+        return raised is exc
 
     def _kept_partial_failure(
         self, kept: _PartialKept, member: ArchiveMember
@@ -5615,8 +5607,9 @@ class ExtractionCoordinator:
         except BaseException as exc:
             # The caller's own exception, raised from inside a member's copy loop:
             # it says nothing about the member's data, so it never keeps a partial
-            # file (``_keeps_partial``).
-            _mark_progress_callback(exc)
+            # file (``_keeps_partial``). Recorded here, not on the exception, which
+            # may refuse new attributes.
+            self._progress_error = exc
             raise
 
     @staticmethod

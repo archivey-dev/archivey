@@ -70,6 +70,7 @@ from archivey.internal.streams.verify import (
     CustomDigests,
     MemberVerifier,
     build_member_verifier,
+    deferrable_failure,
     note_raised_seek,
 )
 from archivey.reader import ArchiveStream
@@ -728,9 +729,9 @@ class ArchiveStreamImpl(ArchiveStream):
             try:
                 chunk = self._read(_KEEPING_STEP)
             except ArchiveyError as exc:
-                # The caller's own ``on_source_read`` exception is a stop, never the
-                # member's verdict: raised now, with the bytes before it.
-                if not chunks or from_source_callback(exc):
+                # Only a verdict on the data waits; a limit, a raised diagnostic or
+                # the caller's own ``on_source_read`` exception stops the read now.
+                if not chunks or not deferrable_failure(exc):
                     raise
                 # Without its traceback: the frames it names hold the bytes returned.
                 self._pending_failure = exc.with_traceback(None)

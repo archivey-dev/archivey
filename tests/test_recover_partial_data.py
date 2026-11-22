@@ -479,3 +479,31 @@ def test_a_deferred_check_is_reported_when_found(n: int) -> None:
     with pytest.raises(CorruptionError):
         stream.read(1)
     stream.close()
+
+
+@pytest.mark.parametrize("how", _SOURCES)
+@pytest.mark.parametrize(
+    "level", [PartialDataRecovery.BEFORE_DAMAGE, PartialDataRecovery.ALL]
+)
+def test_a_limit_is_never_deferred(how: str, level: PartialDataRecovery) -> None:
+    """A limit stops the read that crosses it at every level: at ALL only a verdict
+    on the data waits for the next read."""
+    from archivey import DecoderLimits
+    from archivey.exceptions import ResourceLimitError
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("zeros.bin", b"\0" * (4 << 20))
+    # Past the first 1 MiB step of a read to the end, so the limit trips after
+    # some bytes were read.
+    limits = DecoderLimits(
+        max_ratio=10.0,
+        ratio_activation_threshold=3 << 19,
+        live_ratio_activation_threshold=3 << 19,
+    )
+    config = ArchiveyConfig(recover_partial_data=level, decoder_limits=limits)
+    with _open(buf.getvalue(), how, config) as archive:
+        for _member, stream in archive.stream_members():
+            with pytest.raises(ResourceLimitError):
+                stream.read()
+            break
