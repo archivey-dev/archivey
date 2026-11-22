@@ -48,7 +48,7 @@ from archivey.internal.streams.codecs.lzx_decoder import LzxDecoder
 from archivey.internal.streams.codecs.riscv_filter import riscv_decode
 
 SEEDS = int(os.environ.get("CODECS_PARITY_CASES", "300"))
-# The DMG plan's A0 fuzz run had 200,000 cases; the default runs a sample of them.
+# The DMG plan's A0 fuzz run had 200,000 cases; the default replays its first ones.
 LZFSE_FUZZ_CASES = int(os.environ.get("CODECS_LZFSE_FUZZ_CASES", str(SEEDS * 20)))
 
 
@@ -930,8 +930,7 @@ def test_lzfse_fixture_runs_parity() -> None:
 def _a0_seeds(helpers) -> list[tuple[bytes, bytes]]:
     """The A0 fuzz seeds (``scripts/investigations/lzfse_package/fuzz.py``): the
     ``lzfse`` package's encoder output for text, random, mixed and zero inputs from 0
-    to 64 KiB, plus one stream of two blocks; and the same streams with each ``bvx2``
-    block rewritten as ``bvx1``."""
+    to 64 KiB, plus one stream of two blocks, in ``fuzz.py``'s order."""
     rnd = random.Random(7)
     words = [
         bytes(rnd.choice(b"abcdefghijklmnop \n") for _ in range(rnd.randint(1, 9)))
@@ -947,19 +946,19 @@ def _a0_seeds(helpers) -> list[tuple[bytes, bytes]]:
     seeds = list(zip(items, streams, strict=True))
     (a, za), (b, zb) = seeds[-4], seeds[-3]
     seeds.append((a + b, za[:-4] + zb))
-    seeds += [(data, helpers._to_v1(z)) for data, z in seeds if b"bvx2" in z]
     return seeds
 
 
 def _a0_mutate(
-    rnd: random.Random, seeds: list[tuple[bytes, bytes]]
+    rnd: random.Random, seeds: list[tuple[bytes, bytes]], *, v1: bool = False
 ) -> tuple[bytes, int]:
-    """One A0 fuzz case, as ``fuzz.py``'s ``mutate`` makes it, plus a ``bvx1`` field
-    flip: bit flips, byte overwrites, truncation, trailing bytes, splices, header size
-    fields and packed ``bvx2`` fields; the seed's size as the limit, or near it."""
+    """One fuzz case: bit flips, byte overwrites, truncation, trailing bytes, splices,
+    header size fields and packed ``bvx2`` fields, with the seed's size as the limit
+    or near it. Without ``v1`` it is the case ``fuzz.py``'s ``mutate`` makes from the
+    same generator; ``v1`` adds a flip in the ``bvx1`` fields."""
     data, z = rnd.choice(seeds)
     z = bytearray(z)
-    op = rnd.randrange(9)
+    op = rnd.randrange(9 if v1 else 8)
     if op == 0 and z:
         for _ in range(rnd.randint(1, 4)):
             z[rnd.randrange(len(z))] ^= 1 << rnd.randrange(8)
@@ -981,7 +980,7 @@ def _a0_mutate(
         struct.pack_into("<I", z, off, max(0, min(0xFFFFFFFF, v + step)))
     elif op == 6 and len(z) >= 32 and z[:4] == b"bvx2":
         z[12 + rnd.randrange(24)] ^= 1 << rnd.randrange(8)
-    elif op == 7 and len(z) >= 772 and z[:4] == b"bvx1":
+    elif v1 and op == 7 and len(z) >= 772 and z[:4] == b"bvx1":
         # one bit of the v1 fields before the frequencies (counts, bits, states)
         z[4 + rnd.randrange(46)] ^= 1 << rnd.randrange(8)
     else:
@@ -995,23 +994,41 @@ def _a0_mutate(
     return bytes(z), limit
 
 
-def test_lzfse_a0_fuzz_parity() -> None:
-    """The A0 fuzz cases: the same bytes or the same error, case by case.
-    ``CODECS_LZFSE_FUZZ_CASES=200000`` runs as many as the A0 run had."""
-    helpers = _dmg_helpers()
-    if not helpers._have_lzfse():
-        pytest.skip("the lzfse package (the seeds' encoder) is not installed")
-    seeds = _a0_seeds(helpers)
-    kinds = {z[:4] for _data, z in seeds}
-    assert {b"bvx-", b"bvxn", b"bvx1", b"bvx2"} <= kinds
+def _fuzz_parity(seeds: list[tuple[bytes, bytes]], seed: str, *, v1: bool) -> None:
+    """``LZFSE_FUZZ_CASES`` cases from ``seeds``, case ``k`` generated from
+    ``random.Random(f"{seed}:{k}")``: the same bytes or the same error, case by case."""
     verdicts: dict[str, int] = {}
     for k in range(LZFSE_FUZZ_CASES):
-        src, limit = _a0_mutate(random.Random(f"7:{k}"), seeds)
+        src, limit = _a0_mutate(random.Random(f"{seed}:{k}"), seeds, v1=v1)
         python, rust = lzfse_both(src, limit)
         assert python == rust, (k, src[:64].hex(), limit)
         verdicts[python[0]] = verdicts.get(python[0], 0) + 1
     if LZFSE_FUZZ_CASES >= 1000:
         assert set(verdicts) == {"ok", "corrupt", "truncated"}, verdicts
+
+
+def test_lzfse_a0_fuzz_parity() -> None:
+    """The A0 fuzz cases themselves: ``fuzz.py``'s seeds, generator and run seed
+    ``a0``, so case ``k`` is the A0 run's case ``k``. ``CODECS_LZFSE_FUZZ_CASES=200000``
+    replays the whole A0 run."""
+    helpers = _dmg_helpers()
+    if not helpers._have_lzfse():
+        pytest.skip("the lzfse package (the seeds' encoder) is not installed")
+    seeds = _a0_seeds(helpers)
+    assert {z[:4] for _data, z in seeds} >= {b"bvx-", b"bvxn", b"bvx2"}
+    _fuzz_parity(seeds, "a0", v1=False)
+
+
+def test_lzfse_v1_fuzz_parity() -> None:
+    """Fuzz cases the A0 run had none of: the A0 seeds plus each with its ``bvx2``
+    blocks rewritten as ``bvx1``, and a flip in the ``bvx1`` fields."""
+    helpers = _dmg_helpers()
+    if not helpers._have_lzfse():
+        pytest.skip("the lzfse package (the seeds' encoder) is not installed")
+    seeds = _a0_seeds(helpers)
+    seeds += [(data, helpers._to_v1(z)) for data, z in seeds if b"bvx2" in z]
+    assert b"bvx1" in {z[:4] for _data, z in seeds}
+    _fuzz_parity(seeds, "v1", v1=True)
 
 
 def test_lzvn_parity() -> None:

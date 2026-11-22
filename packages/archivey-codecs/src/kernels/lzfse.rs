@@ -205,7 +205,17 @@ pub fn lzfse_decompress(src: &[u8], max_length: usize) -> Result<Vec<u8>> {
             let block_limit = block_start + n_raw as usize;
             let payload_end = start + n_payload as usize;
             let overrun = format!("LZVN block decodes to more than its {n_raw} bytes");
-            let end = lzvn(src, start, payload_end, &mut out, block_limit, &overrun)?;
+            // The block may write up to its own end; the capacity may grow toward the
+            // stream's limit, so a run of small blocks keeps growing geometrically.
+            let end = lzvn(
+                src,
+                start,
+                payload_end,
+                &mut out,
+                block_limit,
+                max_length,
+                &overrun,
+            )?;
             if out.len() != block_limit {
                 let decoded = out.len() - block_start;
                 return corrupt(format!(
@@ -232,7 +242,15 @@ pub fn lzfse_decompress(src: &[u8], max_length: usize) -> Result<Vec<u8>> {
 pub fn lzvn_decompress(src: &[u8], max_length: usize) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let overrun = format!("LZVN data decodes to more than {max_length} bytes");
-    let end = lzvn(src, 0, src.len(), &mut out, max_length, &overrun)?;
+    let end = lzvn(
+        src,
+        0,
+        src.len(),
+        &mut out,
+        max_length,
+        max_length,
+        &overrun,
+    )?;
     if end != src.len() {
         return corrupt(format!(
             "{} bytes follow the end of the LZVN data",
@@ -251,13 +269,15 @@ const LZVN_IN_OPCODE: &str = "LZVN data ends inside an opcode";
 /// Decode LZVN from `src[i..n]` onto `out` up to its end-of-stream opcode; return the
 /// offset just past that opcode. `out` may already hold earlier output, which matches
 /// can reach back into, and may not grow past `limit`: past it, the error says
-/// `overrun`. `d` starts at 0, which no match may use.
+/// `overrun`. Its capacity may grow up to `ceiling` (at least `limit`), the limit of
+/// the whole output. `d` starts at 0, which no match may use.
 fn lzvn(
     src: &[u8],
     mut i: usize,
     n: usize,
     out: &mut Vec<u8>,
     limit: usize,
+    ceiling: usize,
     overrun: &str,
 ) -> Result<usize> {
     let mut d = 0usize;
@@ -359,7 +379,7 @@ fn lzvn(
             if out.len() + lit > limit {
                 return corrupt(overrun);
             }
-            room(out, lit, limit);
+            room(out, lit, ceiling);
             out.extend_from_slice(&src[i..i + lit]);
             i += lit;
         }
@@ -371,7 +391,7 @@ fn lzvn(
             if size + mlen > limit {
                 return corrupt(overrun);
             }
-            room(out, mlen, limit);
+            room(out, mlen, ceiling);
             copy_match(out, d, mlen);
         }
     }
@@ -819,6 +839,48 @@ mod tests {
             "{err:?}"
         );
         assert!(out.capacity() < 1024, "{}", out.capacity());
+    }
+
+    /// `count` LZVN blocks of four bytes each (`n_raw = 4`), then the end block.
+    fn small_lzvn_blocks(count: usize) -> Vec<u8> {
+        // One literal "a" and a match of 3 at distance 1, then the end opcode.
+        let payload = [0x40, 0x01, b'a', 0x06, 0, 0, 0, 0, 0, 0, 0];
+        let mut data = Vec::new();
+        for _ in 0..count {
+            data.extend_from_slice(b"bvxn");
+            data.extend_from_slice(&4u32.to_le_bytes());
+            data.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            data.extend_from_slice(&payload);
+        }
+        data.extend_from_slice(b"bvx$");
+        data
+    }
+
+    #[test]
+    fn small_lzvn_blocks_grow_the_output_geometrically() {
+        // Each block may write only its own 4 bytes, but the capacity grows toward the
+        // stream's limit: about log2(4000) growths, not one per block.
+        let count = 1000;
+        let size = 4 * count;
+        let data = small_lzvn_blocks(count);
+        let (mut out, mut growths) = (Vec::new(), 0);
+        let mut pos = 0;
+        while &data[pos..pos + 4] == b"bvxn" {
+            let before = out.capacity();
+            let block_limit = out.len() + 4;
+            let end = lzvn(&data, pos + 12, pos + 23, &mut out, block_limit, size, "x");
+            assert_eq!(end.unwrap(), pos + 23);
+            growths += usize::from(out.capacity() != before);
+            pos += 23;
+        }
+        assert_eq!(out, b"aaaa".repeat(count));
+        assert!(growths <= 20, "{growths} growths for {count} blocks");
+        assert!(out.capacity() <= size, "{} > {size}", out.capacity());
+        // The stream decoder passes its own limit as the ceiling: the capacity ends
+        // past the output (a clamp per block leaves it at exactly the output).
+        let out = lzfse_decompress(&data, size + 1000).unwrap();
+        assert_eq!(out.len(), size);
+        assert!(out.capacity() > size && out.capacity() <= size + 1000);
     }
 
     #[test]
