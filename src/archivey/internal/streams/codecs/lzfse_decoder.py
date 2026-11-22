@@ -41,8 +41,15 @@ work is linear in the input and ``max_length``.
 from __future__ import annotations
 
 import struct
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.internal import native
+from archivey.types import OptionalLibrary
+
+if TYPE_CHECKING:
+    from archivey.config import ArchiveyConfig
 
 _END = b"bvx$"
 _STORED = b"bvx-"
@@ -151,6 +158,33 @@ def lzfse_decompress(data: bytes, max_length: int) -> bytes:
             pos = _fse_block(src, pos, magic == _V2, out, max_length)
         else:
             raise CorruptionError(f"unknown LZFSE block magic {magic!r}")
+
+
+Decode = Callable[[bytes, int], bytes]
+
+
+def decoders(
+    excluded: frozenset[OptionalLibrary], *, isolated: bool
+) -> tuple[Decode, Decode]:
+    """The LZFSE and the raw LZVN decoder to use: archivey-codecs' kernels when
+    :mod:`archivey.internal.native` allows them (installed, not in ``excluded``, not
+    ``isolated`` under ``NATIVE_DECODERS``), else :func:`lzfse_decompress` and
+    :func:`lzvn_decompress`. Both give the same bytes and the same errors."""
+    lzfse = native.apple_lz("lzfse", excluded, isolated=isolated) or lzfse_decompress
+    lzvn = native.apple_lz("lzvn", excluded, isolated=isolated) or lzvn_decompress
+    return lzfse, lzvn
+
+
+def decoders_for(config: ArchiveyConfig) -> tuple[Decode, Decode]:
+    """:func:`decoders` for a reader's call: its policy's switched-off packages, and
+    whether its ``process_isolation`` is ``NATIVE_DECODERS``."""
+    # Imported here: archivey.config imports the codecs package.
+    from archivey.config import ProcessIsolation
+
+    return decoders(
+        config.formats._libraries_off,
+        isolated=config.process_isolation is ProcessIsolation.NATIVE_DECODERS,
+    )
 
 
 def lzvn_decompress(data: bytes, max_length: int) -> bytes:

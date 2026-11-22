@@ -50,7 +50,10 @@ from archivey.exceptions import (
 from archivey.formats import ReaderContext, ReaderSource
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.adc_decoder import adc_decompress
-from archivey.internal.streams.codecs.lzfse_decoder import lzfse_decompress
+from archivey.internal.streams.codecs.lzfse_decoder import (
+    decoders_for,
+    lzfse_decompress,
+)
 from archivey.terminal import quoted
 
 if TYPE_CHECKING:
@@ -300,6 +303,8 @@ class UdifImage:
     def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         self._source = source
         self._context = context
+        # The LZFSE decoder: archivey-codecs' kernel when the call allows it.
+        self._lzfse = decoders_for(context.config)[0]
         # The open budget: the physical bytes read and the bytes decoded since the
         # property list, until ``end_open`` (design §7). ``None`` once open is done.
         self._budget: int | None = OPEN_BUDGET
@@ -705,7 +710,8 @@ class UdifImage:
             draw(decoded)
         try:
             if in_house is not None:
-                data = in_house[1](raw, decoded + 1)
+                decode = self._lzfse if kind == LZFSE else in_house[1]
+                data = decode(raw, decoded + 1)
             else:
                 data = self._through_archivey(raw, _THROUGH_ARCHIVEY[kind], decoded)
         except (CorruptionError, TruncatedError) as exc:

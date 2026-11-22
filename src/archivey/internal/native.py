@@ -14,9 +14,10 @@ A kernel is used when all of these hold:
 - its ``KERNELS`` revision for that kernel is at least :data:`MIN_REVISIONS`' (an older
   one may differ from this archivey's Python twin, so it is skipped, logged once at
   DEBUG);
-- for a decoding kernel (ARM64, RISC-V, LZW, LZO1X), the call's ``process_isolation``
-  is not ``NATIVE_DECODERS``: until the decoder child runs these kernels, the Python
-  twin keeps that setting's promise that no native decoder runs in this process.
+- for a decoding kernel (ARM64, RISC-V, LZW, LZO1X, LZFSE, LZVN), the call's
+  ``process_isolation`` is not ``NATIVE_DECODERS``: until the decoder child runs these
+  kernels, the Python twin keeps that setting's promise that no native decoder runs in
+  this process.
 
 A missed check in a kernel panics, and PyO3 raises ``pyo3_runtime.PanicException``, a
 ``BaseException`` that passes ``except Exception``. :func:`panic_to_corruption` turns it
@@ -42,7 +43,9 @@ from archivey.types import OptionalLibrary
 MIN_REVISIONS: dict[str, int] = {
     "arm64": 1,
     "crc16_arc": 1,
+    "lzfse": 1,
     "lzo1x": 1,
+    "lzvn": 1,
     "lzw": 1,
     "riscv": 1,
     "zipcrypto": 1,
@@ -298,6 +301,36 @@ def branch_filter(
             return NativeBranch(decoder(start_offset), label)
 
     return new
+
+
+# ── LZFSE and LZVN ────────────────────────────────────────────────────────────────────
+
+_APPLE_LABELS = {"lzfse": "LZFSE", "lzvn": "LZVN"}
+
+
+def apple_lz(
+    kernel: str, excluded: frozenset[OptionalLibrary], *, isolated: bool
+) -> Callable[[bytes, int], bytes] | None:
+    """The kernel's one-shot decoder with its Python twin's contract (``(data,
+    max_length)``: at most ``max_length`` bytes, the twin's errors and messages), or
+    ``None`` to use the twin. ``kernel`` is ``"lzfse"`` or ``"lzvn"``.
+
+    ``isolated`` is ``ProcessIsolation.NATIVE_DECODERS``: until the decoder child can
+    run these kernels, the Python decoder keeps that setting's promise.
+    """
+    if isolated:
+        return None
+    module = kernels(kernel, excluded)
+    if module is None:
+        return None
+    decompress = getattr(module, kernel).decompress
+    label = _APPLE_LABELS[kernel]
+
+    def decode(data: bytes, max_length: int) -> bytes:
+        with codec_errors(module, label):
+            return decompress(data, max_size=max_length)
+
+    return decode
 
 
 # ── Unix compress (LZW) ───────────────────────────────────────────────────────────────

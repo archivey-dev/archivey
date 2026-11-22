@@ -36,6 +36,8 @@ from archivey.exceptions import (
 )
 from archivey.formats import ReaderContext, ReaderSource
 from archivey.internal.streams.codecs.lzfse_decoder import (
+    Decode,
+    decoders_for,
     lzfse_decompress,
     lzvn_decompress,
 )
@@ -976,6 +978,12 @@ def decmpfs_reader(
         refusal = context.config.formats._codec_refusal(method)
         if refusal is not None:
             raise UnsupportedFeatureError(f"{refusal}.")
+    # The LZFSE and LZVN decoders: archivey-codecs' kernels when the call allows them.
+    apple = (
+        decoders_for(context.config)
+        if method is not None
+        else (lzfse_decompress, lzvn_decompress)
+    )
     chunks = -(-size // DECMPFS_CHUNK)
 
     def expected(index: int) -> int:
@@ -989,7 +997,7 @@ def decmpfs_reader(
             )
 
         def inline_block(index: int) -> bytes:
-            return _decode_chunk(context, kind, header.inline, size, cnid)
+            return _decode_chunk(context, kind, header.inline, size, cnid, apple)
 
         return inline_block
     if not fork_size:
@@ -1036,7 +1044,9 @@ def decmpfs_reader(
                 f"chunk {index} of the compressed file {cnid} ({length} bytes at "
                 f"{start}) is outside its resource fork"
             )
-        return _decode_chunk(context, kind, read(start, length), expected(index), cnid)
+        return _decode_chunk(
+            context, kind, read(start, length), expected(index), cnid, apple
+        )
 
     return fork_block
 
@@ -1047,8 +1057,10 @@ def _decode_chunk(
     data: bytes,
     want: int,
     cnid: int,
+    apple: tuple[Decode, Decode],
 ) -> bytes:
-    """One decmpfs chunk, which must decode to exactly ``want`` bytes."""
+    """One decmpfs chunk, which must decode to exactly ``want`` bytes. ``apple`` is
+    the LZFSE and the raw LZVN decoder (:func:`decoders_for`)."""
     try:
         if kind == 1:
             out = data
@@ -1086,9 +1098,9 @@ def _decode_chunk(
         # The LZVN and LZFSE decoders refuse any output past ``want`` themselves, and
         # their message names ``want``.
         elif kind in _LZVN_KINDS:
-            out = data[1:] if data[:1] == b"\x06" else lzvn_decompress(data, want)
+            out = data[1:] if data[:1] == b"\x06" else apple[1](data, want)
         else:
-            out = data[1:] if data[:1] == b"\xff" else lzfse_decompress(data, want)
+            out = data[1:] if data[:1] == b"\xff" else apple[0](data, want)
     except (CorruptionError, TruncatedError) as exc:
         raise CorruptionError(f"the compressed data of file {cnid}: {exc}") from None
     if len(out) != want:

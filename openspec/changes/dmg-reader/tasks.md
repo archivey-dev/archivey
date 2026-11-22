@@ -97,11 +97,13 @@ Ruled 2026-11-21 (A0.2): the fast path is archivey's own LZFSE and LZVN kernel i
 `archivey-codecs` Rust package, with the same checks as the Python decoder, not the
 `lzfse` PyPI package.
 
-- [ ] H.1 LZFSE and LZVN kernel in `archivey-codecs` with a bounded output and the
-  Python decoder's checks; archivey uses it when the package is installed
-- [ ] H.2 Tests that both decoders agree on every fixture and on the A0 fuzz corpus;
-  `--all-configs` (kernel against the Python decoder: `packages/archivey-codecs/tests/
-  test_parity.py`; the reads through archivey come with H.1's hook)
+- [x] H.1 LZFSE and LZVN kernel in `archivey-codecs` with a bounded output and the
+  Python decoder's checks; archivey uses it when the package is installed (in this
+  process; under `NATIVE_DECODERS` once the decoder child runs the codecs kernels)
+- [x] H.2 Tests that both decoders agree on every fixture and on the A0 fuzz corpus;
+  `--all-configs` (kernel against the Python decoder:
+  `packages/archivey-codecs/tests/test_parity.py`; reads through archivey:
+  `tests/test_native_kernels.py`)
 
 ## On archive
 
