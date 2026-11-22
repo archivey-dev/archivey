@@ -789,8 +789,11 @@ class _VolumeWalk:
         if first is not None:
             member.type = MemberType.HARDLINK
             member.link_target = first
-            # The attributes are the inode's, which every path to it shares.
-            self._add_xattrs(member, inode.cnid, compressed=False)
+            # The attributes are the inode's, which every path to it shares, and
+            # so is what is hidden.
+            flags = hfsplus.file_info(inode.record).owner_flags
+            compressed = bool(flags & hfsplus.UF_COMPRESSED)
+            self._add_xattrs(member, inode.cnid, compressed=compressed)
             return MemberRecord(member, None)
         self._linked[link_id] = path
         self._charge(len(path) + 32, "the HFS+ hard links")
@@ -1090,10 +1093,12 @@ class _ApfsWalk:
         xattrs = tree.xattrs.get(oid, {})
         member = self._base(path, inode)
         earlier = first.get(oid)
+        compressed = bool(inode.bsd_flags & apfs.UF_COMPRESSED)
         if earlier is not None:
             member.type = MemberType.HARDLINK
             member.link_target = earlier
-            self._add_xattrs(member, oid, compressed=False)
+            # The same inode as its first name, so the same attributes are hidden.
+            self._add_xattrs(member, oid, compressed=compressed)
             return MemberRecord(member, None)
         if kind == _S_IFLNK:
             target = xattrs.get(apfs.SYMLINK_XATTR)
@@ -1112,7 +1117,6 @@ class _ApfsWalk:
             )
             self._add_xattrs(member, oid, compressed=False)
             return MemberRecord(member, None)
-        compressed = bool(inode.bsd_flags & apfs.UF_COMPRESSED)
         if (
             compressed
             and apfs.DECMPFS_XATTR not in xattrs

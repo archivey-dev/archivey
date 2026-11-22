@@ -302,6 +302,19 @@ def test_random_access_reads_inside_a_large_file() -> None:
         assert stream.read(1000) == (_BIG * 8)[1_500_000:1_501_000]
 
 
+def test_a_compressed_hard_link_hides_its_decmpfs_attribute_under_every_name() -> None:
+    nodes = [
+        d.Node("a.txt", data=_TEXT, compression=4, xattrs={"user.tag": b"t"}),
+        d.Node("b.txt", kind="hardlink", target="a.txt"),
+    ]
+    members, data = _read_all(_image(nodes))
+    assert data["a.txt"] == _TEXT
+    for name in ("a.txt", "b.txt"):
+        xattrs = members[name].extra["dmg.xattrs"]  # type: ignore[attr-defined]
+        assert "user.tag" in xattrs
+        assert "com.apple.decmpfs" not in xattrs
+
+
 # ── Several volumes ──────────────────────────────────────────────────────────────────
 
 

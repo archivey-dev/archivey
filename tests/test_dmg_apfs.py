@@ -813,6 +813,20 @@ def test_an_encrypted_volume_beside_a_readable_one_is_reported() -> None:
     assert unlisted[0].context.member_name == "Locked"
 
 
+def test_a_compressed_file_hides_its_decmpfs_attribute_under_every_name() -> None:
+    nodes = [
+        d.Node("a.txt", data=_TEXT, compression=4, xattrs={"user.tag": b"t"}),
+        d.Node("b.txt", kind="hardlink", target="a.txt"),
+    ]
+    image = a.apfs_dmg(a.write_apfs(nodes).container)
+    with _open(image) as reader:
+        members = {m.name: m for m in reader.members()}
+    for name in ("a.txt", "b.txt"):
+        xattrs = members[name].extra["dmg.xattrs"]
+        assert "user.tag" in xattrs
+        assert "com.apple.decmpfs" not in xattrs
+
+
 def _mark_first_volume_nodes_encrypted(container: bytearray, info: a.Apfs) -> None:
     """Set the encrypted flag on every mapping of the first volume's object map,
     which the volume's own flags say is not encrypted."""
