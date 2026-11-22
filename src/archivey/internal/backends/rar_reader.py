@@ -4017,6 +4017,8 @@ class RarReader(BaseArchiveReader):
             context=SalvageUnavailableContext(
                 archive_name=self._archive_name,
                 format=ArchiveFormat.RAR.display_name,
+                # The closest reason: archivey has no search for encrypted headers.
+                reason="no_salvage_search",
             ),
             logger=logger,
         )
@@ -7191,7 +7193,8 @@ class RarReadBackend(ReadBackend):
     SUPPORTS_PASSWORD = True
     USES_ENCODING = True  # for RAR 1.5-4 names stored as 8-bit bytes
     # Salvage mode searches past damage for the next header (``rar_search``). It
-    # needs a seekable source, so ``RarForwardReader`` never gets the request.
+    # needs a seekable source: ``RarForwardReader`` (an archive inside another one)
+    # records SALVAGE_UNAVAILABLE instead.
     SUPPORTS_SALVAGE = True
     # Read front to back by ``RarForwardReader``, with RARLAB unrar 7.00 or later.
     SUPPORTS_STREAMING_NON_SEEKABLE = True

@@ -34,7 +34,8 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import ArchiveyUsageError
 from archivey.internal.base_reader import BaseArchiveReader
-from archivey.internal.salvage import SalvageState
+from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.salvage import SalvageState, emit_salvage_unavailable
 
 _RAR_FIXTURE = Path(__file__).parent / "fixtures" / "rar" / "basic_nonsolid__.rar"
 
@@ -125,8 +126,9 @@ def test_a_format_without_salvage_records_unavailable_once(
             if d.code is DiagnosticCode.SALVAGE_UNAVAILABLE
         ]
         assert record.context == SalvageUnavailableContext(
-            archive_name=str(path), format=fmt
+            archive_name=str(path), format=fmt, reason="no_salvage_search"
         )
+        assert "no salvage search for this format" in record.message
         assert isinstance(reader, BaseArchiveReader)
         assert reader._salvage_mode.requested
         assert not reader._salvage_mode.enabled
@@ -272,6 +274,12 @@ def test_config_refuses_a_salvage_limits_that_is_not_one() -> None:
             DiagnosticCode.SALVAGE_UNAVAILABLE,
             SalvageUnavailableContext(archive_name="x.zip", format="ZIP"),
         ),
+        (
+            DiagnosticCode.SALVAGE_UNAVAILABLE,
+            SalvageUnavailableContext(
+                archive_name="x.cpio", format="CPIO", reason="forward_only_reader"
+            ),
+        ),
     ],
 )
 def test_salvage_contexts_pair_with_their_codes_and_are_json_safe(
@@ -280,6 +288,31 @@ def test_salvage_contexts_pair_with_their_codes_and_are_json_safe(
     validate_code_context(code, context)  # type: ignore[arg-type]
     payload = context.to_dict()  # type: ignore[attr-defined]
     assert json.loads(json.dumps(payload)) == payload
+
+
+@pytest.mark.parametrize(
+    ("reason", "cause"),
+    [
+        ("no_salvage_search", "archivey has no salvage search for this format"),
+        ("forward_only_reader", "cannot run on an archive inside another one"),
+    ],
+)
+def test_the_unavailable_message_names_its_reason(reason: str, cause: str) -> None:
+    collector = DiagnosticCollector()
+    emit_salvage_unavailable(
+        collector,
+        archive_name="x.cpio",
+        format_name="CPIO",
+        reason=reason,  # type: ignore[arg-type]
+    )
+    [record] = collector.snapshot().retained
+    assert record.code is DiagnosticCode.SALVAGE_UNAVAILABLE
+    assert record.context == SalvageUnavailableContext(
+        archive_name="x.cpio",
+        format="CPIO",
+        reason=reason,  # type: ignore[arg-type]
+    )
+    assert cause in record.message
 
 
 def test_scan_context_defaults_hold_position_unchecked() -> None:

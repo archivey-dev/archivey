@@ -592,6 +592,11 @@ open:
   listed a member past damage, not only after a volume whose walk ended in damage: the
   default reaches neither. Only after a volume that ended in damage is the next one
   read as after a gap.
+- **`SALVAGE_UNAVAILABLE` reasons.** Header-encrypted archives use
+  `reason="no_salvage_search"`, the closer of the two (archivey has no search for
+  encrypted headers), with a RAR-specific message. A RAR read forward only, inside
+  another archive (`RarForwardReader`), uses `"forward_only_reader"`. RAR has no data
+  re-walk: member reads go by offset, so `QuietSalvageState` is not needed.
 - **A stored RAR5 archive comment** (`CMT`) is not read once the walk is past damage:
   a found `CMT` may belong to an inner archive.
 - **Found members are flagged at open.** The parse reads the whole archive, so every

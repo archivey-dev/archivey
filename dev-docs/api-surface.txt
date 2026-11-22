@@ -1079,10 +1079,11 @@ field archivey.diagnostics.SalvageScanContext.unchecked: tuple[str, ...] = ('pos
 field archivey.diagnostics.SalvageScanContext.volume_index: int | None = None
 method archivey.diagnostics.SalvageScanContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.SalvageUnavailableContext(_JsonSafeContext)
-init archivey.diagnostics.SalvageUnavailableContext(kind: Literal['salvage_unavailable'] = 'salvage_unavailable', archive_name: str | None = None, format: str = '') -> None
+init archivey.diagnostics.SalvageUnavailableContext(kind: Literal['salvage_unavailable'] = 'salvage_unavailable', archive_name: str | None = None, format: str = '', reason: Literal['no_salvage_search', 'forward_only_reader'] = 'no_salvage_search') -> None
 field archivey.diagnostics.SalvageUnavailableContext.archive_name: str | None = None
 field archivey.diagnostics.SalvageUnavailableContext.format: str = ''
 field archivey.diagnostics.SalvageUnavailableContext.kind: Literal['salvage_unavailable'] = 'salvage_unavailable'
+field archivey.diagnostics.SalvageUnavailableContext.reason: Literal['no_salvage_search', 'forward_only_reader'] = 'no_salvage_search'
 method archivey.diagnostics.SalvageUnavailableContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.ScanRaceContext(_JsonSafeContext)
 init archivey.diagnostics.ScanRaceContext(kind: Literal['scan_race'] = 'scan_race', archive_name: str | None = None, relative_path: str = '', entry_kind: Literal['directory', 'entry'] = 'entry') -> None

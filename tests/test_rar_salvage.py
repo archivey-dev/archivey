@@ -12,17 +12,20 @@ test writes (``rar`` 7.00 no longer writes RAR 1.5-4).
 from __future__ import annotations
 
 import functools
+import io
 import random
 import shutil
 import subprocess
 import time
 import zlib
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from archivey import (
+    ArchiveFormat,
     ArchiveyConfig,
     DiagnosticCode,
     DiagnosticPolicy,
@@ -51,7 +54,7 @@ from archivey.internal.backends.rar_search import (
     crc32_from_prefixes,
     is_rar5_qo_copy,
 )
-from tests.conftest import requires_binary, requires_unrar_cli
+from tests.conftest import requires_binary, requires_unrar_cli, unrar_reads_from_pipes
 from tests.rar_util import write_rar29_stored
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
@@ -725,7 +728,7 @@ def test_encrypted_headers_record_salvage_unavailable(name: str) -> None:
         ]
     [record] = records
     assert record.context == SalvageUnavailableContext(
-        archive_name=str(_RAR / name), format="RAR"
+        archive_name=str(_RAR / name), format="RAR", reason="no_salvage_search"
     )
     assert "encrypted" in record.message
 
@@ -774,3 +777,58 @@ def test_a_found_member_over_the_in_place_threshold_reads_from_a_copy(
     with open_archive(path, salvage=True) as reader:
         for member in reader.members_report().members:
             assert reader.read(member) == original[member.name]
+
+
+@pytest.mark.skipif(
+    not unrar_reads_from_pipes(), reason="reading RAR forward needs unrar 7.00+"
+)
+def test_a_rar_inside_another_archive_records_forward_only_reader() -> None:
+    """An inner archive is read forward only (``RarForwardReader``), where the
+    header search cannot run: ``SALVAGE_UNAVAILABLE`` with ``forward_only_reader``."""
+    from archivey import PluginContainer, StreamFormat
+    from archivey.formats import (
+        ForwardStream,
+        Magic,
+        MemberSpan,
+        ReaderContext,
+        SequentialFormatHandler,
+        SequentialReader,
+        register_format,
+    )
+    from archivey.internal.format_adapter import registration_scope
+
+    class Box(PluginContainer):
+        RARBOX = "rarbox"
+
+    class BoxReader(SequentialReader):
+        def __init__(self, context: ReaderContext) -> None:
+            self._context = context
+
+        def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+            stream.read_exact(6)
+            yield from self._context.open_nested(stream, ArchiveFormat.RAR)
+
+    class BoxHandler(SequentialFormatHandler):
+        format = ArchiveFormat(Box.RARBOX, StreamFormat.UNCOMPRESSED)
+        magic = (Magic(0, b"RARBOX"),)
+
+        def open_sequential(self, context: ReaderContext) -> BoxReader:
+            return BoxReader(context)
+
+    data = b"RARBOX" + (_RAR / "basic_nonsolid__.rar").read_bytes()
+    with registration_scope():
+        register_format(BoxHandler)
+        with open_archive(io.BytesIO(data), salvage=True) as reader:
+            names = [m.name for m in reader.members()]
+            records = [
+                d.context
+                for d in reader.diagnostics.retained
+                if d.code is DiagnosticCode.SALVAGE_UNAVAILABLE
+            ]
+    assert "file1.txt" in names
+    rar = [
+        c
+        for c in records
+        if isinstance(c, SalvageUnavailableContext) and c.format == "RAR"
+    ]
+    assert [c.reason for c in rar] == ["forward_only_reader"]
