@@ -753,8 +753,15 @@ class _PluginAdapter(BaseArchiveReader):
             if self._RECORDS_NESTS and self._walk_step == _LISTING
             else None
         )
+        # A walk started over to reach member data builds the inner reader again:
+        # it salvages as the listing's did, and repeats none of its salvage records.
         spans = self._nested_spans(
-            backend_cls, data, fmt, first=self._walk_index, nest=nest
+            backend_cls,
+            data,
+            fmt,
+            first=self._walk_index,
+            nest=nest,
+            repeat=self._walk_step != _LISTING,
         )
         self._nested_iterators.add(spans)
         return spans
@@ -782,7 +789,7 @@ class _PluginAdapter(BaseArchiveReader):
             walk = None
         if walk is None:
             spans = self._nested_spans(
-                backend_cls, data, fmt, first=nest.first, muted=True
+                backend_cls, data, fmt, first=nest.first, muted=True, repeat=True
             )
             self._nested_iterators.add(spans)
             walk = _NestWalk(nest, spans)
@@ -836,13 +843,17 @@ class _PluginAdapter(BaseArchiveReader):
         first: int,
         nest: _Nest | None = None,
         muted: bool = False,
+        repeat: bool = False,
     ) -> Iterator[MemberSpan]:
         """The spans of the inner archive ``data``: its members, numbered from
         ``first`` in what it reports, and their decoded data.
 
         With ``nest``, each span's member is noted as that inner archive's, for the
         listing to record (``_walk_records``). ``muted`` drops what the inner reader
-        reports while it reads its headers, for a reopen (``_reopen_nested``)."""
+        reports while it reads its headers, for a reopen (``_reopen_nested``).
+        ``repeat`` builds the inner reader as one that reads again what the listing's
+        inner reader reported: it salvages as that one did and records none of the
+        salvage codes (``SalvageRequest.repeat``)."""
         collector = self._diagnostics_collector
         quiet = collector.muted if muted else nullcontext
         # The decoder that gives ``data`` may not have read its header yet (an xz,
@@ -863,7 +874,9 @@ class _PluginAdapter(BaseArchiveReader):
             collector.member_ids_from(first),
             reading_inside(self),
             requesting_salvage(
-                self._salvage_mode.requested, supported=backend_cls.SUPPORTS_SALVAGE
+                self._salvage_mode.requested,
+                supported=backend_cls.SUPPORTS_SALVAGE,
+                repeat=repeat,
             ),
             quiet(),
         ):

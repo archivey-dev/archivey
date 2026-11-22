@@ -202,6 +202,7 @@ from archivey.internal.reader_state import (
 from archivey.internal.remote import source_change
 from archivey.internal.resource_usage import ResourceUsage, ResourceUsageRecorder
 from archivey.internal.salvage import (
+    QuietSalvageState,
     SalvageState,
     emit_salvage_unavailable,
     take_salvage_request,
@@ -961,9 +962,11 @@ class BaseArchiveReader(ArchiveReader):
         # Salvage mode (``archivey.internal.salvage``): the opener's request, taken
         # like the parent above. ``self._salvage_mode.enabled`` says whether this
         # reader searches past damage, and ``self._salvage_mode.limits`` holds its
-        # caps.
+        # caps. A repeat reader (an inner archive built again to reach member data)
+        # salvages as the first one did and records nothing: the first one did.
         salvage_request = take_salvage_request()
-        self._salvage_mode = SalvageState(
+        state_cls = QuietSalvageState if salvage_request.repeat else SalvageState
+        self._salvage_mode = state_cls(
             requested=salvage_request.requested,
             enabled=salvage_request.requested and salvage_request.supported,
             limits=self._config.salvage_limits,
@@ -971,7 +974,11 @@ class BaseArchiveReader(ArchiveReader):
             archive_name=archive_name,
             format_name=format.display_name,
         )
-        if salvage_request.requested and not salvage_request.supported:
+        if (
+            salvage_request.requested
+            and not salvage_request.supported
+            and not salvage_request.repeat
+        ):
             emit_salvage_unavailable(
                 self._diagnostics_collector,
                 archive_name=archive_name,

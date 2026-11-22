@@ -292,17 +292,30 @@ def test_scan_context_defaults_hold_position_unchecked() -> None:
 def test_a_nested_reader_archivey_opens_inherits_the_flag() -> None:
     """A ``.deb``'s control and data tars are read by readers archivey opens itself
     (``ReaderContext.open_nested``): they are asked to salvage when the package is,
-    and, with no TAR salvage search yet, each records ``SALVAGE_UNAVAILABLE``."""
+    and, with no TAR salvage search yet, each records ``SALVAGE_UNAVAILABLE``. A walk
+    that builds them again to read member data records it no more."""
     from tests.test_deb import _deb
 
-    with open_archive(io.BytesIO(_deb()), salvage=True) as reader:
-        reader.members()
-        formats = [
+    seen: list[DiagnosticCode] = []
+    config = ArchiveyConfig(on_diagnostic=lambda d: seen.append(d.code))
+
+    def unavailable(reader: BaseArchiveReader) -> list[str]:
+        return [
             d.context.format
             for d in reader.diagnostics.retained
             if isinstance(d.context, SalvageUnavailableContext)
         ]
-    assert formats == ["DEB", "TAR", "TAR_XZ"]
+
+    with open_archive(io.BytesIO(_deb()), salvage=True, config=config) as reader:
+        members = reader.members()
+        assert unavailable(reader) == ["DEB", "TAR", "TAR_XZ"]
+        files = [m for m in members if m.is_file]
+        assert any(m.name.startswith("DEBIAN/") for m in files)
+        assert any(not m.name.startswith("DEBIAN/") for m in files)
+        for member in files:
+            reader.read(member)
+        assert unavailable(reader) == ["DEB", "TAR", "TAR_XZ"]
+    assert seen.count(DiagnosticCode.SALVAGE_UNAVAILABLE) == 3
     with open_archive(io.BytesIO(_deb())) as reader:
         reader.members()
         assert not SALVAGE_CODES & set(reader.diagnostics.counts)
