@@ -528,6 +528,27 @@ def test_lzvn_opcodes() -> None:
         lzvn_decompress(payload, len(expected) - 1)
 
 
+def test_lzvn_overruns_name_lzvn_and_the_limit_that_was_passed() -> None:
+    four = b"\xe4abcd" + b"\x06" + bytes(7)  # four literals, then end-of-stream
+    with pytest.raises(
+        CorruptionError, match="^LZVN data decodes to more than 2 bytes"
+    ):
+        lzvn_decompress(four, 2)
+    # sml_d: L=1 "a", then M=3 at D=1 -> "aaaa"; the match is what passes the limit.
+    match = bytes([0b01000000, 1]) + b"a" + b"\x06" + bytes(7)
+    with pytest.raises(
+        CorruptionError, match="^LZVN data decodes to more than 2 bytes"
+    ):
+        lzvn_decompress(match, 2)
+    # A bvxn block that declares 3 bytes and writes 4, far below max_length.
+    stream = b"bvx-" + struct.pack("<I", 100) + bytes(100)
+    stream += b"bvxn" + struct.pack("<II", 3, len(four)) + four + b"bvx$"
+    with pytest.raises(
+        CorruptionError, match="^LZVN block decodes to more than its 3 bytes"
+    ):
+        lzfse_decompress(stream, 1000)
+
+
 # --- ADC -------------------------------------------------------------------------
 
 

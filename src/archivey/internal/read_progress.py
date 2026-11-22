@@ -60,13 +60,19 @@ class SourceReadReporter:
         size: int | None,
         step: int = 1 << 20,
         nest_level: int = 0,
+        *,
+        size_is_fact: bool = True,
     ) -> None:
+        """``size`` goes into each report. Only a size that is a fact (``size_is_fact``)
+        also marks the source's end, where a report comes due before ``step`` bytes:
+        a hint that understates would otherwise make every read past it report."""
         self.callback = callback
         self.step = step
         self.nest_level = nest_level
         self._offset = 0
         self._name = name
         self._size = size
+        self._end = size if size_is_fact else None
         self._lock = threading.Lock()
         self._bytes_read = 0
         self._reported_at = 0
@@ -98,7 +104,7 @@ class SourceReadReporter:
             if (
                 total - self._reported_at < self.step
                 and not at_end
-                and (self._size is None or position < self._size)
+                and (self._end is None or position < self._end)
                 and self._deferred is None
             ):
                 return

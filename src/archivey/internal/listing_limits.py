@@ -182,15 +182,20 @@ class ListingLimitTracker:
         # What a reader keeps while it walks, beyond its members (``charge_walk``),
         # taken off when the walk ends.
         self._walk_bytes = 0
+        # What a reader keeps for its whole life (``keep``): part of
+        # ``metadata_bytes``, and still counted after ``reset``.
+        self._kept_bytes = 0
 
     def reset(self) -> None:
         self.member_count = 0
-        self.metadata_bytes = 0
+        self.metadata_bytes = self._kept_bytes
         self._archive_comment_counted = False
         self._held = {}
         self._held_bytes = 0
         self._walk_bytes = 0
         self.leave_nest()
+        # What the reader still keeps stays on the nest's account.
+        self._charge_outward(self._kept_bytes, enforce=False, what="what it keeps")
 
     def leave_nest(self) -> None:
         """Take off what this inner tracker charged the outermost one: its reader has
@@ -244,6 +249,26 @@ class ListingLimitTracker:
         self._charge_outward(nbytes, enforce=True, what=what)
         self.metadata_bytes = next_bytes
         self._walk_bytes += nbytes
+
+    def keep(self, nbytes: int, what: str) -> None:
+        """Charge ``nbytes`` a reader keeps for as long as it is open (tables its
+        member reads need) to ``max_metadata_bytes``, with the members and what the
+        walk keeps, and refuse them before the reader allocates them. ``what`` names
+        them, for the refusal. Unlike :meth:`charge_walk`, the charge stays across
+        listings (``reset``); an inner tracker's leaves the nest when its reader
+        closes (``leave_nest``)."""
+        next_bytes = self.metadata_bytes + nbytes
+        max_meta = self._limits.max_metadata_bytes
+        if max_meta is not None and next_bytes + self._nested_bytes > max_meta:
+            raise metadata_limit_error(
+                max_meta,
+                f"retained {next_bytes + self._nested_bytes} bytes, "
+                f"{self._kept_bytes + nbytes} of them kept for {what} and what was "
+                "kept before it",
+            )
+        self._charge_outward(nbytes, enforce=True, what=what)
+        self.metadata_bytes = next_bytes
+        self._kept_bytes += nbytes
 
     def account_archive_comment(self, comment: str | None) -> None:
         """Charge the archive's comment to ``max_metadata_bytes``, once per listing."""

@@ -45,12 +45,16 @@ on a Mac. A workflow on a macOS runner checks archivey against them. Like the ot
 workflows, it runs after a merge to `main` and on a schedule, never on pull requests,
 and the maintainer merges the PR that adds it (it adds triggers).
 
-- [ ] M.1 Writer images through Apple's tools (early: it checks `tests/dmg_build.py`):
+- [x] M.1 Writer images through Apple's tools (early: it checks `tests/dmg_build.py`):
   each builder image passes `hdiutil verify` and `hdiutil attach -readonly`, the mounted
   volume holds the files the writer put there, and each HFS+ volume passes `fsck_hfs -n`
-- [ ] M.2 Reader against fresh `hdiutil` images (with B.8): `hdiutil create` in every
+- [x] M.2 Reader against fresh `hdiutil` images (with B.8): `hdiutil create` in every
   format (UDZO, UDBZ, ULFO, ULMO, UDRO, UDCO; HFS+, HFSX, APFS from Part E), then
   archivey's listing and file hashes match the mounted volume's
+
+Both are `scripts/investigations/dmg_macos_check.py`, run by `dmg-macos.yml`. They
+were ticked after its first green run on `main` (2026-11-22, run 45021023296, after
+decmpfs type 10 was fixed); APFS joins M.2 with Part E.
 
 ## C. User docs
 
@@ -59,22 +63,23 @@ and the maintainer merges the PR that adds it (it adds triggers).
 
 ## D. Polish
 
-- [ ] D.1 Anything part B's review defers
+- [x] D.1 Anything part B's review defers: the folder thread cross-check (one
+  `folder_thread` diagnostic per volume)
 
 ## E. APFS
 
-- [ ] E.1 `apfs.py`: checkpoint, object maps, B-trees, Fletcher-64, filesystem records;
+- [x] E.1 `apfs.py`: checkpoint, object maps, B-trees, Fletcher-64, filesystem records;
   damaged key ranges of skipped nodes (design §6A.6)
-- [ ] E.2 Reader integration; several volumes per container
-- [ ] E.3 `write_apfs` test writer; APFS fixtures; refusals; fuzz target
-- [ ] E.4 Handbook page section
+- [x] E.2 Reader integration; several volumes per container
+- [x] E.3 `write_apfs` test writer; APFS fixtures; refusals; fuzz target
+- [x] E.4 Handbook page section
 
 ## F. Partition CRC-32
 
-- [ ] F.1 Spanning check over whole CRC-bearing `blkx` tables that overlap a filesystem
+- [x] F.1 Spanning check over whole CRC-bearing `blkx` tables that overlap a filesystem
   partition (ignore runs excluded, runs outside the partition included, zero fill folded
   in O(log n)); one table straddling two partitions fails both; `verify_all()`
-- [ ] F.2 Data-fork and master checksums if cheap
+- [x] F.2 Data-fork and master checksums if cheap
 
 ## G. Encrypted images
 

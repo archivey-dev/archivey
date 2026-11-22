@@ -64,6 +64,7 @@ from tests.atheris_fuzz.seeds import (
     cpio_seeds,
     deflate64_seeds,
     detect_format_seeds,
+    dmg_apfs_seeds,
     dmg_seeds,
     filter_seeds,
     gzip_seeds,
@@ -294,6 +295,13 @@ def dmg_open_one(data: bytes) -> None:
             )
     except ArchiveyError:
         return
+
+
+def dmg_apfs_open_one(data: bytes) -> None:
+    """List a DMG image of an APFS container and read the first files: UDIF, the
+    partition map, then the checkpoint, the object maps, the filesystem tree's nodes,
+    extents and decmpfs attributes."""
+    dmg_open_one(data)
 
 
 def xar_open_one(data: bytes) -> None:
@@ -984,6 +992,13 @@ def iter_target_specs() -> list[dict]:
             "name": "dmg",
             "fn": dmg_open_one,
             "seeds": dmg_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
+            "name": "dmg_apfs",
+            "fn": dmg_apfs_open_one,
+            "seeds": dmg_apfs_seeds,
             "fixup": None,
             "per_input_timeout": stream_timeout,
         },
