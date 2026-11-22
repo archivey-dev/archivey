@@ -197,9 +197,9 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   lists any bytes that pass as one of its headers, so the same file gives you members that other
   tools and archivey's default reading don't list. A header of an archive stored inside a member
   passes too, and a crafted file can put one anywhere. Extraction checks every found member as it
-  checks any other, so the guarantees at the top of this page still hold. This release adds the
-  option before any format supports it: every format reads as it does without `salvage=True` and
-  records `SALVAGE_UNAVAILABLE`.
+  checks any other, so the guarantees at the top of this page still hold. 7z has salvage
+  support; every other format reads as it does without `salvage=True` and records
+  `SALVAGE_UNAVAILABLE`.
 
 ## Decoders in a child process
 

@@ -811,10 +811,48 @@ def _finder_hits(data: bytes) -> list[int]:
     window = finder.read(0, len(data))
     hits: list[int] = []
     start = 0
-    while (found := finder.find(window, start)) is not None:
+    while (found := finder.find(window, start, len(window))) is not None:
         hits.append(found)
         start = found + 1
     return hits
+
+
+def test_the_stream_search_places_a_stream_past_its_first_windows() -> None:
+    """Through the search driver, with windows much smaller than the area: the
+    stream found in a later window is placed, and its chain kept, at its offset in
+    the area."""
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.salvage import SalvageState, search_forward
+
+    stream = lzma.compress(
+        bytes(range(256)) * 64,
+        format=lzma.FORMAT_RAW,
+        filters=[{"id": lzma.FILTER_LZMA2}],
+    )
+    # Bytes no stream starts at: no 0x01 and no byte of 0xe0 or more. The area is
+    # longer than a window and the bytes a candidate's check reads.
+    filler = bytes([0x41]) * 300_011
+    data = filler + stream + filler
+    finder = StreamFinder(lambda o, n: data[o : o + n], len(data))
+    state = SalvageState(
+        requested=True,
+        enabled=True,
+        limits=SalvageLimits(),
+        collector=DiagnosticCollector(),
+        archive_name="x.7z",
+        format_name="7Z",
+    )
+    finder.begin()
+    result = search_forward(
+        state,
+        finder.read,
+        finder.search,
+        start=0,
+        end=len(data),
+        window_size=4096,
+    )
+    assert result.found == len(filler)
+    assert set(finder.chains) == {len(filler)}
 
 
 def test_the_stream_search_finds_no_candidate_in_random_bytes() -> None:

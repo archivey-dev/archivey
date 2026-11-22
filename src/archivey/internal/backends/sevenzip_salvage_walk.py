@@ -616,31 +616,42 @@ class StreamFinder:
     within :data:`_STREAM_HEADER_SPAN` bytes of it decodes without error (a chain of
     uncompressed chunks only has no check), and its chain, read on to the area's
     end, ends in ``00`` or runs to the area's end. The driver reads through
-    :meth:`read`, and its reads are contiguous, so each window it gives ends where
-    the last read ended: that places the window in the area, and the whole chain is
-    read through the area's own reader. :attr:`chains` keeps each passing chain.
+    :meth:`read`. A search's first read starts at its first window, and a window
+    that finds nothing is followed by one that starts at its ``stop`` (the step is
+    1): that places each window in the area, and the whole chain is read through
+    the area's own reader. :meth:`begin` starts a search. :attr:`chains` keeps each
+    passing chain.
     """
 
     def __init__(self, read_at: ReadAt, end: int) -> None:
         self._read_at = read_at
         self._area = CachedReader(read_at, end)
         self._end = end
-        self._read_end = 0
+        # Where the window the driver gives next starts in the area; ``None`` until
+        # a search's first read.
+        self._window_start: int | None = None
         self.chains: dict[int, Chain] = {}
         self.search = HeaderSearch(
             find_header=self.find, step=1, max_header_size=_STREAM_HEADER_SPAN
         )
 
-    def read(self, offset: int, size: int) -> bytes:
-        data = self._read_at(offset, size)
-        self._read_end = offset + len(data)
-        return data
+    def begin(self) -> None:
+        """Start a search: its first read places its first window."""
+        self._window_start = None
 
-    def find(self, window: bytes, start: int) -> int | None:
-        base = self._read_end - len(window)
+    def read(self, offset: int, size: int) -> bytes:
+        if self._window_start is None:
+            self._window_start = offset
+        return self._read_at(offset, size)
+
+    def find(self, window: bytes, start: int, stop: int) -> int | None:
+        base = self._window_start
+        assert base is not None, "find before the search's first read"
         local = BytesReader(window)
         for match in _STREAM_START.finditer(window, start):
             index = match.start()
+            if index >= stop:
+                break
             head = scan_chain(local, index, len(window))
             if head is None or head.first_lzma_end is None:
                 continue
@@ -651,6 +662,7 @@ class StreamFinder:
                 continue
             self.chains[base + index] = chain
             return index
+        self._window_start = base + stop
         return None
 
 
@@ -720,6 +732,7 @@ def walk_packed_area(
         return result
     finder = StreamFinder(read_at, end)
     while resume is not None and resume < end:
+        finder.begin()
         found = search(resume, end, finder.search, finder.read)
         if found is None:
             break
