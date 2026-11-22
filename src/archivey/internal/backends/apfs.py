@@ -101,8 +101,9 @@ MAX_BLOCK_SIZE = 65536
 # work, so the cap only refuses an absurd header before any read.
 MAX_DESC_BLOCKS = 65536
 SCAN_BUDGET = 64 << 20
-# Structural: a B-tree of depth 32 with a fanout of at least 2 addresses more nodes
-# than a container's 64-bit block count can hold.
+# Structural: real nodes hold about 100 entries or more, so 10 levels already
+# address more than 2^64 blocks; 32 leaves room, and refuses a corrupt level field
+# before the walk descends.
 MAX_DEPTH = 32
 # The block a file read gathers at a time through its extents.
 READ_PIECE = 1 << 20
@@ -110,6 +111,9 @@ READ_PIECE = 1 << 20
 _MAX_VOLUMES = 100
 # A filesystem node's records cost about this much each beyond their bytes.
 _RECORD_COST = 64
+# What one damaged range holds beyond its reason's text (the tuple, its bounds and
+# the index's entry for it), measured on CPython 3.11.
+_DAMAGE_COST = 200
 
 
 def fletcher64(block: bytes) -> int:
@@ -152,13 +156,18 @@ class DamageIndex:
     are merged into disjoint intervals sorted by key, so the intervals that meet a
     query are one run found by bisection. A range's bounds count as inside it."""
 
-    def __init__(self) -> None:
+    def __init__(self, charge: Callable[[int], None] | None = None) -> None:
+        # Each range is counted as it is added, so a node full of entries that name
+        # a missing child stops at the metadata cap instead of after the walk.
+        self._charge = charge
         self._items: list[Damage] = []
         # (low, high, the first range merged in), disjoint and in key order.
         self._merged: list[tuple[tuple[float, ...], tuple[float, ...], Damage]] | None
         self._merged = None
 
     def append(self, item: Damage) -> None:
+        if self._charge is not None:
+            self._charge(_DAMAGE_COST + len(item.reason))
         self._items.append(item)
         self._merged = None
 
@@ -439,7 +448,7 @@ class _Omap:
     ) -> None:
         self.what = what
         self.max_xid = max_xid
-        self.damage = DamageIndex()
+        self.damage = DamageIndex(lambda n: charge(n, what))
         # oid -> (xid, flags, address)
         self.entries: dict[int, tuple[int, int, int]] = {}
         try:
@@ -475,7 +484,6 @@ class _Omap:
                     best = self.entries.get(oid)
                     if best is None or best[0] < xid:
                         self.entries[oid] = (xid, flags, where)
-        charge(len(self.damage) * _RECORD_COST, what)
 
     def lookup(self, oid: int) -> tuple[int, int] | None:
         """``(address, flags)`` of object ``oid``, or ``None`` when the map has no
@@ -778,7 +786,7 @@ def _name(raw: bytes) -> bytes:
 class FsTree:
     """What a volume's filesystem tree holds, as the walk found it."""
 
-    def __init__(self) -> None:
+    def __init__(self, charge: Callable[[int], None] | None = None) -> None:
         self.inodes: dict[int, Inode] = {}
         self.children: dict[int, list[Child]] = {}
         self.xattrs: dict[int, dict[str, Xattr]] = {}
@@ -787,7 +795,7 @@ class FsTree:
         self.encrypted_streams: set[int] = set()
         # Per inode: how many sibling-link records (one per hard-link name) it has.
         self.siblings: dict[int, int] = {}
-        self.damage = DamageIndex()
+        self.damage = DamageIndex(charge)
 
     def damaged(self, oid: int, kind: int) -> Damage | None:
         """The damaged range that may hold a record (``oid``, ``kind``), if any."""
@@ -853,10 +861,10 @@ class ApfsVolume:
     def walk(self) -> FsTree:
         """Every record of the live filesystem tree, in key order. A damaged node is
         skipped and its range recorded in ``FsTree.damage``."""
-        tree = FsTree()
         blocks = self.container._blocks
         charge = self._charge
         what = f"the APFS volume {quoted(self.name)}"
+        tree = FsTree(lambda n: charge(n, what))
         for leaf in _walk(
             blocks,
             self._root,
@@ -876,7 +884,6 @@ class ApfsVolume:
                 self._add(tree, records)
             except (CorruptionError, TruncatedError) as exc:
                 tree.damage.append(leaf.damage(str(exc)))
-        charge(len(tree.damage) * _RECORD_COST, what)
         return tree
 
     def _add(self, tree: FsTree, records: list[tuple[bytes, bytes]]) -> None:

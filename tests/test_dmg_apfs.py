@@ -435,6 +435,37 @@ def test_a_damaged_leaf_delivers_every_member_outside_it() -> None:
     assert 30 < len(seen) < 60
 
 
+def _children_missing(container: bytearray, info: a.Apfs) -> None:
+    """Point every child of the filesystem root at a virtual id the object map does
+    not hold, so each one is a damaged range."""
+    size = info.block_size
+    at = info.fs_root * size
+    _, _, count, toc_at, _ = struct.unpack_from("<HHIHH", container, at + 32)
+    toc = at + 56 + toc_at
+    values_end = at + size - 40
+    for i in range(count):
+        _, _, value_at, _ = struct.unpack_from("<HHHH", container, toc + 8 * i)
+        struct.pack_into("<Q", container, values_end - value_at, 0xFFFF_FFF0 + i)
+    a.reseal(container, info.fs_root, size)
+
+
+def test_damaged_ranges_count_against_max_metadata_bytes_as_they_are_found() -> None:
+    nodes = [d.Node(f"f{i:03d}.txt", data=b"x") for i in range(100)]
+    written = a.write_apfs(nodes, leaf_records=4, patch=_children_missing)
+    assert len(written.fs_leaves) > 90
+    image = a.apfs_dmg(written.container)
+    with _open(image) as reader, pytest.raises(CorruptionError, match="cannot be used"):
+        reader.members()
+    # Each lost child is a range of about 250 bytes; a cap that holds the object map
+    # but not 90 of them stops the walk.
+    limits = ListingLimits(max_metadata_bytes=20_000)
+    with (
+        _open(image, config=ArchiveyConfig(listing_limits=limits)) as reader,
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+    ):
+        reader.members()
+
+
 def test_a_lost_extent_leaf_fails_only_that_file_and_never_reads_zeros() -> None:
     nodes = [
         d.Node("A", data=b"a" * 4096 + bytes(4096) + b"b" * 4096),

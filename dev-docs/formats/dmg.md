@@ -156,8 +156,10 @@ skipped whole: the walk records the range of keys its verified parent gave it
 leaf whose checksum passes but holds a record that does not parse is skipped the same
 way: nothing from it is kept. The ranges are merged and kept sorted
 (`apfs.DamageIndex`), so each lookup is a bisection, whatever the number of damaged
-nodes. Keys are compared on (object id, record type, extent offset) only: names are left
-out, since hashed directory keys may collide, so a boundary counts as inside. Then:
+nodes, and each range counts against `max_metadata_bytes` as the walk finds it: an index
+node whose entries all name a missing child stops at the cap. Keys are compared on
+(object id, record type, extent offset) only: names are left out, since hashed directory
+keys may collide, so a boundary counts as inside. Then:
 
 - a member whose inode record, or whose symlink or decmpfs attribute, may be in a
   damaged range is not listed; other attributes in one leave it listed with
