@@ -6,9 +6,8 @@ and nothing else changes: the output bytes are the same, and a damaged archive r
 the same exception type with the same message (two caller-only exceptions are listed
 below). Without it, archivey uses its Python decoders.
 
-This is a pre-release. Most kernels have their final, standard-library-shaped API
-(`hashlib`-style hashes, `lzma.LZMADecompressor`-style decoders). BCJ2 still has the
-prototype's API, as a private name, until it is reshaped too.
+This is a pre-release. Every kernel has its final, standard-library-shaped API
+(`hashlib`-style hashes, `lzma.LZMADecompressor`-style decoders).
 
 | Name | Used for | Python decoder it mirrors |
 | --- | --- | --- |
@@ -18,7 +17,7 @@ prototype's API, as a private name, until it is reshaped too.
 | `zipcrypto.Decryptor` | ZIP members with traditional encryption | `zipcrypto.ZipCryptoKeys` |
 | `filters.Arm64Decoder`, `filters.RiscvDecoder` | 7z ARM64 and RISC-V branch filters | `arm64_filter`, `riscv_filter` |
 | `lzx.Decompressor` | LZX folders in Microsoft cabinets | `lzx_decoder.LzxDecoder` |
-| `_codecs._Bcj2Core` (private for now) | 7z BCJ2 (four-stream x86 filter) | the loop of `bcj2_filter.Bcj2DecoderStream` |
+| `bcj2.Decompressor` | 7z BCJ2 (four-stream x86 filter) | `bcj2_filter.Bcj2DecoderStream` |
 
 ```python
 import archivey_codecs
@@ -34,10 +33,10 @@ subclasses of `CodecError`, which is a `ValueError`. `KERNELS` maps each kernel 
 its revision; a decoder's `getstate()` names that revision, and `from_state()` refuses
 a state from another one. Decoders release the GIL while they read `bytes` input (the
 CRC only above 64 KiB, where the release pays off); other buffers are copied first.
-The private LZX and BCJ2 classes hold the GIL, because they call back into Python for
-input. Two LZX refusals that only a caller can reach (a frame size off the 32 KiB grid)
-raise `CorruptDataError` where Python raises `IndexError` or grows its window; see
-`src/kernels/lzx.rs`. The kernel modules (`src/kernels/`) forbid `unsafe` code.
+The BCJ2 decoder holds the GIL, because it reads its four input streams by calling
+their `read()` methods. Two LZX refusals that only a caller can reach (a frame size
+off the 32 KiB grid) raise `CorruptDataError` where Python raises `IndexError` or grows
+its window; see `src/kernels/lzx.rs`. The kernel modules (`src/kernels/`) forbid `unsafe` code.
 
 ## Develop
 

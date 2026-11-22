@@ -4,8 +4,12 @@
 //! Same candidates, same range coder, same refusals and messages.
 
 use crate::kernels::error::DecodeError;
+use crate::kernels::state::{self, Reader};
 
 const BLOCK: usize = 64 * 1024;
+/// The most output one `decode_block` call gives: each `main` byte of a block,
+/// and 4 bytes more for each one that is a converted branch.
+pub const MAX_BLOCK_OUTPUT: usize = 5 * BLOCK;
 const TOP: u32 = 1 << 24;
 const NUM_MOVE_BITS: u32 = 5;
 const PROB_INIT: u16 = 1024;
@@ -25,7 +29,7 @@ pub trait Streams {
 
 type R<T, E> = Result<T, DecodeError<E>>;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Buffered {
     buf: Vec<u8>,
     pos: usize,
@@ -37,6 +41,7 @@ impl Buffered {
     }
 }
 
+#[derive(Clone)]
 pub struct Bcj2 {
     main: Vec<u8>,
     mpos: usize,
@@ -70,6 +75,60 @@ impl Bcj2 {
             code: None,
             out_pos: 0,
         }
+    }
+
+    /// Output bytes decoded so far.
+    pub fn decoded(&self) -> u64 {
+        self.out_pos
+    }
+
+    /// Bytes read from each stream (main, call, jump, rc) but not used yet.
+    pub fn unread(&self) -> [usize; 4] {
+        [
+            self.main.len() - self.mpos,
+            self.call.left(),
+            self.jump.left(),
+            self.rc.left(),
+        ]
+    }
+
+    /// The decoder's state without its buffered input (design D3): a restored decoder
+    /// reads each stream from where this one's use of it ended.
+    pub fn save(&self, out: &mut Vec<u8>) {
+        for p in self.probs {
+            out.extend_from_slice(&p.to_le_bytes());
+        }
+        out.push(self.prev);
+        state::put_u32(out, self.range);
+        match self.code {
+            Some(c) => {
+                out.push(1);
+                state::put_u32(out, c);
+            }
+            None => out.push(0),
+        }
+        state::put_u64(out, self.out_pos);
+    }
+
+    pub fn load(r: &mut Reader<'_>) -> crate::kernels::error::Result<Self> {
+        let mut d = Bcj2::new();
+        for p in d.probs.iter_mut() {
+            let b = r.take(2)?;
+            *p = u16::from_le_bytes([b[0], b[1]]);
+            if *p == 0 || *p >= 2048 {
+                return r.bad(format!("a probability of {p}"));
+            }
+        }
+        d.prev = r.u8()?;
+        d.range = r.u32()?;
+        d.code = if r.bool()? { Some(r.u32()?) } else { None };
+        // The decoder keeps `code < range` (it starts with `range` all ones and refuses
+        // a `code` of all ones).
+        if d.code.is_some_and(|c| c >= d.range) {
+            return r.bad("a range coder code not below its range");
+        }
+        d.out_pos = r.u64()?;
+        Ok(d)
     }
 
     fn rc_byte<S: Streams>(&mut self, s: &mut S) -> R<u32, S::Error> {
