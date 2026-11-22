@@ -55,6 +55,7 @@ from archivey.internal.backends.tar_parser import (
 )
 from archivey.internal.diagnostics_collector import collector_from_config
 from archivey.internal.salvage import WINDOW_SIZE, SalvageState
+from tests.conftest import requires_zstd
 
 # ---------------------------------------------------------------------------
 # Building and damaging archives
@@ -861,6 +862,25 @@ def _reached_liar(claimed: int) -> bytes:
     return out + bytes(2 * BLOCKSIZE)
 
 
+def _reached_liar_inside() -> bytes:
+    """A damaged block, then ``m0``, which the search finds and the next header
+    confirms, then ``liar``, which the walk reaches and which claims 1 KiB: its
+    claimed end falls inside the data of ``t0``, the member after it, not on a
+    header. Then ``t1``, ``t2`` and the end marker."""
+
+    def header(name: str, size: int) -> bytes:
+        info = tarfile.TarInfo(name)
+        info.size = size
+        return info.tobuf(format=tarfile.GNU_FORMAT)
+
+    out = header("a", 3) + b"abc".ljust(BLOCKSIZE, b"\0") + b"\x01" * BLOCKSIZE
+    out += header("m0", 100) + (b"x" * 100).ljust(BLOCKSIZE, b"\0")
+    out += header("liar", 2 * BLOCKSIZE)
+    for index in range(3):
+        out += header(f"t{index}", 4 * BLOCKSIZE) + b"z" * (4 * BLOCKSIZE)
+    return out + bytes(2 * BLOCKSIZE)
+
+
 _PARITY_CASES = [
     pytest.param(_dense(60), id="dense"),
     pytest.param(_confirmed_big(), id="big"),
@@ -870,7 +890,47 @@ _PARITY_CASES = [
     pytest.param(_headers_after_a_liar(), id="headers-after-a-liar"),
     pytest.param(_reached_liar(8 << 20), id="reached-liar-8MiB"),
     pytest.param(_reached_liar(1 << 30), id="reached-liar-1GiB"),
+    pytest.param(_reached_liar_inside(), id="reached-liar-inside"),
 ]
+
+
+@pytest.mark.parametrize("salvage", [False, True])
+def test_a_gzip_tar_whose_last_size_points_past_the_end_ends_truncated(
+    salvage: bool,
+) -> None:
+    """The default walk on a ``.tar.gz`` whose last member claims 8 MiB past the
+    stream's end ends as the plain tar does, in ``TruncatedError`` with the member
+    listed. Before, the walk's codec handle seeked past the end, which counted
+    8 MiB as decoded, and the ratio guard refused the archive."""
+    info = tarfile.TarInfo("liar")
+    info.size = 8 << 20
+    data = info.tobuf(format=tarfile.GNU_FORMAT) + b"y" * 3072
+    plain = _list(data, salvage=salvage)
+    gzipped = _list(gzip.compress(data, compresslevel=1), salvage=salvage)
+    assert gzipped.names == plain.names == ["liar"]
+    assert type(gzipped.error) is type(plain.error) is TruncatedError
+
+
+@pytest.mark.parametrize("wrap", ["plain", "gzip", "deb"])
+def test_a_reached_member_whose_end_is_no_header_is_searched_inside(
+    wrap: str,
+) -> None:
+    """A member the walk reaches past damage whose claimed end holds a block that
+    is not a header is searched inside, as a found member that nothing confirms
+    (recall-first): ``t0``, whose header is inside the claim, is listed. Before,
+    the walk went on to the claimed end, met damage there, and searched from it,
+    which lost ``t0``."""
+    data = _reached_liar_inside()
+    if wrap == "gzip":
+        data = gzip.compress(data, compresslevel=1)
+    elif wrap == "deb":
+        data = _as_deb(data)
+    listing = _list(data, salvage=True)
+    names = [n for n in listing.names if n != "DEBIAN/control"]
+    assert names == ["a", "m0", "liar", "t0", "t1", "t2"]
+    flags = _flags(listing)
+    assert flags["liar"][1] is False
+    assert flags["t0"] == (flags["t0"][0], True)
 
 
 @pytest.mark.parametrize("data", _PARITY_CASES)
@@ -973,6 +1033,111 @@ def test_a_forward_only_walk_searches_back_inside_a_size_that_lies() -> None:
     assert isinstance(nested.error, CorruptionError)
     assert _list(_as_deb(data), salvage=True).names[1:] == direct.names
     assert _list(gzip.compress(data), salvage=True).names == direct.names
+
+
+def _big_after_damage() -> bytes:
+    """``a``, a damaged block, then four 6 MiB members of random bytes, each bigger
+    than the 4 MiB hold, and ``tail``."""
+    rng = random.Random(1)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        members = [("a", b"abc"), ("pad", b"p" * 10)]
+        members += [(f"big{i}", rng.randbytes(6 << 20)) for i in range(4)]
+        for name, body in [*members, ("tail", b"t")]:
+            info = tarfile.TarInfo(name)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body))
+    data = buf.getvalue()
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        pad = next(m.offset for m in tar.getmembers() if m.name == "pad")
+    return _zeroed(data, pad, BLOCKSIZE)
+
+
+def _indexed(kind: str, data: bytes) -> bytes:
+    from tests.streams_util import make_bgzf, make_seekable_zstd
+
+    if kind == "bgzf":
+        return make_bgzf([data[i : i + 60_000] for i in range(0, len(data), 60_000)])
+    step = 1 << 20
+    return make_seekable_zstd([data[i : i + step] for i in range(0, len(data), step)])
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["bgzf", pytest.param("seekable-zstd", marks=requires_zstd())],
+)
+def test_an_indexed_codec_tar_lists_what_the_tar_lists_and_decodes_it_once(
+    kind: str,
+) -> None:
+    """A bgzip or Seekable Zstandard tar damaged before four members bigger than
+    the hold: the salvage listing lists what the plain tar lists and decodes the
+    stream no more than the default listing of the intact tar does, about once
+    (the window seeks an indexed codec, and reads any other through)."""
+    data = _big_after_damage()
+    plain = _list(data, salvage=True)
+    with open_archive(io.BytesIO(_indexed(kind, data)), salvage=True) as reader:
+        names = [m.name for m in reader.members_report().members]
+        assert reader._listing_decode is not None  # type: ignore[attr-defined]
+        decoded = reader._listing_decode.drawn  # type: ignore[attr-defined]
+    assert names == plain.names
+    assert decoded <= len(data) + (1 << 20)
+
+
+class _SeekCounting(io.BytesIO):
+    """A stream that counts the bytes read from it."""
+
+    read_bytes = 0
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        out = super().read(size)
+        self.read_bytes += len(out)
+        return out
+
+
+@dataclass
+class _Restarts:
+    """Restart points as a codec walk's window asks about them: a seek forward
+    jumps one, or none."""
+
+    ahead: bool
+    jumped: bool = False
+
+    def jumps(self, target: int) -> bool:
+        return self.ahead
+
+
+@pytest.mark.parametrize("indexed", [True, False])
+def test_the_window_seeks_to_a_restart_point_and_otherwise_reads_through(
+    indexed: bool,
+) -> None:
+    """``_Window.skip_to``: when a restart point lies ahead, the window seeks the
+    codec forward and reads nothing it passes; otherwise it reads through, keeps
+    the hold asked for, and learns where the stream ends when that comes first, so
+    a size past the end counts nothing past it."""
+    inner = _SeekCounting(bytes(range(256)) * 4096)  # 1 MiB
+    window = tar_parser._Window(
+        inner,  # type: ignore[arg-type]
+        0,
+        head=b"",
+        seekable=True,
+        restarts=_Restarts(ahead=indexed),
+    )
+    window.skip_to(600_000, keep=1000)
+    if indexed:
+        assert inner.read_bytes == 0
+        assert (window.start, window.end) == (600_000, 600_000)
+    else:
+        assert inner.read_bytes == 600_000
+        assert (window.start, window.end) == (599_000, 600_000)
+    window.skip_to(8 << 20, keep=1000)
+    if indexed:
+        assert window.peek(8 << 20, BLOCKSIZE) == b""
+        assert window.eof_at is None
+        assert window.ended_by == 8 << 20
+    else:
+        assert inner.read_bytes == 1 << 20
+        assert window.eof_at == 1 << 20
+        assert (window.start, window.end) == ((1 << 20) - 1000, 1 << 20)
 
 
 def test_dense_headers_cost_the_decoded_length_on_a_gzip_tar() -> None:

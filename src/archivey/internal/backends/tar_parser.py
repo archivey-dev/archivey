@@ -55,7 +55,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
-from typing import BinaryIO, Literal, cast
+from typing import BinaryIO, Literal, Protocol, cast
 
 from archivey.exceptions import (
     ArchiveyError,
@@ -1433,6 +1433,7 @@ class TarWalker:
         end: int | None = None,
         source_seekable: bool = False,
         rewind_costly: bool = False,
+        restarts: RestartPoints | None = None,
     ) -> None:
         self._stream = stream
         self._seekable = seekable
@@ -1446,6 +1447,9 @@ class TarWalker:
         # codec stream): salvage reads it through a window (:meth:`_window`), as it
         # reads a forward-only one.
         self._rewind_costly = rewind_costly
+        # The codec stream's restart points (bgzip, Seekable Zstandard): a move past
+        # the window that one lets skip decoding seeks, and keeps nothing behind.
+        self._restarts = restarts
         # Byte length of the archive when it is a fact (a plain file). A read is then
         # clamped to what the file holds, so one member is one read. Unknown (a
         # compressed stream, a test buffer) keeps the stepped read.
@@ -1741,7 +1745,13 @@ class TarWalker:
         self._held_block = None
         if window is None:
             offset, head = held if held is not None else (self._stream_pos, b"")
-            window = _Window(self._stream, offset, head=head, seekable=self._seekable)
+            window = _Window(
+                self._stream,
+                offset,
+                head=head,
+                seekable=self._seekable,
+                restarts=self._restarts,
+            )
             self._stream = cast(BinaryIO, window)
             self._win = window
         elif held is not None:
@@ -1809,11 +1819,12 @@ class TarWalker:
             return False
         pos = self._pos
         if self._far_look(pos) and (far_to is None or pos < far_to):
-            # Decode forward to the block, through the window from one hold before
-            # it, so the window still holds that span for a search.
+            # Decode forward to the block through the window, which keeps the hold
+            # before it for a search, or stops at the stream's end and keeps the
+            # hold before that; a restart point ahead is seeked to (_Window.skip_to).
             self.looked_far = True
             window = self._window()
-            window.skip_to(pos - _FORWARD_HOLD)
+            window.skip_to(pos, keep=_FORWARD_HOLD)
             self._stream_pos = window.tell()
             look: bytes | _HoldExceeded = self._peek(pos, BLOCKSIZE)
         else:
@@ -1835,11 +1846,22 @@ class TarWalker:
             end = self._eof_at
         if end is None and self._win is not None:
             end = self._eof_at = self._win.eof_at
+            if end is None:
+                end = self._win.ended_by
         if end is None and self._seekable and self._win is None and pos > 0:
             # A seekable stream of unknown length: the byte before ``pos`` says.
             self._seek(pos - 1)
             return not self._read(1)
         return end is not None and pos > end
+
+    @property
+    def rewind_cheap(self) -> bool:
+        """Whether a seek back costs no decode from the start: a plain file, or an
+        indexed codec stream whose seek has jumped a restart point
+        (_Window.indexed)."""
+        if not self._seekable:
+            return False
+        return not self._rewind_costly or (self._win is not None and self._win.indexed)
 
     def search_floor(self, start: int) -> int:
         """Where a search back into a member's data starts after the walk read past
@@ -2125,8 +2147,13 @@ class TarWalker:
                 if self._peek(limit, 1):
                     return None
                 window = self._window()
+                if window.eof_at is None:
+                    # The stream ends at or before where a seek put the window.
+                    assert window.ended_by is not None, (
+                        "a window read short only at its end"
+                    )
+                    return window.ended_by if window.ended_by <= limit else None
                 end = window.eof_at
-                assert end is not None, "a window read short only at its stream's end"
             self._eof_at = end
         return end if end <= limit else None
 
@@ -2872,6 +2899,21 @@ class _ReplayStream:
         return out
 
 
+class RestartPoints(Protocol):
+    """A codec stream's restart points, as a codec walk's window asks about them
+    (``TarReader``'s ``_DecodeThroughSkips``)."""
+
+    @property
+    def jumped(self) -> bool:
+        """Whether a forward seek has jumped a restart point."""
+        ...
+
+    def jumps(self, target: int) -> bool:
+        """Whether a seek forward to ``target`` would jump a restart point past
+        where the stream stands, and so skip decoding the bytes in between."""
+        ...
+
+
 class _Window:
     """A walk's stream that keeps bytes around where it reads: those a look ahead
     fetched before the walk reads them, and up to ``keep_behind`` of those it has
@@ -2880,16 +2922,32 @@ class _Window:
     The bytes it holds run from :attr:`start` to :attr:`end`, where the inner stream
     stands. A seek inside them moves only the read position, and :meth:`peek`
     copies out only what it returns, so a look ahead or a search that reads the
-    same bytes again reads none of the inner stream again. The inner stream moves
-    forward only, except that on a seekable inner a seek outside the held bytes
-    seeks it.
+    same bytes again reads none of the inner stream again.
+
+    A forward-only inner is only read forward. A seekable inner (a codec stream)
+    is seeked back to an offset before the held bytes. Past them, it is seeked only
+    when a restart point lies between the held bytes and the offset
+    (:class:`RestartPoints`: bgzip, Seekable Zstandard): the seek then skips
+    decoding the bytes in between, and keeps none of them. Otherwise the codec
+    would decode those bytes on a seek anyway, so the window reads through to the
+    offset and keeps the hold it is asked for. Either way the move stops at the
+    stream's end, where a seek past it would count bytes no decoder produced (a
+    size that lies past the end, which the ratio guard then refuses); a read
+    through also learns where the stream ends.
     """
 
     def __init__(
-        self, inner: BinaryIO, offset: int, *, head: bytes, seekable: bool
+        self,
+        inner: BinaryIO,
+        offset: int,
+        *,
+        head: bytes,
+        seekable: bool,
+        restarts: RestartPoints | None = None,
     ) -> None:
         self._inner = inner
         self._seekable = seekable
+        self._restarts = restarts if seekable else None
         self._buf = bytearray(head)
         self._start = offset
         self._pos = offset
@@ -2898,8 +2956,22 @@ class _Window:
         self._keep = BLOCKSIZE
         # Where the inner stream ended, once a read of it came back empty.
         self.eof_at: int | None = None
+        # The stream ends at or before this offset: a read right after a seek past
+        # its end came back empty (_note_end).
+        self.ended_by: int | None = None
+        self._blind = False
         # The furthest end the held bytes had before a seek moved them.
         self._max_end = offset
+
+    @property
+    def indexed(self) -> bool:
+        """Whether a seek of the inner has jumped a restart point: the codec is
+        indexed, so a seek back costs no decode from the start."""
+        return self._restarts is not None and self._restarts.jumped
+
+    def _jumps(self, offset: int) -> bool:
+        """Whether a seek of the inner to ``offset`` skips decoding to it."""
+        return self._restarts is not None and self._restarts.jumps(offset)
 
     @property
     def furthest(self) -> int:
@@ -2926,12 +2998,11 @@ class _Window:
         if self._start <= offset <= self.end:
             self._pos = offset
             return offset
-        if offset > self.end or not self._seekable:
-            # Forward: the next read reads the inner on to it (_reach), so a seek
-            # past the stream's end decodes nothing and counts nothing.
-            assert offset > self.end, "a forward-only window never goes back"
+        if offset > self.end and not self._jumps(offset):
+            # Forward: the next read reads the inner on to it (_reach).
             self._pos = offset
             return offset
+        assert self._seekable, "a forward-only window never goes back"
         self._inner.seek(offset)
         self._restart(offset)
         return offset
@@ -2941,43 +3012,42 @@ class _Window:
         self._buf = bytearray()
         self._start = self._pos = offset
         self.eof_at = None
+        # A seek put the held bytes here, and nothing is read yet: when the stream
+        # gives none, it ends at or before ``offset``, not exactly there.
+        self._blind = True
+        self.ended_by = None
 
     def _reach(self, offset: int) -> None:
-        """Make the held bytes reach ``offset``: past the end, the inner is read
-        through to it, never seeked. A codec inner decodes those bytes on a seek
-        anyway, and a read stops at the stream's end, where a seek past it would
-        count bytes no decoder produced (a size that lies past the end)."""
-        if offset <= self.end:
-            return
-        self._max_end = max(self._max_end, self.end)
-        # Nothing between the held bytes and ``offset`` is kept, so neither is
-        # anything before it.
-        self._start = self.end
-        self._buf = bytearray()
-        while self.end < offset:
-            got = len(self._inner.read(min(offset - self.end, 1 << 20)))
-            if not got:
-                self.eof_at = self.end
-                return
-            self._start += got
+        """Make the held bytes reach ``offset``, keeping none of what is passed."""
+        self.skip_to(offset)
+        self._pos = offset
 
-    def skip_to(self, offset: int) -> None:
-        """Read the inner stream forward to ``offset``, keeping none of it, or to its
-        end if that comes first: the held bytes then start and end there, and so
-        does the read position. A codec walk's look past its hold decodes forward
-        this way (:meth:`TarWalker.salvage_confirms`): a read stops at the stream's
-        end, where a seek past it would decode nothing yet count as decoded."""
+    def skip_to(self, offset: int, keep: int = 0) -> None:
+        """Move the held bytes forward to end at ``offset``, or at the stream's end
+        if that comes first, keeping the last ``keep`` bytes before it, and put the
+        read position at their start. A codec with a restart point ahead is seeked
+        there, keeping nothing; any other inner is read through (see the class
+        docstring)."""
         if offset <= self.end:
             return
+        if self._jumps(offset):
+            self._inner.seek(offset)
+            self._restart(offset)
+            return
         self._max_end = max(self._max_end, self.end)
+        # Nothing before the read is kept, past what ``keep`` asks for.
         self._start = self.end
         self._buf = bytearray()
         while self.end < offset:
-            got = len(self._inner.read(min(offset - self.end, 1 << 20)))
-            if not got:
+            data = self._inner.read(min(offset - self.end, 1 << 20))
+            if not data:
                 self.eof_at = self.end
                 break
-            self._start += got
+            self._buf += data
+            drop = len(self._buf) - keep
+            if drop > 0:
+                del self._buf[:drop]
+                self._start += drop
         self._pos = self._start
 
     def peek(self, offset: int, count: int) -> bytes:
@@ -2994,14 +3064,24 @@ class _Window:
         at = offset - self._start
         return bytes(self._buf[at : at + count])
 
+    def _note_end(self) -> None:
+        """A read of the inner came back empty at :attr:`end`: that is the stream's
+        end, unless a seek put the held bytes there and nothing was read since, when
+        the end is only known to be at or before it."""
+        if self._blind and not self._buf:
+            self.ended_by = self.end
+        else:
+            self.eof_at = self.end
+
     def _fill(self, offset: int) -> None:
         """Read the inner stream on until the held bytes reach ``offset`` or the
         stream ends."""
         while self.end < offset:
             data = self._inner.read(offset - self.end)
             if not data:
-                self.eof_at = self.end
+                self._note_end()
                 return
+            self._blind = False
             self._buf += data
 
     def read(self, size: int = -1, /) -> bytes:
@@ -3018,7 +3098,9 @@ class _Window:
             # One read of the inner for the rest, as a full-count stream does.
             data = self._inner.read(size - len(out))
             if not data:
-                self.eof_at = self.end
+                self._note_end()
+            else:
+                self._blind = False
             self._buf += data
             out += data
         self._pos += len(out)

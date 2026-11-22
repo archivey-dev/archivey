@@ -301,16 +301,36 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
     (`_Window.skip_to`) and stops at the stream's end: a seek past the end counted
     as decoded bytes, and the ratio guard stopped a listing whose found member
     claimed 8 MiB past the end.
-- **A size past the archive's end.** A member the walk reaches after a found one,
-  whose size points past the archive's end as far as the walk knows it (a file's
-  size, or where a read of the stream came back short), is treated as a found member
-  that nothing confirms: the search goes inside its data, and the walk does not step
-  to where its size points. In the second pass, a reached member that what pass 1
-  listed does not confirm is searched inside too. The walk's window reads a codec
-  stream forward to any offset past what it holds, never seeks it, so a size past the
-  end decodes nothing it does not read. A search from an offset at or past the end
-  finds nothing. A forward-only walk trusts a reached member's size past the hold as
-  it trusts a found one's.
+- **A reached member that nothing confirms.** A member the walk reaches after a
+  found one is treated as a found member that nothing confirms, and the search goes
+  inside its data, when its size points past the archive's end as far as the walk
+  knows it (a file's size, or where a read of the stream came back short), or when
+  the block at its claimed end is not a header (round 2 of PR 1774; the same on the
+  base PR: `a, m0, liar` lost the members inside the liar's claim). The walk does
+  not step to where its size points. In the second pass, a reached member that what
+  pass 1 listed does not confirm is searched inside too. A search from an offset at
+  or past the end finds nothing. A forward-only walk trusts a reached member's size
+  past the hold as it trusts a found one's. The default walk does not change: this
+  applies only past the default end.
+- **How the window moves forward on a codec stream** (round 2 of PR 1774, K5/K6). Past
+  what it holds, the window seeks the codec only when a restart point lies between where
+  the stream stands and the offset (`RestartPoints.jumps`, answered by
+  `_DecodeThroughSkips` from the decoder's own `nearest_resume_offset`): the seek then
+  skips decoding the bytes in between and keeps none of them. Otherwise a seek would
+  decode those bytes anyway, so the window reads through and keeps the 4 MiB hold. A
+  seek back is cheap, and pass 1 records no gap, once a seek has jumped a restart point
+  (`_Window.indexed`). Either move stops at the stream's end: `_DecodeThroughSkips.seek`
+  reads to the restart point's offset or through, and returns where the stream ended
+  rather than seeking past it, since a seek past the end counts bytes no decoder
+  produced and the ratio guard refuses them. The default walk uses the same handle, so a
+  `.tar.gz` whose last size points past the end now ends in `TruncatedError`, as the
+  plain tar does, where it raised the ratio error before. A read right after a seek that
+  comes back empty says the stream ends at or before that offset (`_Window.ended_by`).
+  The decoder reads a file's own index (a BGZF scan, a Seekable Zstandard seek table)
+  only on declared seek demand, and the plain resume query does not build it, so in a
+  TAR walk the restart points ahead are the ones a decode already found: in pass 2,
+  after pass 1 decoded the layer. The default walk asks the same question, so neither
+  walk jumps more than base did.
 - **A deb's tars on a plain file** read with random access. A deb opened with random
   access hands its control and data tars to `open_nested` as seekable views of the
   file (`ForwardStream._take_view`, internal: the public `take()` contract does not

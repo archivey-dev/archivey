@@ -605,7 +605,10 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
     count: rapidgzip indexes only output its prefetch has decoded, so that seek would
     skip no decoding and would lose the proof (``restarts_follow_decoding``). Reading
     those bytes is also faster than asking the child for a restart point at every
-    member. Any other seek passes through.
+    member. Any other seek passes through. A forward read-through that meets the
+    stream's end stops there and returns where it stopped: a seek past the end
+    would count bytes no decoder produced (a member size that lies past the end),
+    and the ratio guard would refuse the archive for them.
 
     Borrows the codec stream: the reader closes it, never this handle.
     """
@@ -617,6 +620,9 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
         # later; the walk then reads through where it could have seeked, which is
         # never wrong.
         self._restarts_skip_decoding = not restarts_follow_decoding(inner)
+        # Set once a forward seek jumped a restart point: the codec is indexed, so
+        # a salvage walk goes back on it by a seek, not a decode from the start.
+        self.jumped = False
 
     @override
     def read(self, n: int = -1, /) -> bytes:
@@ -629,19 +635,42 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
             return inner.seek(offset, whence)
         here = inner.tell()
         if offset <= here:
-            return inner.seek(offset, whence)
-        resume = (
-            ask_resume_offset(inner, offset) if self._restarts_skip_decoding else None
-        )
-        if resume is not None and resume > here:
-            # A restart point past here: the seek skips decoding.
-            return inner.seek(offset, whence)
+            pos = inner.seek(offset, whence)
+        else:
+            resume = self._resume_ahead(offset)
+            if resume is not None:
+                # A restart point past here: the seek to it skips decoding. It is
+                # a point the codec decoded or indexed, so it lies inside the data.
+                self.jumped = True
+                here = inner.seek(resume)
+            pos = self._read_to(here, offset)
+        return pos
+
+    def jumps(self, target: int) -> bool:
+        """Whether a seek to ``target`` would jump a restart point past where the
+        stream stands (``tar_parser.RestartPoints``)."""
+        return target > self._inner.tell() and self._resume_ahead(target) is not None
+
+    def _resume_ahead(self, target: int) -> int | None:
+        """The restart point a seek to ``target`` would resume from, when it lies
+        past where the stream stands: a point the decoder found, or one of the
+        file's own index when seeking was declared (``seekable_members``)."""
+        if not self._restarts_skip_decoding:
+            return None
+        resume = ask_resume_offset(self._inner, target)
+        here = self._inner.tell()
+        return resume if resume is not None and resume > here else None
+
+    def _read_to(self, here: int, offset: int) -> int:
+        """Read the stream from ``here`` to ``offset``, or to its end if that comes
+        first, and return where it stopped."""
+        inner = self._inner
         remaining = offset - here
         while remaining > 0:
             chunk = read_blocking(inner, min(remaining, _SKIP_READ))
             if not chunk:
-                # Past the end: the codec stream's own seek says where.
-                return inner.seek(offset, whence)
+                # The stream ends first: stay at its end.
+                return inner.tell()
             remaining -= len(chunk)
         return offset
 
@@ -945,8 +974,10 @@ class TarReader(BaseArchiveReader):
         # returns the file's own buffer. Joining the tail on would copy the member.
         # A codec keeps the join: rewinding it would decode the tail again.
         handle: BinaryIO = self._stream
+        restarts: _DecodeThroughSkips | None = None
         if self._compressed:
-            handle = _DecodeThroughSkips(handle)
+            handle = restarts = _DecodeThroughSkips(handle)
+
         view = ReadAheadStream(
             SharedView(handle, 0, lock=self._io_guard()),
             _WALK_BUFFER,
@@ -958,7 +989,13 @@ class TarReader(BaseArchiveReader):
         self._walker_view = view
         # A codec stream seeks back by decoding again from a restart point, so a
         # salvage walk reads it through a window (TarWalker.salvage_search).
-        return TarWalker(view, seekable=True, end=end, rewind_costly=self._compressed)
+        return TarWalker(
+            view,
+            seekable=True,
+            end=end,
+            rewind_costly=self._compressed,
+            restarts=restarts,
+        )
 
     def _io_guard(self) -> AbstractContextManager[object]:
         return self._handle_lock if self._handle_lock is not None else nullcontext()
@@ -1408,15 +1445,20 @@ class TarReader(BaseArchiveReader):
                 self._trusted_spans.add(entry.data_offset)
         if searched and looked is False and self._streaming:
             self._held_spans.add(entry.data_offset)
-        # A member the walk reached whose size points past the archive's end: the
-        # walk cannot go on from there, so the search goes inside its data, as
-        # for a found member that nothing confirms.
-        past = not searched and not confirmed and (known or walker.points_past_end())
+        # A member the walk reached whose size points past the archive's end, or
+        # whose claimed end holds a block that is not a header: the walk cannot go
+        # on from there, so the search goes inside its data, as for a found member
+        # that nothing confirms (recall-first). A member inside the claim is then
+        # listed, not lost behind it.
+        reached = not searched and not confirmed
+        beyond = reached and (known or walker.points_past_end())
+        past = beyond or (reached and looked is not None)
         search_from: int | None = None
         unread = 0
         if (searched or past) and not confirmed and not trusted:
             search_from = found + BLOCKSIZE
-            if far:
+            if far and not walker.rewind_cheap:
+                # Not on an indexed codec, which goes back to the data by a seek.
                 search_from = walker.search_floor(search_from)
                 unread = search_from - found - BLOCKSIZE
                 if gap is None and unread:
@@ -1427,8 +1469,12 @@ class TarReader(BaseArchiveReader):
         if past:
             how = (
                 "the walk reached it from a member the search found, and its size "
-                "points past the end of the archive, so the search goes on inside "
-                "its data"
+                + (
+                    "points past the end of the archive"
+                    if beyond
+                    else "ends where no header passes the same checks"
+                )
+                + ", so the search goes on inside its data"
             )
         elif trusted:
             how = (
