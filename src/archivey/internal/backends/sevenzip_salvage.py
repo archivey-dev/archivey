@@ -54,7 +54,7 @@ ZERO_RUN_ENDS = 64 << 10
 _R3C_STARTS = re.compile(rb"(?=\x17\x06|\x01[\x02\x04\x05])")
 _R4_STARTS = re.compile(rb"(?=\x17\x06|\x01\x04)")
 
-Rule = Literal["R1", "R2", "R3a", "R3b", "R3c", "R4"]
+Rule = Literal["R1", "R2", "R3a", "R3b", "R3c", "R4", "next_header"]
 
 _RULE_TEXT: dict[str, str] = {
     "R1": "its stored next-header offset and size, whose bytes pass the stored "
@@ -69,6 +69,7 @@ _RULE_TEXT: dict[str, str] = {
     "header's first bytes",
     "R4": "a search of the file's last 1 MiB for an end header that parses to its "
     "end, the start header being zero",
+    "next_header": "parsing the next header, which fails its CRC, as it stands",
 }
 
 
@@ -91,7 +92,7 @@ class EndHeaderFind:
     def method(self) -> Literal["header_repair", "header_search"]:
         """``SalvageScanContext.method`` for the members listed from it: stored
         fields corrected under a CRC, or a header found by a search."""
-        if self.rule in ("R1", "R2"):
+        if self.rule in ("R1", "R2", "next_header"):
             return "header_repair"
         return "header_search"
 

@@ -62,6 +62,7 @@ from archivey.internal.backends.sevenzip_detect import (
 )
 from archivey.internal.backends.sevenzip_methods import is_aes, lookup
 from archivey.internal.backends.sevenzip_parser import (
+    MAX_NEXT_HEADER_SIZE,
     SIGNATURE_HEADER_SIZE,
     ZEROED_START_ERROR,
     EncodedHeader,
@@ -71,6 +72,7 @@ from archivey.internal.backends.sevenzip_parser import (
     SevenZipCoder,
     SevenZipFileRecord,
     SevenZipFolder,
+    SignatureHeaderFields,
     SignatureInfo,
     compression_method_for_coder,
     empty_archive,
@@ -97,6 +99,7 @@ from archivey.internal.backends.sevenzip_pipeline import (
 from archivey.internal.backends.sevenzip_salvage import (
     EndHeaderFind,
     TailBudget,
+    header_parses_to_end,
     repair_one_byte,
     repair_stored_fields,
     search_tail_crc,
@@ -1185,8 +1188,9 @@ class SevenZipReader(BaseArchiveReader):
         start_header = signature[12:SIGNATURE_HEADER_SIZE]
         budget = TailBudget(self._salvage_mode)
         if fields.start_header_crc_ok:
-            # The start header is intact: the damage is in the next header or after.
-            pass
+            find = self._reused_next_header(fields, read_at, file_size)
+            if find is not None:
+                self._try_salvage_load(view, signature, find, outcome)
         elif start_header_is_zero(signature):
             # The default's rule for a zeroed start header failed; R4 looks further.
             for start, data in zeroed_start_candidates(read_at, file_size, budget):
@@ -1206,6 +1210,27 @@ class SevenZipReader(BaseArchiveReader):
             budget.stopped(file_size)
             outcome.limit_reached = self._salvage_mode.limit_reached
         return outcome
+
+    @staticmethod
+    def _reused_next_header(
+        fields: SignatureHeaderFields,
+        read_at: Callable[[int, int], bytes],
+        file_size: int,
+    ) -> EndHeaderFind | None:
+        """Decision 3: a next header that fails its CRC, or is cut, parsed as it
+        stands. ``None`` when it passes its CRC (the default failed after it) or
+        does not parse to its ``kEnd``."""
+        start = SIGNATURE_HEADER_SIZE + fields.next_header_offset
+        size = fields.next_header_size
+        if not 0 < size <= MAX_NEXT_HEADER_SIZE or start >= file_size:
+            return None
+        data = read_at(start, min(size, file_size - start))
+        if len(data) == size and zlib.crc32(data) == fields.next_header_crc:
+            return None
+        consumed = header_parses_to_end(data)
+        if consumed is None:
+            return None
+        return EndHeaderFind(start, data[:consumed], "next_header", crc_checked=False)
 
     def _try_salvage_load(
         self,

@@ -313,3 +313,55 @@ def test_7zip_refuses_what_the_default_refuses(
     assert result.returncode == 2, result.stdout
     with pytest.raises(CorruptionError):
         open_archive(path)
+
+
+# The end header used although it fails its CRC (decision 3) ---------------------
+
+
+def _change_next_header(data: bytes, old: bytes, new: bytes) -> bytes:
+    start, size = next_header_span(data)
+    header = data[start : start + size]
+    assert header.count(old) == 1
+    return data[:start] + header.replace(old, new) + data[start + size :]
+
+
+def test_an_encoded_end_header_that_fails_its_crc_is_used_when_it_decodes() -> None:
+    """A byte of the encoded header's LZMA properties changed (a larger dictionary):
+    the next header fails its CRC, but it parses and its decode passes the folder
+    CRC, so every member is listed, confirmed."""
+    damaged = _change_next_header(
+        NONSOLID, b"\x5d" + (1 << 20).to_bytes(4, "little"), b"\x5d\x00\x00\x20\x00"
+    )
+    assert isinstance(_default_error(damaged), CorruptionError)
+    listing = _salvage(damaged)
+    assert listing.contents == FILES
+    start, _ = next_header_span(NONSOLID)
+    for context in listing.found().values():
+        assert (context.method, context.offset, context.confirmed) == (
+            "header_repair",
+            start,
+            True,
+        )
+        assert context.unchecked == ()
+    assert "fails its CRC" in str(listing.error)
+    _assert_add_only(damaged, listing)
+
+
+def test_a_plain_end_header_that_fails_its_crc_is_used_unconfirmed() -> None:
+    old = "file-03.txt".encode("utf-16le")
+    damaged = _change_next_header(PLAIN, old, "file-0X.txt".encode("utf-16le"))
+    listing = _salvage(damaged)
+    renamed = {"file-03.txt": "file-0X.txt"}
+    assert listing.contents == {renamed.get(n, n): d for n, d in FILES.items()}
+    for context in listing.found().values():
+        assert context.method == "header_repair"
+        assert not context.confirmed
+        assert context.unchecked == ("position",)
+
+
+def test_an_encoded_end_header_whose_decode_fails_is_not_used() -> None:
+    """The folder CRC is the check: a header whose decode fails it is not used."""
+    start, size = next_header_span(NONSOLID)
+    damaged = flip(NONSOLID, start + size - 3)
+    listing = _salvage(damaged)
+    assert not listing.found()
