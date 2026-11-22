@@ -7063,6 +7063,45 @@ def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
     assert collision_map == {"README": _Claim(written, 0, written, "README")}
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="only on Windows do the filesystem and Path equality both fold case",
+)
+def test_anti_item_under_trusted_on_windows_releases_the_claim(tmp_path: Path) -> None:
+    """On Windows ``readme`` is the ``README`` this run wrote, under TRUSTED too: the
+    anti-item deletes it, and its claim, made under the exact key ``README``, goes
+    with it."""
+    from archivey.internal.extraction import _RunState
+    from archivey.internal.placements import Placements
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    written = dest / "README"
+    written.write_bytes(b"A")
+
+    coordinator = ExtractionCoordinator(policy=ExtractionPolicy.TRUSTED)
+    written_paths = {written}
+    # Claimed the way a run claims, so the claim is found by its file too.
+    placements = Placements()
+    placements.claim(written, "README", written, 0)
+    anti = ArchiveMember(type=MemberType.ANTI, name="readme")
+
+    coordinator._state = _RunState(
+        dest=dest,
+        dest_root=dest.resolve(),
+        tracker=BombTracker(None, None),
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
+        written_paths=written_paths,
+        placements=placements,
+    )
+    coordinator._apply_anti_item(anti, dest / "readme")
+
+    assert not written.exists()
+    assert written_paths == set()
+    assert not placements
+
+
 def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
     """An exact path this run wrote wins over a case-variant claim in the map.
 

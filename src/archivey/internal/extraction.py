@@ -3308,11 +3308,19 @@ class ExtractionCoordinator:
         collision map, so it matches the way every other collision does: under STRICT
         and STANDARD, an anti-item ``readme`` deletes the ``README`` this run wrote,
         which on a case-insensitive filesystem is the file it names. TRUSTED keys on the
-        exact name, so there it is exact. Directories are not in the map, so a directory
-        matches only by its exact path. Nothing is deleted that this run did not write.
+        exact name, so there the name decides as the platform compares paths: on Windows
+        ``readme`` is the ``README`` this run wrote, and its claim is found by the file
+        (``Placements.owner``). Directories are not in the map, so a directory matches
+        only by its exact path. Nothing is deleted that this run did not write.
         """
         written_paths = self._state.written_paths
-        claim = self._state.placements.at_key(self._collision_key(dest_path))
+        placements = self._state.placements
+        key = self._collision_key(dest_path)
+        claim = placements.at_key(key)
+        if claim is None and dest_path in written_paths and self._occupied(dest_path):
+            # A name the key does not fold that still reaches a written file: under
+            # TRUSTED on Windows, ``readme`` is the ``README`` this run claimed.
+            claim = placements.owner(dest_path, key, occupied=True)
         # The claim's own spelling is the one the run wrote and claimed: on Windows
         # ``readme`` is in ``written_paths`` when ``README`` is (``WindowsPath``
         # equality folds case), and the claim is released by its spelling.
