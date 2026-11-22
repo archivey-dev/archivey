@@ -20,10 +20,9 @@ name: archivey-codecs wheels
 # Each wheel, on every platform, is installed in a clean environment with archivey from
 # this checkout and runs the package's own tests (test_api.py, test_parity.py) with
 # CODECS_REQUIRED=1, so a wheel that does not import fails instead of skipping. The abi3
-# wheel runs them on 3.11 (its floor) and on 3.14.
-# musllinux wheels are tested in the same pypa musllinux image. A free-threaded wheel
-# must also leave the GIL off after import
-# (`-W error` turns CPython's re-enable warning into a failure).
+# wheel runs them on 3.11 (its floor) and on 3.14. A free-threaded wheel must also leave
+# the GIL off after import (`-W error` turns CPython's re-enable warning into a
+# failure). musllinux wheels are tested in the same pypa musllinux image.
 #
 # Trusted Publishing must be set up on the index side, once, for project
 # `archivey-codecs`, as a "pending publisher" (the project does not exist yet):
@@ -126,7 +125,8 @@ jobs:
           # The pypa images dropped free-threaded 3.13, so it comes from uv's builds
           # (python-build-standalone, the same ones the tests run on).
           before-script-linux: |
-            /opt/python/cp312-cp312/bin/python -m pip install -q uv
+            # uv pinned here and in the musl test below; keep the two in step.
+            /opt/python/cp312-cp312/bin/python -m pip install -q 'uv==0.13.9'
             /opt/python/cp312-cp312/bin/python -m uv python install 3.13t
             ln -sf "$(/opt/python/cp312-cp312/bin/python -m uv python find 3.13t)" /usr/local/bin/python3.13t
           args: --release --locked --out ${{ github.workspace }}/dist -i ${{ env.INTERPRETERS }}
@@ -162,7 +162,7 @@ jobs:
           # Read-only: the container cannot change the wheels the next step uploads.
           docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD":/w:ro -w /w "quay.io/pypa/musllinux_1_2_${{ matrix.target }}" sh -euc '
             # No free-threaded 3.13 in the image: test that wheel on the uv build, as built.
-            /opt/python/cp312-cp312/bin/python -m pip install -q uv
+            /opt/python/cp312-cp312/bin/python -m pip install -q "uv==0.13.9"
             /opt/python/cp312-cp312/bin/python -m uv python install 3.13t
             for tag in cp311-cp311 cp314-cp314 cp313-cp313t cp314-cp314t; do
               case "$tag" in
