@@ -134,7 +134,7 @@ from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
-from archivey.internal.salvage import ARCHIVE_LAYER
+from archivey.internal.salvage import ARCHIVE_LAYER, QuietSalvageState
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
@@ -1363,27 +1363,30 @@ class TarReader(BaseArchiveReader):
                 "nothing after its data confirms its size, so the search goes on "
                 "inside its data"
             )
-        self._diagnostics_collector.emit(
-            code=DiagnosticCode.MEMBER_FOUND_BY_SCAN,
-            message=(
-                f"TAR member {quoted(member.name)} was found by salvage's header "
-                f"search at offset {found}, past damage: {how}. Nothing says it "
-                "belongs at this level of the archive (it may be a member of an "
-                "archive stored inside another member)."
-            ),
-            context=SalvageScanContext(
-                archive_name=self._archive_name,
-                member_name=member.name,
-                member_id=index,
-                format=ArchiveFormat.TAR.display_name,
-                method="header_search",
-                offset=found,
-                confirmed=confirmed,
-                unchecked=unchecked,
-            ),
-            member=member,
-            logger=backends_logger,
-        )
+        # A repeat reader (an inner tar built again to reach member data) finds the
+        # members the listing's reader found and flagged (``SalvageRequest.repeat``).
+        if not isinstance(self._salvage_mode, QuietSalvageState):
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_FOUND_BY_SCAN,
+                message=(
+                    f"TAR member {quoted(member.name)} was found by salvage's header "
+                    f"search at offset {found}, past damage: {how}. Nothing says it "
+                    "belongs at this level of the archive (it may be a member of an "
+                    "archive stored inside another member)."
+                ),
+                context=SalvageScanContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    format=ArchiveFormat.TAR.display_name,
+                    method="header_search",
+                    offset=found,
+                    confirmed=confirmed,
+                    unchecked=unchecked,
+                ),
+                member=member,
+                logger=backends_logger,
+            )
         return None if confirmed or trusted or not searched else found + BLOCKSIZE
 
     def _raise_members_the_codec_checked(self) -> None:

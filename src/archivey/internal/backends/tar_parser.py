@@ -3050,17 +3050,20 @@ def tar_header_search(*, v7: bool) -> HeaderSearch:
     512-block from the archive's start, each checked by
     :func:`passes_header_search`."""
 
-    def find_header(window: bytes, start: int) -> int | None:
-        last = len(window) - BLOCKSIZE
+    def find_header(window: bytes, start: int, stop: int) -> int | None:
+        # The last candidate position examined: before ``stop``, and with the whole
+        # block in the window.
+        last = min(len(window) - BLOCKSIZE, stop - 1)
         if v7:
             for at in range(start, last + 1, BLOCKSIZE):
                 if passes_header_search(window[at : at + BLOCKSIZE], v7=True):
                     return at
             return None
-        # Jump from one "ustar" to the next: most blocks hold none.
+        # Jump from one "ustar" to the next: most blocks hold none. The end bound
+        # lets a match start only at a candidate's magic up to ``last``.
         look = start + 257
         while True:
-            hit = window.find(b"ustar", look)
+            hit = window.find(b"ustar", look, last + 257 + 5)
             at = hit - 257
             if hit < 0 or at > last:
                 return None
