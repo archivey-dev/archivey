@@ -24,6 +24,7 @@ import importlib.util
 import os
 import sys
 import textwrap
+import warnings
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from importlib import metadata
@@ -257,7 +258,9 @@ def _format_line(fmt: ArchiveFormat, availability: FormatAvailability) -> list[s
     text = f"{format_format_label(fmt)}: {availability.support.value}"
     if availability.missing:
         text += (
-            " (missing " + ", ".join(str(m.name) for m in availability.missing) + ")"
+            " (missing "
+            + ", ".join(distribution_name(str(m.name)) for m in availability.missing)
+            + ")"
         )
     elif availability.support is FormatSupport.NONE:
         text += " (recognised, not readable)"
@@ -328,6 +331,8 @@ def unimportable_packages(skip: Collection[str] = ()) -> dict[OptionalLibrary, s
     """
     broken: dict[OptionalLibrary, str] = {}
     for library in OptionalLibrary:
+        # pycdlib is deprecated and nothing uses it (ISO needs no package), and
+        # naming it in exclude_libraries= warns, so it is never reported broken.
         if library is OptionalLibrary.PYCDLIB or library in skip:
             continue
         try:
@@ -336,7 +341,13 @@ def unimportable_packages(skip: Collection[str] = ()) -> dict[OptionalLibrary, s
         except (ImportError, ValueError):
             continue
         try:
-            importlib.import_module(library)
+            # On a free-threaded build CPython warns that importing an extension
+            # without free-thread support turns the GIL on. That is expected in this
+            # short-lived process, and under -W error it would read as a broken
+            # package.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                importlib.import_module(library)
         except Exception as exc:  # noqa: BLE001 - any import failure means absent
             first = (str(exc).splitlines() or [""])[0]
             broken[library] = f"{type(exc).__name__}: {first}".removesuffix(": ")

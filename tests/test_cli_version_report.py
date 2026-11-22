@@ -29,9 +29,33 @@ from archivey.cli.version_report import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_broken_packages(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the report off the host's packages: the import probe imports every one
+    found, and a broken one would make it ask the faked ``format_availability`` again
+    with ``config=``. A test that wants a broken package replaces this stub."""
+    monkeypatch.setattr(version_report, "unimportable_packages", lambda skip=(): {})
+
+
 def _report(capsys: pytest.CaptureFixture[str]) -> str:
     assert main(["--version", "-v"]) == EXIT_OK
     return capsys.readouterr().out
+
+
+def _level_row(out: str, section: str, level: str) -> list[str]:
+    """The labels on one support-level row of a report section, continuation lines
+    included."""
+    lines = out.split(f"\n{section}\n")[1].split("\n\n")[0].splitlines()
+    prefix = f"  {level + ':':<10}"
+    for i, line in enumerate(lines):
+        if line.startswith(prefix):
+            text = line[len(prefix) :]
+            for more in lines[i + 1 :]:
+                if not more.startswith(" " * 12):
+                    break
+                text += " " + more.strip()
+            return [label.strip() for label in text.split(",")]
+    return []
 
 
 def test_version_alone_is_one_line(capsys: pytest.CaptureFixture[str]) -> None:
@@ -369,12 +393,21 @@ def test_report_counts_a_package_that_fails_to_import_as_absent(
     )
     monkeypatch.setattr(version_report, "detect_installer", lambda: Install("pip"))
     out = _report(capsys)
-    compression = out.split("compression and encodings\n")[1].split("\n\n")[0]
-    none_line = " ".join(compression.split("none:")[1].split("slower")[0].split())
-    assert "br" in none_line.split(", ")
+    assert "br" in _level_row(out, "compression and encodings", "none")
     flat = " ".join(out.split())
     assert (
         "brotli is installed but fails to import (ImportError: simulated broken "
         "wheel); reinstalling it may fix this adds br"
     ) in flat
     assert "ArchiveyConfig.formats turns it off" not in flat
+
+
+def test_a_combination_row_names_packages_as_pip_does() -> None:
+    hint = "pip install archivey[bzip3]"
+    availability = FormatAvailability(
+        ArchiveFormat.BZIP3,
+        FormatSupport.NONE,
+        (MissingComponent(OptionalLibrary.BZIP3, hint),),
+    )
+    line = version_report._format_line(ArchiveFormat.BZIP3, availability)
+    assert line == ["  bz3: none (missing bzip3)"]
