@@ -2643,9 +2643,16 @@ class ExtractionCoordinator:
             # lands on must lose its path (``_trusted_kept_partial``). The identity
             # match finds it under any name the filesystem gives it: a case
             # variant on a case-insensitive one, or an 8.3 short name.
-            self._current.trusted_prior = (
-                prior if prior is not None else self._alias_claim(requested)
-            )
+            # A claim by this spelling whose file a later name replaced (its result
+            # has no path any more) is stale: the identity match finds the claim of
+            # the file there now.
+            trusted = prior
+            if (
+                trusted is None
+                or self._state.results[trusted.result_index].path is None
+            ):
+                trusted = self._alias_claim(requested) or trusted
+            self._current.trusted_prior = trusted
         collided = (
             prior.path
             if prior is not None and self._policy is not ExtractionPolicy.TRUSTED

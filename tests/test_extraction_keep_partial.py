@@ -570,3 +570,47 @@ def test_trusted_case_variant_over_a_kept_partial(tmp_path: Path, mode: str) -> 
     else:
         assert first.path == dest / "A.bin"
         assert (dest / "A.bin").read_bytes()[:100] == _PAYLOAD[:100]
+
+
+@pytest.mark.parametrize("mode", _MODES)
+def test_trusted_first_spelling_again_after_two_kept_partials(
+    tmp_path: Path, mode: str
+) -> None:
+    # Under TRUSTED and REPLACE: the damaged ``A.bin``, the damaged ``a.bin``, then
+    # a good member a filter maps to ``A.bin``. Where the filesystem folds case, each
+    # later name lands over the one before, so both failed results lose their
+    # paths. Where it keeps them apart, only ``A.bin``'s partial file is replaced.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("A.bin", _PAYLOAD)
+        zf.writestr("a.bin", _PAYLOAD)
+        zf.writestr("good.bin", b"third")
+    data = bytearray(buf.getvalue())
+    for name in (b"A.bin", b"a.bin"):
+        # The first copy of the name is in its local header, just before its data.
+        data[data.find(_PAYLOAD[:4096], data.find(name)) + 100] ^= 0xFF
+    src = tmp_path / "three.zip"
+    src.write_bytes(bytes(data))
+    dest = tmp_path / "out"
+    dest.mkdir()
+    folds = not case_sensitive(dest)
+    source, streaming = _source(src, mode)
+    report = open_and_extract(
+        source,
+        dest,
+        streaming=streaming,
+        on_error=OnError.KEEP_PARTIAL,
+        overwrite=OverwritePolicy.REPLACE,
+        policy=ExtractionPolicy.TRUSTED,
+        filter=lambda m: m.replace(name="A.bin") if m.name == "good.bin" else m,
+    )
+    first, second, third = report.results
+    assert first.status is ExtractionStatus.FAILED
+    assert second.status is ExtractionStatus.FAILED
+    assert third.status is ExtractionStatus.EXTRACTED
+    assert (dest / "A.bin").read_bytes() == b"third"
+    assert first.path is None
+    if folds:
+        assert second.path is None
+    else:
+        assert second.path == dest / "a.bin"
