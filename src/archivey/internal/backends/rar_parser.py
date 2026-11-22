@@ -1341,7 +1341,10 @@ def _parse_rar_volume(
     # The emit rule appends a split_before member only to an empty list, so
     # members[0] is the only place a continuation can show on volume 1.
     if volume_index == 0 and archive.members and archive.members[0].split_before:
-        raise UnsupportedFeatureError(NEED_FIRST_VOLUME_MSG)
+        if archive.members[0].damaged_header is None:
+            raise UnsupportedFeatureError(NEED_FIRST_VOLUME_MSG)
+        # A damaged header's flag: the first volume holds no continuation.
+        archive.members[0].split_before = False
     return archive
 
 
@@ -2124,15 +2127,20 @@ def _settle_unknown_stored_size(member: RarMemberInfo) -> None:
         member.size_unknown = False
 
 
-def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
+def _merge_split_member(
+    old: RarMemberInfo, new: RarMemberInfo, *, check_name: bool = True
+) -> None:
     """Collapse a SPLIT_AFTER continuation into the first part (rarfile-style).
 
     A genuine continuation repeats the same file name and follows a part that was itself
     marked SPLIT_AFTER. Reject a continuation that names a different file or follows a
     non-split member, so a crafted split_before flag cannot silently fold an unrelated
     member's size/CRC into the previous one (and hide it from the listing).
+    ``check_name=False``: a damaged header is involved and
+    :func:`_damaged_split_continues` already decided; the name and flags are not
+    compared, and the member keeps ``old``'s name.
     """
-    if not old.split_after or old.filename != new.filename:
+    if check_name and (not old.split_after or old.filename != new.filename):
         raise CorruptionError(
             "Mismatched RAR split continuation: "
             f"{quoted(new.filename)} does not continue {quoted(old.filename)}"
@@ -4142,8 +4150,17 @@ def _emit_file_member(
     Both header walks, the QO run and the cross-volume merge use this one rule. A
     continuation is appended only when ``members`` is empty: in a header walk that is
     the first member of a volume, which :func:`_parse_rar_volume` refuses on volume 1.
-    Returns ``split_after``.
+    A header that failed its CRC does not decide the merge alone
+    (:func:`_damaged_split_continues`). Returns ``split_after``.
     """
+    if members and (
+        members[-1].damaged_header is not None or member.damaged_header is not None
+    ):
+        if _damaged_split_continues(members[-1], member):
+            _merge_split_member(members[-1], member, check_name=False)
+            return member.split_after
+        # Not a continuation: the damaged header's SPLIT_BEFORE flag is wrong.
+        member.split_before = False
     if member.split_before and members:
         _merge_split_member(members[-1], member)
     else:
@@ -4154,6 +4171,27 @@ def _emit_file_member(
             max_metadata_bytes=max_metadata_bytes,
         )
     return member.split_after
+
+
+def _damaged_split_continues(old: RarMemberInfo, new: RarMemberInfo) -> bool:
+    """Whether ``new`` continues ``old`` when one of them, or both, was listed from a
+    header that failed its CRC.
+
+    The split flags and the name of a damaged header are not checked by anything, and
+    one damaged byte can set ``SPLIT_BEFORE`` or change the name. The walk does not
+    trust them over what it knows: a continuation is never in the volume of the part
+    it continues, and across a volume boundary the flag of the intact header decides.
+    The names are not compared, because a damaged name would fail the open. The
+    merged member keeps ``damaged_header``, and its data is still checked by the last
+    part's digest.
+    """
+    if new.volume_index == old.volume_index:
+        return False
+    if new.damaged_header is None:
+        return new.split_before
+    if old.damaged_header is None:
+        return old.split_after
+    return new.split_before and old.split_after
 
 
 def _packed_end(member: RarMemberInfo) -> int:

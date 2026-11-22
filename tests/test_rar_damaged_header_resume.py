@@ -742,3 +742,83 @@ def test_a_file_copy_of_a_damaged_member_reports_the_damage(tmp_path: Path) -> N
             assert stream.read() == content
         codes = [d.code for d in reader.diagnostics.retained]
     assert codes.count(DiagnosticCode.MEMBER_HEADER_DAMAGED) == 1
+
+
+# ---------------------------------------------------------------------------
+# A damaged header's split flag and name do not decide the split merge
+# ---------------------------------------------------------------------------
+
+
+def _split_before_byte(data: bytes, index: int) -> tuple[int, int]:
+    """Where member ``index``'s header flags hold ``SPLIT_BEFORE``, and the bit."""
+    offset, _ = _headers(data)[index]
+    if data.startswith(b"Rar!\x1a\x07\x01\x00"):
+        # CRC32, the header size vint, the type vint, then the header flags vint.
+        pos = offset + 4
+        while data[pos] & 0x80:
+            pos += 1
+        return pos + 2, 0x08
+    # CRC16, the type byte, then the flags' low byte.
+    return offset + 3, 0x01
+
+
+@pytest.mark.parametrize("index", [0, 1])
+@pytest.mark.parametrize("fixture", _FIXTURE_FILES)
+def test_a_damaged_split_before_flag_is_ignored(fixture: str, index: int) -> None:
+    """One damaged byte sets ``SPLIT_BEFORE`` in a followed header. A continuation is
+    never in the volume of the part it continues, so the flag is wrong: the member is
+    listed on its own, flagged, and the members after it are listed too. Before,
+    the merge raised "Mismatched RAR split continuation" and nothing was listed, or
+    on the first member "Need first volume"."""
+    data = (_FIXTURES / fixture).read_bytes()
+    pos, bit = _split_before_byte(data, index)
+    damaged = _flip(data, pos, value=data[pos] | bit)
+    archive = _parse(damaged)
+    assert [m.filename for m in archive.members] == _NAMES
+    assert [m.header_damaged for m in archive.members] == [
+        i == index for i in range(len(_NAMES))
+    ]
+    assert not any(m.split_before for m in archive.members)
+    assert archive.damaged is not None
+    seen, error = _read_pass(io.BytesIO(damaged))
+    assert [name for name, _, _ in seen] == _NAMES
+    assert isinstance(error, CorruptionError)
+
+
+_VOLUME_SETS = {
+    "rar5": ["tinyvol.part1.rar", "tinyvol.part2.rar"],
+    "rar4": ["tinyvol_rnn.rar", "tinyvol_rnn.r00"],
+}
+
+
+@pytest.mark.parametrize("damaged_volume", [0, 1])
+@pytest.mark.parametrize("kind", sorted(_VOLUME_SETS))
+@requires_binary("unrar")
+def test_a_damaged_name_in_a_split_member_still_merges(
+    kind: str, damaged_volume: int, tmp_path: Path
+) -> None:
+    """One damaged byte in the name of a split member's header, in the first part or
+    in the continuation. The intact header's split flag decides the merge, and the
+    names are not compared: the member is listed once, flagged, and its data reads
+    in full, checked by its digest. Before, the open raised "Mismatched RAR split
+    continuation" and nothing was listed."""
+    names = _VOLUME_SETS[kind]
+    for name in names:
+        (tmp_path / name).write_bytes((_FIXTURES / name).read_bytes())
+    expected = _expected_set(tmp_path / names[0])
+    part = tmp_path / names[damaged_volume]
+    data = part.read_bytes()
+    part.write_bytes(_flip(data, data.index(b"payload.bin") + 2))
+    seen, error = _read_pass(tmp_path / names[0])
+    assert len(seen) == 1
+    _, content, codes = seen[0]
+    assert content == expected
+    assert DiagnosticCode.MEMBER_HEADER_DAMAGED.value in codes
+    assert isinstance(error, CorruptionError)
+
+
+def _expected_set(first: Path) -> bytes:
+    with open_archive(first) as reader:
+        contents = [s.read() for _, s in reader.stream_members() if s is not None]
+    assert len(contents) == 1
+    return contents[0]

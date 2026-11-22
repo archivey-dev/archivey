@@ -395,6 +395,21 @@ volume's last. With no continuing member the set ends at the damaged volume. Whe
 next volume is also missing, the reader raises the usual `TruncatedError` and its
 message names the damaged header as well.
 
+*Split flags and names* (`_damaged_split_continues`). One damaged byte can set a
+followed header's `SPLIT_BEFORE` flag or change its name. The split merge used to trust
+both: `Mismatched RAR split continuation` then failed the open with nothing listed, and
+the same flag on the first volume's first member gave "Need first volume". When either
+header of a possible merge is damaged, the walk decides instead. A continuation is never
+in the volume of the part it continues, so a damaged `SPLIT_BEFORE` inside one volume,
+or on the first volume's first member, is cleared and the member is listed on its own.
+Across a volume boundary the intact header's flag decides (both damaged: both flags
+must agree), and the names are not compared. The merged member keeps its first part's
+name and its `damaged_header`, and its data is still checked by the last part's digest.
+Measured with `unrar` 7.00: `SPLIT_BEFORE` set on the second header of
+`basic_nonsolid__rar4.rar` or `basic_nonsolid__.rar` lists all six members, and one
+damaged name byte in either part of `tinyvol` tests `payload.bin` OK under the first
+part's name. archivey lists and reads the same.
+
 *Encrypted headers.* As for a cut and a damaged end block, this needs the header
 password proven. Unproven, a CRC mismatch reads the same as a wrong key, so it stays the
 wrong-password `EncryptionError`. Proven, a damaged encrypted header is not followed:
