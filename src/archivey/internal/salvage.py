@@ -655,6 +655,9 @@ class WalkSalvage:
         # end once one reached it (``read_at``).
         self._held_to = 0
         self._end: int | None = None
+        # The member about to be yielded is one the walk could not confirm, so it
+        # moves back into its data after it (``moves_back``).
+        self._moves_back = False
         self._report_found = report_found
         self._format_name = format_name
 
@@ -666,7 +669,12 @@ class WalkSalvage:
     def search(
         self, search: HeaderSearch, *, start: int, base: int = 0
     ) -> SearchResult:
-        """:func:`search_forward` over this layer from ``start``."""
+        """:func:`search_forward` over this layer from ``start``. A start past the
+        layer's end (a header's sizes that point past it) has nothing left to
+        search: the search starts at the end."""
+        self._moves_back = False
+        if self.size is not None:
+            start = min(start, self.size)
         read, close = self._open_reader(start)
         try:
             return search_forward(
@@ -680,6 +688,13 @@ class WalkSalvage:
             )
         finally:
             close()
+
+    def moves_back(self) -> bool:
+        """Whether the walk moves back into the data of the member it yielded last,
+        to search on, so the skip past that data can wait (``_skip_data`` in the
+        adapter). Asked once per member: it answers ``False`` again after."""
+        moves_back, self._moves_back = self._moves_back, False
+        return moves_back
 
     def after(self, header: int) -> int:
         """Where a search starts that must not find the header at ``header`` again
@@ -769,6 +784,7 @@ class WalkSalvage:
         """Record ``MEMBER_FOUND_BY_SCAN`` for ``member``, before it is yielded:
         found by the search (``searched``), or walked on to after a member the search
         found."""
+        self._moves_back = not confirmed
         if self._report_found is None:
             return
         where = (

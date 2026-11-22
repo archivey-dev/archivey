@@ -2208,12 +2208,15 @@ class SequentialReaderAdapter(_PluginAdapter):
         return layer
 
     def _skip_data(self, forward: ForwardStream, n: int) -> None:
-        """Move the walk past the ``n`` bytes of member data it has not read. On a
-        layer the salvage search reads, the skip waits for the walk's next read
-        (``ForwardStream._skip_later``): after a member it cannot confirm, the walk
-        moves back into the data to search on, so a decoded layer would decode it
-        for nothing, once for each such member."""
-        if forward in self._walk_salvages:
+        """Move the walk past the ``n`` bytes of member data it has not read. After a
+        member the salvage walk lists but cannot confirm, the walk moves back into
+        that data to search on, so the skip waits for the walk's next read
+        (``ForwardStream._skip_later``), which the move back drops: a decoded layer
+        does not decode the data for nothing, once for each such member. Every other
+        skip is made here, and a member whose data runs past the end raises here,
+        as without salvage."""
+        salvage = self._walk_salvages.get(forward)
+        if salvage is not None and salvage.moves_back():
             forward._skip_later(n)
         else:
             forward.skip(n)

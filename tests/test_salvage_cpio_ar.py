@@ -891,3 +891,38 @@ def test_a_skip_left_for_later_is_paid_by_a_read_and_dropped_by_a_move() -> None
     stream._move_to(5, seek)
     assert stream.read(1) == bytes([5])
     assert skips == [(10, 20)]
+
+
+@pytest.mark.parametrize("name", ["a.cpio", "a.cpio.gz"])
+def test_cpio_cut_inside_a_member_ends_as_the_default(
+    name: str, tmp_path: Path
+) -> None:
+    """No damage before the cut: the member whose data the cut ends raises the
+    default's TruncatedError, from the skip past its data, and the salvage walk does
+    not read it as header damage. Only the skip after a member listed unconfirmed
+    waits for the walk's next read."""
+    import gzip
+    import random
+
+    rng = random.Random(0)
+    sizes = [0, 3, 100, 70_000, 300_000]
+    files = [(f"f{i:02}", rng.randbytes(rng.choice(sizes))) for i in range(30)]
+    raw, _offsets = _cpio("newc", files)
+    cut = raw[: len(raw) // 2]
+    path = _write(tmp_path, gzip.compress(cut) if name.endswith(".gz") else cut, name)
+
+    def listing(**kwargs: object) -> tuple[list[str], BaseException]:
+        names: list[str] = []
+        with open_archive(path, **kwargs) as reader:  # type: ignore[call-overload]
+            with pytest.raises(TruncatedError) as caught:
+                names.extend(m.name for m in reader.members())
+            report = reader.members_report()
+        assert report.error is not None
+        return [m.name for m in report.members], caught.value
+
+    default_names, default_error = listing()
+    # The cut is inside a member's data, not in a header.
+    assert "bytes from offset" in str(default_error)
+    salvage_names, salvage_error = listing(salvage=True)
+    assert salvage_names == default_names
+    assert str(salvage_error) == str(default_error)
