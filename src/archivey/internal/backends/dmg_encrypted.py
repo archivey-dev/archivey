@@ -25,6 +25,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import BinaryIO, NamedTuple
 
+from archivey.diagnostics import ArchiveEofContext, DiagnosticCode
 from archivey.exceptions import (
     CorruptionError,
     ResourceLimitError,
@@ -32,7 +33,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.formats import PasswordConfirmVerdict, ReaderContext, ReaderSource
-from archivey.internal.backends.udif import DiskView, parse_koly
+from archivey.internal.backends.udif import DecryptedImageSource, DiskView, parse_koly
 from archivey.internal.overrides import override
 from archivey.internal.streams.crypto import (
     AesParams,
@@ -92,6 +93,8 @@ class EncryptedHeader(NamedTuple):
     data_size: int  # the decrypted image's length
     data_offset: int
     entries: tuple[_PasswordEntry, ...]
+    data_end: int  # where the last encrypted block ends in the file
+    file_size: int
 
 
 @dataclass(frozen=True)
@@ -180,6 +183,9 @@ def read_header(source: ReaderSource) -> EncryptedHeader:
         )
     table = source.read_exact(_HEADER.size, count * _ENTRY.size)
     entries: list[_PasswordEntry] = []
+    # Why each password entry archivey cannot use was skipped: raised only when no
+    # other password entry is usable.
+    refusals: list[CorruptionError | UnsupportedFeatureError] = []
     for index in range(count):
         kind, offset, length = _ENTRY.unpack_from(table, index * _ENTRY.size)
         if length > _MAX_ENTRY_SIZE:
@@ -195,14 +201,19 @@ def read_header(source: ReaderSource) -> EncryptedHeader:
             )
         if kind != _ENTRY_PASSWORD:
             continue
-        entries.append(_password_entry(source, offset, length))
+        try:
+            entries.append(_password_entry(source, offset, length))
+        except (CorruptionError, UnsupportedFeatureError) as exc:
+            refusals.append(exc)
+    if not entries and refusals:
+        raise refusals[0]
     if not entries:
         raise UnsupportedFeatureError(
             "the encrypted DMG image is locked with a certificate or keychain key, "
             "not a password, which archivey does not read"
         )
     return EncryptedHeader(
-        key_bits // 8, block_size, data_size, data_offset, tuple(entries)
+        key_bits // 8, block_size, data_size, data_offset, tuple(entries), end, size
     )
 
 
@@ -318,6 +329,36 @@ class Unlocker:
         self._head = source.read_exact(
             header.data_offset, head_blocks * header.block_size
         )
+        self._report_tail()
+
+    def _report_tail(self) -> None:
+        """Report non-zero bytes after the encrypted data as ``ARCHIVE_TRAILING_DATA``,
+        as ``UdifImage`` reports bytes no structure covers: the first MiB is looked
+        at, and zero bytes are silent."""
+        start, end = self._header.data_end, self._header.file_size
+        if end <= start:
+            return
+        data = self._source.read_exact(start, min(end - start, 1 << 20))
+        stripped = data.lstrip(b"\0")
+        if not stripped:
+            return
+        origin = self._source._origin
+        found = start + len(data) - len(stripped)
+        self._context.report(
+            DiagnosticCode.ARCHIVE_TRAILING_DATA,
+            (
+                f"The encrypted DMG image holds {end - start} bytes at file offset "
+                f"{origin + start}, after its encrypted data, with a non-zero byte at "
+                f"file offset {origin + found}. The listing does not account for them."
+            ),
+            ArchiveEofContext(
+                format="dmg",
+                expected_marker="zeros_to_eof",
+                expected_bytes=0,
+                observed_bytes=found,
+                observed_kind="nonzero",
+            ),
+        )
 
     def check(self, password: bytes) -> tuple[ImageKeys | None, PasswordConfirmVerdict]:
         for entry in self._header.entries:
@@ -409,9 +450,10 @@ def decrypt_blocks(
     return bytes(out)
 
 
-class EncryptedDmgSource(ReaderSource):
+class EncryptedDmgSource(DecryptedImageSource):
     """The decrypted image, as a :class:`~archivey.formats.ReaderSource` the UDIF
-    reader opens as it would the file. Offsets are the decrypted image's."""
+    reader opens as it would the file. Offsets are the decrypted image's, so its
+    ``_origin`` stays 0: no byte of the file sits at them."""
 
     def __init__(
         self,
@@ -439,7 +481,6 @@ class EncryptedDmgSource(ReaderSource):
             return io.BufferedReader(raw, buffer_size=64 << 10)
 
         super().__init__(view, length, None, read_at)
-        self._origin = source._origin
 
     def _read(self, offset: int, n: int) -> bytes:
         size = self._header.block_size

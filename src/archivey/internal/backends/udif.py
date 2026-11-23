@@ -288,6 +288,11 @@ def _shown_range(start: int, length: int) -> str:
     return f"{length} bytes at offset {start}"
 
 
+class DecryptedImageSource(ReaderSource):
+    """A :class:`~archivey.formats.ReaderSource` over a decrypted image: its offsets
+    are the decrypted image's, not the file's, and messages say so."""
+
+
 class UdifImage:
     """The virtual disk of one UDIF image.
 
@@ -300,6 +305,12 @@ class UdifImage:
     def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         self._source = source
         self._context = context
+        # What the offsets in messages are: ``_origin`` plus a source offset.
+        self._offsets = (
+            "decrypted image offset"
+            if isinstance(source, DecryptedImageSource)
+            else "file offset"
+        )
         # The open budget: the physical bytes read and the bytes decoded since the
         # property list, until ``end_open`` (design §7). ``None`` once open is done.
         self._budget: int | None = OPEN_BUDGET
@@ -643,9 +654,10 @@ class UdifImage:
         try:
             return self._source.read_exact(offset, n)
         except TruncatedError:
+            whole = "decrypted image" if self._offsets != "file offset" else "file"
             raise TruncatedError(
-                f"{what} at offset {self._source._origin + offset} runs past the end "
-                "of the file"
+                f"{what} at {self._offsets} {self._source._origin + offset} runs past "
+                f"the end of the {whole}"
             ) from None
 
     def run_count(self) -> int:
@@ -665,8 +677,8 @@ class UdifImage:
         codec = RUN_CODECS.get(self._kind[index], f"type 0x{self._kind[index]:08x}")
         origin = self._source._origin
         return (
-            f"the {codec} run for disk sector {self._start[index]} (stored at file "
-            f"offset {origin + self._offset[index]})"
+            f"the {codec} run for disk sector {self._start[index]} (stored at "
+            f"{self._offsets} {origin + self._offset[index]})"
         )
 
     def _decode_run(self, index: int, *, keep: bool = True) -> bytes:

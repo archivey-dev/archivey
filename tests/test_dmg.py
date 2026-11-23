@@ -283,6 +283,58 @@ def test_any_password_entry_of_an_encrypted_image_unlocks_it() -> None:
 
 
 @_NEEDS_CRYPTO
+def test_a_password_entry_archivey_cannot_use_is_skipped() -> None:
+    # A KDF other than PBKDF2 in the first entry; the second unlocks the image.
+    unusable = d.EncryptedEntry(patch_blob=_blob_patch(0, ">I", 999))
+    image = _encrypted(entries=[unusable, d.EncryptedEntry()])
+    _, data = _read_all(image, password="secret")
+    assert data["hello.txt"] == _expected()["hello.txt"]
+    with pytest.raises(UnsupportedFeatureError, match="algorithm 999"):
+        _open(_encrypted(entries=[unusable]), password="secret")
+
+
+@_NEEDS_CRYPTO
+def test_bytes_after_the_encrypted_data_are_reported() -> None:
+    image = _encrypted()
+    with _open(image + b"\xffJUNK" * 100, password="secret") as reader:
+        assert DiagnosticCode.ARCHIVE_TRAILING_DATA in _codes(reader)
+        assert "hello.txt" in [m.name for m in reader.members()]
+    with _open(image + bytes(4096), password="secret") as reader:
+        reader.members()
+        assert DiagnosticCode.ARCHIVE_TRAILING_DATA not in _codes(reader)
+
+
+@_NEEDS_CRYPTO
+def test_an_encrypted_image_names_decrypted_image_offsets() -> None:
+    """Its errors name offsets into the decrypted image, not into the file, where
+    those bytes are ciphertext at another offset."""
+    hfs = d.write_hfsplus([d.Node("a.txt", data=bytes(range(256)) * 400)])
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+    disk = d.write_gpt([d.Partition(volume)])
+    udif = d.write_udif(disk.segments, tables=disk.tables, codec=d.ZLIB, run_sectors=64)
+    plain = bytearray(udif.image)
+    block, _ = hfs.forks["a.txt"][0]
+    sector = disk.starts[0] + block * hfs.block_size // d.SECTOR
+    run = next(r for r in udif.runs if r.sector <= sector < r.sector + r.sectors)
+    plain[run.stored_at + 10 : run.stored_at + 14] = bytes(4)
+    with (
+        pytest.raises(
+            CorruptionError,
+            match=f"stored at decrypted image offset {run.stored_at}\\)",
+        ),
+        _open(_encrypted(bytes(plain)), password="secret") as reader,
+    ):
+        reader.read("a.txt")
+    with (
+        pytest.raises(
+            CorruptionError, match=f"stored at file offset {run.stored_at}\\)"
+        ),
+        _open(bytes(plain)) as reader,
+    ):
+        reader.read("a.txt")
+
+
+@_NEEDS_CRYPTO
 def test_an_image_locked_only_by_a_certificate_is_refused_by_name() -> None:
     image = _encrypted(entries=[d.EncryptedEntry(kind=2)])
     with pytest.raises(UnsupportedFeatureError, match="certificate or keychain"):
