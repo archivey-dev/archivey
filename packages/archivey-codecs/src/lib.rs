@@ -16,7 +16,7 @@ pub mod kernels;
 use std::borrow::Cow;
 
 use kernels::error::DecodeError;
-use kernels::{bcj2, crc16, filters, lzo, lzw, lzx, state, zipcrypto};
+use kernels::{bcj2, crc16, filters, lzfse, lzo, lzw, lzx, state, zipcrypto};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyEOFError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -56,7 +56,9 @@ const KERNELS: &[(&str, u32)] = &[
     ("arm64", 1),
     ("bcj2", 1),
     ("crc16_arc", 1),
+    ("lzfse", 1),
     ("lzo1x", 1),
+    ("lzvn", 1),
     ("lzw", 1),
     ("lzx", 2),
     ("riscv", 1),
@@ -325,6 +327,70 @@ fn lzo1x_decompress<'py>(
         }
     }
     Ok(PyBytes::new(py, &out))
+}
+
+// ── LZFSE and LZVN ──────────────────────────────────────────────────────────────────
+
+/// The output limit of a one-shot block function given `out_size` (exact) or
+/// `max_size` (a bound): exactly one of the two.
+fn one_size(name: &str, out_size: Option<usize>, max_size: Option<usize>) -> PyResult<usize> {
+    match (out_size, max_size) {
+        (Some(n), None) | (None, Some(n)) => Ok(n),
+        _ => Err(PyTypeError::new_err(format!(
+            "{name}() takes exactly one of out_size= and max_size="
+        ))),
+    }
+}
+
+/// Run a one-shot kernel on `block` without the GIL, and hold its output to
+/// `out_size` when that was given.
+fn one_shot<'py>(
+    py: Python<'py>,
+    block: &Bound<'py, PyAny>,
+    limit: usize,
+    out_size: Option<usize>,
+    kernel: fn(&[u8], usize) -> kernels::error::Result<Vec<u8>>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let data = input(block)?;
+    let slice: &[u8] = &data;
+    let out = py.detach(|| kernel(slice, limit)).map_err(to_py0)?;
+    if let Some(n) = out_size {
+        if out.len() != n {
+            return Err(CorruptDataError::new_err(format!(
+                "the data decodes to {} bytes, not {n}",
+                out.len()
+            )));
+        }
+    }
+    Ok(PyBytes::new(py, &out))
+}
+
+/// Decode a whole LZFSE stream (blocks up to `bvx$`, nothing after it): exactly
+/// `out_size` bytes, or at most `max_size`. Neither allocates past it.
+#[pyfunction]
+#[pyo3(signature = (data, /, *, out_size = None, max_size = None))]
+fn lzfse_decompress<'py>(
+    py: Python<'py>,
+    data: &Bound<'py, PyAny>,
+    out_size: Option<usize>,
+    max_size: Option<usize>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let limit = one_size("lzfse.decompress", out_size, max_size)?;
+    one_shot(py, data, limit, out_size, lzfse::lzfse_decompress)
+}
+
+/// Decode raw LZVN (opcodes up to the end-of-stream opcode, nothing after it), as
+/// HFS+ compressed files store it: exactly `out_size` bytes, or at most `max_size`.
+#[pyfunction]
+#[pyo3(signature = (data, /, *, out_size = None, max_size = None))]
+fn lzvn_decompress<'py>(
+    py: Python<'py>,
+    data: &Bound<'py, PyAny>,
+    out_size: Option<usize>,
+    max_size: Option<usize>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let limit = one_size("lzvn.decompress", out_size, max_size)?;
+    one_shot(py, data, limit, out_size, lzfse::lzvn_decompress)
 }
 
 // ── ARM64 and RISC-V branch filters ─────────────────────────────────────────────────
@@ -1735,6 +1801,8 @@ fn _codecs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crc16_arc, m)?)?;
     m.add_class::<Crc16Arc>()?;
     m.add("lzo1x_decompress", wrap_pyfunction!(lzo1x_decompress, m)?)?;
+    m.add("lzfse_decompress", wrap_pyfunction!(lzfse_decompress, m)?)?;
+    m.add("lzvn_decompress", wrap_pyfunction!(lzvn_decompress, m)?)?;
     m.add("Arm64Decoder", py.get_type::<Arm64Decoder>())?;
     m.add("RiscvDecoder", py.get_type::<RiscvDecoder>())?;
     m.add("ZipCryptoDecryptor", py.get_type::<ZipCryptoDecryptor>())?;

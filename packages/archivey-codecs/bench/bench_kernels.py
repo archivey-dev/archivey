@@ -17,6 +17,7 @@ import archivey_codecs as n
 
 from archivey.internal.backends.zipcrypto import ZipCryptoKeys
 from archivey.internal.streams.codecs.arm64_filter import arm64_decode
+from archivey.internal.streams.codecs.lzfse_decoder import lzfse_decompress
 from archivey.internal.streams.codecs.lzo_decoder import lzo1x_decompress_python
 from archivey.internal.streams.codecs.lzx_decoder import LzxDecoder
 from archivey.internal.streams.codecs.riscv_filter import riscv_decode
@@ -81,6 +82,25 @@ def main() -> None:
         rs,
         f"(python-lzo/liblzo2 {len(text) / 1e6 / c:.0f} MB/s)",
     )
+
+    # LZFSE, as DMG runs hold it: 1 MiB chunks (bvx2 blocks), and 4 KiB chunks, which
+    # the encoder writes as LZVN (bvxn blocks).
+    import lzfse
+
+    for label, chunk in (
+        ("LZFSE (1 MiB runs)", 1 << 20),
+        ("LZFSE as LZVN (4 KiB)", 4096),
+    ):
+        data = text[: 8 << 20]
+        pieces = [data[i : i + chunk] for i in range(0, len(data), chunk)]
+        streams = [lzfse.compress(p) for p in pieces]
+        sizes = [len(p) for p in pieces]
+        py = best(lambda: [lzfse_decompress(z, k) for z, k in zip(streams, sizes)], 1)
+        rs = best(
+            lambda: [n.lzfse.decompress(z, out_size=k) for z, k in zip(streams, sizes)]
+        )
+        c = best(lambda: [lzfse.decompress(z) for z in streams])
+        row(label, len(data), py, rs, f"(lzfse package {len(data) / 1e6 / c:.0f} MB/s)")
 
     # ZipCrypto.
     data = text[: 8 << 20]

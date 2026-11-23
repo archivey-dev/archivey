@@ -18,6 +18,7 @@ This is a pre-release. Every kernel has its final, standard-library-shaped API
 | `filters.Arm64Decoder`, `filters.RiscvDecoder` | 7z ARM64 and RISC-V branch filters | `arm64_filter`, `riscv_filter` |
 | `lzx.Decompressor` | LZX folders in Microsoft cabinets | `lzx_decoder.LzxDecoder` |
 | `bcj2.Decompressor` | 7z BCJ2 (four-stream x86 filter) | `bcj2_filter.Bcj2DecoderStream` |
+| `lzfse.decompress`, `lzvn.decompress` | LZFSE runs in DMG images, LZFSE and LZVN compressed files on HFS+ | `lzfse_decoder.lzfse_decompress`, `lzvn_decompress` |
 
 ```python
 import archivey_codecs
