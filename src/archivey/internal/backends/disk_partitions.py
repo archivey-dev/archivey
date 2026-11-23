@@ -285,6 +285,12 @@ def _apm(image: UdifImage, report: Report) -> list[Candidate] | None:
                 or type_name.startswith("Apple_Driver"),
             )
         )
+    # As for a GPT: two entries over the same blocks would list one volume twice.
+    ordered = sorted(partitions, key=lambda p: p.start)
+    for a, b in itertools.pairwise(ordered):
+        if b.start < a.start + a.length:
+            refuse(f"entries {quoted(a.label)} and {quoted(b.label)} overlap")
+            return None
     return partitions
 
 

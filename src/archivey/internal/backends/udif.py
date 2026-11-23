@@ -46,6 +46,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
+    exception_detail,
 )
 from archivey.formats import ReaderContext, ReaderSource
 from archivey.internal.listing_limits import str_retained_bytes
@@ -147,6 +148,9 @@ CACHE_RUNS = 8
 # At open, beyond the property list, the physical bytes read plus the bytes decoded
 # must stay within this (design §7).
 OPEN_BUDGET = 64 << 20
+# How far past a structure's end a scan for non-zero bytes looks, as other formats
+# look past their end.
+TRAILING_LOOK = 1 << 20
 # The checksum pass feeds raw bytes to the CRC in slices of this size.
 CHECK_SLICE = 1 << 20
 # What a run costs in the packed arrays: a u32 type and four u64 fields.
@@ -289,8 +293,24 @@ def _overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
     return a_start < a_end and b_start < b_end and a_start < b_end and b_start < a_end
 
 
+def first_nonzero(
+    read: Callable[[int, int], bytes], start: int, end: int
+) -> int | None:
+    """The offset of the first non-zero byte in the first :data:`TRAILING_LOOK`
+    bytes of ``[start, end)``, read with ``read(offset, n)``; ``None`` when they are
+    all zero."""
+    data = read(start, min(end - start, TRAILING_LOOK))
+    stripped = data.lstrip(b"\0")
+    return start + len(data) - len(stripped) if stripped else None
+
+
 def _shown_range(start: int, length: int) -> str:
     return f"{length} bytes at offset {start}"
+
+
+class DecryptedImageSource(ReaderSource):
+    """A :class:`~archivey.formats.ReaderSource` over a decrypted image: its offsets
+    are the decrypted image's, not the file's, and messages say so."""
 
 
 class UdifImage:
@@ -305,6 +325,10 @@ class UdifImage:
     def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         self._source = source
         self._context = context
+        # Whether the source's offsets are a decrypted image's, which the run and
+        # truncation messages name, not the file's.
+        self._decrypted = isinstance(source, DecryptedImageSource)
+        self._offsets = "decrypted image offset" if self._decrypted else "file offset"
         # The open budget: the physical bytes read and the bytes decoded since the
         # property list, until ``end_open`` (design §7). ``None`` once open is done.
         self._budget: int | None = OPEN_BUDGET
@@ -424,12 +448,15 @@ class UdifImage:
             self._report_gap(pos, size)
 
     def _report_gap(self, start: int, end: int) -> None:
-        look = min(end - start, 1 << 20)
-        data = self._read_file(start, look, "bytes outside the image's structures")
-        stripped = data.lstrip(b"\0")
-        if not stripped:
+        found = first_nonzero(
+            lambda at, n: self._read_file(
+                at, n, "bytes outside the image's structures"
+            ),
+            start,
+            end,
+        )
+        if found is None:
             return
-        found = start + len(data) - len(stripped)
         self._context.report(
             DiagnosticCode.ARCHIVE_TRAILING_DATA,
             (
@@ -653,9 +680,10 @@ class UdifImage:
         try:
             return self._source.read_exact(offset, n)
         except TruncatedError:
+            whole = "decrypted image" if self._decrypted else "file"
             raise TruncatedError(
-                f"{what} at offset {self._source._origin + offset} runs past the end "
-                "of the file"
+                f"{what} at {self._offsets} {self._source._origin + offset} runs past "
+                f"the end of the {whole}"
             ) from None
 
     def run_count(self) -> int:
@@ -675,8 +703,8 @@ class UdifImage:
         codec = RUN_CODECS.get(self._kind[index], f"type 0x{self._kind[index]:08x}")
         origin = self._source._origin
         return (
-            f"the {codec} run for disk sector {self._start[index]} (stored at file "
-            f"offset {origin + self._offset[index]})"
+            f"the {codec} run for disk sector {self._start[index]} (stored at "
+            f"{self._offsets} {origin + self._offset[index]})"
         )
 
     def _decode_run(self, index: int, *, keep: bool = True) -> bytes:
@@ -722,7 +750,9 @@ class UdifImage:
         except (CorruptionError, TruncatedError) as exc:
             # The run was read whole, so a stream that stops early is a wrong stored
             # size or damage, not a cut file.
-            raise CorruptionError(f"{self._where(index)}: {exc}") from None
+            raise CorruptionError(
+                f"{self._where(index)}: {exception_detail(exc)}"
+            ) from None
         if len(data) != decoded:
             got = f"more than {decoded}" if len(data) > decoded else str(len(data))
             raise CorruptionError(

@@ -66,7 +66,9 @@ receipt is still one 512-byte tail read.
 property list, `koly` block) and puts the `encrcdsa` header in front, so the handler's
 `open` returns a `NeedsPassword` for "the disk image" and its `then` opens `DmgReader`
 on `EncryptedDmgSource`, the decrypted image. Everything below then runs unchanged on
-that source, and its offsets in errors are the decrypted image's. The image and every
+that source, and its offsets in errors are the decrypted image's (its origin is 0,
+whatever the file's): a run's or a truncated read's message says "decrypted image
+offset" where an unencrypted image's says "file offset". The image and every
 member are `is_encrypted`.
 
 The header, big-endian, as the four `hdiutil` fixtures (macOS 26) hold it:
@@ -121,9 +123,14 @@ and PBKDF2 iteration count (at most 2^31 - 1, `hashlib`'s limit) are
 is `ResourceLimitError`; no key entries, an entry outside the header (between the entry
 table and the encrypted data), 0 PBKDF2 iterations, a salt over 32 bytes, an IV over the
 cipher's block, or a wrapped key that is not a whole number of blocks inside its entry
-is `CorruptionError`; a file shorter than the encrypted data is `TruncatedError`. All of
-this runs before a password is asked for. Only the blocks that hold the last and the
-first 512 bytes are decrypted to check a password.
+is `CorruptionError`; a file shorter than the encrypted data is `TruncatedError`. A
+password entry that fails these checks is skipped when another password entry passes
+them, and reported (`ARCHIVE_STRUCTURE_INCONSISTENT`, `structure="key_entry"`): a
+password for it is rejected as wrong. With none left, the first entry's refusal is
+raised. Non-zero bytes after the encrypted data are `ARCHIVE_TRAILING_DATA` (the first
+MiB is looked at, as for an unencrypted image; `observed_bytes` counts from the end of
+the last encrypted block). All of this runs before a password is asked for. Only the
+blocks that hold the last and the first 512 bytes are decrypted to check a password.
 
 ### 2.2 Open and list
 
@@ -145,7 +152,8 @@ open stay within 64 MiB (`udif.OPEN_BUDGET`), else `ResourceLimitError`.
    `CorruptionError`.
 3. Partitions: a GPT whose header and entry array pass their CRCs and whose geometry is
    sound (primary, else the backup at the last sector), else an Apple partition map
-   whose entries all agree, else the run tables' ranges, else the whole disk. At most
+   whose entries all agree, else the run tables' ranges, else the whole disk. Either
+   map is refused when two of its entries overlap. At most
    128 candidates. Each is probed: `H+`/`HX` at 1024 is HFS+/HFSX, `BD` an HFS volume,
    `NXSB` at 32 APFS. Names (GPT type, APM type, run table name) only describe; a
    disagreement is `ARCHIVE_STRUCTURE_INCONSISTENT`.
@@ -181,7 +189,10 @@ several volumes, each volume's members sit under a top-level directory named aft
 volume (D1), with `Untitled` and ` 1`, ` 2`, ... suffixes as macOS names mount points.
 
 Damage in a catalog node stops that volume's listing: the members before it are
-delivered, the other volumes are listed, then the error is raised.
+delivered, the other volumes are listed, then the error is raised. A record whose name
+cannot be a path component (empty, `.`, `..`, or holding a NUL; a stored `/` is shown
+as `:`) is left out with everything inside it when it is a folder, and the volume's
+listing ends with `CorruptionError`, as for an orphan.
 
 The first listing, per APFS container (`ApfsContainer.load`, also reached from
 `archive_info()`):
@@ -219,9 +230,9 @@ whose type disagrees is `ARCHIVE_STRUCTURE_INCONSISTENT`, `structure="member_typ
 The first path to an inode is the member, later ones `HARDLINK` to it. A symlink's
 target is its `com.apple.fs.symlink` attribute. Names are passed through as stored
 (APFS preserves normalization: `café.txt` is composed on the fixtures, decomposed on
-HFS+). A name holding `/`, an empty name, `.` or `..`, an entry naming an inode the
-tree does not hold, and a directory reached twice are left out and fail the listing
-after the others.
+HFS+). A name holding `/` or a NUL, an empty name, `.` or `..`, an entry naming an
+inode the tree does not hold, and a directory reached twice are left out and fail the
+listing after the others.
 
 **Damaged nodes (D7).** Every object's Fletcher-64, type, own id and transaction are
 checked. A node that fails, or does not parse, or whose keys are out of order, is
@@ -428,6 +439,7 @@ after a merge that touches the DMG code; the table is its job summary.
 | Every encrypted `hdiutil` fixture lists and reads as macOS mounts it with the password `archivey`, and asks for it without (`test_an_encrypted_hdiutil_image_asks_for_its_password`) |
 | Encrypted test-writer images with each key size, key wrap and block size read as the plain image (`test_an_encrypted_builder_image_reads_as_the_plain_one`); a damaged header is refused before any password (`test_a_damaged_encrypted_header_is_refused_before_any_password`) |
 | 7-Zip extracts the same bytes, with the listed differences (`test_7zip_*`) |
+| dpp-py and libyal read the same bytes, with their gaps pinned so a fixed gap fails the test (`tests/test_dmg_oracles.py`) |
 | Damage fails the member it touches, and a damaged catalog node delivers the members before it |
 | `verify_all()` raises every file of an `hdiutil` image to `CHECKSUM`, decoding each table once (`test_verify_all_raises_every_file_of_an_hdiutil_image_to_checksum`) |
 | A changed byte no member reads fails the files of its partition, and a table over two partitions fails both (`test_a_change_no_member_reads_is_caught_by_verify_all`, `test_one_table_over_two_partitions_is_checked_whole`) |

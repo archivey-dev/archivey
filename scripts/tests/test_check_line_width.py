@@ -153,6 +153,11 @@ def test_quotes_keep_their_marker() -> None:
     assert all(line.startswith("> ") for line in out.splitlines())
 
 
+def test_mkdocstrings_directives_stay_one_per_line() -> None:
+    text = "::: archivey.A\n::: archivey.B\n::: archivey.C\n"
+    assert _md_reflow(text, {2}) == text
+
+
 def test_a_hard_break_line_is_left_alone() -> None:
     text = f"**Date:** 2026-09-01  \n{LONG}\n"
     out = _md_reflow(text, {0, 1})

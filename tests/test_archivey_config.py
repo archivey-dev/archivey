@@ -228,6 +228,7 @@ def test_public_api_exports_config_types() -> None:
         "ExtractionLimits",
         "ListingLimits",
         "SpoolLimits",
+        "SalvageLimits",
         "AcceleratorMode",
         "DEFAULT_ARCHIVEY_CONFIG",
         "ResourceLimitError",
