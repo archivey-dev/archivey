@@ -740,6 +740,27 @@ def test_a_partition_type_that_disagrees_is_reported_and_read() -> None:
         assert "partition_name" in _structures(reader)
 
 
+def test_overlapping_apm_entries_use_the_run_tables() -> None:
+    """Two map entries over the same sectors: the map is refused, as a GPT's would be,
+    so the volume is listed once."""
+    hfs = d.write_hfsplus([d.Node("a.txt", data=b"a")])
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+
+    def same_start(index: int, entry: bytearray) -> None:
+        if index == 2:  # the second partition's entry starts at the first's sector
+            struct.pack_into(">I", entry, 8, 64)
+
+    disk = d.write_apm(
+        [d.Partition(volume, name="one"), d.Partition(bytes(len(volume)), name="two")],
+        patch_map=same_start,
+    )
+    image = d.write_udif(disk.segments, tables=disk.tables).image
+    with _open(image) as reader:
+        assert [m.name for m in reader.members() if m.is_file] == ["a.txt"]
+        assert reader.info.extra["dmg.partition_scheme"] == "none"
+        assert "partition_map" in _structures(reader)
+
+
 def test_a_damaged_primary_gpt_falls_back_to_the_backup() -> None:
     def break_crc(header: bytearray) -> None:
         header[16] ^= 0xFF

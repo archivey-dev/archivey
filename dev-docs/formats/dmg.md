@@ -144,7 +144,8 @@ open stay within 64 MiB (`udif.OPEN_BUDGET`), else `ResourceLimitError`.
    `CorruptionError`.
 3. Partitions: a GPT whose header and entry array pass their CRCs and whose geometry is
    sound (primary, else the backup at the last sector), else an Apple partition map
-   whose entries all agree, else the run tables' ranges, else the whole disk. At most
+   whose entries all agree, else the run tables' ranges, else the whole disk. Either
+   map is refused when two of its entries overlap. At most
    128 candidates. Each is probed: `H+`/`HX` at 1024 is HFS+/HFSX, `BD` an HFS volume,
    `NXSB` at 32 APFS. Names (GPT type, APM type, run table name) only describe; a
    disagreement is `ARCHIVE_STRUCTURE_INCONSISTENT`.
