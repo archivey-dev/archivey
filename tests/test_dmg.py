@@ -1732,28 +1732,45 @@ def test_raw_runs_that_share_stored_bytes_count_toward_the_pass_ratio() -> None:
         assert isinstance(error.__cause__, ResourceLimitError)
 
 
-def test_kept_tables_and_their_names_count_toward_max_metadata_bytes() -> None:
-    """Empty tables (no sectors, no runs) with long names: only the runs were
-    charged, so any number of them loaded."""
+def _empty_tables(count: int, name: Callable[[int], str]) -> bytes:
+    """A one-file image whose property list also holds ``count`` empty tables (no
+    sectors, no runs), table ``i`` named ``name(i)``."""
     hfs = d.write_hfsplus([d.Node("a.txt", data=b"hello")])
     volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
     disk = d.write_gpt([d.Partition(volume)])
 
-    def empty_tables(plist: dict) -> None:
+    def add(plist: dict) -> None:
         blkx = plist["resource-fork"]["blkx"]
         mish = bytearray(blkx[0]["Data"][: d.MISH.size])
         struct.pack_into(">Q", mish, 16, 0)  # no sectors
         struct.pack_into(">I", mish, d.MISH.size - 4, 0)  # no runs
-        blkx.extend(
-            {"CFName": f"t{i:04d}" + "n" * 200, "Data": bytes(mish)}
-            for i in range(2000)
-        )
+        blkx.extend({"CFName": name(i), "Data": bytes(mish)} for i in range(count))
 
-    image = d.write_udif(
-        disk.segments, tables=disk.tables, patch_plist=empty_tables
-    ).image
-    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=256 << 10))
-    with pytest.raises(ResourceLimitError, match="max_metadata_bytes.*tables"):
+    return d.write_udif(disk.segments, tables=disk.tables, patch_plist=add).image
+
+
+@pytest.mark.parametrize(
+    ("name", "limit"),
+    [
+        # 2,000 unnamed tables: their 512,000 bytes alone pass a 384 KiB limit.
+        (lambda i: "", 384 << 10),
+        # 2,000 tables with 300-character names: 512,000 bytes of tables and 600,000
+        # of names, past 1 MiB only with the names.
+        (lambda i: f"{i:04d}" + "n" * 296, 1 << 20),
+        # The same names in a non-ASCII letter count four bytes a character: 2.4 MB.
+        (lambda i: f"{i:04d}" + "\u00e9" * 296, 2 << 20),
+    ],
+    ids=["tables", "names", "non-ascii-names"],
+)
+def test_kept_tables_and_their_names_count_toward_max_metadata_bytes(
+    name: Callable[[int], str], limit: int
+) -> None:
+    """Empty tables (no sectors, no runs) cost no run bytes, so only the runs were
+    charged and any number of them loaded. Each limit is one the image passes without
+    the charge its case names."""
+    image = _empty_tables(2000, name)
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=limit))
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes.*blkx tables"):
         _open(image, config=config)
     with _open(image) as reader:
         assert [m.name for m in reader.members() if m.is_file] == ["a.txt"]

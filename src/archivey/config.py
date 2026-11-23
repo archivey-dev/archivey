@@ -451,7 +451,9 @@ class ListingLimits:
     ``extra["zip.extra_fields"]`` counts 72 bytes plus its data. A cabinet's block
     tables, read as members of each folder are first opened and kept for the reader's
     life, count 256 bytes per data block on a running total of their own, so opening a
-    member can raise too.
+    member can raise too. A DMG's run tables, kept for the reader's life, count 256
+    bytes per table plus its name and 36 bytes per run, checked when the image is
+    opened, so ``open_archive`` raises.
 
     A ZIP read from a stream that cannot seek also keeps the data of each member
     short enough to be a symlink until its directory says which members are links.
