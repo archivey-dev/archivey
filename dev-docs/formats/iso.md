@@ -260,11 +260,16 @@ extent is entered once. Within a directory, subdirectories come first, then file
 sorted by identifier bytes (`_sorted_children`, the order `pycdlib` gave and the
 listing keeps), except that plain ISO 9660 files sort by (name, version). In the Rock
 Ridge namespace a relocated directory is skipped where it is parked and listed where
-its `CL` placeholder stands (`_children`, `_relocated`). The `CL` is followed to the
-directory at its extent for its contents and attributes, and the member keeps the
-placeholder's own `NM` name, as Linux's `readdir` does. pycdlib instead took the first
-entry of that directory's parent with the placeholder's name, which listed one of two
-same-named relocated directories in both places. A placeholder that points at no
+its `CL` placeholder stands (`_children`, `_is_parked`, `_relocated`). A directory
+counts as parked only when its `..` carries `PL` and a `CL` that the listing reaches
+points at its extent (`_unrelinked`): one with a `PL` and no such `CL` lists where it
+is stored, since hiding it would lose its files without a word. A `CL` that the
+listing can reach only through that directory, such as one inside its own subtree,
+does not count. Linux hides an entry by its own `RE` entry instead. The `CL` is
+followed to the directory at its extent for its contents and attributes, and the member
+keeps the placeholder's own `NM` name, as Linux's `readdir` does. pycdlib instead took
+the first entry of that directory's parent with the placeholder's name, which listed one
+of two same-named relocated directories in both places. A placeholder that points at no
 directory lists as the file record it is.
 
 What is ISO-specific in turning a record into a member:
@@ -344,8 +349,8 @@ What is ISO-specific in turning a record into a member:
 - **Rock Ridge gaps.** A record with no Rock Ridge entries in a Rock Ridge image is kept
   under its ISO 9660 name, with `MEMBER_HEADER_RECORD_SKIPPED` attached to it. The
   `rr_moved` directory is not listed: it is recognised by its contents (every child is a
-  relocated directory whose `..` carries `PL`), not by its name, and its subtrees appear
-  where they belong.
+  relocated directory whose `..` carries `PL` and that a reachable `CL` points at),
+  not by its name, and its subtrees appear where they belong.
 - **Type.** An `SL` record makes a symlink, the directory flag a directory, and a `PX`
   mode naming a device, FIFO or socket makes `OTHER` when the extent is empty (what
   genisoimage and xorriso write). Over a non-empty extent such a mode gives a `FILE`

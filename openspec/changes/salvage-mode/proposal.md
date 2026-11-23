@@ -28,11 +28,12 @@ and the first formats that use it.
 - **`SalvageLimits`** on `ArchiveyConfig.salvage_limits`: `max_search_bytes` (default
   `None`, uncapped) and `max_reported_regions` (default 1 000, caps the
   `ARCHIVE_REGION_SKIPPED` diagnostics, not the walk). Each byte is searched at most
-  once per layer.
+  once per layer in a walk.
 - **Diagnostics:** `MEMBER_FOUND_BY_SCAN` (member found by a search past damage, with
   `confirmed`), `ARCHIVE_REGION_SKIPPED` (one per range the search stepped over), and
-  `SALVAGE_UNAVAILABLE` (open, `salvage=True` on a format without salvage support,
-  which then reads as the default). None is an integrity code.
+  `SALVAGE_UNAVAILABLE` (open, `salvage=True` on a format without salvage support, or
+  on a nested reader read forward only where the format's search cannot run; the
+  reader then reads as the default). None is an integrity code.
 - **A shared header-search driver** (`internal/salvage.py`): owns the forward search,
   the budget, the claimed regions, the diagnostics and the error kept for the end. A
   format supplies one function: where in this window does the first header start that

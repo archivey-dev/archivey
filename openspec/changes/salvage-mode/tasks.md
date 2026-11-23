@@ -7,16 +7,16 @@
 
 ## 1. Switch (PR 1, davi merges)
 
-- [ ] 1.1 `salvage=` on both `open_archive` overloads; `ArchiveyUsageError` with
+- [x] 1.1 `salvage=` on both `open_archive` overloads; `ArchiveyUsageError` with
   `streaming=True`.
-- [ ] 1.2 `SalvageLimits`, `ArchiveyConfig.salvage_limits`, export, copy/validation like
+- [x] 1.2 `SalvageLimits`, `ArchiveyConfig.salvage_limits`, export, copy/validation like
   the other limits.
-- [ ] 1.3 Codes, contexts, `DiagnosticCodeStr`, catalogue row, API surface listing.
-- [ ] 1.4 Flag reaches every backend; `supports_salvage`; `SALVAGE_UNAVAILABLE` at open;
+- [x] 1.3 Codes, contexts, `DiagnosticCodeStr`, catalogue row, API surface listing.
+- [x] 1.4 Flag reaches every backend; `supports_salvage`; `SALVAGE_UNAVAILABLE` at open;
   nested readers inherit.
-- [ ] 1.5 `internal/salvage.py` driver: windows, overlap, budget, once-per-byte, claimed
+- [x] 1.5 `internal/salvage.py` driver: windows, overlap, budget, once-per-byte, claimed
   regions, region records and cap; unit tests with synthetic finders.
-- [ ] 1.6 `docs/security.md` note; `open_archive` docstring.
+- [x] 1.6 `docs/security.md` note; `open_archive` docstring.
 
 ## 2. TAR (PR 2)
 

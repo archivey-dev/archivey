@@ -55,6 +55,7 @@ _MTIME = datetime.datetime(2024, 3, 1, 12, 0, tzinfo=datetime.UTC)
 TAR_LZOP = ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZOP)
 
 _has_compress_utils = lzo_decoder._compress_utils(frozenset()) is not None
+_has_codecs = lzo_decoder._archivey_codecs(frozenset(), IN_PROCESS, None) is not None
 
 
 @pytest.fixture(
@@ -66,13 +67,26 @@ _has_compress_utils = lzo_decoder._compress_utils(frozenset()) is not None
                 not _has_compress_utils, reason="needs compress-utils"
             ),
         ),
+        pytest.param(
+            "archivey-codecs",
+            marks=pytest.mark.skipif(not _has_codecs, reason="needs archivey-codecs"),
+        ),
     ]
 )
 def decoder(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
-    """Each LZO1X decoder in turn: archivey's own, and compress-utils'."""
+    """Each LZO1X decoder in turn: archivey's own, compress-utils' and
+    archivey-codecs'."""
+    if request.param != "archivey-codecs":
+        monkeypatch.setattr(lzo_decoder, "_archivey_codecs", lambda *_: None)
     if request.param == "python":
         monkeypatch.setattr(lzo_decoder, "_compress_utils", lambda *_: None)
     return request.param
+
+
+@pytest.fixture
+def no_codecs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """compress-utils' tests: archivey-codecs, tried first, is not used."""
+    monkeypatch.setattr(lzo_decoder, "_archivey_codecs", lambda *_: None)
 
 
 _FILES = {
@@ -124,7 +138,7 @@ def test_a_tar_inside_is_found(decoder: str, tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("exclude", [False, True])
 def test_compress_utils_can_be_excluded(
-    exclude: bool, monkeypatch: pytest.MonkeyPatch
+    exclude: bool, monkeypatch: pytest.MonkeyPatch, no_codecs: None
 ) -> None:
     """With compress-utils installed, ``exclude_libraries={"compress_utils"}`` makes
     the read use the Python decoder and never compress-utils; without it,
@@ -152,7 +166,7 @@ def test_compress_utils_can_be_excluded(
 
 
 def test_a_host_output_cap_below_a_block_is_not_corruption(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_codecs: None
 ) -> None:
     """compress-utils' output cap is process-wide and the host's to set. One below an
     lzop block refused the block as damaged; the Python decoder reads it instead."""
@@ -174,7 +188,7 @@ def test_a_host_output_cap_below_a_block_is_not_corruption(
     assert used
 
 
-def test_compress_utils_runs_in_a_child_under_native_decoders() -> None:
+def test_compress_utils_runs_in_a_child_under_native_decoders(no_codecs: None) -> None:
     pytest.importorskip("compress_utils")
     config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
     POOL.close_idle()
@@ -183,7 +197,9 @@ def test_compress_utils_runs_in_a_child_under_native_decoders() -> None:
     assert POOL.idle_count() == 1
 
 
-def test_compress_utils_in_a_child_is_recorded_once_it_decodes() -> None:
+def test_compress_utils_in_a_child_is_recorded_once_it_decodes(
+    no_codecs: None,
+) -> None:
     """Under NATIVE_DECODERS whether the child's build has LZO1X is known only on the
     first block, so compress-utils is recorded then, not when the decoder is built."""
     pytest.importorskip("compress_utils")
@@ -196,7 +212,7 @@ def test_compress_utils_in_a_child_is_recorded_once_it_decodes() -> None:
     )
 
 
-def test_a_damaged_block_in_a_child_is_corruption() -> None:
+def test_a_damaged_block_in_a_child_is_corruption(no_codecs: None) -> None:
     pytest.importorskip("compress_utils")
     config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
     data = bytearray((_DATA / "text-9-crc32.txt.lzo").read_bytes())
@@ -247,7 +263,7 @@ _BLOCK = b"\x17hello\n\x11\x00\x00"
 
 @_NO_COMPRESS_UTILS
 def test_a_compress_utils_that_does_not_import_falls_back_under_native_decoders(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_codecs: None
 ) -> None:
     """In this process a found package that fails to import is treated as absent.
     Under NATIVE_DECODERS it is only looked up, so the child's import failed and the
@@ -262,7 +278,7 @@ def test_a_compress_utils_that_does_not_import_falls_back_under_native_decoders(
 
 @_NO_COMPRESS_UTILS
 def test_a_child_import_failure_leaves_this_process_its_compress_utils(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_codecs: None
 ) -> None:
     """A child is a fresh interpreter: it does not see what this process added to
     ``sys.path``. Its failure turned the package off for in-process reads too."""
@@ -289,7 +305,7 @@ def test_a_child_import_failure_leaves_this_process_its_compress_utils(
 
 @_NO_COMPRESS_UTILS
 def test_a_child_import_that_raises_os_error_falls_back(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_codecs: None
 ) -> None:
     """A broken shared library can raise something other than ImportError. In this
     process any exception from the import counts as absent; in a child only an
@@ -359,7 +375,10 @@ def use_compress_utils_without_lzo_or_snappy(
     "isolation", [ProcessIsolation.NONE, ProcessIsolation.NATIVE_DECODERS]
 )
 def test_a_compress_utils_built_without_lzo_is_not_used(
-    isolation: ProcessIsolation, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    isolation: ProcessIsolation,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_codecs: None,
 ) -> None:
     """compress-utils was used whenever it imported, and a build without LZO1X
     refused every valid block as damaged. The Python decoder reads instead, and the
@@ -367,6 +386,7 @@ def test_a_compress_utils_built_without_lzo_is_not_used(
     POOL.close_idle()
     try:
         use_compress_utils_without_lzo_or_snappy(tmp_path, monkeypatch)
+        monkeypatch.setattr(lzo_decoder, "_archivey_codecs", lambda *_: None)
         natives = (
             ISOLATED if isolation is ProcessIsolation.NATIVE_DECODERS else (IN_PROCESS)
         )

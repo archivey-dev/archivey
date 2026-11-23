@@ -509,7 +509,11 @@ def finish(event: dict) -> Finish:
         body = (
             f"**Round {rnd} found nothing to fix.**{summary}\n\n"
             "An agent merges it once CI is green"
-            + (" and Cursor's review approves" if event.get("tier") == "deep" else "")
+            + (
+                " and a Codex or Cursor review approves"
+                if event.get("tier") == "deep"
+                else ""
+            )
             + ", unless the base branch's `review_prep.py tier` says the maintainer "
             "merges this one or the review lists a maintainer decision "
             "(`address-review-findings` §7)."

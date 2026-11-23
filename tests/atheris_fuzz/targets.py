@@ -33,6 +33,7 @@ from archivey.internal.backends.sevenzip_detect import (
 from archivey.internal.backends.sevenzip_reader import load_sevenzip_archive
 from archivey.internal.backends.zip_detect import validate_zip_local_header
 from archivey.internal.config import StreamConfig
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.streams.codecs import (
     Codec,
@@ -63,6 +64,7 @@ from tests.atheris_fuzz.seeds import (
     cpio_seeds,
     deflate64_seeds,
     detect_format_seeds,
+    dmg_apfs_seeds,
     dmg_seeds,
     filter_seeds,
     gzip_seeds,
@@ -135,7 +137,7 @@ _MAX_TAR_READ_BYTES = 64 * 1024
 # Filter payloads. A BCJ2 main stream of E8 bytes is the slow case; keep it here.
 _MAX_FILTER_BYTES = 64 * 1024
 
-# Empty + common corpus password for the encrypted ZIP and 7z seeds.
+# Empty + common corpus password for the encrypted ZIP, 7z and DMG seeds.
 _PASSWORD_CANDIDATES: list[str | bytes] = ["", "password"]
 
 
@@ -283,16 +285,27 @@ def squashfs_open_one(data: bytes) -> None:
 
 def dmg_open_one(data: bytes) -> None:
     """List a DMG image and read the first files: the koly block, the property list
-    and run tables, the partition map, then the HFS+ catalog, attributes and forks."""
+    and run tables, the partition map, then the HFS+ catalog, attributes and forks. The
+    corpus passwords unlock the encrypted seed, so its key entries and blocks are read."""
     try:
         with open_archive(
-            io.BytesIO(data), format=ArchiveFormat.DMG, config=_FUZZ_CONFIG
+            io.BytesIO(data),
+            format=ArchiveFormat.DMG,
+            config=_FUZZ_CONFIG,
+            password=_PASSWORD_CANDIDATES,
         ) as arc:
             _sample_seekable(
                 arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
             )
     except ArchiveyError:
         return
+
+
+def dmg_apfs_open_one(data: bytes) -> None:
+    """List a DMG image of an APFS container and read the first files: UDIF, the
+    partition map, then the checkpoint, the object maps, the filesystem tree's nodes,
+    extents and decmpfs attributes."""
+    dmg_open_one(data)
 
 
 def xar_open_one(data: bytes) -> None:
@@ -625,7 +638,10 @@ def _fuzz_bcj2(body: bytes) -> None:
     unpack = int.from_bytes(body[8:12], "little") % (_MAX_FILTER_BYTES + 1)
     parts = _split4(body[12 : 12 + _MAX_FILTER_BYTES], weights)
     decoder = Bcj2DecoderStream(
-        *(io.BytesIO(part) for part in parts), unpack_size=unpack
+        *(io.BytesIO(part) for part in parts),
+        unpack_size=unpack,
+        excluded=NO_EXCLUSIONS,
+        isolated=False,
     )
     try:
         decoder.read(min(4096, unpack))
@@ -665,6 +681,7 @@ def _fuzz_filter_stream(payload: bytes, lzma_filter: dict[str, int]) -> None:
         lzma_filter=lzma_filter,
         unpack_size=unpack,
         seekable=True,
+        excluded=NO_EXCLUSIONS,
     ) as stream:
         got = stream.read(4096)
         if not stream.seekable():
@@ -982,6 +999,13 @@ def iter_target_specs() -> list[dict]:
             "name": "dmg",
             "fn": dmg_open_one,
             "seeds": dmg_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
+            "name": "dmg_apfs",
+            "fn": dmg_apfs_open_one,
+            "seeds": dmg_apfs_seeds,
             "fixup": None,
             "per_input_timeout": stream_timeout,
         },

@@ -6,7 +6,8 @@ cannot be read from a pipe is refused before the caller is told to install its
 package).
 
 1. Check the arguments: a wrong-typed or ``UNKNOWN`` ``format=``, a bad config or
-   encoding, ``streaming=True`` with ``concurrent_operations=True``.
+   encoding, ``streaming=True`` with ``concurrent_operations=True`` or with
+   ``salvage=True``.
 2. Resolve the source (``resolve_source``): a path, a
    stream, or a list of volumes becomes one ``ArchiveSource``.
 3. Decide the format (``_decide_format``): refuse a lone numbered volume
@@ -113,6 +114,7 @@ from archivey.internal.remote import (
     raising_source_change,
     refuse_compressed_open_file_stream,
 )
+from archivey.internal.salvage import requesting_salvage
 from archivey.internal.sfx import read_payload_end
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.callers_source import from_source_callback
@@ -393,6 +395,7 @@ def open_archive(
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
     parent: ForwardArchiveReader | None = None,
+    salvage: bool = False,
 ) -> ArchiveReader: ...
 
 
@@ -408,6 +411,7 @@ def open_archive(
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
     parent: ForwardArchiveReader | None = None,
+    salvage: bool = False,
 ) -> ForwardArchiveReader: ...
 
 
@@ -422,6 +426,7 @@ def open_archive(
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
     parent: ForwardArchiveReader | None = None,
+    salvage: bool = False,
 ) -> ForwardArchiveReader:
     """Open an archive for reading.
 
@@ -480,6 +485,21 @@ def open_archive(
     loosen them. A nest holds at most nine archives in a chain; the tenth raises
     :exc:`~archivey.exceptions.UnsupportedFeatureError`. ``None`` (the default) starts
     a new nest.
+
+    ``salvage=True`` reads a damaged archive further than the default does. Where damage
+    stops the member list, the reader searches forward for the next header that passes
+    the format's own checks and lists the members it finds there, each with the
+    diagnostic ``MEMBER_FOUND_BY_SCAN``; each range it steps over is recorded as
+    ``ARCHIVE_REGION_SKIPPED``. Every member the default lists comes first and
+    unchanged, and the listing still ends in the error that ends it without salvage. A
+    found member's header passed its checks, but nothing proves it belongs to this
+    archive, so do not use ``salvage=True`` to decide what an archive holds or whether
+    it is safe. :class:`~archivey.SalvageLimits` (``config.salvage_limits``) caps the
+    search. Salvage needs a seekable source, so ``streaming=True`` is refused. A format
+    without a salvage search, or whose search cannot run on a nested archive read
+    forward only, is read as without it and records ``SALVAGE_UNAVAILABLE``. An archive
+    archivey opens inside another one (a ``.deb``'s ``data.tar``) salvages when the
+    outer one does; one opened with ``parent=`` salvages when that call says so.
 
     The format is auto-detected from the source's magic bytes (then its extension) unless
     ``format=`` is passed explicitly. A directory path opens as a directory pseudo-archive.
@@ -581,7 +601,7 @@ def open_archive(
             in the config raises on, recorded while the archive is detected or opened.
         ArchiveyUsageError: One argument has a type or value the call cannot use (then
             also a ``TypeError`` or ``ValueError``), or ``streaming=True`` is combined
-            with ``concurrent_operations=True``.
+            with ``concurrent_operations=True`` or with ``salvage=True``.
         FileNotFoundError: The path does not exist. Other ``OSError`` from reading the
             source is not wrapped either.
     """
@@ -605,6 +625,7 @@ def open_archive(
         ("streaming", streaming),
         ("seekable_members", seekable_members),
         ("concurrent_operations", concurrent_operations),
+        ("salvage", salvage),
     ):
         check_bool(flag, call=f"open_archive({flag_name}=…)")
     check_config(config, call="open_archive(config=…)")
@@ -616,6 +637,12 @@ def open_archive(
             "open_archive(streaming=True) cannot be combined with "
             "concurrent_operations=True: a forward-only pass has one progressive decoder "
             "and cannot fan out concurrent member streams."
+        )
+    if streaming and salvage:
+        raise _UsageValueError(
+            "open_archive(salvage=True) cannot be combined with streaming=True: "
+            "salvage needs random access to a seekable file. Save the stream to a "
+            "file first, then open that file with salvage=True."
         )
 
     # The public surface is two booleans; everything below the entry point keeps
@@ -666,6 +693,7 @@ def open_archive(
                 member_streams=member_streams,
                 open_site=open_site,
                 parent=cast("BaseArchiveReader | None", parent),
+                salvage=salvage,
             )
     except BaseException:
         # Once a reader exists it closes its source; until then nobody else will.
@@ -1151,6 +1179,7 @@ def _open_resolved(
     member_streams: MemberStreams,
     open_site: OpenSite | None,
     parent: BaseArchiveReader | None = None,
+    salvage: bool = False,
 ) -> ArchiveReader:
     """Detect the format of a resolved source and hand it to its backend.
 
@@ -1230,9 +1259,13 @@ def _open_resolved(
         # remote object for damage it salvages or reports; the open ends with the
         # change instead (``fsspec-integration`` design D7).
         with raising_source_change(archive_source.remote_sources):
-            # Only the backend's build sees the parent, so detection's callbacks
-            # cannot join the nest; the first reader built takes it.
-            with joining(parent):
+            # Only the backend's build sees the parent and the salvage request, so
+            # detection's callbacks cannot join the nest; the first reader built
+            # takes both.
+            with (
+                joining(parent),
+                requesting_salvage(salvage, supported=backend_cls.SUPPORTS_SALVAGE),
+            ):
                 reader = backend.open_read(
                     archive_source,
                     format=resolved_format,
@@ -1252,6 +1285,11 @@ def _open_resolved(
                 raise AssertionError(
                     f"{backend_cls.__name__}.open_read built a reader that did not "
                     f"join open_archive(parent=)'s nest"
+                )
+            if reader._salvage_mode.requested is not salvage:
+                raise AssertionError(
+                    f"{backend_cls.__name__}.open_read built a reader that did not "
+                    f"take open_archive(salvage=)'s request"
                 )
             reader._format_provenance = provenance
             reader._format_info = decision.format_info

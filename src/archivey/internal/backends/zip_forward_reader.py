@@ -430,6 +430,21 @@ class _PassData:
     :data:`_MAX_REPARSE_PREFIX` and one byte.
     """
 
+    # The overrun found by the caller's read that returned the bytes up to the declared
+    # size (``_read_chunk(trim=True)``): the next read raises it.
+    _overrun: CorruptionError | None = None
+    # The same overrun, kept once the next read raised it: the bytes past the declared
+    # size were dropped, so the size and CRC counted on what is left must not pass
+    # (``_finish``).
+    _overran: CorruptionError | None = None
+    # ``PartialDataRecovery.ALL`` on the caller's handle (``return_failed_chunks``).
+    _returns_failed = False
+
+    def return_failed_chunks(self) -> None:
+        """Have the caller's read that runs past the declared size return the bytes up
+        to it and raise on the next read, as the verifier does at ``ALL``."""
+        self._returns_failed = True
+
     def __init__(
         self,
         reader: ZipForwardReader,
@@ -870,7 +885,9 @@ class _PassData:
                 member_name=member.name,
                 source_format=ArchiveFormat.ZIP,
             )
-        keys, check = keys_after_header(password, head)
+        keys, check = keys_after_header(
+            password, head, reader._stream_config.excluded_libraries
+        )
         if check != _zipcrypto_check_byte(loc):
             raise wrong_password_error(ZIP_WRONG_PASSWORD_MSG)
         # The length bounds seeks only, and nothing seeks a pass.
@@ -1146,7 +1163,11 @@ class _PassData:
         its CRC or size check, or for a ZipCrypto member the password may be wrong,
         the ``EncryptionError`` that says so, as from a file."""
         try:
-            chunk = self._read_chunk(n)
+            overrun = self._overrun
+            if overrun is not None:
+                self._overrun = None
+                raise overrun
+            chunk = self._read_chunk(n, trim=self._returns_failed)
             if not chunk and not self.done:
                 self._finish(raise_mismatch=True)
         except ArchiveyError as exc:
@@ -1173,8 +1194,13 @@ class _PassData:
             return failure
         return exc
 
-    def _read_chunk(self, n: int) -> bytes:
-        """Up to ``n`` decoded bytes, or ``b""`` once the codec or the data ends."""
+    def _read_chunk(self, n: int, *, trim: bool = False) -> bytes:
+        """Up to ``n`` decoded bytes, or ``b""`` once the codec or the data ends.
+
+        A chunk that runs past the declared size raises ``CorruptionError``. With
+        ``trim`` (the caller's read at ``PartialDataRecovery.ALL``), it returns the
+        bytes up to the declared size first, when there are any, and keeps the error
+        for the next read, as the file read's verifier does at that level."""
         if self.done or n == 0:
             return b""
         assert n > 0, "callers ask for a number of bytes"
@@ -1200,9 +1226,13 @@ class _PassData:
         if declared is not None and self._size + len(chunk) > declared:
             # The file read's verifier words it (``streams/verify.py``); the
             # ``_fixtures()`` table in ``test_zip_pipe_encrypted.py`` compares them.
-            raise CorruptionError(
+            error = CorruptionError(
                 f"Decompressed content exceeds its declared size of {declared} bytes."
             )
+            chunk = chunk[: declared - self._size]
+            if not (trim and chunk):
+                raise error
+            self._overrun = self._overran = error
         if budget is not None:
             budget._draw_bytes(len(chunk))
         if chunk:
@@ -1268,8 +1298,11 @@ class _PassData:
         size_ok = file_size == self._size or (
             self._deferred() and file_size == self._size & 0xFFFF_FFFF
         )
-        # A failed AES code comes first: the data is not what was written.
-        if error is None and not size_ok:
+        # A failed AES code comes first: the data is not what was written. Then an
+        # overrun a trimmed read dropped: what was counted stops at the declared size.
+        if error is None and self._overran is not None:
+            error = self._overran
+        elif error is None and not size_ok:
             # In the words a read through the size check gives (streams/verify.py).
             if self._size < file_size:
                 error = TruncatedError(
@@ -2785,12 +2818,15 @@ class ZipForwardReader(ZipReader):
             )
         # A codec member's bytes are drawn as they decode (``_PassData._read_chunk``),
         # read or drained; a STORED member's, decoded by nothing, as the caller reads.
-        return self._member_parts(
+        parts = self._member_parts(
             stream,
             member.name,
             size=member.size,
             draw_budget=current._method() == 0,
         )
+        # The pass checks the declared size itself, below the handle's verifier.
+        parts.return_failed = current.return_failed_chunks
+        return parts
 
     @override
     def _ensure_link_target(self, member: ArchiveMember) -> None:
