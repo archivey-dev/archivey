@@ -285,13 +285,18 @@ in the repository measures what each limit costs in time and memory on your mach
   `extraction_limits.max_ratio`, which 0.4.0 removed.
 - **`listing_limits.max_members`**, default 262,144, caps the members an archive can list. It costs
   about 25-50 µs and 1.5 KiB of memory per member, under 15 s and 384 MiB at the default.
-- **`listing_limits.max_metadata_bytes`**, default 64 MiB, caps the text kept for names, comments
-  and link targets. It's a safety weight against hostile archives, not a memory cap: it counts what
-  the archive controls, plus a fixed weight, mostly measured, for each small record an archive can
-  repeat without adding a member, but not the overhead of ordinary text or the fixed cost of each
-  member. A ZIP read from a pipe also keeps up to this much of its small members' data, in case they
-  are links, on top of the text. It costs about 1.7 MiB of memory per MiB counted, 110 MiB at the
-  default, and up to 64 MiB more for a ZIP read from a pipe.
+- **`listing_limits.max_metadata_bytes`**, default 64 MiB, is a weighted budget for the metadata a
+  listing keeps: names, comments, link targets and the text in `extra`. It's a safety weight
+  against hostile archives, not a memory cap; for a hard ceiling, set a memory limit on the process
+  or container. It weighs what the archive controls, plus a fixed weight, mostly measured, for each
+  small record an archive can repeat without adding a member, but not the overhead of ordinary text
+  or the fixed cost of each member. Some formats also hold a total of their own to the same amount:
+  ISO for the UDF paths its walk builds, CAB for the block tables it reads when a member is opened.
+  A ZIP read from a pipe also keeps up to this much of its small members' data, in case they are
+  links; past that it drops the longest, and a link whose data was dropped reports
+  `SYMLINK_TARGET_UNAVAILABLE`. Actual memory depends on the format and the metadata: a ZIP of
+  1,000-byte names holds about 1.7 MiB per MiB weighed, member objects included, so about 110 MiB
+  at the default.
 - **`listing_limits.max_decoded_bytes`**, default 4 GiB, caps what one listing decodes before you
   read anything: listing a `.tar.gz` decodes all of it. For an archive that holds archives, such as
   a `.pkg`'s payloads or a `.deb`'s tars, it caps all of them together. Member data you read doesn't
