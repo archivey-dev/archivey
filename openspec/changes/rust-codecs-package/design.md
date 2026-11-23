@@ -268,12 +268,13 @@ the two. `src/archivey/internal/kernels/` holds it:
 
 - `kernels/python/`: the Python twins, one module per package module
   (`zipcrypto.Decryptor`, `filters.Arm64Decoder`, `lzo1x.decompress`,
-  `lzw.Decompressor`, `lzx.Decompressor`, `bcj2.Decompressor`, and `crc16_arc`), with
-  the package's classes, arguments, attributes and errors (archivey's, as the wrappers
-  raise them). They leave out the state methods (`getstate`, `from_state`, and `copy`
-  except ZipCrypto's), and LZX leaves out `unused_data` and `total_in`: the Python
-  decoder's bit buffer reads its input ahead of the output, and no call site needs
-  either.
+  `lzw.Decompressor`, `lzx.Decompressor`, `bcj2.Decompressor`, and `crc16_arc`). Each
+  has the subset of the package's API that archivey's call sites use, with the same
+  names, arguments, attributes and errors (archivey's, as the wrappers raise them).
+  They leave out `Crc16Arc`, the state methods (`getstate`, `from_state`, and `copy`
+  except ZipCrypto's), and LZX's `reset()`, `window_bits`, `unused_data` and
+  `total_in`: the Python decoder's bit buffer reads its input ahead of the output, and
+  no call site needs any of them. The package's stubs give its whole API.
 - `kernels/rust.py`: the package's objects wrapped to raise archivey's errors and latch
   panics, with the same API.
 - `kernels/__init__.py`: the switch. `kernels.lzx(excluded, isolated=...)` (and one
