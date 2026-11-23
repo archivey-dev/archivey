@@ -1086,9 +1086,10 @@ def test_lzx_late_output_size_inside_a_failed_frame_raises_the_error(
     codecs: object,
 ) -> None:
     """After a decode error, a late output size that ends the output inside the
-    failed frame does not drop the error: it raises it again, on both sides, wherever
-    in the frame the error was met (a block header after the stream's last block, or
-    a match in a block after it)."""
+    failed frame does not drop the error: it raises it again, on both sides. Here the
+    error is in a block header after the stream's last block; a size below what the
+    frame decoded (5) raises the decode error too, not the ``ValueError`` for a size
+    below the output."""
     lzx = codecs.lzx
     r_regs = (1).to_bytes(4, "little") * 3
     first = bytes.fromhex("0030a000") + r_regs + b"0123456789"
@@ -1096,7 +1097,7 @@ def test_lzx_late_output_size_inside_a_failed_frame_raises_the_error(
     d = lzx.Decompressor(15)
     with pytest.raises((archivey_codecs.CorruptDataError, CorruptionError)):
         d.decompress(first + bad)
-    for size in (10, 0):
+    for size in (10, 5, 0):
         with pytest.raises(
             (archivey_codecs.CorruptDataError, CorruptionError), match="block type 7"
         ):
