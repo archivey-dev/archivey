@@ -40,6 +40,7 @@ from archivey.exceptions import (
     ResourceUnavailableError,
     TruncatedError,
     UnsupportedFeatureError,
+    exception_detail,
 )
 from archivey.formats import (
     IndexedFormatHandler,
@@ -68,6 +69,7 @@ from archivey.internal.backends.udif import (
     crc32_value,
 )
 from archivey.internal.format_adapter import register_builtin_format
+from archivey.internal.listing_limits import str_retained_bytes
 from archivey.internal.overrides import override
 from archivey.internal.streams.callers_source import from_source_callback
 from archivey.terminal import quoted
@@ -91,6 +93,9 @@ ENCRYPTED_V1 = b"cdsaencr"
 
 # The names macOS gives a volume it mounts with no usable name (``/Volumes/Untitled``).
 _UNTITLED = "Untitled"
+# What a member the listing holds to sort costs beyond its name, roughly: the member,
+# its record and its locator (``DmgReader._ordered``).
+_HELD_MEMBER_BYTES = 512
 
 
 class FileData(NamedTuple):
@@ -101,6 +106,7 @@ class FileData(NamedTuple):
     record: bytes  # its catalog file record
     decmpfs: hfsplus.Attribute | None  # its com.apple.decmpfs, when compressed
     refusal: tuple[type[ArchiveyError], str] | None = None
+    position: int = -1  # its place in the listing (``iter_members``)
 
 
 class ApfsData(NamedTuple):
@@ -111,9 +117,18 @@ class ApfsData(NamedTuple):
     oid: int
     compressed: bool
     refusal: tuple[type[ArchiveyError], str] | None = None
+    position: int = -1  # its place in the listing (``iter_members``)
 
 
 Locator = FileData | ApfsData | None
+
+
+def _bad_name(name: str) -> bool:
+    """Whether a stored directory-entry name cannot be one component of a member
+    path: empty, ``.``, ``..``, or holding ``/`` or a NUL. Only damage or a crafted
+    image stores one. Both walks use it; an HFS+ name never holds ``/`` here, since
+    ``hfsplus`` shows a stored ``/`` as ``:``."""
+    return name in ("", ".", "..") or "/" in name or "\0" in name
 
 
 def volume_names(labels: list[str]) -> list[str]:
@@ -244,7 +259,8 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
                     self._report_unlisted(
                         candidate,
                         candidate.label,
-                        f"an APFS container archivey does not read ({exc})",
+                        "an APFS container archivey does not read "
+                        f"({exception_detail(exc)})",
                     )
                 else:
                     self._open_failure = self._open_failure or exc
@@ -468,12 +484,19 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
         """Every member of every volume, in partition order, each HFS+ volume in
         catalog order (parent folder id, then name), each APFS volume a directory at a
         time from the root. Damage in one volume stops or thins that volume's listing;
-        the other volumes are listed, then the first error is raised."""
+        the other volumes are listed, then the first error is raised.
+
+        Where reading a volume's files in that order would decode a compressed run
+        twice, that volume's members come in data order instead
+        (:meth:`_in_data_order`), as CAB sorts its file table: each run is then
+        decoded once. Each locator carries its member's place in the order, which
+        tells ``UdifImage.member_reads`` which reads make a pass in listing order."""
         units = self._load()
         names = self._volume_names()
         failure = self._load_failure
         spanning = self._context._spanning_check
         check = None
+        position = 0
         for index, unit in enumerate(units):
             walk: _VolumeWalk | _ApfsWalk
             if unit.hfs is not None:
@@ -491,10 +514,15 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
                     check = self._checks[unit.part] = spanning(
                         ("dmg partition", unit.part)
                     )
-            for record in walk.members():
+            for record in self._ordered(unit, walk.members()):
+                locator = record.locator
+                if locator is not None:
+                    locator = locator._replace(position=position)
+                    record = record._replace(locator=locator)
+                position += 1
                 # A file whose read is refused proves nothing, whatever the CRC says.
                 if check is not None and (
-                    record.locator is not None and record.locator.refusal is None
+                    locator is not None and locator.refusal is None
                 ):
                     check.cover(record.member)
                 if self._encrypted:
@@ -504,6 +532,125 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
                 failure = walk.failure
         if failure is not None:
             raise failure
+
+    def _ordered(
+        self, unit: _Unit, walk: Iterator[MemberRecord[Locator]]
+    ) -> Iterator[MemberRecord[Locator]]:
+        """A volume's walk, whole, in the order :meth:`_in_data_order` picks; then
+        the error that stopped it, if any. The walk is held only while it fits the
+        listing limits (``max_members``, and ``max_metadata_bytes`` at a rough
+        weight per member): past either, the members come in listing order as they
+        are walked, and archivey refuses the listing at its limit."""
+        limits = self._context.config.listing_limits
+        records: list[MemberRecord[Locator]] = []
+        weight = 0
+        too_many = False
+        try:
+            for record in walk:
+                records.append(record)
+                weight += str_retained_bytes(record.member.name) + _HELD_MEMBER_BYTES
+                if (
+                    limits.max_members is not None and len(records) > limits.max_members
+                ) or (
+                    limits.max_metadata_bytes is not None
+                    and weight > limits.max_metadata_bytes
+                ):
+                    too_many = True
+                    break
+        except ArchiveyError:
+            yield from self._in_data_order(unit, records)
+            raise
+        if too_many:
+            yield from records
+            yield from walk
+            return
+        yield from self._in_data_order(unit, records)
+
+    def _in_data_order(
+        self, unit: _Unit, records: list[MemberRecord[Locator]]
+    ) -> list[MemberRecord[Locator]]:
+        """A volume's members in listing order, or, where reading the files in that
+        order would decode a compressed run twice, in data order.
+
+        The run cache holds a few runs (``udif.CACHE_RUNS``). Writers lay files out
+        as they copy them, so reading in listing order decodes each run once. In
+        another layout each file would decode a whole run again; the check replays
+        the cache over each file's disk ranges, with nothing read
+        (``UdifImage.decodes_twice``). Then the order is: directories and the other
+        members with no data ranges, in listing order (a directory still comes before
+        its contents); the files, by the disk offset of their first byte; the hard
+        links, in listing order (each after the member it names). As for SquashFS
+        fragments and CAB folders, the order changes for ``members()`` too."""
+        ranges = [self._ranges(unit, record) for record in records]
+        if not self._image.decodes_twice(r for r in ranges if r):
+            return records
+        first: list[MemberRecord[Locator]] = []
+        files: list[tuple[int, int, MemberRecord[Locator]]] = []
+        links: list[MemberRecord[Locator]] = []
+        for index, (record, spans) in enumerate(zip(records, ranges, strict=True)):
+            if record.member.type is MemberType.HARDLINK:
+                links.append(record)
+            elif spans:
+                files.append((spans[0][0], index, record))
+            else:
+                first.append(record)
+        files.sort(key=lambda item: item[:2])
+        return [*first, *(record for _, _, record in files), *links]
+
+    def _ranges(
+        self, unit: _Unit, record: MemberRecord[Locator]
+    ) -> list[tuple[int, int]]:
+        """The disk ranges a read of the member's data reads, in order, as far as
+        the listing knows them without reading more: an HFS+ fork's eight extents in
+        its record (the overflow ones are left out), an APFS stream's extents. Empty
+        for a member with no data, a refused one, and decmpfs data kept in its
+        attribute."""
+        locator = record.locator
+        if locator is None or locator.refusal is not None or not record.member.is_file:
+            return []
+        if isinstance(locator, FileData):
+            volume = unit.hfs
+            assert volume is not None
+            if locator.decmpfs is None:
+                fork = hfsplus.data_fork(locator.record)
+            else:
+                fork = hfsplus.resource_fork(locator.record)
+            base = getattr(volume.source, "start", 0)
+            size = volume.header.block_size
+            left = fork.size
+            spans: list[tuple[int, int]] = []
+            for start, count in fork.extents:
+                if left <= 0:
+                    break
+                length = min(count * size, left)
+                spans.append((base + start * size, base + start * size + length))
+                left -= length
+            return spans
+        volume = unit.apfs
+        assert volume is not None
+        tree = self._tree(locator.volume)
+        inode = tree.inodes.get(locator.oid)
+        if inode is None:
+            return []
+        stream = inode.stream
+        if locator.compressed:
+            rsrc = tree.xattrs.get(locator.oid, {}).get(apfs.RESOURCE_FORK_XATTR)
+            if rsrc is None or rsrc.value is not None:
+                return []
+            stream = rsrc.stream
+        flat = tree.extents.get(stream)
+        if flat is None:
+            return []
+        blocks = volume.container._blocks
+        base = getattr(volume.container.source, "start", 0)
+        return [
+            (
+                base + flat[i + 2] * blocks.size,
+                base + (flat[i + 2]) * blocks.size + flat[i + 1],
+            )
+            for i in range(0, len(flat), 3)
+            if flat[i + 2]
+        ]
 
     @override
     def open_member(
@@ -530,7 +677,11 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
                 rsrc.size,
                 lambda: volume.fork_reader(cnid, hfsplus.RESOURCE_FORK, rsrc),
             )
-            stream = block_stream(header.size, hfsplus.DECMPFS_CHUNK, read_chunk)
+            stream = block_stream(
+                header.size,
+                hfsplus.DECMPFS_CHUNK,
+                self._image.member_reads(read_chunk, locator.position),
+            )
             return MemberData(stream, bounded=True)
         fork = hfsplus.data_fork(record)
         read = volume.fork_reader(cnid, hfsplus.DATA_FORK, fork)
@@ -539,7 +690,8 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
         def read_piece(i: int) -> bytes:
             return read(i * piece, min(piece, fork.size - i * piece))
 
-        return MemberData(block_stream(fork.size, piece, read_piece), bounded=True)
+        read_block = self._image.member_reads(read_piece, locator.position)
+        return MemberData(block_stream(fork.size, piece, read_block), bounded=True)
 
     def _open_apfs(self, locator: ApfsData) -> MemberData:
         volume = self._load()[locator.volume].apfs
@@ -550,7 +702,11 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
         if not locator.compressed:
             read, _ = apfs.stream_reader(volume, tree, inode.stream, inode.size, what)
             stream = block_stream(
-                inode.size, apfs.READ_PIECE, apfs.read_pieces(inode.size, read)
+                inode.size,
+                apfs.READ_PIECE,
+                self._image.member_reads(
+                    apfs.read_pieces(inode.size, read), locator.position
+                ),
             )
             return MemberData(stream, bounded=True)
         xattrs = tree.xattrs.get(locator.oid, {})
@@ -581,7 +737,11 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
             rsrc.size if rsrc is not None else 0,
             open_fork,
         )
-        stream = block_stream(header.size, hfsplus.DECMPFS_CHUNK, read_chunk)
+        stream = block_stream(
+            header.size,
+            hfsplus.DECMPFS_CHUNK,
+            self._image.member_reads(read_chunk, locator.position),
+        )
         return MemberData(stream, bounded=True)
 
     # ── The checksum pass (design §7.2) ──────────────────────────────────────────────
@@ -862,6 +1022,11 @@ class _VolumeWalk:
         self._paths: dict[int, str | None] = {hfsplus.ROOT_FOLDER: ""}
         self._hidden: dict[int, bool] = {hfsplus.ROOT_FOLDER: False}
         self._looped: set[int] = set()
+        # (parent path, name) of each record whose name cannot be a path component,
+        # and the records left out because a folder above them has such a name.
+        self._bad_names: list[tuple[str, str]] = []
+        self._inside_bad = 0
+        self._bad_above: dict[int, bool] = {hfsplus.ROOT_FOLDER: False}
         orphans = 0
         try:
             for entry in hfsplus.catalog_entries(volume):
@@ -879,6 +1044,25 @@ class _VolumeWalk:
             failure = CorruptionError(
                 f"the HFS+ folder {first}'s parent chain loops, so {orphans} "
                 "records of the catalog are not listed"
+            )
+        elif failure is None and self._bad_names:
+            where, bad = self._bad_names[0]
+            count = len(self._bad_names)
+            records = "1 record" if count == 1 else f"{count} records"
+            has, are = ("has", "is") if count == 1 else ("have", "are")
+            first = "the first is " if count > 1 else ""
+            below = ""
+            if self._inside_bad:
+                inside = self._inside_bad
+                more = "is 1 record" if inside == 1 else f"are {inside} records"
+                below = f", nor {more} inside such folders"
+            if orphans:
+                stray = "1 record is" if orphans == 1 else f"{orphans} records are"
+                below += f"; also, {stray} in folders the catalog does not hold"
+            failure = CorruptionError(
+                f"{records} of the HFS+ catalog {has} a name that cannot be a path "
+                f"component ({first}{quoted(bad)} in the folder "
+                f"{quoted(where or '/')}) and {are} not listed{below}"
             )
         elif failure is None and orphans:
             failure = CorruptionError(
@@ -903,6 +1087,24 @@ class _VolumeWalk:
             self._hidden[each] = hidden
         return hidden
 
+    def _in_bad_folder(self, cnid: int) -> bool:
+        """Whether folder ``cnid``, or a folder above it, has a name that cannot be a
+        path component. Its parent chain reaches the root: ``folder_path`` checked
+        it."""
+        folders = self._catalog.folders
+        chain = []
+        at = cnid
+        while at not in self._bad_above:
+            if _bad_name(folders[at][1]):
+                self._bad_above[at] = True
+                break
+            chain.append(at)
+            at = folders[at][0]
+        bad = self._bad_above[at]
+        for each in chain:
+            self._bad_above[each] = bad
+        return bad
+
     def _member(self, entry: hfsplus.Entry) -> MemberRecord[Locator] | None | _Orphan:
         folder = hfsplus.is_folder(entry)
         if folder and entry.cnid == hfsplus.ROOT_FOLDER:
@@ -923,6 +1125,14 @@ class _VolumeWalk:
             and entry.parent == hfsplus.ROOT_FOLDER
             and self._is_journal(entry)
         ):
+            return None
+        # After the hidden-folder checks: the name of the private-data folder
+        # (``hfsplus.PRIVATE_DATA``) holds NULs, so it would count as a bad name.
+        if self._in_bad_folder(entry.parent):
+            self._inside_bad += 1
+            return None
+        if _bad_name(entry.name):
+            self._bad_names.append((parent, entry.name))
             return None
         within = f"{parent}/{entry.name}" if parent else entry.name
         path = f"{self._top}/{within}" if self._top else within
@@ -1036,7 +1246,7 @@ class _VolumeWalk:
             self._add_xattrs(member, inode.cnid, compressed=compressed)
             return MemberRecord(member, None)
         self._linked[link_id] = path
-        self._charge(len(path) + 32, "the HFS+ hard links")
+        self._charge(str_retained_bytes(path) + 32, "the HFS+ hard links")
         return MemberRecord(member, self._file_data(member, inode))
 
     def _refused(
@@ -1072,13 +1282,17 @@ class _VolumeWalk:
                     head = hfsplus.attribute_value(self._volume, entry.cnid, attribute)
                 except ArchiveyError as exc:
                     problem = (
-                        f"has a com.apple.decmpfs attribute that cannot be read ({exc})"
+                        "has a com.apple.decmpfs attribute that cannot be read "
+                        f"({exception_detail(exc)})"
                     )
             if head is not None and problem is None:
                 try:
                     size = hfsplus.parse_decmpfs(head).size
                 except ArchiveyError as exc:
-                    problem = f"has a damaged com.apple.decmpfs attribute ({exc})"
+                    problem = (
+                        "has a damaged com.apple.decmpfs attribute "
+                        f"({exception_detail(exc)})"
+                    )
         if problem is not None:
             member.size = 0
             return self._refused(
@@ -1110,7 +1324,7 @@ class _VolumeWalk:
                 reason="damaged",
                 message=(
                     f"The target of the HFS+ symlink {quoted(member.name)} cannot be "
-                    f"read: {exc}"
+                    f"read: {exception_detail(exc)}"
                 ),
                 target_in_archive=True,
             )
@@ -1197,7 +1411,7 @@ class _ApfsWalk:
             below: list[tuple[int, str]] = []
             for child in sorted(tree.children.get(parent, ()), key=lambda c: c.name):
                 entry = self._context.decode_name(child.name)
-                if "/" in entry or entry in ("", ".", ".."):
+                if _bad_name(entry):
                     problems.append(f"a directory record names {quoted(entry)}")
                     continue
                 within = prefix + entry
@@ -1253,7 +1467,7 @@ class _ApfsWalk:
             also = f"; also, {problems[0]}" if problems else ""
             self.failure = CorruptionError(
                 f"{len(tree.damage)} nodes of the filesystem tree of the APFS volume "
-                f"{quoted(name)} cannot be used (block {first_bad.address}: "
+                f"{quoted(name)} cannot be used ({first_bad.place}: "
                 f"{first_bad.reason}){unlisted}{also}"
             )
         elif problems:
@@ -1382,8 +1596,13 @@ class _ApfsWalk:
                 _, sparse = apfs.stream_reader(
                     self._volume, tree, inode.stream, inode.size, what
                 )
+            except ResourceLimitError:
+                # Only the charge of a kept stream check raises it here (no byte is
+                # read): the archive is over max_metadata_bytes, not this member
+                # damaged.
+                raise
             except ArchiveyError as exc:
-                return ApfsData(self._index, oid, False, (type(exc), str(exc)))
+                return ApfsData(self._index, oid, False, (type(exc), exc.raw_message))
             member.is_sparse = sparse
             return ApfsData(self._index, oid, False)
         attr = tree.xattrs.get(oid, {}).get(apfs.DECMPFS_XATTR)
@@ -1398,6 +1617,10 @@ class _ApfsWalk:
                     f"{what} has the compressed flag and no com.apple.decmpfs attribute",
                 ),
             )
+        # The stream check's charge is the archive's, so it is outside the ``try``;
+        # what reading the bytes raises is this member's damage.
+        if attr.value is None:
+            apfs.stream_view(self._volume, tree, attr.stream)
         try:
             value = apfs.xattr_value(
                 self._volume,
@@ -1415,7 +1638,10 @@ class _ApfsWalk:
                 True,
                 (
                     CorruptionError,
-                    f"{what} has a damaged com.apple.decmpfs attribute ({exc})",
+                    (
+                        f"{what} has a damaged com.apple.decmpfs attribute "
+                        f"({exception_detail(exc)})"
+                    ),
                 ),
             )
         return ApfsData(self._index, oid, True)
@@ -1446,6 +1672,9 @@ class _ApfsWalk:
                 target_in_archive=True,
             )
             return
+        # As for the decmpfs attribute: the stream check's charge is the archive's.
+        if target.value is None:
+            apfs.stream_view(self._volume, self._tree, target.stream)
         try:
             raw = apfs.xattr_value(
                 self._volume,
@@ -1460,7 +1689,7 @@ class _ApfsWalk:
                 reason="damaged",
                 message=(
                     f"The target of the APFS symlink {quoted(member.name)} cannot be "
-                    f"read: {exc}"
+                    f"read: {exception_detail(exc)}"
                 ),
                 target_in_archive=True,
             )

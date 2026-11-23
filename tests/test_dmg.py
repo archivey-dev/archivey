@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import hashlib
 import io
+import random
 import struct
 import sys
 import time
 import unicodedata
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
@@ -38,7 +40,7 @@ from archivey import (
     detect_format,
     open_archive,
 )
-from archivey.internal.backends import dmg_encrypted
+from archivey.internal.backends import dmg_encrypted, udif
 from archivey.internal.backends.dmg_reader import volume_names
 from tests import dmg_build as d
 from tests.conftest import requires
@@ -280,6 +282,97 @@ def test_any_password_entry_of_an_encrypted_image_unlocks_it() -> None:
         assert data["hello.txt"] == _expected()["hello.txt"]
     with pytest.raises(EncryptionError, match="Wrong password"):
         _open(image, password="third")
+
+
+def _kdf_999(blob: bytearray) -> None:
+    struct.pack_into(">I", blob, 0, 999)
+
+
+def _no_iterations(blob: bytearray) -> None:
+    struct.pack_into(">I", blob, 8, 0)
+
+
+_KDF_999 = d.EncryptedEntry(patch_blob=_kdf_999)
+_NO_ITERATIONS = d.EncryptedEntry(patch_blob=_no_iterations)
+
+
+@_NEEDS_CRYPTO
+@pytest.mark.parametrize(
+    "unusable", [_KDF_999, _NO_ITERATIONS], ids=["kdf", "iterations"]
+)
+def test_a_password_entry_archivey_cannot_use_is_skipped_and_reported(
+    unusable: d.EncryptedEntry,
+) -> None:
+    # The first entry is unsupported or damaged; the second unlocks the image.
+    image = _encrypted(entries=[unusable, d.EncryptedEntry()])
+    with _open(image, password="secret") as reader:
+        assert "key_entry" in _structures(reader)
+        assert reader.read("hello.txt") == _expected()["hello.txt"]
+
+
+@_NEEDS_CRYPTO
+def test_the_first_refusal_is_raised_when_no_password_entry_is_usable() -> None:
+    with pytest.raises(UnsupportedFeatureError, match="algorithm 999"):
+        _open(_encrypted(entries=[_KDF_999, _NO_ITERATIONS]), password="secret")
+    with pytest.raises(CorruptionError, match="0 PBKDF2 iterations"):
+        _open(_encrypted(entries=[_NO_ITERATIONS, _KDF_999]), password="secret")
+
+
+@_NEEDS_CRYPTO
+def test_an_oversized_key_entry_refuses_the_image_beside_a_usable_one() -> None:
+    image = _encrypted(
+        entries=[d.EncryptedEntry(), d.EncryptedEntry()],
+        patch_header=_header_patch(88, ">Q", 5000),  # the first entry's size
+    )
+    with pytest.raises(ResourceLimitError, match="5000 bytes"):
+        _open(image, password="secret")
+
+
+@_NEEDS_CRYPTO
+def test_bytes_after_the_encrypted_data_are_reported() -> None:
+    image = _encrypted()
+    with _open(image + bytes(100) + b"\xffJUNK", password="secret") as reader:
+        (trailing,) = [
+            x
+            for x in reader.diagnostics.retained
+            if x.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+        ]
+        # Counted from the end of the last encrypted block, the image's end here.
+        assert trailing.context.observed_bytes == 100
+        assert "hello.txt" in [m.name for m in reader.members()]
+    with _open(image + bytes(4096), password="secret") as reader:
+        reader.members()
+        assert DiagnosticCode.ARCHIVE_TRAILING_DATA not in _codes(reader)
+
+
+@_NEEDS_CRYPTO
+def test_an_encrypted_image_names_decrypted_image_offsets() -> None:
+    """Its errors name offsets into the decrypted image, not into the file, where
+    those bytes are ciphertext at another offset."""
+    hfs = d.write_hfsplus([d.Node("a.txt", data=bytes(range(256)) * 400)])
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+    disk = d.write_gpt([d.Partition(volume)])
+    udif = d.write_udif(disk.segments, tables=disk.tables, codec=d.ZLIB, run_sectors=64)
+    plain = bytearray(udif.image)
+    block, _ = hfs.forks["a.txt"][0]
+    sector = disk.starts[0] + block * hfs.block_size // d.SECTOR
+    run = next(r for r in udif.runs if r.sector <= sector < r.sector + r.sectors)
+    plain[run.stored_at + 10 : run.stored_at + 14] = bytes(4)
+    with (
+        pytest.raises(
+            CorruptionError,
+            match=f"stored at decrypted image offset {run.stored_at}\\)",
+        ),
+        _open(_encrypted(bytes(plain)), password="secret") as reader,
+    ):
+        reader.read("a.txt")
+    with (
+        pytest.raises(
+            CorruptionError, match=f"stored at file offset {run.stored_at}\\)"
+        ),
+        _open(bytes(plain)) as reader,
+    ):
+        reader.read("a.txt")
 
 
 @_NEEDS_CRYPTO
@@ -978,6 +1071,97 @@ def test_an_extents_file_short_of_its_blocks_is_corruption() -> None:
         reader.read("a.bin")
 
 
+def _count_extents_nodes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The node numbers the extents overflow B-tree reads, in order."""
+    from archivey.internal.backends import hfsplus
+
+    reads: list[int] = []
+    node = hfsplus._BTree.node
+
+    def counted(self, number: int):  # type: ignore[no-untyped-def]
+        if self._name == "extents":
+            reads.append(number)
+        return node(self, number)
+
+    monkeypatch.setattr(hfsplus._BTree, "node", counted)
+    return reads
+
+
+def test_overflow_extents_are_read_along_the_leaf_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fork with many overflow records finds the first one down the index and walks
+    the leaf chain from there: each extents node is read once per fork reader, not
+    once per record."""
+    data = bytes(range(256)) * 2 * 400  # 400 blocks of 512 bytes
+    image = d.dmg_of(
+        [d.Node("a.bin", data=data, fragment=400)],
+        hfs_options={"block_size": 512, "node_size": 512},
+    )
+    reads = _count_extents_nodes(monkeypatch)
+    with _open(image, seekable_members=True) as reader:
+        assert reader.read("a.bin") == data
+        with reader.open("a.bin") as stream:
+            for at in (0, 511, 512, 100_000, len(data) - 1):
+                stream.seek(at)
+                assert stream.read(700) == data[at : at + 700]
+    # 49 overflow records of 8 extents, about 10 to a 512-byte node.
+    assert max(Counter(reads).values()) <= 2  # one walk per fork reader: read, open
+    assert len(set(reads)) < 15
+
+
+@pytest.mark.parametrize("link", ["skip", "loop"])
+def test_a_broken_extents_leaf_chain_falls_back_to_a_search(
+    monkeypatch: pytest.MonkeyPatch, link: str
+) -> None:
+    """When the extents leaf chain does not lead to the next overflow record (it skips
+    a leaf, or loops), that record is searched for from the root, so the file reads
+    as before."""
+    from archivey.internal.backends import hfsplus
+
+    data = bytes(range(256)) * 2 * 400
+    image = d.dmg_of(
+        [d.Node("a.bin", data=data, fragment=400)],
+        hfs_options={"block_size": 512, "node_size": 512},
+    )
+    node = hfsplus._BTree.node
+    broken: list[int] = []
+
+    def relinked(self, number: int):  # type: ignore[no-untyped-def]
+        flink, kind, height, records = node(self, number)
+        if self._name == "extents" and kind == -1 and flink and not broken:
+            broken.append(number)
+            flink = flink + 1 if link == "skip" else number
+        return flink, kind, height, records
+
+    monkeypatch.setattr(hfsplus._BTree, "node", relinked)
+    with _open(image) as reader:
+        assert reader.read("a.bin") == data
+    assert broken
+
+
+def test_extents_past_the_fork_size_are_not_looked_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Blocks allocated past a fork's size are never read, so their overflow records
+    are not looked up: a 0-byte fork listing many extents costs no extents read."""
+
+    def zero_size(body: bytearray) -> None:
+        struct.pack_into(">Q", body, 88, 0)  # the data fork's logicalSize
+
+    image = d.dmg_of(
+        [d.Node("a.bin", data=bytes(512 * 200), fragment=200)],
+        hfs_options={
+            "block_size": 512,
+            "patch_catalog": _patch_file("a.bin", zero_size),
+        },
+    )
+    reads = _count_extents_nodes(monkeypatch)
+    with _open(image) as reader:
+        assert reader.read("a.bin") == b""
+    assert reads == []
+
+
 def _attribute_extent_records(
     monkeypatch: pytest.MonkeyPatch,
     count: int,
@@ -1113,6 +1297,70 @@ def test_a_catalog_leaf_loop_delivers_the_members_before_it() -> None:
     assert len(seen) < 120
 
 
+def _cut_chain(nodes_: list[bytearray]) -> None:
+    # The first leaf's forward link is 0: the chain ends there.
+    first = next(i for i, n in enumerate(nodes_) if n[8:9] == b"\xff")
+    struct.pack_into(">I", nodes_[first], 0, 0)
+
+
+def _miscount(nodes_: list[bytearray]) -> None:
+    # The header record's leafRecords, after the node descriptor, depth and root.
+    at = 14 + 2 + 4
+    struct.pack_into(
+        ">I", nodes_[0], at, struct.unpack_from(">I", nodes_[0], at)[0] + 1
+    )
+
+
+@pytest.mark.parametrize(
+    ("patch", "match", "listed"),
+    [
+        (_cut_chain, "ends at node", lambda n: 0 < n < 60),
+        (_miscount, "header declares", lambda n: n == 60),
+    ],
+    ids=["cut", "miscounted"],
+)
+def test_a_catalog_leaf_chain_short_of_its_header_is_corruption(
+    patch: Callable[[list[bytearray]], None],
+    match: str,
+    listed: Callable[[int], bool],
+) -> None:
+    """A leaf chain that ends before the header's lastLeafNode, or holds another
+    number of records than its leafRecords, has lost members: the members it found
+    are listed, then the error comes."""
+    nodes = [d.Node(f"f{i:03d}.txt", data=b"x") for i in range(60)]
+    seen: list[str] = []
+    with (
+        _open(
+            _image(nodes, hfs_options={"patch_catalog_nodes": patch, "node_size": 512})
+        ) as reader,
+        pytest.raises(CorruptionError, match=match),
+    ):
+        for member in reader:
+            seen.append(member.name)
+    assert listed(len(seen))
+
+
+def test_an_attributes_leaf_chain_short_of_its_header_is_corruption() -> None:
+    """The attributes B-tree gets the same check: every member is listed, then the
+    error comes."""
+    nodes = [
+        d.Node(f"f{i}.txt", data=b"x", xattrs={"user.tag": b"t"}) for i in range(4)
+    ]
+    seen: list[str] = []
+    with (
+        _open(
+            _image(
+                nodes,
+                hfs_options={"patch_attributes_nodes": _miscount, "node_size": 512},
+            )
+        ) as reader,
+        pytest.raises(CorruptionError, match="attributes B-tree.*header declares"),
+    ):
+        for member in reader:
+            seen.append(member.name)
+    assert sorted(seen) == [f"f{i}.txt" for i in range(4)]
+
+
 def test_a_folder_parent_loop_delivers_the_other_members() -> None:
     """A folder whose parent chain loops cannot be placed: the members in it are left
     out, the others are listed, and the error comes at the end (DR-2)."""
@@ -1144,6 +1392,76 @@ def test_a_folder_parent_loop_delivers_the_other_members() -> None:
             seen.append(member.name)
     assert {"m/one", "z/two", "top"} <= set(seen)
     assert not any(name.startswith("a/") for name in seen)
+
+
+@pytest.mark.parametrize(
+    "stored", ["..", ".", "", "a\0b"], ids=["dotdot", "dot", "empty", "nul"]
+)
+def test_an_hfs_name_that_cannot_be_a_path_component_is_damage(stored: str) -> None:
+    """A catalog name that is ``..``, ``.``, empty or holds a NUL is left out, the
+    other members are listed, and the listing ends with the error (DR-2)."""
+    nodes = [
+        d.Node("sub/bad", data=b"x", raw_name=stored.encode("utf-16-be")),
+        d.Node("sub/ok", data=b"ok"),
+        d.Node("top", data=b"t"),
+    ]
+    seen: list[str] = []
+    with (
+        _open(_image(nodes)) as reader,
+        pytest.raises(CorruptionError, match="cannot be a path component"),
+    ):
+        for member in reader:
+            seen.append(member.name)
+    assert sorted(seen) == ["sub/", "sub/ok", "top"]
+
+
+def test_a_bad_name_beside_an_orphan_names_both() -> None:
+    nodes = [
+        d.Node("sub/bad", data=b"x", raw_name="..".encode("utf-16-be")),
+        d.Node("o/orph", data=b"o"),
+        d.Node("top", data=b"t"),
+    ]
+
+    def orphan(records: list[d.CatalogRecord]) -> None:
+        raw = "orph".encode("utf-16-be")
+        next(r for r in records if r.name == raw).parent = 9999
+
+    seen: list[str] = []
+    with (
+        _open(_image(nodes, hfs_options={"patch_catalog": orphan})) as reader,
+        pytest.raises(
+            CorruptionError,
+            match=r"\('\.\.' in the folder 'sub'\) and is not listed; also, 1 record is",
+        ),
+    ):
+        for member in reader:
+            seen.append(member.name)
+    assert sorted(seen) == ["o/", "sub/", "top"]
+
+
+def test_an_hfs_folder_named_dotdot_leaves_out_what_it_holds() -> None:
+    """A folder stored as ``..`` listed its child as ``../evil.txt``."""
+    nodes = [
+        d.Node("up", kind="dir", raw_name="..".encode("utf-16-be")),
+        d.Node("up/deeper/evil.txt", data=b"evil"),
+        d.Node("ok", data=b"ok"),
+    ]
+    seen: list[str] = []
+    with (
+        _open(_image(nodes)) as reader,
+        pytest.raises(
+            CorruptionError, match=r"'\.\.' in the folder '/'.*nor are 2 records inside"
+        ),
+    ):
+        for member in reader:
+            seen.append(member.name)
+    assert seen == ["ok"]
+
+
+def test_an_hfs_name_with_a_slash_is_listed_with_a_colon() -> None:
+    nodes = [d.Node("a", data=b"a", raw_name="x/y".encode("utf-16-be"))]
+    _, data = _read_all(_image(nodes))
+    assert data == {"x:y": b"a"}
 
 
 def test_type_9_without_its_marker_is_unsupported(
@@ -1298,6 +1616,20 @@ def test_max_metadata_bytes_applies_to_folder_paths_in_a_hidden_folder() -> None
     path = ".HFS+ Private Directory Data\r/" + "/".join(["n" * 255] * 200)
     image = _image([d.Node(path, kind="dir")], hfs_options={"node_size": 32768})
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=1 << 20))
+    with (
+        pytest.raises(ResourceLimitError, match="HFS\\+ folder paths"),
+        _open(image, config=config) as reader,
+    ):
+        reader.members()
+
+
+def test_non_ascii_folder_paths_are_weighed_like_listed_names() -> None:
+    """A built folder path is weighed by the listing's rule for a name: four bytes a
+    character once it is not ASCII. Counted by characters, these paths came to under
+    a third of that and passed this cap."""
+    path = ".HFS+ Private Directory Data\r/" + "/".join(["\u00e9" * 100] * 60)
+    image = _image([d.Node(path, kind="dir")], hfs_options={"node_size": 32768})
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=500_000))
     with (
         pytest.raises(ResourceLimitError, match="HFS\\+ folder paths"),
         _open(image, config=config) as reader,
@@ -1822,3 +2154,217 @@ def test_raw_runs_that_share_stored_bytes_count_toward_the_pass_ratio() -> None:
         assert member.name == "a.txt"
         assert "did not run" in str(error)
         assert isinstance(error.__cause__, ResourceLimitError)
+
+
+# ── Runs decoded again, and the data order ───────────────────────────────────────────
+
+_RUN_SECTORS = 64  # 32 KiB runs: eight 4 KiB blocks each
+_BLOCKS_PER_RUN = _RUN_SECTORS * d.SECTOR // 4096
+_BASE = 4096  # a block past those the builder allocates
+
+
+def _runs_image(
+    layout: dict[str, list[int]],
+    extra: list[d.Node] | None = None,
+    *,
+    blocks: int = 1,
+    run_sectors: int = _RUN_SECTORS,
+) -> tuple[bytes, dict[str, bytes]]:
+    """An image of files of extents of ``blocks`` blocks, file ``name``'s extent
+    ``j`` in run ``layout[name][j]`` of ``run_sectors`` sectors (32 KiB by default),
+    each at its run's next free blocks. Returns the image and each file's data
+    (incompressible, so the archive-wide ratio on the output stays near 1:1)."""
+    per_run = run_sectors * d.SECTOR // 4096
+    used: dict[int, int] = {}
+    placed: dict[str, list[tuple[int, int]]] = {}
+    for name, runs in layout.items():
+        extents = []
+        for run in runs:
+            slot = used.get(run, 0)
+            assert slot + blocks <= per_run
+            used[run] = slot + blocks
+            extents.append((_BASE + run * per_run + slot, blocks))
+        placed[name] = extents
+    data = {
+        name: random.Random(name).randbytes(4096 * blocks * len(runs))
+        for name, runs in layout.items()
+    }
+    nodes = [
+        d.Node(name, data=data[name], fragment=len(runs))
+        for name, runs in layout.items()
+    ]
+    hfs = d.write_hfsplus(
+        [*nodes, *(extra or [])],
+        spare_blocks=_BASE + (max(used) + 1) * per_run + 16,
+        move_extents=lambda path, extents: placed.get(path, extents),
+    )
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+    disk = d.write_gpt([d.Partition(volume)])
+    image = d.write_udif(
+        disk.segments, tables=disk.tables, codec=d.ZLIB, run_sectors=run_sectors
+    ).image
+    return image, data
+
+
+def _cycling_image(extents: int, runs: int, blocks: int = 1) -> tuple[bytes, bytes]:
+    """One file of ``extents`` extents of ``blocks`` blocks, extent ``j`` in run
+    ``j % runs``: with more runs than the cache holds, each extent misses on a run
+    the read decoded before."""
+    layout = {"f": [j % runs for j in range(extents)]}
+    image, data = _runs_image(layout, blocks=blocks)
+    return image, data["f"]
+
+
+_TIGHT = ArchiveyConfig(
+    decoder_limits=DecoderLimits(max_ratio=4.0, ratio_activation_threshold=0)
+)
+
+
+@pytest.mark.parametrize("blocks", [1, 2], ids=["4k", "8k"])
+def test_a_member_read_that_decodes_its_runs_again_is_held_to_the_ratio(
+    blocks: int,
+) -> None:
+    """Extents over 9 runs, one more than the cache holds: each decodes a run again.
+    The charge is against the image's size: with 8 KiB extents each 32 KiB run
+    costs 4 times the bytes it returns, so a charge against the member's size at
+    4:1 would never refuse it."""
+    image, data = _cycling_image(9 * _BLOCKS_PER_RUN // blocks, 9, blocks)
+    with _open(image) as reader:
+        assert reader.read("f") == data
+    # 63 (4 KiB) or 27 (8 KiB) runs of 32 KiB decoded again, from an image of about
+    # 300 KiB: past twice its size.
+    config = ArchiveyConfig(
+        decoder_limits=DecoderLimits(max_ratio=2.0, ratio_activation_threshold=0)
+    )
+    with (
+        pytest.raises(ResourceLimitError, match="decoded again"),
+        _open(image, config=config) as reader,
+    ):
+        reader.read("f")
+
+
+def test_runs_read_once_per_member_are_not_charged() -> None:
+    # The same extents over 8 runs fit the cache, so no run is decoded again.
+    image, data = _cycling_image(64, 8)
+    with _open(image, config=_TIGHT) as reader:
+        assert reader.read("f") == data
+
+
+def test_small_files_read_in_any_order_are_not_charged() -> None:
+    """Many small files read in a random order miss the cache on almost every read,
+    but each read decodes each of its runs once: nothing is charged."""
+
+    nodes = [d.Node(f"f{k:04d}", data=bytes([k % 251 + 1]) * 200) for k in range(600)]
+    image = _image(nodes, codec=d.ZLIB, run_sectors=_RUN_SECTORS)
+    with _open(image, config=_TIGHT) as reader:
+        files = [m for m in reader.members() if m.is_file]
+        random.Random(1).shuffle(files)
+        for member in files:
+            assert reader.read(member) == bytes([int(member.name[1:]) % 251 + 1]) * 200
+
+
+def _count_decodes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The run indexes each cache miss decodes, from here on."""
+    decoded: list[int] = []
+    real = udif.UdifImage._decode_run
+
+    def counting(self: udif.UdifImage, index: int, *, keep: bool = True) -> bytes:
+        if index not in self._cache:
+            decoded.append(index)
+        return real(self, index, keep=keep)
+
+    monkeypatch.setattr(udif.UdifImage, "_decode_run", counting)
+    return decoded
+
+
+def test_a_listing_that_would_decode_a_run_twice_comes_in_data_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two files in each of 9 runs, listed run by run twice over: in listing order
+    the second round decodes every run again. The files come sorted by where their
+    data starts; the directory before them and the hard link after its target."""
+    layout = {f"d/f{k:02d}": [k % 9] for k in range(18)}
+    extra = [d.Node("d/link", kind="hardlink", target="d/f03")]
+    image, data = _runs_image(layout, extra)
+    decoded = _count_decodes(monkeypatch)
+    with _open(image) as reader:
+        names = [m.name for m in reader.members()]
+        decoded.clear()
+        for member, stream in reader.stream_members():
+            if stream is not None:
+                assert stream.read() == data.get(member.name, data["d/f03"])
+    files = [n for n in names if n.startswith("d/f")]
+    assert files == [f"d/f{k:02d}" for r in range(9) for k in (r, r + 9)]
+    assert names.index("d/") < names.index(files[0])
+    assert names.index("d/link") > names.index("d/f03")
+    assert len(decoded) == len(set(decoded))  # each run once
+
+
+def test_a_listing_in_data_order_keeps_its_order() -> None:
+    layout = {f"f{k:02d}": [k // 2] for k in range(18)}
+    image, _ = _runs_image(layout)
+    with _open(image) as reader:
+        files = [m.name for m in reader.members() if m.is_file]
+    assert files == sorted(layout)
+
+
+def test_many_files_out_of_order_within_the_cache_keep_their_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1,200 one-block files whose data is shuffled over 8 runs of 1 MiB: listing
+    # order jumps between runs at almost every file, but the 8 runs fit the cache,
+    # so each run decodes once and the listing is not sorted. More files than the
+    # replay's budget once counted.
+    slots = [run for run in range(8) for _ in range(150)]
+    random.Random(5).shuffle(slots)
+    layout = {f"f{k:04d}": [run] for k, run in enumerate(slots)}
+    image, data = _runs_image(layout, run_sectors=2048)
+    decodes = _count_decodes(monkeypatch)
+    with _open(image, config=_TIGHT) as reader:
+        files = [m.name for m in reader.members() if m.is_file]
+        assert files == sorted(layout)
+        before = len(decodes)
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            assert stream.read() == data[member.name]
+        assert len(set(decodes[before:])) == len(decodes[before:])
+
+
+def _crossing_layout() -> dict[str, list[int]]:
+    """Eight files whose first extents share run 0 and whose other seven each take a
+    different window of runs 1 to 9: sorted, they still share runs out of order,
+    but no file reads a run twice itself."""
+    return {f"f{k}": [0, *(1 + (k * 7 + j) % 9 for j in range(7))] for k in range(8)}
+
+
+@pytest.mark.parametrize("how", ["stream_members", "extract_all", "read in order"])
+def test_runs_a_pass_decodes_again_are_held_to_the_ratio(
+    how: str, tmp_path: Path
+) -> None:
+    image, data = _runs_image(_crossing_layout())
+    with _open(image) as reader:
+        assert {m.name: reader.read(m) for m in reader.members() if m.is_file} == data
+    with (
+        pytest.raises(ResourceLimitError, match="decoded again"),
+        _open(image, config=_TIGHT) as reader,
+    ):
+        if how == "stream_members":
+            for _, stream in reader.stream_members():
+                if stream is not None:
+                    stream.read()
+        elif how == "extract_all":
+            reader.extract_all(tmp_path)
+        else:
+            for member in reader.members():
+                if member.is_file:
+                    reader.read(member)
+
+
+def test_runs_shared_by_files_read_out_of_listing_order_are_not_charged() -> None:
+    """The same image read in reverse: each read is its own, and no file reads a
+    run twice, so nothing is charged (the caller chose the order)."""
+    image, data = _runs_image(_crossing_layout())
+    with _open(image, config=_TIGHT) as reader:
+        files = [m for m in reader.members() if m.is_file]
+        for member in reversed(files):
+            assert reader.read(member) == data[member.name]

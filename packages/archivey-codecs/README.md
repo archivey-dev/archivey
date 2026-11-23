@@ -18,6 +18,7 @@ This is a pre-release. Every kernel has its final, standard-library-shaped API
 | `filters.Arm64Decoder`, `filters.RiscvDecoder` | 7z ARM64 and RISC-V branch filters | `kernels.python.filters` |
 | `lzx.Decompressor` | LZX folders in Microsoft cabinets | `kernels.python.lzx` |
 | `bcj2.Decompressor` | 7z BCJ2 (four-stream x86 filter) | `kernels.python.bcj2` |
+| `lzfse.decompress`, `lzvn.decompress` | LZFSE runs in DMG images, LZFSE and LZVN compressed files on HFS+ | `kernels.python.lzfse`, `kernels.python.lzvn` |
 
 Each twin (in `archivey.internal.kernels.python`) has the subset of the package's API
 that archivey's call sites use, with the same names, arguments and behaviour. It
@@ -33,7 +34,11 @@ from archivey_codecs import lzw
 
 archivey_codecs.crc16_arc(b"123456789")  # 0xBB3D
 d = lzw.Decompressor()
-data = d.decompress(z_bytes) + d.flush()
+data = d.decompress(z_bytes)
+# flush() returns the output before a bad code, and the next call raises it:
+# call it until eof.
+while not d.eof:
+    data += d.flush()
 # A .Z stream has no end marker, so a cut can pass unseen. Some cuts leave
 # evidence, which flush() reports here instead of raising:
 if d.truncation is not None:

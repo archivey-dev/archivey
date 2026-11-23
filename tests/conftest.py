@@ -534,8 +534,12 @@ def pytest_configure(config: pytest.Config) -> None:
     if os.environ.get("CODECS_REQUIRED") == "1":
         from archivey.internal.streams.codecs import deps
 
-        if not deps.archivey_codecs.available():
-            raise pytest.UsageError("CODECS_REQUIRED=1, but archivey-codecs is missing")
+        # load(), not available(): a package that is found but fails to import
+        # stops the run too.
+        if deps.archivey_codecs.load() is None:
+            raise pytest.UsageError(
+                "CODECS_REQUIRED=1, but archivey-codecs is missing or fails to import"
+            )
     try:
         from hypothesis import settings
     except ImportError:

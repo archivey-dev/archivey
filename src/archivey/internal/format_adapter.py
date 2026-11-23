@@ -112,6 +112,7 @@ from archivey.internal.plugin_passwords import (
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.resource_usage import handler_name
+from archivey.internal.salvage import requesting_salvage
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import MemberStreamParts, RewindWarning
 from archivey.internal.streams.blocks import BlockStream
@@ -1018,8 +1019,17 @@ class _PluginAdapter(BaseArchiveReader):
             if self._RECORDS_NESTS and self._walk_step == _LISTING
             else None
         )
+        # A walk started over to reach member data builds the inner reader again:
+        # it salvages as the listing's did, and repeats none of its salvage records.
+        # So does every walk of a reader that is itself built again: its own listing
+        # walk reads what the first such reader's listing reported.
         spans = self._nested_spans(
-            backend_cls, data, fmt, first=self._walk_index, nest=nest
+            backend_cls,
+            data,
+            fmt,
+            first=self._walk_index,
+            nest=nest,
+            repeat=self._salvage_mode.repeat or self._walk_step != _LISTING,
         )
         self._nested_iterators.add(spans)
         return spans
@@ -1047,7 +1057,7 @@ class _PluginAdapter(BaseArchiveReader):
             walk = None
         if walk is None:
             spans = self._nested_spans(
-                backend_cls, data, fmt, first=nest.first, muted=True
+                backend_cls, data, fmt, first=nest.first, muted=True, repeat=True
             )
             self._nested_iterators.add(spans)
             walk = _NestWalk(nest, spans)
@@ -1101,13 +1111,17 @@ class _PluginAdapter(BaseArchiveReader):
         first: int,
         nest: _Nest | None = None,
         muted: bool = False,
+        repeat: bool = False,
     ) -> Iterator[MemberSpan]:
         """The spans of the inner archive ``data``: its members, numbered from
         ``first`` in what it reports, and their decoded data.
 
         With ``nest``, each span's member is noted as that inner archive's, for the
         listing to record (``_walk_records``). ``muted`` drops what the inner reader
-        reports while it reads its headers, for a reopen (``_reopen_nested``)."""
+        reports while it reads its headers, for a reopen (``_reopen_nested``).
+        ``repeat`` builds the inner reader as one that reads again what the listing's
+        inner reader reported: it salvages as that one did and records none of the
+        salvage codes (``SalvageRequest.repeat``)."""
         collector = self._diagnostics_collector
         quiet = collector.muted if muted else nullcontext
         # The decoder that gives ``data`` may not have read its header yet (an xz,
@@ -1116,7 +1130,24 @@ class _PluginAdapter(BaseArchiveReader):
         with collector.member_ids_from(first), quiet():
             head = data.read(1) or b""
         config = self._nested_config()
-        with collector.member_ids_from(first), reading_inside(self), quiet():
+        # An inner archive salvages when this one was asked to, whether or not this
+        # format has a salvage search of its own. The inner reader is built with
+        # streaming=True because its source is the member's data, which reads forward
+        # only. One search (``search_forward``) reads forward, so it can run there;
+        # whether the walk can go back after it, into the data of a member the search
+        # found but could not confirm, is the format's call, and a format that cannot
+        # records SALVAGE_UNAVAILABLE (reason "forward_only_reader"). The refusal of
+        # ``streaming=True`` with ``salvage=True`` is for a caller's open_archive only.
+        with (
+            collector.member_ids_from(first),
+            reading_inside(self),
+            requesting_salvage(
+                self._salvage_mode.requested,
+                supported=backend_cls.SUPPORTS_SALVAGE,
+                repeat=repeat,
+            ),
+            quiet(),
+        ):
             reader = backend_cls().open_read(
                 ArchiveSource.for_stream(
                     cast(BinaryIO, _Primed(head, data)) if head else data

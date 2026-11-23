@@ -25,17 +25,19 @@ from __future__ import annotations
 import functools
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, overload
+from typing import Any, Literal, Protocol, overload
 
 from archivey.internal.kernels._select import (
     caused_by_panic,
     decoding_kernels,
     is_panic,
     kernels,
+    panic_of,
 )
 from archivey.types import OptionalLibrary
 
 __all__ = [
+    "AppleLz",
     "Bcj2",
     "Bcj2Decompressor",
     "Bcj2Factory",
@@ -60,9 +62,12 @@ __all__ = [
     "crc16_arc",
     "filters",
     "is_panic",
+    "lzfse",
     "lzo1x",
+    "lzvn",
     "lzw",
     "lzx",
+    "panic_of",
     "zipcrypto",
 ]
 
@@ -201,7 +206,7 @@ class Bcj2Decompressor(Protocol):
 
 
 class ZipCryptoFactory(Protocol):
-    def __call__(self, password: bytes, /) -> ZipCryptoDecryptor: ...
+    def __call__(self, password: Buffer) -> ZipCryptoDecryptor: ...
 
 
 class BranchFactory(Protocol):
@@ -277,6 +282,15 @@ class Filters:
 @dataclass(frozen=True, slots=True)
 class Lzo1x:
     """``archivey_codecs.lzo1x``."""
+
+    decompress: Lzo1xDecompress
+    library: OptionalLibrary | None
+
+
+@dataclass(frozen=True, slots=True)
+class AppleLz:
+    """``archivey_codecs.lzfse`` or ``archivey_codecs.lzvn``: a one-shot
+    ``decompress`` with ``lzo1x.decompress``'s shape."""
 
     decompress: Lzo1xDecompress
     library: OptionalLibrary | None
@@ -410,3 +424,35 @@ def bcj2(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> Bcj2:
     from archivey.internal.kernels import rust
 
     return Bcj2(Decompressor=_bind(rust.Bcj2Decompressor, module), library=_CODECS)
+
+
+def lzfse(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> AppleLz:
+    """``lzfse`` (Apple's LZFSE, in DMG runs). Under ``isolated`` the twin decodes,
+    until the decoder child can run it."""
+    return _apple_lz("lzfse", excluded, isolated=isolated)
+
+
+def lzvn(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> AppleLz:
+    """``lzvn`` (raw LZVN, in HFS+ compressed files). Under ``isolated`` the twin
+    decodes, until the decoder child can run it."""
+    return _apple_lz("lzvn", excluded, isolated=isolated)
+
+
+def _apple_lz(
+    kernel: Literal["lzfse", "lzvn"],
+    excluded: frozenset[OptionalLibrary],
+    *,
+    isolated: bool,
+) -> AppleLz:
+    module = None if isolated else kernels(kernel, excluded)
+    if module is None:
+        from archivey.internal.kernels.python import (
+            lzfse as lzfse_twin,
+            lzvn as lzvn_twin,
+        )
+
+        twin = lzfse_twin if kernel == "lzfse" else lzvn_twin
+        return AppleLz(decompress=twin.decompress, library=None)
+    from archivey.internal.kernels import rust
+
+    return AppleLz(decompress=rust.apple_lz_decompress(module, kernel), library=_CODECS)

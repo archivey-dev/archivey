@@ -1011,9 +1011,12 @@ def write_hfsplus(
     dirty: bool = False,
     patch_catalog: Callable[[list[CatalogRecord]], None] | None = None,
     patch_catalog_nodes: Callable[[list[bytearray]], None] | None = None,
+    patch_attributes_nodes: Callable[[list[bytearray]], None] | None = None,
     patch_header: Callable[[bytearray], None] | None = None,
     patch_volume: Callable[[bytearray, Hfs], None] | None = None,
     attributes_in_fork: Sequence[str] = (),
+    move_extents: Callable[[str, list[tuple[int, int]]], list[tuple[int, int]]]
+    | None = None,
 ) -> Hfs:
     """An HFS+ (or with ``hfsx``, HFSX) volume holding ``nodes``.
 
@@ -1026,8 +1029,11 @@ def write_hfsplus(
 
     The hooks break things: ``patch_catalog`` edits the leaf records before they are
     sorted and packed, ``patch_catalog_nodes`` edits the packed nodes (a leaf loop, bad
-    record offsets), ``patch_header`` the volume header, and ``patch_volume`` the whole
-    volume once it is laid out.
+    record offsets), ``patch_attributes_nodes`` the attributes B-tree's packed nodes,
+    ``patch_header`` the volume header, and ``patch_volume`` the whole
+    volume once it is laid out. ``move_extents(path, extents)`` returns where a data
+    fork's ``(start, count)`` extents go instead, one for each; the data is written
+    there, inside the volume's spare blocks or over other free blocks.
 
     ``journal`` writes a journaled volume, with ``.journal_info_block`` and ``.journal``
     in the root as macOS makes them, in one of the states of design §6.1: ``"clean"``
@@ -1116,6 +1122,11 @@ def write_hfsplus(
             if pieces > 1:
                 alloc.take(1, hole=True)  # a free block, so the extents cannot merge
             extents.append((start, count))
+            done += count
+        if move_extents is not None and fork_type == 0:
+            extents = move_extents(path, extents)
+        done = 0
+        for start, count in extents:
             contents.append(
                 (start, data[done * block_size : (done + count) * block_size])
             )
@@ -1458,6 +1469,7 @@ def write_hfsplus(
         variable_index_keys=True,
         min_nodes=8,
         block_size=block_size,
+        patch_nodes=patch_attributes_nodes,
     )
 
     # ── lay out the special files after the data ──
