@@ -447,9 +447,9 @@ class ListingLimits:
     ``extra``, a ZIP extra field, a sparse map entry) also weighs a fixed amount per
     record, mostly the measured cost of the objects it keeps, rounded up. The weight
     leaves out the object overhead of ordinary text fields and the fixed cost of each
-    member, about 1.5 KiB, whose total ``max_members`` bounds. So a listing uses more
-    memory than this weight, by an amount that depends on the format, the member count
-    and the shape of the metadata: a ZIP of 1,000-byte names, for example, holds about
+    member, about 1.5 KiB, whose total ``max_members`` bounds. So how the memory a
+    listing holds compares with this weight depends on the format, the member count and
+    the shape of the metadata: a ZIP of 1,000-byte names, for example, holds about
     1.7 bytes per byte weighed, its member objects included.
 
     Counts member names (and raw names), comments, link targets, owner and group names
@@ -463,10 +463,10 @@ class ListingLimits:
     ZIP extra field kept in ``extra["zip.extra_fields"]`` counts 72 bytes plus its data.
 
     Some formats also hold a total of their own to this amount, for structures the
-    listing does not weigh. ISO weighs the full UDF paths its walk builds, so a deep
-    tree can be refused during the walk. A cabinet's block tables, read as members of
-    each folder are first opened and kept for the reader's life, count 256 bytes per
-    data block, so opening a member can raise too.
+    listing does not weigh. ISO weighs the full UDF paths when the archive is opened, so
+    ``open_archive()`` can refuse a deep UDF tree. A cabinet's block tables, read as
+    members of each folder are first opened and kept for the reader's life, count 256
+    bytes per data block, so opening a member can raise too.
 
     A ZIP read from a stream that cannot seek also keeps the data of each member
     short enough to be a symlink until its directory says which members are links.
