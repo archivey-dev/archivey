@@ -42,7 +42,7 @@ use a per-input wall-clock kill timeout.
 | Native 7z header parse | Deep coverage of the pure-Python header parser. Seeds MUST include archives whose next header is not compressed, so a mutation of a coder field is still a header |
 | 7z `open_archive` + member list + bounded member `open`/`read` | Reader/spine path after parse, including the coder pipeline, solid folders, AES and branch/Delta filters. MUST pass password candidates |
 | `detect_format` over arbitrary/prefix seeds | Magic/peek-replay entry point. Each input MUST also be offered to the ZIP, RAR and 7z SFX hit validators, once with a known remaining length and once with an unknown length |
-| ZIP `open_archive` + member list + bounded member `open`/`read` | Wrapper + native codec/AES read path; mutate local/CD headers and compressed content with CRC fixup. A second open MUST use a non-seekable source and `streaming=True`, so the forward reader walks local headers and data descriptors |
+| ZIP `open_archive` + member list + bounded member `open`/`read` | Wrapper + native codec/AES read path; mutate local/CD headers and compressed content with CRC fixup. A second open MUST use a non-seekable source and `pipe=True`, so the forward reader walks local headers and data descriptors |
 | TAR `open_archive` + member list + bounded member read | Header checksum mutate-then-fixup, then the walk, including PAX/GNU extended headers and sparse maps when the seed has them |
 | ISO `open_archive` + member list + bounded file read | Shallow; MUST use a hard wall-clock kill timeout |
 | Native RAR header parse | Deep coverage of the pure-Python RAR3/RAR5 metadata parser (CRC mutate-then-fixup) |

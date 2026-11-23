@@ -88,7 +88,7 @@ def test_skipping_a_damaged_member_on_a_pipe_raises_the_codec_error() -> None:
     data = _xz_flipped(_tar(3, 3000))
     with (
         pytest.raises(CorruptionError) as exc_info,
-        archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader,
+        archivey.open_archive(NonSeekableBytesIO(data), pipe=True) as reader,
     ):
         for _member, _stream in reader.stream_members():
             pass

@@ -280,6 +280,76 @@ class _ArrivedView(ReadOnlyIOStream):
         return self._source.read_arrived(n)
 
 
+class PipeView(ReadOnlyIOStream):
+    """A forward-only view of a stream, for ``open_archive(pipe=True)``:
+    ``seekable()`` is ``False``, ``seek`` and ``tell`` raise (``RawIOBase``'s
+    defaults, which :class:`ReadOnlyIOStream` keeps), and reads start where ``inner``
+    is.
+
+    It gives no ``size`` or ``fileno()``, as a pipe of the same bytes would not, so
+    nothing that measures it seeks ``inner`` or decodes ahead. It keeps ``name``, the
+    one hint a pipe can carry, so that detection sees the same name whether the
+    caller's object could seek or not. Reads go through the shared adapters
+    (``read_blocking``, ``try_readinto``), as :class:`DelegatingStream`'s do.
+
+    Not a :class:`DelegatingStream`: that class owns its inner and forwards seeking,
+    and this one borrows a caller's stream (``owns=False``) and refuses to seek.
+    Closing it closes ``inner`` only when ``owns`` is set.
+    """
+
+    # Class defaults, so that ``close()``, which ``IOBase``'s finalizer calls, runs on
+    # an instance whose ``__init__`` did not.
+    _inner: BinaryIO | None = None
+    _owns: bool = False
+
+    def __init__(self, inner: BinaryIO, *, owns: bool, name: str | None) -> None:
+        super().__init__()
+        self._inner = inner
+        self._owns = owns
+        self._name = name
+
+    @property
+    @override
+    def name(self) -> str:  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]  # base is Never; this returns the name the inner carried
+        """The name ``inner`` carried, for detection's hints; never opened as a path.
+
+        Raises :exc:`AttributeError` when there is none, as the
+        :class:`ReadOnlyIOStream` contract asks.
+        """
+        if self._name is None:
+            raise AttributeError("name")
+        return self._name
+
+    def _open_inner(self) -> BinaryIO:
+        inner = self._inner
+        if inner is None or self.closed:
+            raise ValueError("read from a closed pipe view")
+        return inner
+
+    @override
+    def read(self, n: int = -1, /) -> bytes:
+        return read_blocking(self._open_inner(), n)
+
+    @override
+    def readinto(self, b: WriteableBuffer, /) -> int:
+        inner = self._open_inner()
+        n = try_readinto(inner, b)
+        if n is not None:
+            return n
+        return readinto_via_read(inner, b)
+
+    @override
+    def close(self) -> None:
+        if self.closed:
+            return
+        inner, self._inner = self._inner, None
+        try:
+            if inner is not None and self._owns:
+                inner.close()
+        finally:
+            super().close()
+
+
 class ArchiveSource(ReadOnlyIOStream):
     """A read-only stream over one archive source, carrying every source guarantee.
 
@@ -340,6 +410,14 @@ class ArchiveSource(ReadOnlyIOStream):
     _reporter: SourceReadReporter | None = None
     _owned_beneath: BinaryIO | None = None
     _fsspec_decompressed: FsspecDecompressed | None = None
+    # The size ``on_source_read`` reports for a source read as a pipe
+    # (:meth:`read_as_pipe`): it has no length to clamp to and no size hint, which
+    # detection would read, yet the file it reads has a size worth showing.
+    _report_size: int | None = None
+    # Whether this source reads, as a pipe, an object that could seek
+    # (``open_archive(pipe=True)`` over a file or a seekable stream). A refusal then
+    # says to open it without ``pipe=True``; from a real pipe that would not help.
+    piped_from_seekable: bool = False
     # Where the reader's first byte sits in the file: the offset of a compressed stream
     # behind a ``#!`` script (``open_at_script_payload``), else 0. A codec adds it to
     # the offsets its messages name (``StreamConfig.source_origin``).
@@ -535,14 +613,27 @@ class ArchiveSource(ReadOnlyIOStream):
 
     @classmethod
     def for_fsspec_decompressed(
-        cls, decoded: BinaryIO, raw: BinaryIO, origin: FsspecDecompressed
+        cls,
+        decoded: BinaryIO,
+        raw: BinaryIO,
+        origin: FsspecDecompressed,
+        *,
+        pipe: bool = False,
     ) -> ArchiveSource:
         """Own the two files archivey opened for an fsspec ``OpenFile`` with a
         ``compression``: fsspec's decompressor ``decoded``, read as :meth:`for_stream`
         reads a caller's stream, and fsspec's file ``raw`` under it. Both close with
         this source, ``decoded`` first, since a decompressor leaves the file it was
-        handed open. ``origin`` names the object for ``SOURCE_CHANGE_UNDETECTABLE``."""
-        source = cls.for_stream(decoded)
+        handed open. ``origin`` names the object for ``SOURCE_CHANGE_UNDETECTABLE``.
+        Under ``pipe`` the decompressor is read through a :class:`PipeView`, so that
+        measuring it decodes nothing ahead."""
+        read: BinaryIO = decoded
+        piped = pipe and is_seekable(decoded)
+        if piped:
+            view = PipeView(decoded, owns=False, name=source_name(decoded))
+            read = cast("BinaryIO", view)
+        source = cls.for_stream(read)
+        source.piped_from_seekable = piped
         source._owned = decoded
         source._owned_beneath = raw
         source._fsspec_decompressed = origin
@@ -604,6 +695,30 @@ class ArchiveSource(ReadOnlyIOStream):
             seek_is_expensive=joined.seek_is_expensive,
         )
 
+    @classmethod
+    def read_as_pipe(cls, source: ArchiveSource) -> ArchiveSource:
+        """Own ``source`` and read it as a pipe: once, front to back, from where it is.
+
+        For ``open_archive(pipe=True)`` over a source archivey opened that can seek: a
+        path or an fsspec ``OpenFile`` read by range. (A caller's stream is wrapped in a
+        :class:`PipeView` before it is measured, so that nothing seeks it.) The result
+        is the non-seekable raw shape, so it has no path, no volume paths and no size,
+        and detection and the backend read it as they read a pipe that carries the same
+        bytes and the same name. What a pipe-mode read gives therefore never depends on
+        whether the object the caller passed can seek. The range sources stay recorded,
+        so a change to the remote object is still reported and each request still
+        reaches ``on_source_read``. Closing the result closes ``source``.
+        """
+        view = PipeView(cast("BinaryIO", source), owns=True, name=source._name)
+        piped = cls.for_stream(cast("BinaryIO", view))
+        piped._owned = cast("BinaryIO", view)
+        if source._remote:
+            piped.adopt_remote(source._remote)
+        piped._fsspec_decompressed = source._fsspec_decompressed
+        piped._report_size = source._length
+        piped.piped_from_seekable = True
+        return piped
+
     def adopt_remote(self, ranges: tuple[RangeSource, ...]) -> None:
         """Record the range sources this source reads (one, or a volume list's)."""
         self._remote = ranges
@@ -627,7 +742,8 @@ class ArchiveSource(ReadOnlyIOStream):
         # fills in ``SourceProgress.size``; the reporter takes the source's end from a
         # fact alone, so a wrong hint cannot change how often reports come.
         fact = self._length
-        size = fact if fact is not None else self._size
+        hint = self._size if self._report_size is None else self._report_size
+        size = fact if fact is not None else hint
         reporter = SourceReadReporter(
             callback, name, size, step, nest_level, size_is_fact=fact is not None
         )

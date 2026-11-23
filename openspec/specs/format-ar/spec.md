@@ -23,7 +23,7 @@ handbook is `dev-docs/formats/ar.md`.
 ### Requirement: Read ar archives of either dialect in one pass
 
 The ar backend SHALL read an archive that starts with `!<arch>\n` in one forward pass,
-from a file, a seekable stream, a pipe (`streaming=True`) or inside any single-file
+from a file, a seekable stream, a pipe (`pipe=True`) or inside any single-file
 compression stream. It SHALL list every member as a `FILE`, skip the symbol tables
 (`/`, `/SYM64/`, `__.SYMDEF` and its `SORTED` and `_64` forms), and report the dialect
 in `ArchiveInfo.extra["ar.dialect"]` (`"gnu"` or `"bsd"`) and whether a symbol table

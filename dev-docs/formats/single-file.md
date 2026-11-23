@@ -27,7 +27,7 @@ layer; what differs is on [`tar.md`](tar.md) §2.3.
 | --- | --- |
 | Read | Yes, ten codecs, one reader (`SingleFileReader`). Each is `ContainerFormat.RAW_STREAM` plus a `StreamFormat` (`ArchiveFormat.GZ`, …) |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
-| Source | Any. Random access needs a seekable source; a pipe needs `streaming=True` and gives one forward pass. `start_offset` is refused |
+| Source | Any. Random access needs a seekable source; a pipe needs `pipe=True` and gives one forward pass. `start_offset` is refused |
 | Listing cost | `INDEXED`. The one member is built at open without decoding; the few fields that need the source come from its header or its end (§2.2) |
 | Access cost | `DIRECT` — one member, nothing solid in front of it |
 | Stream capability | `SEEKABLE` on a seekable source, `FORWARD_ONLY` on a pipe. What a backward seek costs depends on the codec (§2.3) |
@@ -529,7 +529,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Size from the xz index and lzip trailers on any seekable source whose end is cheap to reach: not a pipe or a deflated member stream |
 | Only lzip reports a digest |
 | Validation at open, one byte deep; on a pipe only when detection read all of it, else deferred to the first read |
-| A pipe needs `streaming=True` and gives one pass |
+| A pipe needs `pipe=True` and gives one pass |
 | Concurrent and re-entrant opens are independent |
 | `password=` accepted and unused |
 | `open_stream` is forward-only unless asked, and builds no index then |

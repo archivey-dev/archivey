@@ -48,6 +48,7 @@ from tests.conftest import (
     requires_unrar_cli,
     unrar_reads_from_pipes,
 )
+from tests.streams_util import open_mode
 from tests.test_audit_rar_iso_dir import (
     _rar3_build,
     _rar3_parse,
@@ -224,7 +225,7 @@ def _pass(source: BinaryIO, password: str | None, **kwargs: object) -> list[obje
     out: list[object] = []
     try:
         with open_archive(
-            source, streaming=True, password=password, **kwargs
+            source, **open_mode(source, streaming=True), password=password, **kwargs
         ) as reader:
             for member, stream in reader.stream_members():
                 fields = (
@@ -308,7 +309,10 @@ def test_a_pipe_pass_that_reads_some_members_lists_them_all(
         out: list[object] = []
         try:
             with open_archive(
-                source, streaming=True, password=password, **kwargs
+                source,
+                **open_mode(source, streaming=True),
+                password=password,
+                **kwargs,
             ) as reader:
                 for index, (member, stream) in enumerate(reader.stream_members()):
                     entry: list[object] = [member.name, member.uname]
@@ -373,7 +377,7 @@ def _piped_members(
     """Each member a pipe pass yields, its data, and ``member_state_final`` as it
     was yielded."""
     got = []
-    with open_archive(_pipe(data), streaming=True, config=config) as reader:
+    with open_archive(_pipe(data), pipe=True, config=config) as reader:
         for member, stream in reader.stream_members():
             assert stream is not None
             got.append((member, stream.read(), member.member_state_final))
@@ -555,7 +559,7 @@ def test_closing_does_not_wait_for_a_source_that_stopped_sending(
     source = _StallingStream(data, int(len(data) * 0.8))
     buffered = io.BufferedReader(source)
     try:
-        reader = open_archive(buffered, streaming=True, config=_config(4000))
+        reader = open_archive(buffered, pipe=True, config=_config(4000))
         it = reader.stream_members()
         for _ in range(2):
             _member, stream = next(it)
@@ -617,7 +621,7 @@ def test_a_failed_source_read_raises_its_own_error(
 
     with (
         open_archive(
-            io.BufferedReader(_Failing()), streaming=True, config=_config(limit)
+            io.BufferedReader(_Failing()), pipe=True, config=_config(limit)
         ) as reader,
         pytest.raises(ConnectionResetError, match="peer reset"),
     ):
@@ -636,7 +640,7 @@ def _pass_on_a_thread(
     pass run on a thread. A pass still running after ``timeout`` seconds fails the
     test; the reader is closed then, which ends ``unrar`` and lets the thread go."""
     got: list[tuple[str, object]] = []
-    reader = open_archive(_pipe(data), streaming=True, config=config)
+    reader = open_archive(_pipe(data), pipe=True, config=config)
 
     def run() -> None:
         try:
@@ -775,7 +779,7 @@ def test_a_pipe_pass_that_reads_few_members_lists_them_all(
     files = {f"f{i}.bin": _text(60_000) for i in range(6)}
     raw = _rar(tmp_path, files, "-s")
     names = []
-    with open_archive(_pipe(raw), streaming=True, config=_config()) as reader:
+    with open_archive(_pipe(raw), pipe=True, config=_config()) as reader:
         for member, stream in reader.stream_members():
             names.append(member.name)
             if read == "some" and member.name in {"f1.bin", "f4.bin"}:
@@ -797,7 +801,7 @@ def test_a_pipe_listing_without_a_pass_runs_no_unrar(
         raise AssertionError("unrar started for a listing")
 
     monkeypatch.setattr(rar_forward_reader, "open_unrar_p", no_unrar)
-    with open_archive(_pipe(raw), streaming=True, config=_config()) as reader:
+    with open_archive(_pipe(raw), pipe=True, config=_config()) as reader:
         report = reader.members_report()
     assert report.error is None
     assert [m.name for m in report.members] == list(files)
@@ -811,7 +815,7 @@ def test_a_pipe_pass_closed_early_removes_its_volumes(
 ) -> None:
     files = {f"f{i}.bin": _text(60_000) for i in range(4)}
     raw = _rar(tmp_path, files, "-s")
-    with open_archive(_pipe(raw), streaming=True, config=_config()) as reader:
+    with open_archive(_pipe(raw), pipe=True, config=_config()) as reader:
         for member, stream in reader.stream_members():
             assert stream is not None
             assert stream.read(10) == files[member.name][:10]
@@ -827,7 +831,7 @@ def test_several_passwords_pick_the_one_a_rar5_check_accepts(tmp_path: Path) -> 
     files = {"a.txt": _text(30_000), "b.txt": _text(30_000)}
     raw = _rar(tmp_path, files, "-s", "-psecret")
     with open_archive(
-        _pipe(raw), streaming=True, password=["wrong", "secret"], config=_config()
+        _pipe(raw), pipe=True, password=["wrong", "secret"], config=_config()
     ) as reader:
         got = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
     assert got == files
@@ -839,9 +843,7 @@ def test_several_passwords_on_rar4_data_encryption_are_refused() -> None:
     """RAR 1.5-4 data has no password check value, and one ``unrar`` cannot try
     several: the encrypted member's read names one password as the fix."""
     raw = (_FIXTURES / "encryption__rar4.rar").read_bytes()
-    with open_archive(
-        _pipe(raw), streaming=True, password=["wrong", "password"]
-    ) as reader:
+    with open_archive(_pipe(raw), pipe=True, password=["wrong", "password"]) as reader:
         refused = []
         for member, stream in reader.stream_members():
             if member.is_encrypted and stream is not None:
@@ -860,7 +862,7 @@ def test_a_header_password_is_found(password: str | list[str]) -> None:
     raw = (_FIXTURES / "encrypted_header__rar4.rar").read_bytes()
     with open_archive(io.BytesIO(raw), password="header_password") as reader:
         expected = {m.name: reader.read(m) for m in reader.members() if m.is_file}
-    with open_archive(_pipe(raw), streaming=True, password=password) as reader:
+    with open_archive(_pipe(raw), pipe=True, password=password) as reader:
         got = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
     assert got == expected
 
@@ -869,14 +871,14 @@ def test_a_header_password_is_found(password: str | list[str]) -> None:
 def test_a_volume_set_is_refused_from_a_pipe() -> None:
     raw = (_FIXTURES / "tinyvol_rnn.rar").read_bytes()
     with pytest.raises(StreamNotSeekableError, match="volume set"):
-        open_archive(_pipe(raw), streaming=True)
+        open_archive(_pipe(raw), pipe=True)
 
 
 def test_unar_is_refused_from_a_pipe() -> None:
     raw = (_FIXTURES / "basic_solid__.rar").read_bytes()
     with pytest.raises(StreamNotSeekableError, match="RARLAB unrar"):
         open_archive(
-            _pipe(raw), streaming=True, config=ArchiveyConfig(rar_decompressor="unar")
+            _pipe(raw), pipe=True, config=ArchiveyConfig(rar_decompressor="unar")
         )
 
 
@@ -889,14 +891,14 @@ def test_an_unrar_older_than_7_is_refused_from_a_pipe(
     raw = (_FIXTURES / "basic_solid__.rar").read_bytes()
     with pytest.raises(StreamNotSeekableError, match="7.00 or later"):
         open_archive(
-            _pipe(raw), streaming=True, config=ArchiveyConfig(rar_decompressor="unrar")
+            _pipe(raw), pipe=True, config=ArchiveyConfig(rar_decompressor="unrar")
         )
 
 
 def test_random_access_on_a_pipe_stays_refused() -> None:
     raw = (_FIXTURES / "basic_solid__.rar").read_bytes()
     with pytest.raises(StreamNotSeekableError):
-        open_archive(_pipe(raw), streaming=False)
+        open_archive(_pipe(raw), pipe=False)
 
 
 def _rar5_vint(value: int) -> bytes:
@@ -1129,7 +1131,7 @@ def test_a_truncated_pipe_member_never_verifies_zero_padding(tmp_path: Path) -> 
             stream.read()
     # The missing bytes are zero in the original. Invented padding therefore passes
     # the member's CRC. The error must come from the source ending, not the digest.
-    with open_archive(_pipe(cut), streaming=True, config=config) as reader:
+    with open_archive(_pipe(cut), pipe=True, config=config) as reader:
         members = reader.stream_members()
         member, stream = next(members)
         assert member.size == len(payload)
@@ -1161,7 +1163,7 @@ def test_a_late_source_cut_fails_the_member_read(
     )[: cut_at << 20]
     config = ArchiveyConfig(spool_limits=SpoolLimits(max_bytes=limit))
     with (
-        open_archive(_pipe(raw), streaming=True, config=config) as reader,
+        open_archive(_pipe(raw), pipe=True, config=config) as reader,
         reader.stream_members() as members,
     ):
         member, stream = next(members)
@@ -1288,12 +1290,12 @@ def test_extra_area_padding_survives_a_rolling_volume_split(tmp_path: Path) -> N
         (member,) = reader.members()
         with reader.open(member) as stream:
             assert stream.read() == payload
-    with open_archive(_pipe(raw), streaming=True) as reader:
+    with open_archive(_pipe(raw), pipe=True) as reader:
         assert [
             (m.name, s.read() if s else None) for m, s in reader.stream_members()
         ] == [("a", payload)]
     config = ArchiveyConfig(spool_limits=SpoolLimits(max_bytes=4000))
-    with open_archive(_pipe(raw), streaming=True, config=config) as reader:
+    with open_archive(_pipe(raw), pipe=True, config=config) as reader:
         assert [
             (m.name, s.read() if s else None) for m, s in reader.stream_members()
         ] == [("a", payload)]

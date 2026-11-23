@@ -79,7 +79,7 @@ Three options to `open_archive` allow ways of reading that are off by default:
   decompresses again from the start. py7zr has no member streams.
 - **Keep several members open at once:** `concurrent_operations=True`. zipfile, tarfile and rarfile
   allow it. py7zr has no member streams.
-- **Read from a pipe:** one pass, with `streaming=True`, for TAR, ZIP, cpio, ar, deb, RPM, makeself
+- **Read from a pipe:** one pass, with `pipe=True`, for TAR, ZIP, cpio, ar, deb, RPM, makeself
   and single compressed files. tarfile reads one pass with mode `"r|*"`. zipfile, py7zr and rarfile
   can't read from a pipe.
 

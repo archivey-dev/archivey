@@ -716,7 +716,7 @@ def _owner_seen(data: bytes) -> tuple[tuple[int | None, int | None], ...]:
     """The owner a file read lists, then the one the pipe pass gives after its end."""
     with open_archive(io.BytesIO(data)) as ar:
         listed = ar.get("owned.txt")
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as ar:
         streamed = [member for member, _ in ar.stream_members()]
     return (listed.uid, listed.gid), (streamed[0].uid, streamed[0].gid)
 
@@ -854,7 +854,7 @@ def test_local_only_owner_fields_are_read_from_a_writer_that_copies_them(
     data = _zip_with_extra(extra)
     with open_archive(io.BytesIO(data)) as ar:
         assert (ar.get("owned.txt").uid, ar.get("owned.txt").gid) == owner
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as ar:
         (final,) = [member for member, _ in ar.stream_members()]
     assert (final.uid, final.gid) == owner
 
@@ -970,7 +970,7 @@ def test_pass_yields_no_owner_until_the_directory(
     # Extraction applies an owner as it writes a member, and a chown cannot be taken
     # back if the directory gives another owner or none. So the pass yields none, and
     # the member gets the directory's at the end of the pass, as a file read lists it.
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as ar:
         during = [(m.uid, m.gid) for m, _ in ar.stream_members()]
     assert during == [(None, None)]
     assert _owner_seen(data) == (owner, owner)
@@ -1001,7 +1001,7 @@ def test_trusted_applies_the_directory_owner_from_a_pipe(
 
     monkeypatch.setattr(ExtractionCoordinator, "_apply_metadata", record)
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
-    with open_archive(source, streaming=piped) as ar:
+    with open_archive(source, pipe=piped) as ar:
         ar.extract_all(
             tmp_path / "out", policy=ExtractionPolicy.TRUSTED, on_blocked="skip"
         )
@@ -1019,7 +1019,7 @@ def test_trusted_as_root_owner_matches_from_a_pipe(
 ) -> None:
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
     dest = tmp_path / "out"
-    with open_archive(source, streaming=piped) as ar:
+    with open_archive(source, pipe=piped) as ar:
         ar.extract_all(dest, policy=ExtractionPolicy.TRUSTED, on_blocked="skip")
     st = (dest / "owned.txt").stat()
     expected = (os.geteuid(), os.getegid()) if owner == (None, None) else owner
@@ -1074,12 +1074,12 @@ def test_non_seekable_zip_fails_fast_via_detection(simple_zip: Path) -> None:
     data = simple_zip.read_bytes()
     with pytest.raises(StreamNotSeekableError) as excinfo:
         open_archive(NonSeekableBytesIO(data))
-    assert "streaming=True" in str(excinfo.value)
+    assert "pipe=True" in str(excinfo.value)
 
 
 def test_non_seekable_zip_opens_via_detection_when_streaming(simple_zip: Path) -> None:
     data = simple_zip.read_bytes()
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
         assert reader.format is ArchiveFormat.ZIP
         assert sum(1 for _ in reader.stream_members()) > 0
 
@@ -2335,7 +2335,7 @@ def test_name_flagged_utf8_that_is_not_decodes_as_unflagged(
     raw = b"caf\xe9.txt"
     data = _stored_zip(raw, utf8_flag=True, comment=b"caf\xe9ine")
     source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
-    with open_archive(source, encoding=encoding, streaming=streaming) as ar:
+    with open_archive(source, encoding=encoding, pipe=streaming) as ar:
         ar.extract_all(tmp_path, on_blocked="skip")
         report = ar.members_report_if_available()
         assert report is not None

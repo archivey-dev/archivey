@@ -1266,7 +1266,7 @@ def test_a_missing_end_record_behind_a_stub_names_the_offset_in_the_file(
         pipe = isinstance(source, _ReadPipe)
         with (
             pytest.raises(CorruptionError) as exc,
-            open_archive(source, format=fmt, streaming=pipe) as reader,  # type: ignore[arg-type]
+            open_archive(source, format=fmt, pipe=pipe) as reader,  # type: ignore[arg-type]
         ):
             for _member, stream in reader.stream_members():
                 if stream is not None:

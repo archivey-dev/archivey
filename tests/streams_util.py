@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import io
 import lzma
+import os
 import random
 import shutil
 import struct
@@ -17,7 +18,19 @@ from typing import BinaryIO, Self
 
 import pytest
 
+from archivey.internal.streams.streamtools.binaryio import is_seekable
 from tests.conftest import CPYTHON
+
+
+def open_mode(source: object, *, streaming: bool) -> dict[str, bool]:
+    """``open_archive`` mode arguments for a test that takes sources of either kind:
+    ``pipe=True`` for a stream that cannot seek, else ``streaming=streaming``. A path
+    and an fsspec ``OpenFile`` (read by range requests) can seek."""
+    # archivey's own check: a Windows ``os.pipe()`` reader claims ``seekable()``.
+    is_open_file = hasattr(source, "fs") and hasattr(source, "path")
+    if isinstance(source, (str, os.PathLike)) or is_open_file or is_seekable(source):
+        return {"streaming": streaming}
+    return {"pipe": True}
 
 
 class NonSeekableBytesIO(io.RawIOBase):

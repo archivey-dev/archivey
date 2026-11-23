@@ -7073,8 +7073,8 @@ class RarReadBackend(ReadBackend):
         del format
         reader_cls = RarReader
         if not source.seekable():
-            # Only streaming=True gets here with such a source (open_archive refuses
-            # random access on one). Imported here: that module builds on this one.
+            # Only pipe=True gets here with such a source (open_archive refuses
+            # one in every other mode). Imported here: that module builds on this one.
             from archivey.internal.backends.rar_forward_reader import (
                 RarForwardReader,
             )

@@ -80,8 +80,9 @@ That origin story encodes priorities that remain core:
 - **No silent success.** Integrity verdicts come from reads, never from `close()`, and
   once a read has raised a verdict, later reads of that stream raise it again
   (ADR 0014).
-- With `streaming=False`, a format that needs to seek fails at open on a non-seekable
-  source; archivey does not quietly buffer the input to make it work (ADR 0010).
+- A source that cannot seek is read only when the caller asks for pipe mode
+  (`pipe=True`), and a format that needs to seek fails at open on one; archivey does not
+  quietly buffer the input to make it work (ADR 0010).
 - Contracts hold under adversarial input, not just well-formed archives.
 
 ## Performance budget
