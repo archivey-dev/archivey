@@ -252,7 +252,12 @@ design and are left out.
 
 A file's data fork is a `block_stream` of 1 MiB pieces over its extents; each piece
 reads the virtual disk through `UdifSource`, which decodes the runs it covers (eight
-decoded runs are cached). A compressed file (`UF_COMPRESSED` and `com.apple.decmpfs`)
+decoded runs are cached). Within one member stream, the first decode of each run is
+free; a cache miss on a run that stream decoded before charges the run's decoded size,
+and that total is held to `DecoderLimits.max_ratio` times the member's size (past it,
+`ResourceLimitError`, which stops an extraction). A file whose extents cycle over more
+runs than the cache holds would otherwise decode a whole run for each extent. A
+compressed file (`UF_COMPRESSED` and `com.apple.decmpfs`)
 decodes its 64 KiB chunks one at a time from the inline attribute or the resource fork.
 Every member read counts in the archive-wide ratio, whatever runs serve the bytes.
 
@@ -318,7 +323,8 @@ The row in [`threat-model.md`](../threat-model.md). In short: every range and co
 checked before it is used (§2.2); zero-fill runs make large disks from tiny files, so
 member reads are bounded by the archive-wide ratio and the extraction limits, and every
 run a listing decodes, a cache miss included, counts toward
-`ListingLimits.max_decoded_bytes`; the in-house ADC, LZFSE and LZVN decoders are bounded
+`ListingLimits.max_decoded_bytes`, and a run a member stream decodes again counts toward
+`max_ratio` times the member's size (§2.3); the in-house ADC, LZFSE and LZVN decoders are bounded
 by their output length; `verify_all()`'s checksum pass holds the runs it decodes to the
 archive-wide ratio on its own total (§2.4); B-tree leaf chains, folder parent chains
 and overflow extents are loop-checked; the open is bounded by the open budget. APFS:

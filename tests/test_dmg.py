@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import random
 import struct
 import sys
 import time
@@ -1780,3 +1781,75 @@ def test_raw_runs_that_share_stored_bytes_count_toward_the_pass_ratio() -> None:
         assert member.name == "a.txt"
         assert "did not run" in str(error)
         assert isinstance(error.__cause__, ResourceLimitError)
+
+
+# ── Runs decoded again inside one member's read ──────────────────────────────────────
+
+_RUN_SECTORS = 64  # 32 KiB runs: eight 4 KiB blocks each
+_BLOCKS_PER_RUN = _RUN_SECTORS * d.SECTOR // 4096
+
+
+def _cycling_image(extents: int, runs: int) -> tuple[bytes, bytes]:
+    """A file of ``extents`` one-block extents, extent ``j`` in run ``j % runs``: with
+    more runs than the cache holds, each extent misses on a run the read decoded
+    before. Returns the image and the file's data."""
+    assert extents <= runs * _BLOCKS_PER_RUN
+    base = 4096  # past the blocks the builder allocates
+    # Incompressible, so the archive-wide ratio on the output stays near 1:1.
+    data = random.Random(extents).randbytes(4096 * extents)
+
+    def cycle(path: str, placed: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        return [
+            (base + j % runs * _BLOCKS_PER_RUN + j // runs, 1)
+            for j in range(len(placed))
+        ]
+
+    hfs = d.write_hfsplus(
+        [d.Node("f", data=data, fragment=extents)],
+        spare_blocks=base + runs * _BLOCKS_PER_RUN + 16,
+        move_extents=cycle,
+    )
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+    disk = d.write_gpt([d.Partition(volume)])
+    image = d.write_udif(
+        disk.segments, tables=disk.tables, codec=d.ZLIB, run_sectors=_RUN_SECTORS
+    ).image
+    return image, data
+
+
+_TIGHT = ArchiveyConfig(
+    decoder_limits=DecoderLimits(max_ratio=4.0, ratio_activation_threshold=0)
+)
+
+
+def test_a_member_read_that_decodes_its_runs_again_is_held_to_the_ratio() -> None:
+    # 64 extents over 9 runs, one more than the cache holds: 55 runs decoded again,
+    # about 1.7 MiB for a 256 KiB file, 7:1.
+    image, data = _cycling_image(64, 9)
+    with _open(image) as reader:
+        assert reader.read("f") == data
+    with (
+        pytest.raises(ResourceLimitError, match="decoded again"),
+        _open(image, config=_TIGHT) as reader,
+    ):
+        reader.read("f")
+
+
+def test_runs_read_once_per_member_are_not_charged() -> None:
+    # The same extents over 8 runs fit the cache, so no run is decoded again.
+    image, data = _cycling_image(64, 8)
+    with _open(image, config=_TIGHT) as reader:
+        assert reader.read("f") == data
+
+
+def test_small_files_read_in_any_order_are_not_charged() -> None:
+    """Many small files read in a random order miss the cache on almost every read,
+    but each read decodes each of its runs once: nothing is charged."""
+
+    nodes = [d.Node(f"f{k:04d}", data=bytes([k % 251 + 1]) * 200) for k in range(600)]
+    image = _image(nodes, codec=d.ZLIB, run_sectors=_RUN_SECTORS)
+    with _open(image, config=_TIGHT) as reader:
+        files = [m for m in reader.members() if m.is_file]
+        random.Random(1).shuffle(files)
+        for member in files:
+            assert reader.read(member) == bytes([int(member.name[1:]) % 251 + 1]) * 200

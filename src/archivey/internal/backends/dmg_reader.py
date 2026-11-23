@@ -530,7 +530,11 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
                 rsrc.size,
                 lambda: volume.fork_reader(cnid, hfsplus.RESOURCE_FORK, rsrc),
             )
-            stream = block_stream(header.size, hfsplus.DECMPFS_CHUNK, read_chunk)
+            stream = block_stream(
+                header.size,
+                hfsplus.DECMPFS_CHUNK,
+                self._image.member_reads(header.size, read_chunk),
+            )
             return MemberData(stream, bounded=True)
         fork = hfsplus.data_fork(record)
         read = volume.fork_reader(cnid, hfsplus.DATA_FORK, fork)
@@ -539,7 +543,8 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
         def read_piece(i: int) -> bytes:
             return read(i * piece, min(piece, fork.size - i * piece))
 
-        return MemberData(block_stream(fork.size, piece, read_piece), bounded=True)
+        read_block = self._image.member_reads(fork.size, read_piece)
+        return MemberData(block_stream(fork.size, piece, read_block), bounded=True)
 
     def _open_apfs(self, locator: ApfsData) -> MemberData:
         volume = self._load()[locator.volume].apfs
@@ -550,7 +555,11 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
         if not locator.compressed:
             read, _ = apfs.stream_reader(volume, tree, inode.stream, inode.size, what)
             stream = block_stream(
-                inode.size, apfs.READ_PIECE, apfs.read_pieces(inode.size, read)
+                inode.size,
+                apfs.READ_PIECE,
+                self._image.member_reads(
+                    inode.size, apfs.read_pieces(inode.size, read)
+                ),
             )
             return MemberData(stream, bounded=True)
         xattrs = tree.xattrs.get(locator.oid, {})
@@ -581,7 +590,11 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
             rsrc.size if rsrc is not None else 0,
             open_fork,
         )
-        stream = block_stream(header.size, hfsplus.DECMPFS_CHUNK, read_chunk)
+        stream = block_stream(
+            header.size,
+            hfsplus.DECMPFS_CHUNK,
+            self._image.member_reads(header.size, read_chunk),
+        )
         return MemberData(stream, bounded=True)
 
     # ── The checksum pass (design §7.2) ──────────────────────────────────────────────

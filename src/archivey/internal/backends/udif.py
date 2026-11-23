@@ -29,6 +29,7 @@ import contextlib
 import io
 import plistlib
 import struct
+import threading
 import xml.parsers.expat
 import zlib
 from array import array
@@ -55,6 +56,8 @@ from archivey.terminal import quoted
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
+
+    from archivey.config import DecoderLimits
 
 from archivey.types import (
     ArchiveFormat,
@@ -340,6 +343,8 @@ class UdifImage:
         self.run_codecs: set[str] = set()
         self._load_tables(self._read_plist(koly))
         self._cache: OrderedDict[int, bytes] = OrderedDict()
+        # The member read running on each thread (:meth:`member_reads`), if any.
+        self._reading = threading.local()
 
     # ── The koly block and the file's ranges ─────────────────────────────────────────
 
@@ -703,6 +708,10 @@ class UdifImage:
         draw = self._context._listing_draw
         if draw is not None:
             draw(decoded)
+        if keep:
+            reading: _MemberRead | None = getattr(self._reading, "member", None)
+            if reading is not None:
+                reading.miss(index, decoded, len(self._kind))
         try:
             if in_house is not None:
                 data = in_house[1](raw, decoded + 1)
@@ -723,6 +732,24 @@ class UdifImage:
             if len(self._cache) > CACHE_RUNS:
                 self._cache.popitem(last=False)
         return data
+
+    def member_reads(
+        self, size: int, read_block: Callable[[int], bytes | BinaryIO]
+    ) -> Callable[[int], bytes | BinaryIO]:
+        """``read_block`` for one member stream of ``size`` bytes, whose cache
+        misses count as one member read's (:class:`_MemberRead`)."""
+        reading = _MemberRead(size, self._context.config.decoder_limits)
+        local = self._reading
+
+        def read(index: int) -> bytes | BinaryIO:
+            previous = getattr(local, "member", None)
+            local.member = reading
+            try:
+                return read_block(index)
+            finally:
+                local.member = previous
+
+        return read
 
     def _through_archivey(
         self, raw: bytes, method: CompressionAlgorithm | StreamFormat, decoded: int
@@ -889,6 +916,51 @@ class UdifImage:
             n = min(CHECK_SLICE, length - at)
             crc = zlib.crc32(self._read_file(start + at, n, "the UDIF data fork"), crc)
         return crc
+
+
+class _MemberRead:
+    """The runs one member stream has decoded, and what decoding them again cost.
+
+    The first decode of each run is free: a member reads its runs once in order.
+    A cache miss on a run this stream decoded before charges the run's decoded
+    size, and the total is held to ``DecoderLimits.max_ratio`` times the member's
+    size, as the checksum pass holds its runs. A file whose extents cycle over more
+    runs than the cache holds would otherwise decode a whole run for each extent.
+    One bit per run of the image, allocated at the first miss."""
+
+    __slots__ = ("_decoded", "_limits", "_size", "again")
+
+    def __init__(self, size: int, limits: DecoderLimits) -> None:
+        self._size = size
+        self._limits = limits
+        self._decoded: bytearray | None = None
+        self.again = 0
+
+    def miss(self, index: int, decoded: int, runs: int) -> None:
+        seen = self._decoded
+        if seen is None:
+            seen = self._decoded = bytearray((runs + 7) // 8)
+        byte, bit = divmod(index, 8)
+        if not seen[byte] >> bit & 1:
+            seen[byte] |= 1 << bit
+            return
+        self.again += decoded
+        limits = self._limits
+        ratio = limits.max_ratio
+        if (
+            ratio is None
+            or self.again <= limits.ratio_activation_threshold
+            or self.again <= ratio * max(self._size, 1)
+        ):
+            return
+        # Imported here, as the checksum pass imports it.
+        from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError
+
+        raise AlwaysStopResourceLimitError(
+            f"Decompression ratio {self.again / max(self._size, 1):.0f}:1 exceeds "
+            f"limit max_ratio={ratio:.0f}:1 ({self.again} bytes of UDIF runs that "
+            f"one read of a {self._size}-byte member decoded again)"
+        )
 
 
 class UdifSource(ReaderSource):
