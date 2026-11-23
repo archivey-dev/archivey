@@ -725,7 +725,7 @@ fn fse_block(
         lit_state[2] as usize,
         lit_state[3] as usize,
     ];
-    for chunk in literals.chunks_exact_mut(4) {
+    for chunk in literals.as_chunks_mut::<4>().0 {
         bits.refill(src)?;
         // Four symbols of at most 10 bits each fit in the 56 or more bits just loaded.
         for (slot, s) in chunk.iter_mut().zip(states.iter_mut()) {
