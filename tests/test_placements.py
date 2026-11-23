@@ -127,7 +127,14 @@ def test_a_retired_claim_leaves_the_identity_index(tmp_path: Path) -> None:
     # With ``A``'s claim retired, ``b``'s is the file's only one.
     assert placements.retire(first)
     assert placements.owner(tmp_path / "c", "c", occupied=True) is link
-    assert sum(placements._count.values()) == 1
+    assert (
+        sum(
+            len(spellings)
+            for entries in placements._by_id.values()
+            for spellings in entries.values()
+        )
+        == 1
+    )
 
 
 def _win(path: str) -> Path:
