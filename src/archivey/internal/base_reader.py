@@ -103,6 +103,7 @@ from archivey.config import (
     ArchiveyConfig,
     DecoderLimits,
     ExtractionLimits,
+    PartialDataRecovery,
 )
 from archivey.cost import CostReceipt
 from archivey.detection import FormatInfo
@@ -1452,6 +1453,7 @@ class BaseArchiveReader(ArchiveReader):
                     stream = open_member(member)
                 if stream is not None:
                     previous = stream
+                    self._apply_recovery_level(stream)
                 yield member, stream
             if after_members is not None:
                 after_members()
@@ -2050,6 +2052,15 @@ class BaseArchiveReader(ArchiveReader):
             bounded=bounded,
         )
 
+    def _apply_recovery_level(self, stream: ArchiveStreamImpl) -> None:
+        """Set a member handle given to the caller (``open()``, ``stream_members()``)
+        to the caller's ``recover_partial_data`` level where the handle, not the codec
+        under it, carries it out: ``ALL`` returns the bytes of a read whose check fails
+        (``ArchiveStreamImpl.return_failed_chunks``). Archivey's own reads of member
+        data (a link target) keep withholding them, since they read once and stop."""
+        if self._config.recover_partial_data is PartialDataRecovery.ALL:
+            stream.return_failed_chunks()
+
     def _member_parts(
         self,
         inner: BinaryIO,
@@ -2165,7 +2176,7 @@ class BaseArchiveReader(ArchiveReader):
         member_name = parts.member_name
         translate = parts.translate
         try:
-            return ArchiveStreamImpl(
+            stream = ArchiveStreamImpl(
                 # ``seekable=None``: settled on first use
                 # (``ArchiveStreamImpl._seek_allowed``).
                 _Opened(parts.inner, settle_seekable=parts.seekable is None),
@@ -2196,6 +2207,8 @@ class BaseArchiveReader(ArchiveReader):
             with contextlib.suppress(Exception):
                 parts.inner.close()
             raise
+        stream._failed_hook = parts.return_failed
+        return stream
 
     def _open_member_handle(self, member: ArchiveMember) -> ArchiveStreamImpl:
         """``_open_member`` as an open handle, for code that reads the member itself."""
@@ -4448,7 +4461,7 @@ class BaseArchiveReader(ArchiveReader):
                 # one read (the TAR walk reads ahead): a failing call that lost its
                 # bytes would take whole members before the damage with it. So it
                 # recovers them whatever the caller set.
-                recover_partial_data=True,
+                redecode_before_damage=True,
                 source_origin=source.payload_origin,
             ),
             stamp=lambda exc: self._stamp_error_context(exc),
@@ -4779,6 +4792,7 @@ class BaseArchiveReader(ArchiveReader):
                 self._hold_to_ratio(stream, _data_owner(opened[0]), counted_as=member)
                 stream._level_member = self._level_member(opened[0])
                 stream._level_refresh = self._refresh_member_levels
+                self._apply_recovery_level(stream)
                 # An eager open may have proved the password already.
                 stream._sync_member_level()
                 registered = self._register_public_stream(stream, token=reservation)
@@ -5017,7 +5031,13 @@ class BaseArchiveReader(ArchiveReader):
     def read(self, member: str | ArchiveMember) -> bytes:
         """Read member data as bytes."""
         with self.open(member) as f:
-            return f.read()
+            data = f.read()
+            if self._config.recover_partial_data is PartialDataRecovery.ALL:
+                # At ALL the read to the end returns a damaged member's bytes and
+                # keeps the error for the next read: make it, so this call raises at
+                # every level, as its contract says.
+                f.read()
+            return data
 
     # --- Public API: verify_all() and checks that span members ------------------------
 

@@ -2160,6 +2160,27 @@ class OnError(Enum):
     CONTINUE = "continue"
     """The failure is recorded in the report as ``FAILED``, its partial output is
     removed, and extraction goes on with the next member."""
+    KEEP_PARTIAL = "keep_partial"
+    """As ``CONTINUE``, except that a file whose data fails part-way stays on disk,
+    holding the bytes its data gave before the failure, as ``unrar x -kb``, 7-Zip and
+    GNU tar leave it. A member whose only damage is a failed CRC or size check keeps
+    every byte, unless the decoder makes that check itself (gzip's trailer CRC), which
+    can lose the last bytes it decoded: the member is read as under
+    ``PartialDataRecovery.ALL``, whatever the config says. The result is
+    ``FAILED`` with the error, and its ``path`` names the partial file. The file lands
+    as a complete one would, so under ``OverwritePolicy.REPLACE`` it replaces an entry
+    already at its name.
+
+    When the same damage also ends the archive's list of members (a cut TAR), the call
+    raises instead of returning a report, and a note on that error names each partial
+    file the run kept.
+
+    Nothing is kept when no byte was written, when the member failed before its data
+    was read (an existing entry under ``OverwritePolicy.ERROR``), when a limit refused
+    it, in a dry run, or for a hard link. The partial file gets none of the member's
+    metadata: its modification time is when it was written, and its mode is the one
+    archivey creates files with (``0o600``, or ``0o666`` less the umask for a member
+    with no stored mode under ``TRUSTED``)."""
 
 
 # The string spellings of ``OnError``, so a type checker flags a bad one at the
@@ -2167,7 +2188,7 @@ class OnError(Enum):
 # ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
 # case, and a literal can express neither, so this is the canonical spelling.
 # Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
-OnErrorStr = Literal["stop", "continue"]
+OnErrorStr = Literal["stop", "continue", "keep_partial", "keep-partial"]
 
 
 class OnBlocked(StrEnum):
@@ -2268,7 +2289,8 @@ class ExtractionStatus(StrEnum):
     """Refused by a safety check or by the policy."""
     FAILED = "failed"
     """Extraction failed: damaged data, a limit such as the expansion ratio, or a write
-    error."""
+    error. Nothing of the member is left at its destination, except the partial file
+    that ``OnError.KEEP_PARTIAL`` keeps, which ``path`` then names."""
     LINK_TARGET_UNAVAILABLE = "link_target_unavailable"
     """A symlink whose target the archive never recorded, so it cannot be written. Not a
     failure: extraction goes on whatever ``on_error`` says. The archive is reported with
@@ -2410,7 +2432,10 @@ class ExtractionResult:
     are filled in late may still change; treat it as read-only."""
 
     path: Path | None
-    """Where the member was written, or ``None`` if it was not."""
+    """Where the member was written, or ``None`` if it was not. On a ``FAILED``
+    result it is ``None``, except under ``OnError.KEEP_PARTIAL``, where it names the
+    partial file kept for the
+    member."""
 
     status: ExtractionStatus
     """What happened to the member."""

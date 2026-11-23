@@ -50,7 +50,7 @@ def test_kernels_table() -> None:
         "lzo1x": 1,
         "lzvn": 1,
         "lzw": 1,
-        "lzx": 1,
+        "lzx": 2,
         "riscv": 1,
         "zipcrypto": 1,
     }
@@ -442,15 +442,15 @@ def test_lzx_state_after_a_capped_flush() -> None:
         assert d.flush() == _HELLO[max(at, 1) :]
 
 
-def test_lzx_state_after_a_failed_flush_raises_again() -> None:
+def test_lzx_after_an_error_raises_again_and_refuses_getstate() -> None:
     d = lzx.Decompressor(15, output_size=len(_HELLO))
     d.decompress(_LZX_HELLO[:-10])
     with pytest.raises(archivey_codecs.TruncatedDataError):
         d.flush()
-    r = lzx.Decompressor.from_state(d.getstate())
-    r.decompress(_LZX_HELLO[r.total_in : -10])
     with pytest.raises(archivey_codecs.TruncatedDataError):
-        r.flush()
+        d.flush()
+    with pytest.raises(ValueError, match="after a decode error"):
+        d.getstate()
 
 
 def test_lzw_flush_keeps_its_cap(tmp_path) -> None:
@@ -865,3 +865,47 @@ def test_mutable_inputs_are_copied() -> None:
     assert crc16_arc(memoryview(ba)) == want
     assert crc16_arc(memoryview(bytearray(b"x" + data))[1:]) == want
     assert crc16_arc(words) == want
+
+
+def test_bcj2_decoded_runs_ahead_of_total_out() -> None:
+    """A read decodes to the end of a ``main`` chunk: ``decoded`` counts those
+    bytes, returned or not, and reaches ``out_size`` before ``total_out`` does."""
+    d = _bcj2()
+    assert d.decoded == 0
+    d.read(1)
+    assert d.total_out == 1
+    assert d.decoded == 64 * 1024
+    while not d.eof:
+        d.read(100_000)
+    assert d.decoded == d.total_out == len(_BCJ2_MAIN)
+
+
+def test_lzx_frame_of_empty_blocks_holds_little_input() -> None:
+    """A frame's input is not bounded by its output: blocks of length 0 give none.
+    The decoder drops the input it read at each block header, so feeding 64 MiB of
+    empty uncompressed blocks does not keep them. Run in a fresh process, so its
+    resident memory says what the decoder holds (Linux only: it reads
+    ``/proc/self/statm``)."""
+    import subprocess
+    import sys
+
+    if not sys.platform.startswith("linux"):
+        pytest.skip("reads /proc/self/statm")
+    probe = (
+        "from archivey_codecs import lzx\n"
+        "rss = lambda: int(open('/proc/self/statm').read().split()[1]) * 4096\n"
+        # The stream header bit and an empty uncompressed block, then more of them
+        # (each 16 bytes: type and length, alignment, three repeated offsets).
+        "first = bytes.fromhex('00300000') + bytes.fromhex('01000000') * 3\n"
+        "piece = (bytes.fromhex('00600000') + bytes.fromhex('01000000') * 3) * 65536\n"
+        "d = lzx.Decompressor(15, output_size=32768)\n"
+        "assert d.decompress(first) == b''\n"
+        "before = rss()\n"
+        "for _ in range(64):\n"
+        "    assert d.decompress(piece) == b''\n"
+        "print((rss() - before) >> 20)\n"
+    )
+    got = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    assert int(got.stdout) < 16, f"the decoder kept {got.stdout.strip()} MB of input"
