@@ -121,11 +121,12 @@ fn input<'a>(obj: &'a Bound<'_, PyAny>) -> PyResult<Cow<'a, [u8]>> {
         let copy = with_critical_section(&owner, || buffer.to_vec(obj.py()))?;
         return Ok(Cow::Owned(copy));
     }
-    // A buffer of wider items (`array.array("I")`): its bytes, as hashlib reads them.
-    let bytes = PyMemoryView::from(obj)?.call_method1("cast", ("B",))?;
-    let buffer = PyBuffer::<u8>::get(&bytes)?;
-    let copy = with_critical_section(&owner, || buffer.to_vec(obj.py()))?;
-    Ok(Cow::Owned(copy))
+    // A buffer of other items (`array.array("I")`, signed bytes), strided or not: its
+    // bytes in order, as hashlib reads them. `tobytes()` takes any layout, where
+    // `cast("B")` takes only a C-contiguous one.
+    let view = PyMemoryView::from(obj)?;
+    let bytes = with_critical_section(&owner, || view.call_method0("tobytes"))?;
+    Ok(Cow::Owned(bytes.cast::<PyBytes>()?.as_bytes().to_vec()))
 }
 
 // ── Saved state ─────────────────────────────────────────────────────────────────────
@@ -1443,10 +1444,8 @@ impl bcj2::Streams for PyStreams<'_, '_> {
     type Error = PyErr;
     fn read(&mut self, which: usize, n: usize) -> Result<Vec<u8>, PyErr> {
         let data = self.reads[which].call1((n,))?;
-        let data = match data.cast::<PyBytes>() {
-            Ok(b) => b.as_bytes().to_vec(),
-            Err(_) => data.extract::<Vec<u8>>()?,
-        };
+        // Read as `input()` reads an argument: a buffer's bytes, copied as a buffer.
+        let data = input(&data)?.into_owned();
         if data.len() > n {
             return Err(PyValueError::new_err(format!(
                 "read({n}) returned {} bytes",

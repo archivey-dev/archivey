@@ -118,7 +118,7 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
                 # An error the decoder met in the blocks this read decoded raises
                 # here.
                 self._d.read(0)
-        except Exception:
+        except BaseException:  # an interrupt too: the decoder keeps it as its failure
             # Keep every byte decoded before the error, those the decoder still
             # holds too: they are returned before the error raises again.
             ahead = self._d.decoded - self._d.total_out

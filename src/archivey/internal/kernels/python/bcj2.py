@@ -227,7 +227,9 @@ class Decompressor:
         self._range = 0xFFFFFFFF
         self._code: int | None = None  # read lazily: an empty output needs no rc bytes
         self._checked = False  # the end check passed
-        self._failure: Exception | None = None  # the error that stopped decoding
+        # The error that stopped decoding: any, ``KeyboardInterrupt`` too, as the
+        # package keeps it. A step it stopped is half done, so nothing decodes after.
+        self._failure: BaseException | None = None
         self.total_out = 0
 
     @property
@@ -308,7 +310,7 @@ class Decompressor:
                 del self._pending[: self._pending_pos]
                 self._pending_pos = 0
             self._decode_block()
-        except Exception as exc:  # noqa: BLE001 - an input's own error too
+        except BaseException as exc:  # noqa: BLE001 - an input's own error, an interrupt
             self._failure = exc
 
     def _decode_block(self) -> None:

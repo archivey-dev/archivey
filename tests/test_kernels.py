@@ -12,7 +12,9 @@ import io
 import logging
 import random
 import struct
+import traceback
 import types
+import weakref
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -305,6 +307,49 @@ def test_a_panic_reaches_the_caller_as_corruption(
     with pytest.raises(CorruptionError, match="CRC-16 decoder failed") as info:
         crc(b"abc", 0)
     assert isinstance(info.value.__cause__, PanicException)
+
+
+class _Latched:
+    """A wrapper of a kernel object, as ``rust.py``'s, whose call panics."""
+
+    def __init__(self, panic: type[BaseException]) -> None:
+        self._latch = _select.Latch("lzw")
+        self._panic = panic
+
+    def call(self) -> None:
+        with self._latch.guard():
+            raise self._panic("index out of bounds")
+
+
+@pytest.mark.parametrize(
+    "panic",
+    [PanicException, kernel_child.ChildPanic],
+    ids=["in-process", "child"],
+)
+def test_a_latch_raises_a_fresh_copy_each_time(panic: type[BaseException]) -> None:
+    """A latched failure is raised again as a new copy, still caused by the panic,
+    and holds no frame: the wrapper goes with its last reference, with no garbage
+    collection (``kept_errors``)."""
+    wrapper = _Latched(panic)
+    ref = weakref.ref(wrapper)
+    raised: list[tuple[int, bool]] = []
+    gc.disable()
+    try:
+        for _ in range(3):
+            try:
+                wrapper.call()
+            except CorruptionError as exc:
+                frames = len(list(traceback.walk_tb(exc.__traceback__)))
+                raised.append((frames, kernels.caused_by_panic(exc)))
+                del exc
+        del wrapper
+        alive = ref() is not None
+    finally:
+        gc.enable()
+    assert not alive
+    assert all(by_panic for _, by_panic in raised)
+    # A raise again does not add its frames to an earlier raise's traceback.
+    assert raised[1][0] == raised[2][0]
 
 
 def test_a_panic_in_an_lha_read_is_corruption(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -887,6 +932,59 @@ def test_a_zero_byte_bcj2_read_reads_no_input(twin: bool) -> None:
         d.read()
     with pytest.raises(CorruptionError, match="BCJ2 main stream has bytes past"):
         d.read(0)
+
+
+class _InterruptedOnce(io.BytesIO):
+    """A stream whose ``at``-th read raises ``KeyboardInterrupt``."""
+
+    def __init__(self, data: bytes, at: int) -> None:
+        super().__init__(data)
+        self._reads = 0
+        self._at = at
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        self._reads += 1
+        if self._reads == self._at:
+            raise KeyboardInterrupt
+        return super().read(n)
+
+
+@pytest.mark.parametrize("twin", [False, True], ids=["kernel", "twin"])
+@pytest.mark.parametrize("which", range(4), ids=["main", "call", "jump", "rc"])
+def test_an_interrupted_bcj2_input_read_stops_the_decoder(
+    twin: bool, which: int
+) -> None:
+    """An interrupt in an input's ``read()`` is kept like any error: later reads give
+    a prefix of the output and then raise it again, and never decode on from the
+    half-done step."""
+    if not twin and not deps.archivey_codecs.available():
+        pytest.skip("needs archivey-codecs")
+    size = 200_000
+    streams = bcj2_encode(random.Random(4), size)
+    make = kernels.bcj2(EXCLUDED if twin else frozenset(), isolated=False).Decompressor
+    data = make(*(io.BytesIO(s) for s in streams), out_size=size).read()
+    assert len(data) == size
+    inputs: list[io.BytesIO] = [io.BytesIO(s) for s in streams]
+    # The second read lands mid-output for ``main``; ``rc`` is read once only.
+    inputs[which] = _InterruptedOnce(streams[which], at=1 if which == 3 else 2)
+    d = make(*inputs, out_size=size)
+    out = bytearray()
+    interrupts = 0
+    for _ in range(200):
+        try:
+            chunk = d.read(4096)
+        except KeyboardInterrupt:
+            interrupts += 1
+            if interrupts == 3:
+                break
+            continue
+        if not chunk:
+            break
+        out += chunk
+    # The interrupt comes back on each later read, from the end check when it came
+    # there (``call`` and ``jump`` are read for the last time by the check).
+    assert interrupts == 3
+    assert data.startswith(out)
 
 
 def _params(fn: Callable[..., object]) -> list[tuple[str, object, object]]:

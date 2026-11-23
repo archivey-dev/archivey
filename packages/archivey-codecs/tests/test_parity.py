@@ -222,17 +222,21 @@ def test_riscv_parity() -> None:
 
 
 def _views(data: bytes) -> list[tuple[str, memoryview, bytes]]:
-    """Views the package takes, and the bytes each holds: one of 4-byte items and
-    one with a stride."""
+    """Views the package takes, and the bytes each holds: one of 4-byte items, one
+    with a stride, one with both, and one of signed bytes with a stride."""
     doubled = bytes(b for pair in zip(data, data[::-1], strict=True) for b in pair)
+    words = [data[i : i + 4] for i in range(0, len(data), 4)]
+    interleaved = b"".join(w + w[::-1] for w in words)
     return [
         ("wide", memoryview(data).cast("I"), data),
         ("strided", memoryview(doubled)[::2], data),
+        ("wide-strided", memoryview(interleaved).cast("I")[::2], data),
+        ("signed-strided", memoryview(doubled).cast("b")[::2], data),
     ]
 
 
 @BOTH
-@pytest.mark.parametrize("kind", ["wide", "strided"])
+@pytest.mark.parametrize("kind", ["wide", "strided", "wide-strided", "signed-strided"])
 def test_a_view_is_read_as_its_bytes(codecs: object, kind: str) -> None:
     """Every kernel takes a view as its bytes, never its items: a view of 4-byte
     items or with a stride gives the result of the same bytes, and counts them."""
@@ -243,6 +247,10 @@ def test_a_view_is_read_as_its_bytes(codecs: object, kind: str) -> None:
     assert k.crc16_arc(view, 7) == k.crc16_arc(same, 7)
     a, b = k.zipcrypto.Decryptor(b"pw"), k.zipcrypto.Decryptor(b"pw")
     assert (a.decrypt(view), a.total_in) == (b.decrypt(same), len(same))
+    password = data[:8]
+    pv = next(v for k2, v, _ in _views(password) if k2 == kind)
+    a, b = k.zipcrypto.Decryptor(pv), k.zipcrypto.Decryptor(password)
+    assert a.decrypt(data[:64]) == b.decrypt(data[:64])
     for make in (k.filters.Arm64Decoder, k.filters.RiscvDecoder):
         # A first feed of odd length leaves bytes held back, to join to the view.
         a, b = make(), make()
@@ -258,6 +266,38 @@ def test_a_view_is_read_as_its_bytes(codecs: object, kind: str) -> None:
 
 
 @BOTH
+class _ReadsAs(io.BytesIO):
+    """A stream whose ``read()`` returns each chunk as a view of ``kind``."""
+
+    def __init__(self, data: bytes, kind: str) -> None:
+        super().__init__(data)
+        self._kind = kind
+
+    def read(self, n: int | None = -1, /) -> memoryview:  # type: ignore[override]
+        chunk = super().read(n if n is None or n < 0 else n // 4 * 4 or 4)
+        if len(chunk) % 4:
+            return memoryview(chunk)
+        return next(v for k, v, _ in _views(chunk) if k == self._kind)
+
+
+@BOTH
+@pytest.mark.parametrize("kind", ["wide", "strided", "wide-strided", "signed-strided"])
+def test_bcj2_reads_a_view_from_its_streams_as_its_bytes(
+    codecs: object, kind: str
+) -> None:
+    """A BCJ2 input stream whose ``read()`` returns a view of wider or strided items
+    gives the output its bytes give."""
+    from bcj2_util import bcj2_encode
+
+    streams = bcj2_encode(random.Random(5), 20_000)
+    bcj2 = codecs.bcj2
+    want = PYTHON.bcj2.Decompressor(
+        *(io.BytesIO(s) for s in streams), out_size=20_000
+    ).read()
+    d = bcj2.Decompressor(*(_ReadsAs(s, kind) for s in streams), out_size=20_000)
+    assert d.read() == want
+
+
 def test_crc16_refuses_a_value_outside_16_bits(codecs: object) -> None:
     for data in (b"", b"x"):
         for value in (-1, 1 << 16):

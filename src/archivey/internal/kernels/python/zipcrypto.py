@@ -61,12 +61,12 @@ class Decryptor:
 
     __slots__ = ("k0", "k1", "k2", "total_in")
 
-    def __init__(self, password: bytes) -> None:
+    def __init__(self, password: bytes | bytearray | memoryview) -> None:
         # APPNOTE §6.1.5 update_keys, run over the password bytes (plain, not decrypted).
         # No 32-bit masks on k0/k2: see the width note in decrypt().
         k0, k1, k2 = 0x12345678, 0x23456789, 0x34567890
         table = _CRC_TABLE
-        for b in password:
+        for b in raw_bytes(password):
             k0 = (k0 >> 8) ^ table[(k0 ^ b) & 0xFF]
             k1 = ((k1 + (k0 & 0xFF)) * 134775813 + 1) & 0xFFFFFFFF
             k2 = (k2 >> 8) ^ table[(k2 ^ (k1 >> 24)) & 0xFF]

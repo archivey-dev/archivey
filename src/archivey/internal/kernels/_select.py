@@ -30,6 +30,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Generator, Mapping
 from types import ModuleType
+from typing import NoReturn
 
 from archivey.exceptions import (
     CorruptionError,
@@ -40,6 +41,7 @@ from archivey.internal import logs
 from archivey.internal.kernels import child
 from archivey.internal.kernels.child import ChildCodecs, ChildPanic
 from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.kept_errors import unraised
 from archivey.types import OptionalLibrary
 
 MIN_REVISIONS: dict[str, int] = {
@@ -172,18 +174,33 @@ class Latch:
 
     def __init__(self, kernel: str) -> None:
         self._kernel = kernel
-        self._failure: CorruptionError | None = None
+        # Copies never raised of the error and of its panic, not the raised ones: a
+        # raised error's traceback holds the frames, and so the wrapper, that hold
+        # this latch (see ``kept_errors``).
+        self._failure: tuple[CorruptionError, BaseException] | None = None
 
     @contextlib.contextmanager
     def guard(self) -> Generator[None]:
         """Raise the stored failure, else run the block, storing a panic in it as
         the ``CorruptionError`` it raises."""
         if self._failure is not None:
-            raise self._failure
+            self._raise_again(*self._failure)
         try:
             with panic_to_corruption(self._kernel):
                 yield
         except CorruptionError as exc:
-            if caused_by_panic(exc):
-                self._failure = exc
+            if caused_by_panic(exc) and exc.__cause__ is not None:
+                self._failure = (unraised(exc), unraised(exc.__cause__))
             raise
+
+    @staticmethod
+    def _raise_again(error: CorruptionError, panic: BaseException) -> NoReturn:
+        """Raise a fresh copy of ``error`` from a fresh copy of ``panic``: the panic
+        stays its cause, which ``caused_by_panic`` reads. The locals go as the raise
+        leaves, so this frame is not tied to the error."""
+        again, cause = unraised(error), unraised(panic)
+        again.__traceback__ = cause.__traceback__ = None
+        try:
+            raise again from cause
+        finally:
+            del again, cause
