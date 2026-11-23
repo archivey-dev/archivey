@@ -115,10 +115,13 @@ line, `peak use of the reader limits:`. It gives the largest decoder allocation 
 and what it was for, the bytes spooled to a temporary file at their peak, and two totals: the
 key-derivation rounds and the listing's members and metadata bytes. These are the numbers to
 compare with [`DecoderLimits`, `SpoolLimits` and `ListingLimits`](security.md) before you open an
-untrusted archive with tighter limits. A part that is zero is left out, and when every part is zero
-there is no line. A run that stops before its summary, such as a limit refusal or `--abort-on`,
-prints no line either. Decoder memory counts only the allocations archivey checks itself: xz, LZMA
-Alone and zstd leave that check to their library.
+untrusted archive with tighter limits. The listing's metadata bytes are what the listing holds at
+the end. Some formats also weigh paths or tables of their own against `max_metadata_bytes`, such as
+an ISO image's UDF paths or a CAB file's block tables, and what a walk holds only while it runs is
+gone by the summary. So a limit above this number can still be refused. A part that is zero is left
+out, and when every part is zero there is no line. A run that stops before its summary, such as a
+limit refusal or `--abort-on`, prints no line either. Decoder memory counts only the allocations
+archivey checks itself: xz, LZMA Alone and zstd leave that check to their library.
 
 `--outer` removes only the compression layer: `archivey extract data.tgz --outer` writes
 `data.tar` and keeps the original, as `gunzip -k` does.
