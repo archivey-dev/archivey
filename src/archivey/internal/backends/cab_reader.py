@@ -54,7 +54,7 @@ from archivey.formats import (
     ReaderContext,
     ReaderSource,
 )
-from archivey.internal import native
+from archivey.internal import kernels
 from archivey.internal.config import check_decoder_memory
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.listing_limits import metadata_limit_error
@@ -63,7 +63,6 @@ from archivey.internal.streams.codecs.lzx_decoder import (
     FRAME_SIZE,
     MAX_WINDOW_BITS,
     MIN_WINDOW_BITS,
-    LzxDecoder,
 )
 from archivey.terminal import quoted
 from archivey.types import (
@@ -802,28 +801,30 @@ class _FolderStream:
         self._history = b""
         # Set when a decode raised, so the stream is not parked for the next member.
         self.failed = False
-        self._lzx: LzxDecoder | native.NativeLzx | None = None
+        self._lzx: kernels.LzxDecompressor | None = None
         # LZX: the next block whose bytes the decoder pulls through ``_lzx_more``.
         self._lzx_input = self._next
+        # LZX: the decoder knows the folder's size, and its input has ended.
+        self._lzx_sized = False
+        self._lzx_ended = False
         if folder.method == _LZX:
             config = reader._context.config
-            make = native.lzx(
+            lzx = kernels.lzx(
                 config.formats._libraries_off,
                 isolated=config.process_isolation is ProcessIsolation.NATIVE_DECODERS,
             )
-            if make is None:
-                self._lzx = LzxDecoder(folder.window_bits, self._lzx_more)
-            else:
-                # The kernel sets the last frame's length from the folder's size.
-                size = table.output[-1] if table.complete else None
-                self._lzx = make(folder.window_bits, self._lzx_more, size)
+            # The decoder sets the last frame's length from the folder's size.
+            size = table.output[-1] if table.complete else None
+            self._lzx = lzx.Decompressor(folder.window_bits, output_size=size)
+            self._lzx_sized = size is not None
 
     def release(self) -> None:
         """Give back the decoder child the LZX kernel holds under ``NATIVE_DECODERS``
         now, not when the stream is collected. The stream is not read after this."""
         lzx, self._lzx = self._lzx, None
-        if isinstance(lzx, native.NativeLzx):
-            lzx.close()
+        close = getattr(lzx, "close", None)
+        if close is not None:
+            close()
 
     def _payload(self, number: int) -> bytes:
         block = self._table.blocks[number]
@@ -843,6 +844,34 @@ class _FolderStream:
         self._lzx_input += 1
         return data
 
+    def _lzx_frame(self, frame_size: int) -> bytes:
+        """The next LZX frame, ``frame_size`` bytes, with input pulled block by block
+        through ``_lzx_more``. A damaged block raises from the frame that reads it."""
+        d = self._lzx
+        assert d is not None
+        if not self._lzx_sized:
+            # Without an output size the decoder ends the stream where its input
+            # does, at a frame boundary; a frame asked for past that is cut short,
+            # so the decoder is told this frame is wanted.
+            d.set_output_size(d.total_out + frame_size)
+        while True:
+            out = (
+                d.flush(frame_size)
+                if self._lzx_ended
+                else d.decompress(b"", frame_size)
+            )
+            if out:
+                return out
+            if self._lzx_ended or d.eof:
+                raise TruncatedError("LZX stream ends before its output")
+            data = self._lzx_more()
+            if data is None:
+                self._lzx_ended = True
+                continue
+            out = d.decompress(data, frame_size)
+            if out:
+                return out
+
     def _decode_next(self) -> bytes:
         """The next block's output (for LZX, the next 32 KiB frame)."""
         table = self._table
@@ -858,7 +887,7 @@ class _FolderStream:
                 raise CorruptionError(table.refused)
             frame = min(FRAME_SIZE, left) if table.complete else FRAME_SIZE
             try:
-                return self._lzx.decode_frame(frame)
+                return self._lzx_frame(frame)
             except TruncatedError:
                 # The input ran out at the refused block, not at a cut.
                 if table.refused is not None:

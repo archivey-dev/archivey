@@ -40,7 +40,7 @@ from zipcrypto import _encrypt  # noqa: E402
 
 import archivey  # noqa: E402
 from archivey.exceptions import ArchiveyError  # noqa: E402
-from archivey.internal.backends.zipcrypto import ZipCryptoKeys  # noqa: E402
+from archivey.internal.kernels.python.zipcrypto import Decryptor as ZipCryptoKeys  # noqa: E402
 from archivey.internal.streams.codecs.lzh_decoder import LzhDecoder  # noqa: E402
 from archivey.internal.streams.codecs.lzx_decoder import FRAME_SIZE, LzxDecoder  # noqa: E402
 

@@ -1,0 +1,334 @@
+"""archivey's decoding kernels, each with one API whichever decoder runs.
+
+archivey-codecs (the optional Rust package) has fast versions of some of archivey's
+Python decoders. Each kernel here is one ``archivey_codecs`` module: a call site asks
+for it with the call's excluded libraries and isolation, and gets a namespace with that
+module's classes and functions. They are the package's when it is installed, current
+and allowed (:mod:`~archivey.internal.kernels._select`), wrapped to raise archivey's
+errors (:mod:`~archivey.internal.kernels.rust`), and otherwise the Python twins
+(:mod:`~archivey.internal.kernels.python`), which have the same API. The two give the
+same bytes and raise the same errors (the package's parity tests compare them), so a
+call site does not know which runs: the choice changes speed only. ``library`` says
+which, for the record of the backends a read used.
+
+Under ``ProcessIsolation.NATIVE_DECODERS`` (``isolated``) a decoding kernel runs in a
+decoder child, or as its Python twin when no child can run it; BCJ2 is not run there
+yet, so its twin decodes. CRC-16/ARC and ZipCrypto run in this process under every
+setting, as checksums and AES do.
+
+Design: openspec change ``rust-codecs-package``, D4 and D5.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+from archivey.internal.kernels._select import (
+    caused_by_panic,
+    decoding_kernels,
+    is_panic,
+    kernels,
+)
+from archivey.types import OptionalLibrary
+
+__all__ = [
+    "Bcj2",
+    "Bcj2Decompressor",
+    "BranchDecoder",
+    "Crc16",
+    "Filters",
+    "Lzo1x",
+    "Lzw",
+    "LzwDecompressor",
+    "Lzx",
+    "LzxDecompressor",
+    "ZipCrypto",
+    "ZipCryptoDecryptor",
+    "bcj2",
+    "caused_by_panic",
+    "crc16_arc",
+    "filters",
+    "is_panic",
+    "lzo1x",
+    "lzw",
+    "lzx",
+    "zipcrypto",
+]
+
+Buffer = bytes | bytearray | memoryview
+
+_CODECS = OptionalLibrary.ARCHIVEY_CODECS
+
+
+# ── The API ───────────────────────────────────────────────────────────────────────────
+
+
+Crc16 = Callable[[Buffer, int], int]
+"""``crc16_arc(data, value=0)``: CRC-16/ARC of ``data`` going on from ``value``."""
+
+
+class ZipCryptoDecryptor(Protocol):
+    """``zipcrypto.Decryptor(password)``: the ZipCrypto key state."""
+
+    def decrypt(self, data: Buffer, /) -> bytes: ...
+
+    def copy(self) -> ZipCryptoDecryptor: ...
+
+    @property
+    def total_in(self) -> int: ...
+
+
+class BranchDecoder(Protocol):
+    """``filters.Arm64Decoder(start_offset=0)`` or ``RiscvDecoder``: one stream through
+    a branch filter. :meth:`decode` returns the decoded prefix of everything fed so far,
+    holding back the start of an instruction the chunk cut off (at most 3 bytes for
+    ARM64, 7 for RISC-V); :meth:`flush` returns those bytes unchanged."""
+
+    def decode(self, data: Buffer, /) -> bytes: ...
+
+    def flush(self) -> bytes: ...
+
+    @property
+    def total_in(self) -> int: ...
+
+    @property
+    def total_out(self) -> int: ...
+
+
+class LzwDecompressor(Protocol):
+    """``lzw.Decompressor(*, max_width=None, block_mode=None, nine_bit_widens=None)``:
+    Unix ``compress`` with the ``lzma.LZMADecompressor`` interface plus ``flush()``."""
+
+    def decompress(self, data: Buffer, max_length: int = -1) -> bytes: ...
+
+    def flush(self, max_length: int = -1) -> bytes: ...
+
+    @property
+    def eof(self) -> bool: ...
+
+    @property
+    def needs_input(self) -> bool: ...
+
+    @property
+    def unused_data(self) -> bytes: ...
+
+    @property
+    def truncation(self) -> str | None: ...
+
+    @property
+    def header_params(self) -> tuple[int, bool] | None: ...
+
+    @property
+    def nine_bit_widens(self) -> bool | None: ...
+
+    @property
+    def clear_offsets(self) -> list[tuple[int, int]]: ...
+
+    @property
+    def total_in(self) -> int: ...
+
+    @property
+    def total_out(self) -> int: ...
+
+
+class LzxDecompressor(Protocol):
+    """``lzx.Decompressor(window_bits, *, output_size=None)``: one LZX stream (a CAB
+    folder), with the ``lzma.LZMADecompressor`` interface plus ``flush()`` and
+    ``set_output_size()``. It has no ``unused_data`` or ``total_in``: the stream ends
+    at its output size, and the Python decoder reads its input ahead of the output."""
+
+    def set_output_size(self, output_size: int, /) -> None: ...
+
+    def decompress(self, data: Buffer, max_length: int = -1) -> bytes: ...
+
+    def flush(self, max_length: int = -1) -> bytes: ...
+
+    @property
+    def eof(self) -> bool: ...
+
+    @property
+    def needs_input(self) -> bool: ...
+
+    @property
+    def output_size(self) -> int | None: ...
+
+    @property
+    def total_out(self) -> int: ...
+
+
+class Bcj2Decompressor(Protocol):
+    """``bcj2.Decompressor(main, call, jump, rc, *, out_size)``: 7-Zip's BCJ2 over its
+    four input streams, read with :meth:`read`."""
+
+    def read(self, max_length: int = -1) -> bytes: ...
+
+    @property
+    def eof(self) -> bool: ...
+
+    @property
+    def out_size(self) -> int: ...
+
+    @property
+    def decoded(self) -> int: ...
+
+    @property
+    def total_in(self) -> tuple[int, int, int, int]: ...
+
+    @property
+    def total_out(self) -> int: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ZipCrypto:
+    """``archivey_codecs.zipcrypto``."""
+
+    Decryptor: Callable[[bytes], ZipCryptoDecryptor]
+    library: OptionalLibrary | None
+
+
+@dataclass(frozen=True, slots=True)
+class Filters:
+    """``archivey_codecs.filters``."""
+
+    Arm64Decoder: Callable[[int], BranchDecoder]
+    RiscvDecoder: Callable[[int], BranchDecoder]
+    library: OptionalLibrary | None
+
+
+@dataclass(frozen=True, slots=True)
+class Lzo1x:
+    """``archivey_codecs.lzo1x``."""
+
+    decompress: Callable[..., bytes]
+    library: OptionalLibrary | None
+
+
+@dataclass(frozen=True, slots=True)
+class Lzw:
+    """``archivey_codecs.lzw``."""
+
+    Decompressor: Callable[..., LzwDecompressor]
+    library: OptionalLibrary | None
+
+
+@dataclass(frozen=True, slots=True)
+class Lzx:
+    """``archivey_codecs.lzx``."""
+
+    Decompressor: Callable[..., LzxDecompressor]
+    library: OptionalLibrary | None
+
+
+@dataclass(frozen=True, slots=True)
+class Bcj2:
+    """``archivey_codecs.bcj2``."""
+
+    Decompressor: Callable[..., Bcj2Decompressor]
+    library: OptionalLibrary | None
+
+
+# ── The switch ────────────────────────────────────────────────────────────────────────
+
+
+def _bind(cls: Callable[..., Any], module: object) -> Callable[..., Any]:
+    """``cls`` with the package module (or its stand-in) as its first argument."""
+
+    def new(*args: Any, **kwargs: Any) -> Any:
+        return cls(module, *args, **kwargs)
+
+    return new
+
+
+def crc16_arc(excluded: frozenset[OptionalLibrary]) -> Crc16:
+    """``crc16_arc``: the package's when it is installed and ``excluded`` leaves it
+    on, else the Python one. Both give the same value."""
+    module = kernels("crc16_arc", excluded)
+    if module is None:
+        from archivey.internal.kernels import python
+
+        return python.crc16_arc
+    from archivey.internal.kernels import rust
+
+    return rust.crc16_arc(module)
+
+
+def zipcrypto(excluded: frozenset[OptionalLibrary]) -> ZipCrypto:
+    """``zipcrypto``, in this process under every isolation setting."""
+    module = kernels("zipcrypto", excluded)
+    if module is None:
+        from archivey.internal.kernels.python import zipcrypto as twin
+
+        return ZipCrypto(Decryptor=twin.Decryptor, library=None)
+    from archivey.internal.kernels import rust
+
+    return ZipCrypto(Decryptor=_bind(rust.ZipCryptoDecryptor, module), library=_CODECS)
+
+
+def filters(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> Filters:
+    """``filters`` (ARM64 and RISC-V). The two filters are separate kernels, so each
+    is the package's or the twin as its own revision allows."""
+    from archivey.internal.kernels import rust
+    from archivey.internal.kernels.python import filters as twin
+
+    arm64 = decoding_kernels("arm64", excluded, isolated=isolated)
+    riscv = decoding_kernels("riscv", excluded, isolated=isolated)
+    return Filters(
+        Arm64Decoder=twin.Arm64Decoder
+        if arm64 is None
+        else _bind(rust.Arm64Decoder, arm64),
+        RiscvDecoder=twin.RiscvDecoder
+        if riscv is None
+        else _bind(rust.RiscvDecoder, riscv),
+        library=None if arm64 is None and riscv is None else _CODECS,
+    )
+
+
+def lzo1x(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> Lzo1x:
+    """``lzo1x``. Under ``isolated`` each block decodes in a decoder child."""
+    module = decoding_kernels("lzo1x", excluded, isolated=isolated)
+    if module is None:
+        from archivey.internal.kernels.python import lzo1x as twin
+
+        return Lzo1x(decompress=twin.decompress, library=None)
+    from archivey.internal.kernels import rust
+
+    return Lzo1x(decompress=rust.lzo1x_decompress(module), library=_CODECS)
+
+
+def lzw(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> Lzw:
+    """``lzw`` (Unix ``compress``)."""
+    module = decoding_kernels("lzw", excluded, isolated=isolated)
+    if module is None:
+        from archivey.internal.kernels.python import lzw as twin
+
+        return Lzw(Decompressor=twin.Decompressor, library=None)
+    from archivey.internal.kernels import rust
+
+    return Lzw(Decompressor=_bind(rust.LzwDecompressor, module), library=_CODECS)
+
+
+def lzx(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> Lzx:
+    """``lzx`` (CAB's LZX)."""
+    module = decoding_kernels("lzx", excluded, isolated=isolated)
+    if module is None:
+        from archivey.internal.kernels.python import lzx as twin
+
+        return Lzx(Decompressor=twin.Decompressor, library=None)
+    from archivey.internal.kernels import rust
+
+    return Lzx(Decompressor=_bind(rust.LzxDecompressor, module), library=_CODECS)
+
+
+def bcj2(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> Bcj2:
+    """``bcj2`` (7-Zip's four-stream x86 filter). Under ``isolated`` the twin
+    decodes, until the decoder child can carry BCJ2's four inputs."""
+    module = None if isolated else kernels("bcj2", excluded)
+    if module is None:
+        from archivey.internal.kernels.python import bcj2 as twin
+
+        return Bcj2(Decompressor=twin.Decompressor, library=None)
+    from archivey.internal.kernels import rust
+
+    return Bcj2(Decompressor=_bind(rust.Bcj2Decompressor, module), library=_CODECS)

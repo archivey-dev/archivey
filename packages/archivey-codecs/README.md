@@ -9,15 +9,20 @@ below). Without it, archivey uses its Python decoders.
 This is a pre-release. Every kernel has its final, standard-library-shaped API
 (`hashlib`-style hashes, `lzma.LZMADecompressor`-style decoders).
 
-| Name | Used for | Python decoder it mirrors |
+| Name | Used for | archivey's Python twin |
 | --- | --- | --- |
-| `crc16_arc`, `Crc16Arc` | LHA data and header checks | `lha_reader.crc16` |
-| `lzo1x.decompress` | `.lzo` files, LZO SquashFS images | `lzo_decoder.lzo1x_decompress_python` |
-| `lzw.Decompressor` | Unix `compress` (`.Z`, `.tar.Z`) | `unix_compress_decoder.LzwState` |
-| `zipcrypto.Decryptor` | ZIP members with traditional encryption | `zipcrypto.ZipCryptoKeys` |
-| `filters.Arm64Decoder`, `filters.RiscvDecoder` | 7z ARM64 and RISC-V branch filters | `arm64_filter`, `riscv_filter` |
-| `lzx.Decompressor` | LZX folders in Microsoft cabinets | `lzx_decoder.LzxDecoder` |
-| `bcj2.Decompressor` | 7z BCJ2 (four-stream x86 filter) | `bcj2_filter.Bcj2DecoderStream` |
+| `crc16_arc`, `Crc16Arc` | LHA data and header checks | `kernels.python.crc16_arc` |
+| `lzo1x.decompress` | `.lzo` files, LZO SquashFS images | `kernels.python.lzo1x` |
+| `lzw.Decompressor` | Unix `compress` (`.Z`, `.tar.Z`) | `kernels.python.lzw` |
+| `zipcrypto.Decryptor` | ZIP members with traditional encryption | `kernels.python.zipcrypto` |
+| `filters.Arm64Decoder`, `filters.RiscvDecoder` | 7z ARM64 and RISC-V branch filters | `kernels.python.filters` |
+| `lzx.Decompressor` | LZX folders in Microsoft cabinets | `kernels.python.lzx` |
+| `bcj2.Decompressor` | 7z BCJ2 (four-stream x86 filter) | `kernels.python.bcj2` |
+
+Each twin (in `archivey.internal.kernels.python`) has the same classes, arguments and
+attributes, less the state methods (`getstate`, `from_state`, `copy` other than
+ZipCrypto's) and LZX's `unused_data` and `total_in`; archivey's call sites cannot tell
+which one runs.
 
 ```python
 import archivey_codecs

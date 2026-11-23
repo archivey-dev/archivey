@@ -34,10 +34,16 @@ from archivey import (
     open_archive,
     open_stream,
 )
-from archivey.internal import native, native_child
+from archivey.internal import kernels
 from archivey.internal.backends import lha_reader, zipcrypto
+from archivey.internal.kernels import _select, child as kernel_child, rust
+from archivey.internal.kernels.python import (
+    filters as filters_twin,
+    lzw as lzw_twin,
+    zipcrypto as zipcrypto_twin,
+)
 from archivey.internal.streams.codecs import decoder_child, decoder_worker, deps
-from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
+from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
 from archivey.internal.streams.codecs.bcj2_filter import (
     _BLOCK as _BCJ2_BLOCK,
     Bcj2DecoderStream,
@@ -48,7 +54,6 @@ from archivey.internal.streams.codecs.decoder_child import (
 )
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, ISOLATED
 from archivey.internal.streams.codecs.lzma_filter_decoder import (
-    PythonBranch,
     branch_maker,
 )
 from archivey.internal.streams.codecs.lzo_decoder import (
@@ -56,9 +61,8 @@ from archivey.internal.streams.codecs.lzo_decoder import (
     lzo1x_decompress_python,
     lzo1x_decompressor,
 )
-from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV, riscv_decode
+from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV
 from archivey.internal.streams.codecs.unix_compress_decoder import (
-    LzwState,
     UnixCompressDecoder,
 )
 from tests.bcj2_util import bcj2_encode
@@ -69,6 +73,7 @@ from tests.streams_util import make_unix_compress
 from tests.zipcrypto import build_stored_zipcrypto_zip, build_zipcrypto_zip
 
 EXCLUDED = frozenset({OptionalLibrary.ARCHIVEY_CODECS})
+TWIN_BRANCHES = (filters_twin.Arm64Decoder, filters_twin.RiscvDecoder)
 OFF = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={"archivey-codecs"}))
 RISCV_7Z = Path(__file__).parent / "fixtures" / "sevenzip" / "riscv_lzma2.7z"
 # 12 000 lines of text in lzop blocks, as tests/fixtures/external/lzop/README says.
@@ -100,10 +105,10 @@ class _FakeDecryptor:
     panic_header: ClassVar[bool] = False
     calls: ClassVar[int] = 0
 
-    def __init__(self, password: bytes, keys: zipcrypto.ZipCryptoKeys | None = None):
+    def __init__(self, password: bytes, keys: zipcrypto_twin.Decryptor | None = None):
         if keys is None:
             type(self).built.append(password)
-            keys = zipcrypto.ZipCryptoKeys(password)
+            keys = zipcrypto_twin.Decryptor(password)
         self._password = password
         self._keys = keys
 
@@ -129,12 +134,9 @@ class _FakeBranch:
 
     def __init__(self, start_offset: int = 0) -> None:
         type(self).built.append(start_offset)
-        self._python = PythonBranch(self.decode_with, start_offset)
+        self._python = self.twin(start_offset)
 
-    @staticmethod
-    def decode_with(data: bytes, pc: int) -> bytes:
-        """The Python filter this fake stands in for: set by each subclass."""
-        raise NotImplementedError
+    twin: ClassVar[type] = filters_twin.Arm64Decoder
 
     def decode(self, data: bytes) -> bytes:
         type(self).calls += 1
@@ -148,11 +150,11 @@ class _FakeBranch:
 
 
 class _FakeArm64(_FakeBranch):
-    decode_with = staticmethod(arm64_decode)
+    twin = filters_twin.Arm64Decoder
 
 
 class _FakeRiscv(_FakeBranch):
-    decode_with = staticmethod(riscv_decode)
+    twin = filters_twin.RiscvDecoder
 
 
 class _FakeLzw:
@@ -219,7 +221,8 @@ def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamesp
     monkeypatch.setattr(_FakeLzo1x, "calls", [])
     monkeypatch.setattr(_FakeLzo1x, "panic", False)
     codec_error = type("CodecError", (ValueError,), {})
-    monkeypatch.setattr(_FakeLzo1x, "error", codec_error)
+    corrupt_error = type("CorruptDataError", (codec_error,), {})
+    monkeypatch.setattr(_FakeLzo1x, "error", corrupt_error)
     module = types.SimpleNamespace(
         KERNELS=kernels,
         crc16_arc=crc16_arc,
@@ -229,18 +232,18 @@ def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamesp
         lzo1x=_FakeLzo1x,
         CodecError=codec_error,
         TruncatedDataError=type("TruncatedDataError", (ValueError,), {}),
-        CorruptDataError=type("CorruptDataError", (ValueError,), {}),
+        CorruptDataError=corrupt_error,
         UnsupportedDataError=type("UnsupportedDataError", (ValueError,), {}),
     )
     package = deps.LazyOptional(OptionalLibrary.ARCHIVEY_CODECS, present=True)
     package._module = module  # type: ignore[assignment]
     monkeypatch.setattr(deps, "archivey_codecs", package)
-    monkeypatch.setattr(native, "_too_old_logged", set())
+    monkeypatch.setattr(_select, "_too_old_logged", set())
     return module
 
 
 def _child_kernels(monkeypatch: pytest.MonkeyPatch, module: object) -> list[frozenset]:
-    """Make ``native_child.open_kernels``, the kernels run in a decoder child under
+    """Make ``kernel_child.open_kernels``, the kernels run in a decoder child under
     ``NATIVE_DECODERS``, return ``module`` (``None``: no child can run them). Returns
     the ``excluded`` sets it was called with."""
     calls: list[frozenset] = []
@@ -249,7 +252,7 @@ def _child_kernels(monkeypatch: pytest.MonkeyPatch, module: object) -> list[froz
         calls.append(excluded)
         return module
 
-    monkeypatch.setattr(native_child, "open_kernels", open_kernels)
+    monkeypatch.setattr(kernel_child, "open_kernels", open_kernels)
     return calls
 
 
@@ -262,20 +265,20 @@ def test_an_absent_package_is_not_used(monkeypatch: pytest.MonkeyPatch) -> None:
         "archivey_codecs",
         deps.LazyOptional(OptionalLibrary.ARCHIVEY_CODECS, present=False),
     )
-    assert native.kernels("crc16_arc", frozenset()) is None
-    assert lha_reader.crc16_for(frozenset()) is lha_reader.crc16
+    assert _select.kernels("crc16_arc", frozenset()) is None
+    assert kernels.crc16_arc(frozenset()) is lha_reader.crc16
 
 
 def test_an_excluded_package_is_not_used(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake(monkeypatch, crc16_arc=1)
-    assert native.kernels("crc16_arc", EXCLUDED) is None
-    assert lha_reader.crc16_for(EXCLUDED) is lha_reader.crc16
+    assert _select.kernels("crc16_arc", EXCLUDED) is None
+    assert kernels.crc16_arc(EXCLUDED) is lha_reader.crc16
 
 
 def test_a_current_kernel_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _fake(monkeypatch, crc16_arc=1, zipcrypto=2)
-    assert native.kernels("crc16_arc", frozenset()) is module
-    assert native.kernels("zipcrypto", frozenset()) is module  # newer is fine
+    assert _select.kernels("crc16_arc", frozenset()) is module
+    assert _select.kernels("zipcrypto", frozenset()) is module  # newer is fine
 
 
 @pytest.mark.parametrize("kernels", [{}, {"crc16_arc": 0}, {"crc16_arc": "1"}])
@@ -286,8 +289,8 @@ def test_an_old_or_missing_kernel_is_not_used_and_logged_once(
 ) -> None:
     _fake(monkeypatch, **kernels)  # type: ignore[arg-type]
     with caplog.at_level(logging.DEBUG, logger="archivey.streams"):
-        assert native.kernels("crc16_arc", frozenset()) is None
-        assert native.kernels("crc16_arc", frozenset()) is None
+        assert _select.kernels("crc16_arc", frozenset()) is None
+        assert _select.kernels("crc16_arc", frozenset()) is None
     logged = [r for r in caplog.records if "'crc16_arc' kernel revision" in r.message]
     assert len(logged) == 1
     assert "needs 1 or newer" in logged[0].message
@@ -297,7 +300,7 @@ def test_a_panic_reaches_the_caller_as_corruption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _fake(monkeypatch, crc16_arc=1)
-    crc = lha_reader.crc16_for(frozenset())
+    crc = kernels.crc16_arc(frozenset())
     with pytest.raises(CorruptionError, match="CRC-16 decoder failed") as info:
         crc(b"abc", 0)
     assert isinstance(info.value.__cause__, PanicException)
@@ -405,14 +408,14 @@ def test_branch_filters_use_the_kernel_unless_switched_off_or_no_child(
         assert make is not None
         return make()
 
-    assert isinstance(built(frozenset(), isolated=False), native.NativeBranch)
+    assert isinstance(built(frozenset(), isolated=False), rust.BranchDecoder)
     assert _FakeBranch.built == [0x1000]
-    assert isinstance(built(EXCLUDED, isolated=False), PythonBranch)
+    assert isinstance(built(EXCLUDED, isolated=False), TWIN_BRANCHES)
     # Under NATIVE_DECODERS: the decoder child's kernel, else the Python filter.
     _child_kernels(monkeypatch, None)
-    assert isinstance(built(frozenset(), isolated=True), PythonBranch)
+    assert isinstance(built(frozenset(), isolated=True), TWIN_BRANCHES)
     _child_kernels(monkeypatch, module)
-    assert isinstance(built(frozenset(), isolated=True), native.NativeBranch)
+    assert isinstance(built(frozenset(), isolated=True), rust.BranchDecoder)
     assert _FakeBranch.built == [0x1000, 0x1000]
 
 
@@ -420,7 +423,7 @@ def test_an_old_branch_kernel_is_not_used(monkeypatch: pytest.MonkeyPatch) -> No
     _fake(monkeypatch, arm64=0, riscv=1)
     make = branch_maker(FILTER_ARM64, 0, excluded=frozenset(), natives=IN_PROCESS)
     assert make is not None
-    assert isinstance(make(), PythonBranch)
+    assert isinstance(make(), TWIN_BRANCHES)
     assert branch_maker(0x03, 0, excluded=frozenset(), natives=IN_PROCESS) is None
 
 
@@ -477,29 +480,29 @@ def test_lzw_uses_the_kernel_unless_switched_off_or_no_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _fake(monkeypatch, lzw=1)
-    assert native.lzw(frozenset(), isolated=False) is not None
-    assert native.lzw(EXCLUDED, isolated=False) is None
+    assert kernels.lzw(frozenset(), isolated=False).library is not None
+    assert kernels.lzw(EXCLUDED, isolated=False).library is None
     _child_kernels(monkeypatch, None)
-    assert native.lzw(frozenset(), isolated=True) is None
+    assert kernels.lzw(frozenset(), isolated=True).library is None
     calls = _child_kernels(monkeypatch, module)
-    assert native.lzw(frozenset(), isolated=True) is not None
-    assert native.lzw(EXCLUDED, isolated=True) is None
+    assert kernels.lzw(frozenset(), isolated=True).library is not None
+    assert kernels.lzw(EXCLUDED, isolated=True).library is None
     assert calls == [frozenset()]
     _fake(monkeypatch, lzw=0)
-    assert native.lzw(frozenset(), isolated=False) is None
+    assert kernels.lzw(frozenset(), isolated=False).library is None
 
 
 def test_an_lzw_state_refuses_every_call_after_a_panic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _fake(monkeypatch, lzw=1)
-    make = native.lzw(frozenset(), isolated=False)
-    assert make is not None
-    state = make()
+    lzw = kernels.lzw(frozenset(), isolated=False)
+    assert lzw.library is OptionalLibrary.ARCHIVEY_CODECS
+    d = lzw.Decompressor()
     with pytest.raises(CorruptionError, match="LZW decoder failed") as info:
-        state.feed(b"\x1f\x9d\x90abc")
+        d.decompress(b"\x1f\x9d\x90abc")
     assert _FakeLzw.calls == 1
-    for again in (state.flush, lambda: state.feed(b"more")):
+    for again in (d.flush, lambda: d.decompress(b"more")):
         with pytest.raises(CorruptionError) as repeat:
             again()
         assert repeat.value is info.value
@@ -614,7 +617,7 @@ def test_a_zipcrypto_state_refuses_every_call_after_a_panic(
     other = zipcrypto.new_keys(b"pw")
     with pytest.raises(TypeError):
         other.decrypt(None)  # type: ignore[arg-type]
-    assert other.decrypt(b"abc") == zipcrypto.ZipCryptoKeys(b"pw").decrypt(b"abc")
+    assert other.decrypt(b"abc") == zipcrypto_twin.Decryptor(b"pw").decrypt(b"abc")
 
 
 def test_a_panic_on_the_zipcrypto_header_closes_the_payload(
@@ -645,22 +648,22 @@ def test_a_panic_on_the_zipcrypto_header_closes_the_payload(
 
 def test_only_a_panic_cause_keeps_corruption_from_the_password_check() -> None:
     plain = CorruptionError("bad")
-    assert not native.caused_by_panic(plain)
+    assert not kernels.caused_by_panic(plain)
     try:
         try:
             raise PanicException("boom")
         except PanicException as panic:
             raise CorruptionError("wrapped") from panic
     except CorruptionError as exc:
-        assert native.caused_by_panic(exc)
+        assert kernels.caused_by_panic(exc)
         try:
             raise CorruptionError("outer") from exc
         except CorruptionError as outer:
-            assert native.caused_by_panic(outer)
+            assert kernels.caused_by_panic(outer)
 
 
 def test_other_exceptions_pass_unchanged() -> None:
-    with pytest.raises(KeyboardInterrupt), native.panic_to_corruption("x"):
+    with pytest.raises(KeyboardInterrupt), _select.panic_to_corruption("x"):
         raise KeyboardInterrupt
 
 
@@ -673,7 +676,7 @@ needs_codecs = pytest.mark.skipif(
 
 @needs_codecs
 def test_lha_uses_the_kernel_and_reads_the_same() -> None:
-    assert lha_reader.crc16_for(frozenset()) is not lha_reader.crc16
+    assert kernels.crc16_arc(frozenset()) is not lha_reader.crc16
     data = bytes(range(256)) * 400
     raw = archive([Member(b"a.bin", data), Member(b"b.txt", b"text\n" * 100)])
     results = []
@@ -706,8 +709,8 @@ def test_lha_uses_the_kernel_and_reads_the_same() -> None:
 )
 def test_zipcrypto_uses_the_kernel_and_reads_the_same(compression: int) -> None:
     keys = zipcrypto.new_keys(b"pw")
-    assert isinstance(keys, native.NativeZipCrypto)
-    assert isinstance(zipcrypto.new_keys(b"pw", EXCLUDED), zipcrypto.ZipCryptoKeys)
+    assert isinstance(keys, rust.ZipCryptoDecryptor)
+    assert isinstance(zipcrypto.new_keys(b"pw", EXCLUDED), zipcrypto_twin.Decryptor)
     data = b"secret data " * 5000
     raw = build_zipcrypto_zip(b"pw", b"a.txt", data, compression=compression)
     for config in (None, OFF):
@@ -751,7 +754,7 @@ def test_zipcrypto_kernel_matches_python_keys() -> None:
 def test_7z_riscv_uses_the_kernel_and_reads_the_same(name: str) -> None:
     make = branch_maker(FILTER_RISCV, 0, excluded=frozenset(), natives=IN_PROCESS)
     assert make is not None
-    assert isinstance(make(), native.NativeBranch)
+    assert isinstance(make(), rust.BranchDecoder)
     results = []
     for config in (None, OFF):
         with open_archive(RISCV_7Z.with_name(name), config=config) as reader:
@@ -777,9 +780,9 @@ def _read_z(raw: bytes, config: ArchiveyConfig | None, piece: int) -> tuple:
 @requires("ncompress")
 @pytest.mark.parametrize("piece", [1, 4096, -1])
 def test_z_uses_the_kernel_and_reads_the_same(piece: int) -> None:
-    make = native.lzw(frozenset(), isolated=False)
-    assert make is not None
-    assert isinstance(make(), native.NativeLzw)
+    lzw = kernels.lzw(frozenset(), isolated=False)
+    assert lzw.library is OptionalLibrary.ARCHIVEY_CODECS
+    assert isinstance(lzw.Decompressor(), rust.LzwDecompressor)
     data = (bytes(range(256)) * 50 + b"text " * 30000) * 3
     raw = make_unix_compress(data)
     # 1-byte reads are slow, so they read the first 1500 bytes, damaged inside them.
@@ -821,12 +824,11 @@ def test_z_seeks_back_through_clear_points_with_the_kernel() -> None:
                 assert stream.read(1000) == data[at : at + 1000]
 
 
-def _z_points(make_state: object, raw: bytes) -> tuple[bytes, list]:
+def _z_points(make: Callable[..., object], raw: bytes) -> tuple[bytes, list]:
     decoder = UnixCompressDecoder(
-        make_state(),  # type: ignore[operator]
+        make,  # type: ignore[arg-type]
         comp_cursor=0,
         decomp_cursor=0,
-        make_state=make_state,  # type: ignore[arg-type]
     )
     out = bytearray()
     points = []
@@ -849,15 +851,12 @@ def test_z_clear_points_match_and_restart_with_the_kernel() -> None:
     # Text, then random bytes: the ratio drops, so compress writes CLEAR codes.
     data = b"the quick brown fox " * 20_000 + rng.randbytes(300_000)
     raw = make_unix_compress(data)
-    make = native.lzw(frozenset(), isolated=False)
-    assert make is not None
+    make = kernels.lzw(frozenset(), isolated=False).Decompressor
     out, points = _z_points(make, raw)
     assert out == data
-    assert (out, points) == _z_points(LzwState, raw)
+    assert (out, points) == _z_points(lzw_twin.Decompressor, raw)
     assert len(points) >= 3  # the header point and the CLEARs
-    template = UnixCompressDecoder(
-        make(), comp_cursor=0, decomp_cursor=0, make_state=make
-    )
+    template = UnixCompressDecoder(make, comp_cursor=0, decomp_cursor=0)
     template.feed(raw[:3])  # reads the header
     for point in points[1:]:
         restarted = template.recreate(point, io.BytesIO())
@@ -868,28 +867,28 @@ def test_z_clear_points_match_and_restart_with_the_kernel() -> None:
         assert got == data[point.decompressed_offset :]
 
 
-def _drive_lzw(state: object, data: bytes, cap: int) -> tuple:
-    """Feed all of ``data`` with output capped at ``cap``, then call ``flush()``
-    twice and ``feed()`` once more: the bytes, the CLEAR units, each call's
-    error, and which calls returned output."""
+def _drive_lzw(d: kernels.LzwDecompressor, data: bytes, cap: int) -> tuple:
+    """Pass all of ``data`` with output capped at ``cap``, then call ``flush()``
+    twice uncapped and ``decompress()`` once more: the bytes, the CLEAR offsets,
+    each call's error, and which calls returned output."""
     out = bytearray()
     units: list = []
     events: list = []
 
-    def call(step: object) -> bool:
+    def call(step: Callable[[], bytes]) -> bool:
         try:
-            got, more = step()  # type: ignore[operator]
-        except (CorruptionError, UnsupportedFeatureError) as exc:
+            got = step()
+        except (CorruptionError, UnsupportedFeatureError, ValueError, EOFError) as exc:
             events.append((type(exc).__name__, str(exc)))
             return False
         out.extend(got)
-        units.extend(more)
+        units.extend(d.clear_offsets)
         events.append(("ok", bool(got)))
         return True
 
-    # One capped feed leaves most of the stream for flush().
-    call(lambda: state.feed(data, cap))  # type: ignore[attr-defined]
-    for step in (state.flush, state.flush, lambda: state.feed(b"x")):  # type: ignore[attr-defined]
+    # One capped call leaves most of the stream for flush().
+    call(lambda: d.decompress(data, cap))
+    for step in (d.flush, d.flush, lambda: d.decompress(b"x")):
         call(step)
     errors = [e for e in events if e[0] != "ok"]
     return bytes(out), units, errors, events[-3:]
@@ -899,9 +898,8 @@ def _drive_lzw(state: object, data: bytes, cap: int) -> tuple:
 @requires("ncompress")
 def test_lzw_bad_code_inside_flush_raises_from_the_next_call() -> None:
     """A bad code met by ``flush()`` after some output: ``flush()`` returns that
-    output and the next call raises, as ``LzwState`` does."""
-    make = native.lzw(frozenset(), isolated=False)
-    assert make is not None
+    output and the next call raises, in the kernel and its Python twin alike."""
+    make = kernels.lzw(frozenset(), isolated=False).Decompressor
     rng = random.Random(11)
     inside_flush = 0
     for _ in range(200):
@@ -914,7 +912,7 @@ def test_lzw_bad_code_inside_flush_raises_from_the_next_call() -> None:
             bad[rng.randrange(3, len(bad))] ^= rng.randrange(1, 256)
         cap = rng.choice((1, 50, 1000))
         rust = _drive_lzw(make(), bytes(bad), cap)
-        python = _drive_lzw(LzwState(), bytes(bad), cap)
+        python = _drive_lzw(lzw_twin.Decompressor(), bytes(bad), cap)
         assert rust[:3] == python[:3]
         first_flush, second_flush, _ = rust[3]
         if first_flush == ("ok", True) and second_flush[0] != "ok":
@@ -1029,7 +1027,7 @@ def test_cab_lzx_uses_the_kernel_and_reads_the_same() -> None:
     same error with the kernel as with the Python decoder, in order and backwards.
     A damaged block whose checksum fails raises from the frame that needs it, though
     the kernel was given that block earlier."""
-    assert native.lzx(frozenset(), isolated=False) is not None
+    assert kernels.lzx(frozenset(), isolated=False).library is not None
     rng = random.Random(29)
     for _, raw, names in _lzx_cabs():
         start = raw.index(b"a.txt\0") + 32  # past the file table, into the blocks
@@ -1053,14 +1051,14 @@ def test_cab_lzx_kernel_is_not_used_when_switched_off_or_no_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _fake(monkeypatch, lzx=2)
-    assert native.lzx(frozenset(), isolated=False) is not None
-    assert native.lzx(EXCLUDED, isolated=False) is None
+    assert kernels.lzx(frozenset(), isolated=False).library is not None
+    assert kernels.lzx(EXCLUDED, isolated=False).library is None
     _child_kernels(monkeypatch, None)
-    assert native.lzx(frozenset(), isolated=True) is None
+    assert kernels.lzx(frozenset(), isolated=True).library is None
     _child_kernels(monkeypatch, module)
-    assert native.lzx(frozenset(), isolated=True) is not None
+    assert kernels.lzx(frozenset(), isolated=True).library is not None
     _fake(monkeypatch, lzx=1)
-    assert native.lzx(frozenset(), isolated=False) is None
+    assert kernels.lzx(frozenset(), isolated=False).library is None
 
 
 class _FakeLzx:
@@ -1203,7 +1201,7 @@ def test_bcj2_uses_the_kernel_and_reads_the_same() -> None:
     """Every read gives the same bytes or raises the same error with the kernel as
     with the Python decoder, at the same read: the kernel hands back the bytes
     before an error first, and the wrapper raises the error from that read."""
-    assert native.bcj2(frozenset(), isolated=False) is not None
+    assert kernels.bcj2(frozenset(), isolated=False).library is not None
     rng = random.Random(31)
     for streams, size in _bcj2_cases(rng):
         reads = [rng.choice((1, 100, 4096, 65536, 300_000)) for _ in range(8)]
@@ -1216,11 +1214,11 @@ def test_bcj2_kernel_is_not_used_when_switched_off_or_isolated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _fake(monkeypatch, bcj2=1)
-    assert native.bcj2(frozenset(), isolated=False) is not None
-    assert native.bcj2(EXCLUDED, isolated=False) is None
-    assert native.bcj2(frozenset(), isolated=True) is None
+    assert kernels.bcj2(frozenset(), isolated=False).library is not None
+    assert kernels.bcj2(EXCLUDED, isolated=False).library is None
+    assert kernels.bcj2(frozenset(), isolated=True).library is None
     _fake(monkeypatch, bcj2=0)
-    assert native.bcj2(frozenset(), isolated=False) is None
+    assert kernels.bcj2(frozenset(), isolated=False).library is None
 
 
 class _FakeBcj2:
@@ -1313,7 +1311,7 @@ def test_bcj2_input_error_raises_the_same_and_again_after(which: int) -> None:
     errors = [r for r in python if isinstance(r, tuple)]
     assert len(errors) > 1
     assert all(again for *_, again in errors)
-    if native.bcj2(frozenset(), isolated=False) is not None:
+    if kernels.bcj2(frozenset(), isolated=False).library is not None:
         assert _bcj2_failing_calls(streams, which, frozenset()) == python
 
 
@@ -1370,22 +1368,22 @@ def child_builds(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """The kernel objects built in a decoder child, by their name in the package
     (``"lzo1x"`` for each block decoded)."""
     built: list[str] = []
-    build, lzo1x = native_child.ChildCodecs.build, native_child.ChildCodecs._lzo1x
+    build, lzo1x = kernel_child.ChildCodecs.build, kernel_child.ChildCodecs._lzo1x
 
     def spy_build(
-        self: native_child.ChildCodecs, name: str, *args: object, **kwargs: object
+        self: kernel_child.ChildCodecs, name: str, *args: object, **kwargs: object
     ) -> object:
         built.append(name)
         return build(self, name, *args, **kwargs)
 
     def spy_lzo1x(
-        self: native_child.ChildCodecs, block: bytes, *, max_size: int
+        self: kernel_child.ChildCodecs, block: bytes, *, max_size: int
     ) -> bytes:
         built.append("lzo1x")
         return lzo1x(self, block, max_size=max_size)
 
-    monkeypatch.setattr(native_child.ChildCodecs, "build", spy_build)
-    monkeypatch.setattr(native_child.ChildCodecs, "_lzo1x", spy_lzo1x)
+    monkeypatch.setattr(kernel_child.ChildCodecs, "build", spy_build)
+    monkeypatch.setattr(kernel_child.ChildCodecs, "_lzo1x", spy_lzo1x)
     return built
 
 
@@ -1500,25 +1498,31 @@ def test_a_panic_in_the_child_is_reported_as_one() -> None:
     with pytest.raises(decoder_worker.KernelPanic) as raised:
         host.decode(b"\0" * 8)
     payload = decoder_worker.error_payload(raised.value)
-    rebuilt = rebuild_error(payload, native_child._ERRORS)
-    assert isinstance(rebuilt, native_child.ChildPanic)
-    assert native.is_panic(rebuilt)
+    rebuilt = rebuild_error(payload, kernel_child._ERRORS)
+    assert isinstance(rebuilt, kernel_child.ChildPanic)
+    assert kernels.is_panic(rebuilt)
 
     class _Proxy:
         calls = 0
 
         def decode(self, data: bytes) -> bytes:
             self.calls += 1
-            raise rebuild_error(payload, native_child._ERRORS)
+            raise rebuild_error(payload, kernel_child._ERRORS)
 
         def flush(self) -> bytes:
             return b""
 
     proxy = _Proxy()
-    branch = native.NativeBranch(proxy, "ARM64")
+    stand_in = types.SimpleNamespace(
+        filters=types.SimpleNamespace(Arm64Decoder=lambda start: proxy),
+        TruncatedDataError=kernel_child.ChildTruncatedDataError,
+        CorruptDataError=kernel_child.ChildCorruptDataError,
+        UnsupportedDataError=kernel_child.ChildUnsupportedDataError,
+    )
+    branch = rust.Arm64Decoder(stand_in, 0)  # type: ignore[arg-type]
     with pytest.raises(CorruptionError, match="ARM64 decoder failed") as info:
         branch.decode(b"\0" * 8)
-    assert isinstance(info.value.__cause__, native_child.ChildPanic)
+    assert isinstance(info.value.__cause__, kernel_child.ChildPanic)
     with pytest.raises(CorruptionError) as again:
         branch.flush()
     assert again.value is info.value
@@ -1527,18 +1531,18 @@ def test_a_panic_in_the_child_is_reported_as_one() -> None:
 
 def test_the_childs_codec_errors_are_rebuilt_as_the_packages() -> None:
     for name, kind in (
-        ("CorruptDataError", native_child.ChildCorruptDataError),
-        ("TruncatedDataError", native_child.ChildTruncatedDataError),
-        ("UnsupportedDataError", native_child.ChildUnsupportedDataError),
-        ("CodecError", native_child.ChildCodecError),
+        ("CorruptDataError", kernel_child.ChildCorruptDataError),
+        ("TruncatedDataError", kernel_child.ChildTruncatedDataError),
+        ("UnsupportedDataError", kernel_child.ChildUnsupportedDataError),
+        ("CodecError", kernel_child.ChildCodecError),
     ):
         error = type(name, (ValueError,), {"__module__": "_codecs"})("bad code 7")
         rebuilt = rebuild_error(
-            decoder_worker.error_payload(error), native_child._ERRORS
+            decoder_worker.error_payload(error), kernel_child._ERRORS
         )
         assert type(rebuilt) is kind
         assert str(rebuilt) == "bad code 7"
-        assert isinstance(rebuilt, native_child.ChildCodecs.CodecError)
+        assert isinstance(rebuilt, kernel_child.ChildCodecs.CodecError)
 
 
 @pytest.mark.parametrize("how", ["no child", "start fails", "import fails"])
@@ -1549,15 +1553,15 @@ def test_no_child_means_the_python_twin(
     process: it is not native, so NATIVE_DECODERS' promise holds. The failure is
     remembered, so later streams start no child to see it fail again."""
     _fake(monkeypatch, lzw=1)
-    monkeypatch.setattr(native_child, "_table", [])
-    monkeypatch.setattr(native_child, "_failed", [])
+    monkeypatch.setattr(kernel_child, "_table", [])
+    monkeypatch.setattr(kernel_child, "_failed", [])
     asked: list[str] = []
 
     def unavailable(name: str) -> str | None:
         asked.append(name)
         return "frozen" if how == "no child" else None
 
-    monkeypatch.setattr(native_child, "decoder_child_unavailable_reason", unavailable)
+    monkeypatch.setattr(kernel_child, "decoder_child_unavailable_reason", unavailable)
     starts = []
     error = (
         DecoderChildStartError
@@ -1569,10 +1573,10 @@ def test_no_child_means_the_python_twin(
         starts.append(args)
         raise error("cannot start the decoder process: no")
 
-    monkeypatch.setattr(native_child, "DecoderChild", refuse)
+    monkeypatch.setattr(kernel_child, "DecoderChild", refuse)
     with caplog.at_level(logging.DEBUG, logger="archivey"):
         for _ in range(3):
-            assert native.lzw(frozenset(), isolated=True) is None
+            assert kernels.lzw(frozenset(), isolated=True).library is None
     assert len(asked) == 1
     assert len(starts) == (0 if how == "no child" else 1)
     logged = "cannot be imported" if how == "import fails" else "cannot run in a"
@@ -1584,7 +1588,7 @@ def test_no_child_means_the_python_twin(
 @needs_codecs
 def test_the_packages_errors_have_the_module_the_child_matches() -> None:
     """The child's errors are rebuilt by their module and name
-    (``native_child._ERRORS``): PyO3 sets that module to ``_codecs``."""
+    (``kernel_child._ERRORS``): PyO3 sets that module to ``_codecs``."""
     import archivey_codecs
 
     for name in (
@@ -1594,7 +1598,7 @@ def test_the_packages_errors_have_the_module_the_child_matches() -> None:
         "UnsupportedDataError",
     ):
         kind = getattr(archivey_codecs, name)
-        assert (kind.__module__, kind.__qualname__) in native_child._ERRORS
+        assert (kind.__module__, kind.__qualname__) in kernel_child._ERRORS
 
 
 @needs_codecs
@@ -1637,21 +1641,21 @@ def test_cab_members_open_at_once_give_their_children_back(
 
 def test_an_excluded_package_starts_no_child(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake(monkeypatch, lzw=1)
-    monkeypatch.setattr(native_child, "_table", [])
+    monkeypatch.setattr(kernel_child, "_table", [])
 
     def refuse(*args: object, **kwargs: object) -> NoReturn:
         raise AssertionError("a child was started")
 
-    monkeypatch.setattr(native_child, "DecoderChild", refuse)
-    assert native.lzw(EXCLUDED, isolated=True) is None
-    assert native_child.open_kernels(EXCLUDED) is None
+    monkeypatch.setattr(kernel_child, "DecoderChild", refuse)
+    assert kernels.lzw(EXCLUDED, isolated=True).library is None
+    assert kernel_child.open_kernels(EXCLUDED) is None
 
 
 @needs_codecs
 def test_an_old_kernel_in_the_child_is_not_used(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(native_child, "_table", [{"lzw": 0, "lzx": 2}])
-    monkeypatch.setattr(native, "_too_old_logged", set())
-    assert native.lzw(frozenset(), isolated=True) is None
-    assert native.lzx(frozenset(), isolated=True) is not None
+    monkeypatch.setattr(kernel_child, "_table", [{"lzw": 0, "lzx": 2}])
+    monkeypatch.setattr(_select, "_too_old_logged", set())
+    assert kernels.lzw(frozenset(), isolated=True).library is None
+    assert kernels.lzx(frozenset(), isolated=True).library is not None

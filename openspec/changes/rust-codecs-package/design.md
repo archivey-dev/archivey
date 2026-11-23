@@ -218,7 +218,7 @@ f.seek(stream_start + point[1])         # feed input from total_in; output resum
   the same message.
 - Panics: a missed check in a kernel panics, and PyO3 raises
   `pyo3_runtime.PanicException`, a `BaseException` that gets past `except Exception`.
-  `internal/native.py` catches it around every kernel call and raises archivey's
+  `internal/kernels/rust.py` catches it around every kernel call and raises archivey's
   `CorruptionError` with the panic as `__cause__`, so the caller sees a typed error as
   with the Python twin. The decoder object is then unusable (its state may be half
   updated): every later call raises the same error. Fuzzing and parity treat any panic
@@ -236,7 +236,7 @@ f.seek(stream_start + point[1])         # feed input from total_in; output resum
 
 `archivey_codecs.KERNELS` maps each kernel name to a revision, raised whenever the
 kernel's observable behaviour changes (output, error kind or message, seek points).
-archivey's `internal/native.py` holds the minimum revision it needs per kernel and uses
+archivey's `internal/kernels/_select.py` holds the minimum revision it needs per kernel and uses
 a kernel only at that revision or newer; otherwise it uses the Python decoder and logs
 once at DEBUG. The dependency range is `archivey-codecs>=0.1,<1` (question 7).
 
@@ -261,6 +261,30 @@ The "change it twice" rule stays: a fix to a twinned Python decoder is made in R
 the same PR, and the kernel's revision goes up. Users get the fixed Python version
 until the next codecs release turns the kernel back on.
 
+## D4a. archivey's side: one API, one switch
+
+The maintainer asked (2026-11-22) that call sites never mention the native package:
+each kernel has a Python version with the package's exact API and one switch between
+the two. `src/archivey/internal/kernels/` holds it:
+
+- `kernels/python/`: the Python twins, one module per package module
+  (`zipcrypto.Decryptor`, `filters.Arm64Decoder`, `lzo1x.decompress`,
+  `lzw.Decompressor`, `lzx.Decompressor`, `bcj2.Decompressor`, and `crc16_arc`), with
+  the package's classes, arguments, attributes and errors (archivey's, as the wrappers
+  raise them). They leave out the state methods (`getstate`, `from_state`, and `copy`
+  except ZipCrypto's), and LZX leaves out `unused_data` and `total_in`: its pull decoder
+  reads ahead of the output, and no call site needs either.
+- `kernels/rust.py`: the package's objects wrapped to raise archivey's errors and latch
+  panics, with the same API.
+- `kernels/__init__.py`: the switch. `kernels.lzx(excluded, isolated=...)` (and one
+  function per kernel) returns a namespace with that module's names, the package's or
+  the twin's, and `library` for the record of the backends a read used.
+  `kernels/_select.py` holds the revision table and error mapping, and
+  `kernels/child.py` the stand-in module whose objects live in a decoder child.
+
+Each call site builds through the switch and then uses one API. The package's parity
+tests run the same driver code over the twins and the package.
+
 ## D5. How archivey installs and turns it off
 
 - Extra `archivey[codecs]` with platform markers, so pip never falls back to the sdist:
@@ -281,7 +305,8 @@ until the next codecs release turns the kernel back on.
   knows the package; `[recommended]` gains it one archivey release later (question 9).
 - `OptionalLibrary.ARCHIVEY_CODECS` (question 8), passed through every call site (the
   prototype reached only LZO). It is the only switch: tests that need the Python path
-  pass `exclude_libraries`, or use a fixture that patches `internal/native.py`. No
+  pass `exclude_libraries`, or use a fixture that patches the switch in
+  `internal/kernels` (`tests/kernels_util.use_python_twin`). No
   environment variable turns the kernels off.
 - `[free-threaded]` includes the package (the module declares `gil_used = false`, and
   CI's GIL assertion over that extra covers it). `[all]` gets it through

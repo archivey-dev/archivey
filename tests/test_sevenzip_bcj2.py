@@ -25,7 +25,6 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal import native
 from archivey.internal.backends.sevenzip_parser import (
     SevenZipCoder,
     SevenZipFolder,
@@ -42,6 +41,7 @@ from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
 from archivey.types import CompressionAlgorithm
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.kernels_util import use_python_twin
 from tests.streams_util import (
     assert_non_integer_seek_is_type_error,
     assert_seek_underflow_matches_bytesio,
@@ -79,7 +79,7 @@ _FORCED = [
 def bcj2_kernel(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
     """Every test with each BCJ2 decoder: archivey's own, and archivey-codecs'."""
     if request.param == "python":
-        monkeypatch.setattr(native, "bcj2", lambda *_a, **_k: None)
+        use_python_twin(monkeypatch, "bcj2")
     return request.param
 
 

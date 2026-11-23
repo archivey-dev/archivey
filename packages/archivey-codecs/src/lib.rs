@@ -854,7 +854,10 @@ impl LzwDecompressor {
         let total_out = r.u64().map_err(to_py0)?;
         r.finish().map_err(to_py0)?;
         let produced = total_out.checked_add(held.len() as u64);
-        if clear_at.0 > fed || produced.is_none_or(|p| clear_at.1 > p) {
+        // A CLEAR's segment ends after its group padding, which may not have arrived:
+        // the last CLEAR offset is ahead of `total_in` by the padding still to skip.
+        let consumed = fed.checked_add(inner.pending_skip());
+        if consumed.is_none_or(|c| clear_at.0 > c) || produced.is_none_or(|p| clear_at.1 > p) {
             return Err(CorruptDataError::new_err(
                 "the lzw state holds offsets that do not agree",
             ));
