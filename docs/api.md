@@ -108,6 +108,7 @@ See [Configuration](opening.md#configuration), [Passwords](opening.md#passwords)
 ::: archivey.AcceleratorMode
 ::: archivey.ProcessIsolation
 ::: archivey.RarDecompressor
+::: archivey.PartialDataRecovery
 ::: archivey.PasswordInput
 ::: archivey.PasswordRequest
 ::: archivey.PasswordProvider

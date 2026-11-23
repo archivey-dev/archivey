@@ -18,12 +18,16 @@ import zlib
 from collections.abc import Sequence
 from typing import BinaryIO
 
+from archivey.internal import native
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
+from archivey.internal.native import CipherState
 from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     read_exact,
     resolve_seek,
 )
+from archivey.types import OptionalLibrary
 
 #: Length of the encryption header in front of every ZipCrypto member's data.
 ZIPCRYPTO_HEADER_LEN = 12
@@ -139,20 +143,34 @@ class ZipCryptoKeys:
         return b"".join(parts)
 
 
+def new_keys(
+    password: bytes, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+) -> CipherState:
+    """The key state for ``password``: archivey-codecs' when it is installed and
+    ``excluded`` leaves it on, else :class:`ZipCryptoKeys`. Both give the same bytes."""
+    make = native.zipcrypto(excluded)
+    return ZipCryptoKeys(password) if make is None else make(password)
+
+
 def keys_after_header(
-    password: bytes, header_ciphertext: bytes
-) -> tuple[ZipCryptoKeys, int]:
+    password: bytes,
+    header_ciphertext: bytes,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
+) -> tuple[CipherState, int]:
     """Decrypt the 12-byte header; return the state after it and its last plaintext byte.
 
     The last byte is the check byte a correct password reproduces.
     """
-    keys = ZipCryptoKeys(password)
+    keys = new_keys(password, excluded)
     plain = keys.decrypt(header_ciphertext[:ZIPCRYPTO_HEADER_LEN])
     return keys, plain[-1]
 
 
 def password_matches_check_byte(
-    password: bytes, header_ciphertext: bytes, check_byte: int
+    password: bytes,
+    header_ciphertext: bytes,
+    check_byte: int,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
 ) -> bool:
     """Whether ``password`` satisfies ZipCrypto's 1-byte header check.
 
@@ -160,7 +178,7 @@ def password_matches_check_byte(
     """
     if len(header_ciphertext) < ZIPCRYPTO_HEADER_LEN:
         return False
-    _, plain_last = keys_after_header(password, header_ciphertext)
+    _, plain_last = keys_after_header(password, header_ciphertext, excluded)
     return plain_last == check_byte
 
 
@@ -170,6 +188,7 @@ def parallel_plaintext_crc32(
     body: BinaryIO,
     *,
     chunk_size: int = 64 * 1024,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
 ) -> list[tuple[bytes, int]]:
     """Decrypt ``body`` with each password in parallel; return ``(password, crc32)``.
 
@@ -180,7 +199,8 @@ def parallel_plaintext_crc32(
     first match).
     """
     states = [
-        keys_after_header(password, header_ciphertext)[0] for password in passwords
+        keys_after_header(password, header_ciphertext, excluded)[0]
+        for password in passwords
     ]
     crcs = [0] * len(states)
     while True:
@@ -214,7 +234,7 @@ class ZipCryptoDecryptStream(ReadOnlyIOStream):
     Close owns ``source``.
     """
 
-    def __init__(self, source: BinaryIO, keys: ZipCryptoKeys, *, length: int) -> None:
+    def __init__(self, source: BinaryIO, keys: CipherState, *, length: int) -> None:
         # First: close() reads it, and IOBase.__del__ runs close() on a refused instance.
         self._source = source
         super().__init__()

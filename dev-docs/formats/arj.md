@@ -16,10 +16,10 @@ written against `archivey.formats` and registered as a built-in, as LHA and CAB 
 | Listing cost | Header by header, one read per header and a seek past the data |
 | Access cost | `DIRECT`: each member is its own stream |
 | Core dependencies | None. Methods 1 to 3 through `lzh_decoder.py` (LHA's decoder), method 4 through `arj_fast_decoder.py`, both archivey's own, in Python |
-| Encryption | "Garbling" (`-g`): listed with `is_encrypted`, refused when read |
+| Encryption | "Garbling" (`-g`): listed with `is_encrypted`, read with `password=` (§5). ARJ's later GOST cipher (encryption version 2 and later) is refused when read |
 | Name encoding | Bytes. UTF-8 first, then `encoding=` (DOS archives are usually cp437 or cp866), then escaped, as in every format |
 | Checksums | A CRC-32 of each basic header and each extended header, checked when it is read; a CRC-32 of each member's data, checked by the read |
-| Refuses | Garbled members and members split across volumes, when read; methods past 4, when read; a pipe, with `StreamNotSeekableError` |
+| Refuses | GOST-encrypted members and members split across volumes, when read; methods past 4, when read; a pipe, with `StreamNotSeekableError` |
 | Spec | `openspec/specs/format-arj/spec.md` |
 
 Not here, though a reader might look for it: multi-volume sets (`.arj`, `.a01`, ...) are
@@ -117,7 +117,28 @@ stub, the archive at byte 16 959, an ARJ-SECURITY envelope after it, from the IF
 lists its 25 members, detected and forced, with no diagnostic, and each member's bytes
 match 7-Zip's. ARJ for Unix's `-je` and `-je1` programs (ELF) read the same way.
 
-## 5. Tests and fixtures
+## 5. Garbled members
+
+ARJ's original garble (`arj a -g<password>`, open-source ARJ 3.10's only one) XORs each
+stored byte with `(password[i % len] + modifier) & 0xFF`, `i` counted from the member's
+first stored byte and `modifier` the file header's byte 7. The main header's byte 7 is
+the encryption version: 0 and 1 are this garble, 2 and later ARJ's GOST 28147-89 cipher
+(the ARJCRYPT module), which archivey refuses.
+
+Nothing before the data tells a wrong password, so `open_member` returns a
+`NeedsPassword` whose check passes any non-empty password (`INCONCLUSIVE`) and whose
+`full_check` decodes the member to its CRC-32 (`CONFIRMED` over 4 bytes or more). With
+several candidates, or a provider, each one is decoded in full before the read: a
+garbled member then costs two decodes. A single password with no provider is decoded
+once, and a wrong one fails the read itself with the wrong-password-or-damage
+`EncryptionError` (decoder failures included, as for a ZIP member). The full checks
+decode outside the member handle, so its ratio guard never sees them: before the request
+goes out, `_check_ratio` refuses a member whose recorded sizes break `max_ratio`, with
+the `ResourceLimitError` an extraction's size check raises. A recorded compressed size
+of 0 skips that check: the decoder then stops on the empty input. Fixtures:
+`garbled.arj`, `garbled_m1.arj`, `garbled_m4.arj` (`tests/fixtures/external/README.md`).
+
+## 6. Tests and fixtures
 
 - `tests/test_arj.py`: `tests/fixtures/external/arj_310` (ARJ 3.10 for Linux: each method,
   links, a FIFO, a directory, a garbled member, a `-je1` self-extractor) and two of Commons Compress's archives

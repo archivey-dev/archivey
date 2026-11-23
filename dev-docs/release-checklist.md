@@ -31,8 +31,11 @@ fails if the tag and either packaged version disagree.
 
 ## 1. Gather user-visible changes (CHANGELOG)
 
-Pull requests do not edit `CHANGELOG.md`; the release PR writes the whole entry. What
-goes in it:
+Pull requests may add or edit lines under `## [Unreleased]`, merged into the structure
+below (CONTRIBUTING.md §Cutting a release). They leave the shared **Fixed** line alone:
+a plain bug fix needs no line. The release PR does the final pass: add what the merged
+pull requests left out, merge lines on the same topic, drop what is not user-facing, and
+fix the order and wording. What goes in it:
 
 - one line per new feature and per public API change, counting a renamed or removed
   `archivey` verb or option and a changed exit code (**Added** / **Changed** /
@@ -83,7 +86,7 @@ the date in that heading.)
   line it prints is an **Added** item, a `-` line is **Removed**, and a `-` and `+` pair
   for the same name is **Changed** (or **Deprecated**, or a **Breaking:** line).
 
-- [ ] Write the entry under `## [Unreleased]`. `release.py start` (§6) moves it under
+- [ ] Finish the entry under `## [Unreleased]`. `release.py start` (§6) moves it under
   a dated `## [X.Y.Z]` heading and writes the compare links.
 
 ---
@@ -275,6 +278,36 @@ would do. A patch release is §1 to §5 and these four commands.
 - [ ] If docs site is Pages-published, confirm the workflow ran on the tag /
       default branch as configured.
 - [ ] Announce as you prefer (not required by the tooling).
+
+---
+
+## archivey-codecs releases
+
+archivey-codecs (`packages/archivey-codecs`) has its own version, its own changelog
+and its own tags, `codecs-vX.Y.Z`. `publish.yml` runs on `v*` and does not match them;
+`codecs-publish.yml` does. It builds the abi3 wheel and the free-threaded wheels on
+every platform, tests each one against archivey from the same commit, builds the sdist,
+and uploads through Trusted Publishing.
+
+One-time setup (the project does not exist on PyPI before the first upload): add a
+pending publisher for project `archivey-codecs`, repository `archivey-dev/archivey`,
+workflow `codecs-publish.yml`, on PyPI with environment `pypi` and on TestPyPI with
+environment `testpypi`.
+
+1. A release PR sets `[package].version` in `packages/archivey-codecs/Cargo.toml`
+   (the only version: `pyproject.toml` reads it), moves the package `CHANGELOG.md`'s
+   `Unreleased` text under the version, and raises any changed kernel revisions.
+2. Before merging it, run the TestPyPI dry run from its branch: Actions →
+   archivey-codecs wheels → Run workflow, target `testpypi`. A TestPyPI filename can
+   never be uploaded again either, so a second dry run of the same version uploads
+   nothing new.
+3. After the merge, create the GitHub Release on the merge commit with tag
+   `codecs-vX.Y.Z`, and untick "Set as latest release" so the repository's latest
+   release stays archivey's. The tag starts `codecs-publish.yml`, which checks the tag
+   against `Cargo.toml` and publishes to PyPI after the `pypi` environment approval.
+4. Confirm the files on PyPI, each with provenance (an attestation).
+
+Release when a kernel is added or its revision changes, or for a security fix.
 
 ---
 

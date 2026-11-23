@@ -200,7 +200,7 @@ class PkgReader(XarReader):
     ) -> Iterator[MemberRecord[_Location]]:
         """The files of the payload ``record``, or ``record`` itself when it does not
         hold a CPIO."""
-        payload, location = record
+        payload, location = record.member, record.locator
         try:
             stream = cast(BinaryIO, super().open_member(payload, location).stream)
         except UnsupportedFeatureError:
