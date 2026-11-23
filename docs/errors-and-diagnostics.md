@@ -157,13 +157,13 @@ member in one call and then stops should check the length it got, or call `read(
 When a read with a size meets damaged compressed data in a file, it first gives you every byte
 before the damage, and the next read raises. To find those bytes, archivey decompresses that part
 of the member a second time. If you throw a damaged member away anyway, set
-`ArchiveyConfig(recover_partial_data=False)` to skip that work: the read that meets the damage then
-raises sooner, and some of the bytes just before the damage, at most one internal step's worth, are
-lost. Formats whose decoder already returns those bytes at no extra cost (`.Z`, lzop, bzip3 and the
-old ZIP methods) still return them. The error is the same either way. A compressed tar in a file
-still gives you every member that ends before the damage, under either setting. bzip2 is the
-exception: it decompresses whole blocks of about 900 kB, so one damaged byte fails every member
-with data in that block, and a small `.tar.bz2` is often a single block.
+`ArchiveyConfig(recover_partial_data=PartialDataRecovery.OFF)` to skip that work: the read that
+meets the damage then raises sooner, and some of the bytes just before the damage, at most one
+internal step's worth, are lost. Formats whose decoder already returns those bytes at no extra cost
+(`.Z`, lzop, bzip3 and the old ZIP methods) still return them. The error is the same at every level.
+A compressed tar in a file still gives you every member that ends before the damage, at every level.
+bzip2 is the exception: it decompresses whole blocks of about 900 kB, so one damaged byte fails
+every member with data in that block, and a small `.tar.bz2` is often a single block.
 
 A pipe can't be read twice, so there archivey can't decompress a second time. A `.tar.gz` and the
 formats just named still give you every member that ends before the damage. With xz, zstd and the
@@ -179,6 +179,15 @@ solid archive the members after the damage in the same solid block fail too, eac
 read, and with random access `open()` itself can raise for them. The loop raises and stops early
 only when the damage is to the archive's structure, such as a TAR cut off inside a member, so that
 archivey can't find the next member.
+
+By default, the read that fails a checksum or size check, such as the read that reaches the end of a
+ZIP member whose data does not match its CRC, raises and returns none of its own bytes. To get every
+byte of such a member and still hear that it failed, set
+`ArchiveyConfig(recover_partial_data=PartialDataRecovery.ALL)`. The read whose check fails then
+returns its bytes, and the next read raises the same error. Keep reading until a read returns `b""`
+or raises: a single `read()` of the whole member returns its bytes without raising, and
+`member.verified` stays below `CHECKSUM`. Extraction with `on_error=OnError.KEEP_PARTIAL` reads this
+way whatever the config says.
 
 No option makes archivey check a member before handing you its bytes. If you must never use
 unchecked data, read the whole member into memory or a temporary file first, and use it only once

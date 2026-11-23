@@ -322,9 +322,9 @@ contributors; it can be split out later with its history.
 
 ## D7. Wheels
 
-One workflow on `PyO3/maturin-action`. abi3 (cp311) wheels, one per platform:
-manylinux x86_64 and aarch64 (native arm runner), musllinux x86_64 and aarch64, macOS
-arm64 and x86_64 (cross-compiled), Windows x86_64 and arm64. About 300 KB each.
+One workflow on `PyO3/maturin-action`. abi3 (cp311) wheels, one per platform, each
+built on a native runner: manylinux_2_28 and musllinux_1_2 x86_64 and aarch64, macOS
+arm64 and x86_64, Windows x86_64 and arm64. About 300 KB each.
 
 - Free-threaded (3.13t, 3.14t, later 3.15t): per-version wheels on the same platforms
   (question 10). The module already declares `gil_used = false`.
