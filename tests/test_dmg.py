@@ -1021,6 +1021,45 @@ def test_a_catalog_leaf_loop_delivers_the_members_before_it() -> None:
     assert len(seen) < 120
 
 
+def _cut_chain(nodes_: list[bytearray]) -> None:
+    # The first leaf's forward link is 0: the chain ends there.
+    first = next(i for i, n in enumerate(nodes_) if n[8:9] == b"\xff")
+    struct.pack_into(">I", nodes_[first], 0, 0)
+
+
+def _miscount(nodes_: list[bytearray]) -> None:
+    # The header record's leafRecords, after the node descriptor, depth and root.
+    at = 14 + 2 + 4
+    struct.pack_into(
+        ">I", nodes_[0], at, struct.unpack_from(">I", nodes_[0], at)[0] + 1
+    )
+
+
+@pytest.mark.parametrize(
+    ("patch", "match"),
+    [(_cut_chain, "ends at node"), (_miscount, "header declares")],
+    ids=["cut", "miscounted"],
+)
+def test_a_catalog_leaf_chain_short_of_its_header_is_corruption(
+    patch: Callable[[list[bytearray]], None], match: str
+) -> None:
+    """A leaf chain that ends before the header's lastLeafNode, or holds another
+    number of records than its leafRecords, has lost members: the members it found
+    are listed, then the error comes."""
+    nodes = [d.Node(f"f{i:03d}.txt", data=b"x") for i in range(60)]
+    seen: list[str] = []
+    with (
+        _open(
+            _image(nodes, hfs_options={"patch_catalog_nodes": patch, "node_size": 512})
+        ) as reader,
+        pytest.raises(CorruptionError, match=match),
+    ):
+        for member in reader:
+            seen.append(member.name)
+    # The cut chain lists the first leaf's members; the miscounted one lists all.
+    assert 0 < len(seen) < 60 if patch is _cut_chain else len(seen) == 60
+
+
 def test_a_folder_parent_loop_delivers_the_other_members() -> None:
     """A folder whose parent chain loops cannot be placed: the members in it are left
     out, the others are listed, and the error comes at the end (DR-2)."""
