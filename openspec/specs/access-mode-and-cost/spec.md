@@ -279,7 +279,7 @@ The system SHALL behave per this canonical table (`✅` allowed,
 | `members` / `get` / `open` / `read` | ✅; `members`/`get` complete-or-raise | ⛔ |
 | `in` (identity) | ✅ no scan (incl. recovered report members) | ✅ no scan |
 | `cost` / `info` / `format` / `close` / CM | ✅ | ✅ |
-| at `open_archive()` | `StreamNotSeekableError` if the source cannot seek | `streaming=True`: `StreamNotSeekableError` if the source cannot seek; `pipe=True`: any source, read once as a pipe (a format that needs seeking still refuses) |
+| at `open_archive()` | `StreamNotSeekableError` if the source cannot seek | `streaming=True`: `StreamNotSeekableError` if the source cannot seek; `pipe=True`: one byte stream, seekable or not, read once as a pipe; a directory or a volume set raises `ArchiveyUsageError`, and a format that needs seeking still refuses (see the source rules above) |
 
 In streaming mode and pipe mode, `__iter__` / `stream_members` / `extract_all` share one pass.
 
