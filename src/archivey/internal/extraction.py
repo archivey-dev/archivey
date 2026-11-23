@@ -2364,6 +2364,9 @@ class ExtractionCoordinator:
             # own result is recorded by the caller's handler.
             if self._current.removed_existing:
                 self._mark_overwritten(prior or self._replaced_kept_partial())
+                if self._retire_owner():
+                    # The name is free again for a later RENAME.
+                    self._state.rename_next.clear()
             raise
 
         return self._settle_placement(
@@ -2411,6 +2414,8 @@ class ExtractionCoordinator:
         # partial file ``OnError.KEEP_PARTIAL`` kept landed as well.
         if _wrote_at_path(result):
             self._mark_overwritten(prior or self._replaced_kept_partial())
+            # Whatever landed (a directory too), the file it replaced is gone.
+            self._retire_owner()
             if transformed.type == MemberType.DIRECTORY and result.path is not None:
                 self._state.written_dirs.setdefault(
                     self._collision_key(result.path), []
@@ -4478,6 +4483,15 @@ class ExtractionCoordinator:
         if earlier.status is not ExtractionStatus.FAILED or earlier.path is None:
             return None
         return claim
+
+    def _retire_owner(self) -> bool:
+        """Under REPLACE, retire the claim of the file this member's destination held
+        (``_MemberState.owner``) once that file is gone: the member landed over it,
+        or removed it and then failed. Whether a claim was retired."""
+        owner = self._current.owner
+        if owner is None or self._overwrite is not OverwritePolicy.REPLACE:
+            return False
+        return self._state.placements.retire(owner)
 
     def _mark_overwritten(self, prior: _Claim | None) -> None:
         """Revise a clobbered member's result to OVERWRITTEN: its content is gone.

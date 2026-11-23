@@ -7,6 +7,7 @@ scenarios (path traversal, symlink escape, zip bomb, entry-count bomb).
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import gzip
 import io
@@ -35,6 +36,7 @@ from archivey import (
     DecoderLimits,
     ExtractionLimits,
     ExtractionPolicy,
+    ExtractionResult,
     ExtractionStatus,
     OnError,
     OverwritePolicy,
@@ -7910,3 +7912,47 @@ def test_a_hard_link_does_not_take_the_claim_of_its_target(
     assert report.results[2].path == dest / "d" / "A"
     assert (dest / "d" / "A").read_bytes() == b"two"
     assert (dest / link).read_bytes() == b"one"
+
+
+@pytest.mark.parametrize(
+    "policy", [ExtractionPolicy.STANDARD, ExtractionPolicy.TRUSTED]
+)
+@pytest.mark.parametrize("mkdir_fails", [False, True])
+def test_a_directory_that_replaces_a_file_retires_the_file_s_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    policy: ExtractionPolicy,
+    mkdir_fails: bool,
+) -> None:
+    # The file's claim goes once the file is gone: when the directory landed over
+    # it, and when its removal succeeded and the directory then could not be made.
+    coordinators: list[ExtractionCoordinator] = []
+    run = ExtractionCoordinator.run
+
+    def spy(
+        self: ExtractionCoordinator, reader: BaseArchiveReader, dest: str | Path
+    ) -> list[ExtractionResult]:
+        coordinators.append(self)
+        return run(self, reader, dest)
+
+    monkeypatch.setattr(ExtractionCoordinator, "run", spy)
+    dest = tmp_path / "out"
+    if mkdir_fails:
+        real_mkdir = extraction_module.os.mkdir
+
+        def mkdir(path: object, *args: object, **kwargs: object) -> None:
+            if os.fspath(cast("str", path)).endswith("x"):
+                raise OSError(errno.EACCES, "denied")
+            real_mkdir(cast("str", path), *args, **kwargs)
+
+        monkeypatch.setattr(extraction_module.os, "mkdir", mkdir)
+    archive = _tar_bytes([("file", "x", b"one"), ("dir", "x", None)])
+    with contextlib.suppress(ExtractionError, OSError):
+        open_and_extract(
+            io.BytesIO(archive),
+            dest,
+            policy=policy,
+            overwrite=OverwritePolicy.REPLACE,
+        )
+    assert not (dest / "x").is_file()
+    assert not coordinators[0]._state.placements

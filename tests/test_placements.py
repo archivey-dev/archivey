@@ -89,11 +89,38 @@ def test_the_key_decides_between_hard_links_of_one_file(tmp_path: Path) -> None:
     # One inode, two claims: each name's own key answers for it.
     assert placements.owner(tmp_path / "A", "A", occupied=True) is first
     assert placements.owner(tmp_path / "b", "b", occupied=True) is link
-    # A name no key reaches finds the claim of the name it folds to, else the latest.
+    # A name no key reaches finds the claim of the name it folds to.
     os.link(tmp_path / "A", tmp_path / "a")
-    os.link(tmp_path / "A", tmp_path / "c")
     assert placements.owner(tmp_path / "a", "a", occupied=True) is first
+    # A name that folds to neither (an 8.3 short name stands for one of the two)
+    # cannot tell which entry it reaches: no claim answers for it.
+    os.link(tmp_path / "A", tmp_path / "c")
+    assert placements.owner(tmp_path / "c", "c", occupied=True) is None
+
+
+@posix_inodes
+def test_a_name_that_folds_to_no_claim_finds_its_file_s_only_claim(
+    tmp_path: Path,
+) -> None:
+    placements = Placements()
+    only = placements.claim(_file(tmp_path / "LongFileName"), "L", tmp_path / "L", 0)
+    # ``LONGFI~1`` names the one entry the file has a claim for.
+    os.link(tmp_path / "LongFileName", tmp_path / "LONGFI~1")
+    assert placements.owner(tmp_path / "LONGFI~1", "LONGFI~1", occupied=True) is only
+
+
+@posix_inodes
+def test_a_retired_claim_leaves_the_identity_index(tmp_path: Path) -> None:
+    placements = Placements()
+    first = placements.claim(_file(tmp_path / "A"), "A", tmp_path / "A", 0)
+    os.link(tmp_path / "A", tmp_path / "b")
+    link = placements.claim(tmp_path / "b", "b", tmp_path / "b", 1)
+    os.link(tmp_path / "A", tmp_path / "c")
+    assert placements.owner(tmp_path / "c", "c", occupied=True) is None
+    # With ``A``'s claim retired, ``b``'s is the file's only one.
+    assert placements.retire(first)
     assert placements.owner(tmp_path / "c", "c", occupied=True) is link
+    assert sum(len(entries) for entries in placements._by_id.values()) == 1
 
 
 def _win(path: str) -> Path:

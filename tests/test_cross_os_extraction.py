@@ -1489,6 +1489,42 @@ def test_short_name_alias_collides_with_the_member_it_names(
         )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the alias is simulated with a hard link")
+@pytest.mark.parametrize(
+    "policy", [ExtractionPolicy.STANDARD, ExtractionPolicy.TRUSTED]
+)
+def test_short_name_of_a_hard_linked_file_does_not_reach_its_other_link(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """``other.txt`` is a hard link of ``longfilename.txt``, so one file has two
+    claimed entries, and the file alone cannot tell which of them ``LONGFI~1.TXT``
+    names. The write goes where the member asked, and ``other.txt`` keeps its
+    content and its result."""
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(
+            _tar(
+                [
+                    ("file", "longfilename.txt", b"1"),
+                    ("hard", "other.txt", "longfilename.txt"),
+                    ("file", "LONGFI~1.TXT", b"2"),
+                ]
+            )
+        ),
+        dest,
+        filter=_alias_after_first(dest, "longfilename.txt", "LONGFI~1.TXT"),
+        policy=policy,
+        overwrite=OverwritePolicy.REPLACE,
+        on_error=OnError.CONTINUE,
+    )
+    _one, link, three = report.results
+    assert link.status is ExtractionStatus.EXTRACTED
+    assert (dest / "other.txt").read_bytes() == b"1"
+    assert three.status is ExtractionStatus.EXTRACTED
+    assert three.path == dest / "LONGFI~1.TXT"
+    assert three.path.read_bytes() == b"2"
+
+
 @pytest.mark.parametrize("overwrite", [OverwritePolicy.ERROR, OverwritePolicy.REPLACE])
 def test_short_name_alias_is_a_file_already_there_under_trusted(
     tmp_path: Path, overwrite: OverwritePolicy

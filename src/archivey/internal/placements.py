@@ -19,7 +19,6 @@ the spellings this record has to keep apart.
 
 from __future__ import annotations
 
-import contextlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +26,9 @@ from pathlib import Path
 from archivey.internal.filters import collision_key
 from archivey.internal.long_paths import long_path
 from archivey.types import ExtractionPolicy
+
+_FileId = tuple[int, int]
+_EntryId = tuple[str, int, int]
 
 
 @dataclass(frozen=True)
@@ -58,15 +60,22 @@ class Placements:
     is filled lazily: a claim waits in ``_unindexed`` until the first identity lookup
     after it was made, so a run into an empty destination costs no ``lstat``. An
     identity hit is checked again against the claimed path, as an inode can be reused
-    once its file is gone. One inode can hold several claims: an archive's hard link
-    gives its file a second name.
+    once its file is gone.
+
+    One inode can hold several claims, because an archive's hard link gives its file
+    a second directory entry. The index keeps them by entry (the folded name and the
+    directory it is in), so a lookup costs the same however many links there are, and
+    a claim leaves the index when it is retired.
     """
 
     by_key: dict[str, Claim] = field(default_factory=dict)
     # The key each claimed path was claimed under, by spelling, so a release finds the
     # claim after a symlink in its path was replaced and the path resolves elsewhere.
     _key_of: dict[str, str] = field(default_factory=dict)
-    _by_id: dict[tuple[int, int], list[Claim]] = field(default_factory=dict)
+    # (st_dev, st_ino) -> entry (folded name, parent st_dev, parent st_ino) -> claim.
+    _by_id: dict[_FileId, dict[_EntryId, Claim]] = field(default_factory=dict)
+    # Where each indexed claim sits in ``_by_id``, by ``id``, so retiring it is cheap.
+    _slot: dict[int, tuple[_FileId, _EntryId]] = field(default_factory=dict)
     _unindexed: list[Claim] = field(default_factory=list)
 
     def __bool__(self) -> bool:
@@ -95,6 +104,9 @@ class Placements:
         """Claim ``path`` under ``key`` for result ``index``. Claiming a key someone
         else holds transfers it: a third member colliding revises the second."""
         claim = Claim(path, index, physical, key)
+        superseded = self.by_key.get(key)
+        if superseded is not None:
+            self._unindex(superseded)
         self.by_key[key] = claim
         self._key_of[os.fspath(path)] = key
         self._unindexed.append(claim)
@@ -112,21 +124,38 @@ class Placements:
         """Record that result ``index`` landed a file at ``path``, over the file of
         ``replaced`` (its owner before the write, from :meth:`owner`), if any.
 
-        The one place a landing updates ownership: the replaced claim is retired, even
-        when it was made under another key (a case variant under TRUSTED, whose key
-        does not fold it), so it can never answer for the new file. A replaced claim
-        under ``key`` itself is superseded by the new claim."""
-        if replaced is not None and replaced.key != key and self.is_live(replaced):
-            del self.by_key[replaced.key]
+        The replaced claim is retired, even when it was made under another key (a
+        case variant under TRUSTED, whose key does not fold it), so it can never
+        answer for the new file. A replaced claim under ``key`` itself is superseded
+        by the new claim."""
+        if replaced is not None and replaced.key != key:
+            self.retire(replaced)
         return self.claim(path, key, physical, index)
+
+    def retire(self, claim: Claim) -> bool:
+        """Drop ``claim`` once its file is gone (replaced, or removed by a write that
+        then failed), under whatever key it was made. Whether it was live."""
+        if not self.is_live(claim):
+            return False
+        del self.by_key[claim.key]
+        self._unindex(claim)
+        return True
+
+    def _unindex(self, claim: Claim) -> None:
+        slot = self._slot.pop(id(claim), None)
+        if slot is None:
+            return
+        entries = self._by_id.get(slot[0])
+        if entries is not None and entries.get(slot[1]) is claim:
+            del entries[slot[1]]
+            if not entries:
+                del self._by_id[slot[0]]
 
     def release(self, path: Path, key: str) -> bool:
         """Drop the claim made for ``path``, under ``key`` (as for :meth:`at_path`),
         once its content is gone. Whether there was one."""
-        if self.at_path(path, key) is None:
-            return False
-        del self.by_key[key]
-        return True
+        claim = self.at_path(path, key)
+        return claim is not None and self.retire(claim)
 
     def owner(self, path: Path, key: str, *, occupied: bool) -> Claim | None:
         """The live claim on the entry at ``path`` now, or else the one under ``key``.
@@ -137,7 +166,8 @@ class Placements:
         decides: the claim whose file is that entry wins, under whatever name it was
         claimed (a case variant on a case-insensitive filesystem, an 8.3 short name, a
         spelling NTFS's upcase table folds and ``casefold`` does not). With no such
-        claim, or on a filesystem that reports inode 0, the key decides."""
+        claim, or none that names this entry rather than another hard link of its
+        file, or on a filesystem that reports inode 0, the key decides."""
         if not self.by_key:
             return None
         keyed = self.by_key.get(key)
@@ -151,64 +181,85 @@ class Placements:
             return keyed
         if keyed is not None and _is_file_of(keyed, st):
             return keyed
-        found = self._by_identity(path, st)
+        found = self._entry_owner(path, st)
         return found if found is not None else keyed
 
     def by_identity(self, path: Path) -> Claim | None:
-        """The live claim whose file is the entry at ``path``, under whatever name it
-        was claimed, or ``None``. ``path`` should hold an entry: this costs an
+        """A live claim whose file is the entry at ``path``, under whatever name it
+        was claimed, or ``None``: the one naming this entry when the file has several
+        hard links and one can be told. ``path`` should hold an entry: this costs an
         ``lstat``, plus one per claim made since the last identity lookup."""
         try:
             st = os.lstat(long_path(path))
         except OSError:
             return None
-        return self._by_identity(path, st)
-
-    def _by_identity(self, path: Path, st: os.stat_result) -> Claim | None:
         if st.st_ino == 0:
             return None
+        found = self._entry_owner(path, st)
+        if found is not None:
+            return found
+        for claim in reversed(self._by_id.get((st.st_dev, st.st_ino), {}).values()):
+            if self.is_live(claim) and _is_file_of(claim, st):
+                return claim
+        return None
+
+    def _entry_owner(self, path: Path, st: os.stat_result) -> Claim | None:
+        """The live claim on the directory entry at ``path``, which ``st`` describes:
+        the claim of its file made in the same directory under a name that folds to
+        this one (case, Unicode normalization, a trailing dot or space), or else the
+        file's only claim. A file with several claims and no such name (an 8.3 short
+        name of one of its hard links) has no answer here: its file cannot tell which
+        entry the name reaches, and a wrong answer would send a write to another one."""
+        if st.st_ino == 0:
+            return None
+        self._index_new_claims()
+        entries = self._by_id.get((st.st_dev, st.st_ino))
+        if not entries:
+            return None
+        parent = _dir_id(path)
+        if parent is not None:
+            claim = entries.get((_folded(path.name), *parent))
+            if claim is not None and self.is_live(claim) and _is_file_of(claim, st):
+                return claim
+        if len(entries) == 1:
+            (claim,) = entries.values()
+            if self.is_live(claim) and _is_file_of(claim, st):
+                return claim
+        return None
+
+    def _index_new_claims(self) -> None:
         for claim in self._unindexed:
             if not self.is_live(claim):
                 continue
-            with contextlib.suppress(OSError):
+            parent = _dir_id(claim.path)
+            if parent is None:
+                continue
+            try:
                 cst = os.lstat(long_path(claim.path))
-                self._by_id.setdefault((cst.st_dev, cst.st_ino), []).append(claim)
+            except OSError:
+                continue
+            file_id = (cst.st_dev, cst.st_ino)
+            entry = (_folded(claim.path.name), *parent)
+            entries = self._by_id.setdefault(file_id, {})
+            earlier = entries.pop(entry, None)
+            if earlier is not None:
+                self._slot.pop(id(earlier), None)
+            entries[entry] = claim
+            self._slot[id(claim)] = (file_id, entry)
         self._unindexed.clear()
-        live = [
-            claim
-            for claim in self._by_id.get((st.st_dev, st.st_ino), ())
-            if self.is_live(claim)
-        ]
-        # Hard links of one file are several entries. The entry here is the claim
-        # whose name folds to this one (case, Unicode normalization, a trailing dot
-        # or space) in the same directory; a name that test cannot decide (an 8.3
-        # short name) takes the latest claim of the file.
-        name = _folded(path.name)
-        for claim in reversed(live):
-            if (
-                _folded(claim.path.name) == name
-                and _same_directory(claim.path, path)
-                and _is_file_of(claim, st)
-            ):
-                return claim
-        for claim in reversed(live):
-            if _is_file_of(claim, st):
-                return claim
-        return None
 
 
 def _folded(name: str) -> str:
     return collision_key(name, ExtractionPolicy.STANDARD)
 
 
-def _same_directory(a: Path, b: Path) -> bool:
-    """Whether the parents of ``a`` and ``b`` are one directory."""
+def _dir_id(path: Path) -> tuple[int, int] | None:
+    """The identity of the directory ``path`` is in, following symlinks."""
     try:
-        return os.path.samestat(
-            os.stat(long_path(a.parent)), os.stat(long_path(b.parent))
-        )
+        st = os.stat(long_path(path.parent))
     except OSError:
-        return False
+        return None
+    return st.st_dev, st.st_ino
 
 
 def _is_file_of(claim: Claim, st: os.stat_result) -> bool:
