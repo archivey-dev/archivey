@@ -206,7 +206,7 @@ def test_outcome_names_what_a_non_red_run_means() -> None:
 
 def test_tier_is_light_only_when_every_path_is_maintainer_prose_or_tests() -> None:
     light = prep.tier(["dev-docs/x.md", "tests/test_x.py", "mkdocs.yml", "NOTES.md"])
-    assert (light.name, light.api_changed) == ("light", False)
+    assert (light.name, light.api_changed, light.api_paths) == ("light", False, [])
     # A spec is a contract, and a nested `.md` outside the light folders is not prose.
     assert prep.tier(["dev-docs/x.md", "openspec/specs/cli/spec.md"]).name == "standard"
     # User docs get the Opus round, so they are standard.
@@ -233,7 +233,10 @@ def test_tier_path_lists_name_paths_that_exist() -> None:
     # A renamed file would stop matching and quietly drop its pull requests to standard.
     for entry in (
         prep.DEEP_SECURITY
-        + prep.DEEP_PROCESS
+        + prep.DEEP_CORE
+        + prep.PROCESS_FILES
+        + prep.NEW_PARSER_DIRS
+        + (prep.API_SURFACE, prep.CODECS_API)
         + prep.NOT_LIGHT
         + tuple(prep.MAINTAINER_FILES)
     ):
@@ -256,16 +259,22 @@ def test_required_checks_are_job_names_in_the_workflows() -> None:
         assert check in names, check
 
 
-def test_the_review_rules_are_deep_and_the_gate_goes_to_the_maintainer() -> None:
-    """A pull request is reviewed under its own copy of these. The prompt and the skill
-    merge like any deep pull request; the files that decide whether a round runs and
+def test_the_review_rules_are_standard_with_the_pass_and_the_gate_goes_to_the_maintainer() -> (
+    None
+):
+    """A pull request is reviewed under its own copy of these. They are not deep
+    (maintainer, 2026-11-22): every one gets the security pass with the pull request's
+    author as the attacker, and the files that decide whether a round runs and
     approves, and who merges, go to the maintainer."""
     for rules in (
         ".github/review-loop-prompt.md",
         ".claude/skills/code-review-skill/SKILL.md",
         "scripts/review/review_shape.py",
+        ".github/workflows/ci.yml",
     ):
-        assert prep.tier([rules]).name == "deep", rules
+        t = prep.tier([rules])
+        assert (t.name, t.process) == ("standard", [rules]), rules
+        assert "security pass: yes" in prep.tier_report(t), rules
         assert prep.maintainer_decisions([prep.FileDiff(rules)]) == [], rules
     for gate in (
         "scripts/review/review_loop_gate.py",
@@ -274,7 +283,7 @@ def test_the_review_rules_are_deep_and_the_gate_goes_to_the_maintainer() -> None
         ".github/workflows/review-loop.yml",
         ".github/workflows/risk-label.yml",
     ):
-        assert prep.tier([gate]).name == "deep", gate
+        assert prep.tier([gate]).name == "standard", gate
         assert prep.maintainer_decisions([prep.FileDiff(gate)]) == [
             f"touches the merge gate: {gate}"
         ]
@@ -294,18 +303,62 @@ def test_an_edit_to_the_merge_rule_goes_to_the_maintainer() -> None:
     assert prep.tier(["dev-docs/review-loop.md"]).name == "standard"
 
 
-def test_tier_is_deep_on_a_safety_path_and_on_workflows() -> None:
+def test_tier_is_deep_on_a_change_to_a_shared_layers_code() -> None:
     safety = prep.tier(["src/archivey/internal/extraction.py", "docs/x.md"])
     assert safety.name == "deep"
-    assert safety.reasons == ["src/archivey/internal/extraction.py"]
+    assert safety.reasons == ["shared layer: src/archivey/internal/extraction.py"]
     assert prep.tier(["src/archivey/internal/external/unar.py"]).name == "deep"
-    workflow = prep.tier([".github/workflows/ci.yml"])
-    assert prep.tier_report(workflow)[:2] == [
+    core = prep.tier(["src/archivey/internal/streams/verify.py"])
+    assert prep.tier_report(core)[:2] == [
         "tier: deep",
-        "  deep path: .github/workflows/ci.yml",
+        "  deep: shared layer: src/archivey/internal/streams/verify.py",
     ]
+    # A docstring or a comment alone does not count.
+    docs_only = prep.tier(["src/archivey/config.py"], code_changed=lambda p: False)
+    assert docs_only.name == "standard"
     # A directory entry matches by prefix, a file entry only exactly.
     assert prep.tier(["src/archivey/paths.pyi"]).name == "standard"
+
+
+def test_code_changed_ignores_docstrings_and_comments() -> None:
+    before = 'def f():\n    """Old."""\n    return 1  # one\n'
+    assert not prep._code_changed(before, 'def f():\n    """New."""\n    return 1\n')
+    assert not prep._code_changed(before, "def f():\n    return 1\n")
+    assert prep._code_changed(before, 'def f():\n    """Old."""\n    return 2\n')
+    # A string that is not the first statement is code.
+    assert prep._code_changed("x = 1\n", 'x = 1\n"s"\n')
+    assert prep._code_changed(None, "x = 1\n")
+    assert prep._code_changed("x = (\n", "x = 1\n")
+    # A type-checker or lint directive is not a plain comment.
+    plain = "def f() -> int:\n    return g()\n"
+    for directive in (
+        "# pyrefly: ignore[bad-return]",
+        "# type: ignore",
+        "# noqa: E501",
+    ):
+        assert prep._code_changed(plain, plain.replace("g()", f"g()  {directive}"))
+    assert not prep._code_changed(
+        plain.replace("g()", "g()  # ty: ignore"),
+        plain.replace("g()", "g()  #  ty: ignore"),
+    )
+
+
+def test_a_commit_trailer_raises_the_tier_and_nothing_lowers_it() -> None:
+    # The trailer values `git log --format=%(trailers:...,valueonly)` prints.
+    assert prep.raised_tiers("deep (resumable state)\n\nDeep\n") == [
+        "resumable state",
+        "",
+    ]
+    assert prep.raised_tiers("standard\n") == []
+    # Only one pair around the whole reason is unwrapped.
+    assert prep.raised_tiers(
+        "deep (a) and (b)\ndeep (nested (parens))\ndeep (why) extra\ndeep (open\n"
+    ) == ["(a) and (b)", "nested (parens)", "(why) extra", "(open"]
+    t = prep.tier(["src/archivey/core.py"], raised=["resumable state"])
+    assert (t.name, t.reasons) == ("deep", ["raised in a commit: resumable state"])
+    assert prep.tier(["dev-docs/x.md"], raised=[""]).reasons == [
+        "raised in a commit: (no reason given)"
+    ]
 
 
 def test_the_merge_line_names_the_maintainers_decisions() -> None:
@@ -317,10 +370,14 @@ def test_the_merge_line_names_the_maintainers_decisions() -> None:
         "  maintainer decision: touches the release path: scripts/release/release.py",
     ]
     # With no decision, the line names what must approve first: the Opus pass runs on
-    # the tiers review_loop_gate.py lists, and Cursor on deep alone.
+    # the tiers review_loop_gate.py lists, and Codex or Cursor on deep alone.
     assert gate.OPUS_PASS_TIERS == {"standard", "deep"}
     for paths, line in (
-        ([".github/workflows/ci.yml"], "the Opus pass and Cursor approve"),
+        (
+            ["src/archivey/internal/extraction.py"],
+            "the Opus pass and a Codex or Cursor review approve",
+        ),
+        ([".github/workflows/ci.yml"], "the Opus pass approves"),
         (["src/archivey/core.py"], "the Opus pass approves"),
         (["dev-docs/x.md"], "the review approves"),
         (["docs/x.md"], "the Opus pass approves"),
@@ -570,6 +627,7 @@ def test_review_tier_reads_adds_renames_and_texts_from_git(
         tmp_path,
         {
             f"{backends}/zip_parser.py": body,
+            "src/archivey/config.py": '"""Old."""\nX = 1\n',
             prep.THREAT_MODEL: THREAT_BASE,
             "pyproject.toml": pyproject,
             ".github/workflows/ci.yml": "jobs:\n  - uses: actions/checkout@v4\n",
@@ -583,6 +641,7 @@ def test_review_tier_reads_adds_renames_and_texts_from_git(
         tmp_path,
         {
             f"{backends}/cab_reader.py": "new\n",
+            "src/archivey/config.py": '"""New."""\nX = 1  # one\n',
             "dev-docs/decisions/0099-x.md": "adr\n",
             prep.THREAT_MODEL: THREAT_BASE.replace("### Stays inside\none\n", "")
             + "### X\n",
@@ -591,7 +650,14 @@ def test_review_tier_reads_adds_renames_and_texts_from_git(
         },
     )
     _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-qm", "pr")
+    # A body line that starts with the key is prose, not a trailer.
+    _git(
+        tmp_path,
+        "commit",
+        "-qm",
+        "pr\n\nReview-Tier: deep is how you raise it.\nMore prose.\n\n"
+        "Review-Tier: deep (a test)",
+    )
     # main moves on after the fork: the "before" texts must not come from its tip.
     _git(tmp_path, "checkout", "-q", "main")
     _write(tmp_path, {"pyproject.toml": pyproject.replace('"a"', '"a", "b"')})
@@ -599,6 +665,11 @@ def test_review_tier_reads_adds_renames_and_texts_from_git(
     monkeypatch.setattr(prep, "ROOT", tmp_path)
     t = prep.review_tier("main", "pr")
     assert t.new_parsers == [f"{backends}/cab_reader.py"]
+    # The docstring-only edit of config.py is not a reason; the trailer is.
+    assert t.reasons == [
+        f"new reader, parser, codec or kernel: {backends}/cab_reader.py",
+        "raised in a commit: a test",
+    ]
     assert t.maintainer == [
         "drops or renames a defended property: Stays inside",
         "accepts a new non-guarantee: X",
@@ -609,201 +680,37 @@ def test_review_tier_reads_adds_renames_and_texts_from_git(
     assert f"{backends}/zip_parser.py" in prep.changed_paths("main", "pr")
 
 
-def test_a_new_parser_or_codec_file_gets_the_security_pass_on_any_tier() -> None:
-    new = "src/archivey/internal/backends/cab_reader.py"
-    t = prep.tier([new, "tests/test_cab.py"], added=[new, "tests/test_cab.py"])
-    assert (t.name, t.new_parsers) == ("standard", [new])
-    report = prep.tier_report(t)
-    i = report.index("security pass: yes")
-    assert report[i + 1] == f"  new file under a parser or codec directory: {new}"
-    # Editing one is up to the Risk line's rules; so is a new file elsewhere.
+def test_a_new_parser_codec_or_kernel_file_is_deep() -> None:
+    for new in (
+        "src/archivey/internal/backends/cab_reader.py",
+        "packages/archivey-codecs/src/kernels/lzfse.rs",
+    ):
+        t = prep.tier([new, "tests/test_cab.py"], added=[new, "tests/test_cab.py"])
+        assert (t.name, t.new_parsers) == ("deep", [new])
+        report = prep.tier_report(t)
+        i = report.index("security pass: yes")
+        assert report[i + 1] == f"  new reader, parser, codec or kernel file: {new}"
+    # Editing one is standard, and the pass is up to the Risk line's rules.
     edited = prep.tier(["src/archivey/internal/streams/codecs/lzo.py"])
-    assert edited.new_parsers == []
+    assert (edited.name, edited.new_parsers) == ("standard", [])
     assert any(
         line.startswith("security pass: per the Risk line")
         for line in prep.tier_report(edited)
     )
-    # A deep pull request always gets it.
-    deep = prep.tier(["src/archivey/internal/extraction.py"])
-    assert "security pass: yes" in prep.tier_report(deep)
 
 
-def test_security_new_file_prefixes_exist() -> None:
-    for entry in prep.SECURITY_NEW_FILES:
-        assert (ROOT / entry).is_dir(), entry
-
-
-def test_tier_reports_a_public_api_change() -> None:
+def test_tier_is_deep_on_a_public_api_change() -> None:
     t = prep.tier(["src/archivey/core.py", "dev-docs/api-surface.txt"])
-    assert t.api_changed
+    assert (t.name, t.api_changed) == ("deep", True)
     assert "public API: changed (dev-docs/api-surface.txt)" in prep.tier_report(t)
-
-
-QUIET = """\
-name: Bench
-on:
-  workflow_dispatch:
-    inputs:
-      ref:
-        type: string
-  schedule:
-    - cron: "7 3 * * *"
-permissions:
-  contents: read
-jobs:
-  run:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref }}
-          persist-credentials: false
-      - run: echo "${{ github.sha }}"
-"""
-
-
-@pytest.mark.parametrize(
-    ("text", "quiet"),
-    [
-        (QUIET, True),
-        (QUIET.replace("  schedule:\n", "  push:\n  schedule:\n"), False),
-        (
-            QUIET.replace("on:\n  workflow_dispatch:", "on:\n  pull_request_target:"),
-            False,
-        ),
-        (
-            "on: [workflow_dispatch, schedule]\n" + QUIET.split("permissions:", 1)[1],
-            False,
-        ),
-        (
-            "on: [workflow_dispatch, schedule]\npermissions:"
-            + QUIET.split("permissions:", 1)[1],
-            True,
-        ),
-        ("on: workflow_dispatch\npermissions: {}\njobs: {}\n", True),
-        ("on: pull_request\npermissions: {}\njobs: {}\n", False),
-        # No `permissions:` at all: the repository's default token.
-        (QUIET.replace("permissions:\n  contents: read\n", ""), False),
-        (QUIET.replace("contents: read", "contents: write"), False),
-        (QUIET.replace("contents: read", "write-all"), False),
-        # A job-level scope that writes.
-        (QUIET + "    permissions:\n      pull-requests: write\n", False),
-        (QUIET.replace("${{ inputs.ref }}", "${{ secrets.TOKEN }}"), False),
-        # The job's own token is bounded by `permissions:`; a dispatcher's fields are
-        # theirs to choose, since they can push anyway.
-        (QUIET.replace("${{ inputs.ref }}", "${{ secrets.GITHUB_TOKEN }}"), True),
-        (QUIET.replace("github.sha", "github.event.inputs.ref"), True),
-        (
-            QUIET
-            + "  call:\n    uses: ./.github/workflows/x.yml\n    secrets: inherit\n",
-            False,
-        ),
-        # A `#` inside a string does not hide the rest of the line.
-        (QUIET.replace('echo "${{ github.sha', 'echo "#" "${{ secrets.X'), False),
-        (None, False),
-        ("jobs: {}\n", False),
-        # Spellings the readers do not follow fail closed (round 1, K1).
-        (QUIET.replace("  contents: read", "  contents: 'write'"), False),
-        (QUIET.replace("  contents: read", "  contents: 'read'"), False),
-        (
-            QUIET.replace(
-                "permissions:\n  contents: read", "permissions: {contents: write}"
-            ),
-            False,
-        ),
-        (QUIET.replace("${{ inputs.ref }}", "${{ secrets['OAUTH_TOKEN'] }}"), False),
-        (QUIET.replace("${{ inputs.ref }}", "${{ toJSON(secrets) }}"), False),
-        (QUIET.replace("${{ inputs.ref }}", "${{ secrets['GITHUB_TOKEN'] }}"), True),
-        (QUIET.replace("${{ inputs.ref }}", "${{ secrets.GITHUB_TOKEN_2 }}"), False),
-        (QUIET.replace("  schedule:\n", '  "push":\n  schedule:\n'), False),
-        (QUIET.replace("  schedule:\n", "  - push\n  schedule:\n"), False),
-        (QUIET + "on: push\n", False),  # two `on:` keys
-        ("on: {push: {}}\npermissions: {}\n", False),
-        # An alias is refused before the load expands it (Cursor, C4).
-        (QUIET + "  x:\n    env:\n      a: &a [1, 2]\n      b: [*a, *a]\n", False),
-        # Context names ignore case in an expression (round 2, K6).
-        (QUIET.replace("${{ inputs.ref }}", "${{ SECRETS.FOO }}"), False),
-        (QUIET.replace("${{ inputs.ref }}", "${{ Secrets['FOO'] }}"), False),
-        (QUIET.replace("${{ inputs.ref }}", "${{ SECRETS.GITHUB_TOKEN }}"), True),
-        # Quoted multi-line `name` holding a `permissions:` block (Cursor, C1 on 467e99e).
-        (
-            'name: "x\npermissions:\n  contents: read\n"\non: workflow_dispatch\njobs: {}\n',
-            False,
-        ),
-        (
-            "name: 'x\npermissions:\n  contents: read\n'\non: workflow_dispatch\njobs: {}\n",
-            False,
-        ),
-        # Cursor round 1, C1: forms only a YAML parse reads right.
-        (
-            'name: "bench\npermissions:\n"\n'
-            + QUIET.split("permissions:\n  contents: read\n")[0].split("\n", 1)[1]
-            + QUIET.split("permissions:\n  contents: read\n")[1],
-            False,
-        ),
-        ('name: "x\non: workflow_dispatch\n"\n' + QUIET.split("\n", 1)[1], False),
-        (QUIET.replace("  contents: read", "  id-token: >-\n    write"), False),
-        (QUIET.replace("  contents: read", '  contents: "write"'), False),
-        (
-            QUIET + "  other:\n    runs-on: x\n    permissions: {id-token: write}\n",
-            False,
-        ),
-    ],
-)
-def test_quiet_workflow(text: str | None, quiet: bool) -> None:
-    if quiet:
-        pytest.importorskip("yaml")  # without it nothing is quiet (the test below)
-    assert prep.quiet_workflow(text) is quiet
-
-
-def test_without_pyyaml_no_workflow_is_quiet(monkeypatch) -> None:
-    monkeypatch.setitem(sys.modules, "yaml", None)
-    assert prep.quiet_workflow(QUIET) is False
-
-
-def test_a_quiet_workflow_is_standard_and_keeps_the_security_pass(
-    tmp_path: Path, monkeypatch
-) -> None:
-    pytest.importorskip("yaml")
-    _git(tmp_path, "init", "-q", "-b", "main")
-    _write(tmp_path, {"README.md": "x\n", ".github/workflows/ci.yml": "on: push\n"})
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-qm", "base")
-    _git(tmp_path, "checkout", "-qb", "pr")
-    _write(
-        tmp_path,
-        {
-            ".github/workflows/bench.yml": QUIET,
-            "benchmarks/compare.py": "x = 1\n",
-            **{f"src/archivey/m{i}.py": "x = 1\n" for i in range(6)},
-        },
-    )
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-qm", "pr")
-    monkeypatch.setattr(prep, "ROOT", tmp_path)
-    t = prep.review_tier("main", "pr")
-    assert (t.name, t.quiet_workflows) == ("standard", [".github/workflows/bench.yml"])
-    report = prep.tier_report(t)
-    assert report[:3] == [
-        "tier: standard",
-        (
-            "  quiet workflow (dispatch or schedule, read-only token):"
-            " .github/workflows/bench.yml"
-        ),
-        (
-            "  not light because of: src/archivey/m0.py, src/archivey/m1.py,"
-            " src/archivey/m2.py, src/archivey/m3.py, src/archivey/m4.py (+1 more)"
-        ),
-    ]
-    assert "security pass: yes" in report
-    # A new workflow is still the maintainer's to merge.
+    stub = "packages/archivey-codecs/python/archivey_codecs/lzx.pyi"
+    codecs = prep.tier([stub, "packages/archivey-codecs/src/lib.rs"])
+    assert codecs.reasons == [f"public API: {stub}"]
+    # The package's Python code alone is not its API.
     assert (
-        "  maintainer decision: adds a workflow: .github/workflows/bench.yml" in report
+        prep.tier(["packages/archivey-codecs/python/archivey_codecs/lzx.py"]).name
+        == "standard"
     )
-    # With a workflow that is not quiet next to it, the pull request stays deep.
-    _write(tmp_path, {".github/workflows/ci.yml": "on: push\njobs: {}\n"})
-    _git(tmp_path, "commit", "-qam", "ci too")
-    assert prep.review_tier("main", "pr").name == "deep"
 
 
 @pytest.mark.parametrize(
