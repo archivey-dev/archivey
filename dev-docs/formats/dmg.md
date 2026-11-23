@@ -271,8 +271,9 @@ a second time, its members come in data order. The check replays the eight-run c
 over each file's disk ranges (an HFS+ fork's eight extents in its record, an APFS
 stream's extents), with nothing decoded (`UdifImage.decodes_twice`). The replay's work
 is one step per range plus a budget of steps across run boundaries (4 × the run count +
-1024). Disjoint ranges cross each boundary once at most, so an honest image never runs
-out, whatever its file count; ranges that overlap over many runs do, and are sorted.
+1024). Disjoint ranges cross each boundary once at most, so they never run out, whatever
+their count or order. Ranges that overlap over many runs can (a crafted image, or many
+APFS clones of one file); the listing is then sorted, which changes only the order.
 Then the order is: directories and the other members with no data ranges, in listing
 order (a directory still comes before its contents); the files, by the disk offset of
 their first byte; the hard links, in listing order (each after the member it names).

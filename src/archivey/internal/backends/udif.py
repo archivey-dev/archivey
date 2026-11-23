@@ -832,10 +832,11 @@ class UdifImage:
 
         The step a range takes into its first run is free, so the work is the number
         of ranges plus a budget of ``4 *`` the run count ``+ 1024`` steps across run
-        boundaries. Disjoint ranges cross each boundary at most once, so an honest
-        layout never runs out of budget, whatever its file count or order. Ranges
-        that overlap over many runs do (only a crafted image has them), and the answer
-        is then yes: the listing is sorted, which costs nothing more."""
+        boundaries. Disjoint ranges cross each boundary at most once, so they never
+        run out of budget, whatever their count or order. Ranges that overlap over
+        many runs can (a crafted image, or many APFS clones of one file), and the
+        answer is then yes: the listing is sorted, which changes only the member
+        order."""
         starts = self._start
         kinds = self._kind
         cache: OrderedDict[int, None] = OrderedDict()
