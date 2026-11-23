@@ -1076,6 +1076,20 @@ def _check_stream(
     return _StreamView(fault, sparse_from, tuple(lows), tuple(peaks))
 
 
+def stream_view(volume: ApfsVolume, tree: FsTree, stream: int) -> _StreamView:
+    """The check of data stream ``stream``'s extents: kept on ``tree``, and charged,
+    when it is costly (``stream_reader``). Only the charge raises
+    (``ResourceLimitError``); a bad extent is recorded in the view, for the read."""
+    view = tree.stream_views.get(stream)
+    if view is None:
+        blocks = volume.container._blocks
+        flat = tree.extents.get(stream, array("Q"))
+        view = _check_stream(flat, tree.damage, stream, blocks.size, blocks.count)
+        if len(flat) // 3 + len(view.lows) > _KEPT_VIEW_MIN:
+            tree.keep_view(stream, view)
+    return view
+
+
 def stream_reader(
     volume: ApfsVolume, tree: FsTree, stream: int, size: int, what: str
 ) -> tuple[Callable[[int, int], bytes], bool]:
@@ -1096,11 +1110,7 @@ def stream_reader(
             f"{what} has an extent with an encryption id on an unencrypted volume"
         )
     flat = tree.extents.get(stream, array("Q"))
-    view = tree.stream_views.get(stream)
-    if view is None:
-        view = _check_stream(flat, tree.damage, stream, bs, blocks.count)
-        if len(flat) // 3 + len(view.lows) > _KEPT_VIEW_MIN:
-            tree.keep_view(stream, view)
+    view = stream_view(volume, tree, stream)
     if view.fault is not None:
         kind, first, last = view.fault
         if kind == "overlap":

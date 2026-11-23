@@ -590,6 +590,9 @@ def _share_one_stream(records: list) -> None:
     _sparse_extents(records, shared, 100)
 
 
+_ATTR_STREAM = 0x7000
+
+
 def _attribute_as_stream(path: str, name: str) -> Callable[[list], None]:
     """Store ``path``'s attribute ``name`` as a 16-byte stream of sparse extents."""
 
@@ -600,7 +603,7 @@ def _attribute_as_stream(path: str, name: str) -> Callable[[list], None]:
             for r in records
             if r.path == path and r.kind == apfs.XATTR and r.secondary == (raw,)
         )
-        stream = 0x7000
+        stream = _ATTR_STREAM
         inner = struct.pack("<Q", stream) + struct.pack("<QQQQQ", 16, 4096, 0, 16, 0)
         rec.value = struct.pack("<HH", 0x1, len(inner)) + inner  # XATTR_STREAM
         records.append(a._Record(stream, apfs.EXTENT, (0,),
@@ -670,6 +673,46 @@ def test_a_stream_check_over_max_metadata_bytes_ends_the_listing(
     ):
         reader.members()
     assert len(checked) == len(set(checked))  # no stream checked twice
+
+
+@pytest.mark.parametrize(
+    ("nodes", "patch", "name"),
+    [
+        (
+            [d.Node("link", kind="symlink", target="f"), d.Node("f", data=b"f")],
+            _attribute_as_stream("link", apfs.SYMLINK_XATTR),
+            "link",
+        ),
+        (
+            [d.Node("c", data=b"c" * 100, compression=3)],
+            _attribute_as_stream("c", apfs.DECMPFS_XATTR),
+            "c",
+        ),
+    ],
+    ids=["symlink target", "decmpfs attribute"],
+)
+def test_a_limit_met_reading_an_attribute_stream_is_that_members_damage(
+    monkeypatch: pytest.MonkeyPatch, nodes: list, patch: Callable, name: str
+) -> None:
+    # A limit of one run of the image (an inflated compressed run) met while the
+    # attribute's bytes are read: the member is damaged, the listing goes on.
+    real = apfs.stream_reader
+
+    def reader(volume, tree, stream, size, what):  # type: ignore[no-untyped-def]
+        read, sparse = real(volume, tree, stream, size, what)
+        if stream != _ATTR_STREAM:
+            return read, sparse
+
+        def inflated(offset: int, n: int) -> bytes:
+            raise ResourceLimitError("a compressed run stores more than archivey reads")
+
+        return inflated, sparse
+
+    monkeypatch.setattr(apfs, "stream_reader", reader)
+    written = a.write_apfs(nodes, patch_records=patch)
+    with _open(a.apfs_dmg(written.container)) as reader_:
+        listed = {m.name for m in reader_.members()}
+    assert name in listed
 
 
 def test_a_stream_check_is_kept_and_charged_only_when_it_is_costly() -> None:
