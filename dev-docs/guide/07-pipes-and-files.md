@@ -38,8 +38,9 @@ reads a source that cannot seek: without it, such a source raises
 one-pass read of a file for some formats (a ZIP's modes and symlinks arrive with its
 index at the end), so the caller chooses it rather than getting it because the object
 they passed happened not to seek. A seekable source under `pipe=True` is wrapped as a
-forward-only view (`ArchiveSource.read_as_pipe`), so the same call gives the same result
-on a pipe and on a file.
+forward-only view before anything measures it (`PipeView`,
+`ArchiveSource.read_as_pipe`), so the same call gives the same result on a pipe and on a
+file carrying the same bytes and name, and nothing seeks the caller's object.
 
 ### `seekable_members` and `concurrent_operations` (ADR 0003)
 

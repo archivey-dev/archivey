@@ -135,6 +135,7 @@ from archivey.internal.volumes import (
     first_volume_for_stub,
     incomplete_lone_numbered_volume_error,
     is_sfx_stub_name,
+    is_source_sequence,
     resolve_source,
 )
 from archivey.reader import ArchiveReader, ArchiveStream, ForwardArchiveReader
@@ -678,10 +679,13 @@ def open_archive(
     # Collector is created before detection so open + detect share one budget /
     # occurrence order, and reader.diagnostics covers both.
     collector = collector_from_config(effective_config)
+    if pipe:
+        _refuse_volume_list_as_pipe(source)
     resolved = resolve_source(
         source,
         discover_volumes=effective_config.discover_volumes,
         max_read_through=effective_config.max_read_through,
+        pipe=pipe,
     )
     if pipe:
         resolved = _read_as_pipe(resolved)
@@ -716,14 +720,33 @@ def open_archive(
         raise
 
 
+def _volume_set_message(parts: int) -> str:
+    return (
+        f"open_archive(pipe=True) reads one stream, and this source is a volume set of "
+        f"{parts} parts, which a single stream cannot join; open the set without "
+        "pipe=True."
+    )
+
+
+def _refuse_volume_list_as_pipe(source: object) -> None:
+    """Refuse a list of two or more parts under ``pipe=True``, before anything reads
+    or measures them: joining a list measures each caller stream in it."""
+    if is_source_sequence(source):
+        parts = len(source)
+        if parts > 1:
+            raise _UsageValueError(_volume_set_message(parts))
+
+
 def _read_as_pipe(resolved: ResolvedSource) -> ResolvedSource:
     """The source ``open_archive(pipe=True)`` reads: ``resolved``'s, read as a pipe.
 
-    A source that cannot seek already is one. A source that can is wrapped so that
-    detection and the backend read it once, front to back, exactly as a pipe carrying
-    the same bytes, with no path, volume paths or size to go by. A directory has no
-    bytes to carry, and a volume set's parts cannot be joined from one stream, so both
-    are refused. Closes the source when it raises.
+    A source that cannot seek already is one, and so is a caller's stream, which
+    :func:`resolve_source` wrapped before measuring it. A source archivey opened that
+    can seek (a path, an fsspec ``OpenFile`` read by range) is wrapped here so that
+    detection and the backend read it once, front to back, as a pipe carrying the same
+    bytes and name, with no path, volume paths or size to go by. A directory has no
+    bytes to carry, and a volume set found beside a path cannot be joined from one
+    stream, so both are refused. Closes the source when it raises.
     """
     source = resolved.source
     if source.is_directory:
@@ -732,14 +755,9 @@ def _read_as_pipe(resolved: ResolvedSource) -> ResolvedSource:
             "open_archive(pipe=True) reads a stream of bytes, and a directory is not "
             "one; open the directory without pipe=True."
         )
-    parts = len(source.volume_paths)
-    if parts > 1:
+    if resolved.volume_count > 1:
         source.close()
-        raise _UsageValueError(
-            f"open_archive(pipe=True) reads one stream, and this source is a volume "
-            f"set of {parts} parts, which a single stream cannot join; open the set "
-            "without pipe=True."
-        )
+        raise _UsageValueError(_volume_set_message(resolved.volume_count))
     if not source.seekable():
         return resolved
     return replace(resolved, source=ArchiveSource.read_as_pipe(source))
@@ -1172,17 +1190,20 @@ def _backend_for_source(
             collector=collector,
             replacement=replacement,
         )
-        if pipe:
+        if archive_source.piped_from_seekable:
+            # The caller's object can seek; only the flag made it a pipe.
             message = (
                 f"Format {resolved_format.display_name} cannot be read as a pipe "
-                f"({refused_cls.NON_SEEKABLE_REASON}). Open it without pipe=True from "
-                f"a file or a BytesIO."
+                f"({refused_cls.NON_SEEKABLE_REASON}). Open it again without "
+                "pipe=True, from the start of the file or stream."
             )
         else:
+            # One message whatever the mode: no flag makes this source readable.
             message = (
-                f"Format {resolved_format.display_name} cannot be read from a "
-                f"non-seekable source in any mode ({refused_cls.NON_SEEKABLE_REASON}). "
-                f"Buffer it to disk or a BytesIO and reopen."
+                f"Format {resolved_format.display_name} cannot be read from a source "
+                f"that cannot seek, in any mode ({refused_cls.NON_SEEKABLE_REASON}). "
+                "Detection has already read from this source, so copy the archive "
+                "from its start to a file or a BytesIO and open that."
             )
         raise StreamNotSeekableError(
             message,
@@ -1215,8 +1236,9 @@ def _backend_for_source(
             f"This {resolved_format.display_name} source cannot seek, so it can be "
             "read only as a pipe, which can differ from reading a file (for example, "
             "a ZIP's permissions and symlinks arrive only at its end, and damaged "
-            "data can lose more). Pass pipe=True to read it that way, or copy it to a "
-            "file or a BytesIO first.",
+            "data can lose more). Detection has already read from this source, so "
+            "open a new one: pass pipe=True to read it that way, or copy the archive "
+            "to a file or a BytesIO first.",
             source_format=resolved_format,
             archive_name=archive_name,
         )

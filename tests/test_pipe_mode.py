@@ -88,6 +88,8 @@ def test_a_source_that_cannot_seek_needs_pipe_in_every_mode(streaming: bool) -> 
     message = str(info.value)
     assert "pipe=True" in message
     assert "streaming=True" not in message
+    # Detection read from the source first, so the retry needs a new one.
+    assert "open a new one" in message
 
 
 def test_the_refusal_is_the_same_in_both_modes() -> None:
@@ -282,12 +284,18 @@ def test_a_format_that_needs_seek_is_refused_under_pipe(make) -> None:
     ) as info:
         archivey.open_archive(io.BytesIO(data), pipe=True)
     assert "without pipe=True" in str(info.value)
-    # The same bytes from a source that cannot seek: one message for every mode, and it
-    # does not propose pipe=True, which could not work either.
-    for kwargs in ({}, {"streaming": True}, {"pipe": True}):
-        with pytest.raises(StreamNotSeekableError) as info:
-            archivey.open_archive(NonSeekableBytesIO(data), **kwargs)  # type: ignore[call-overload]  # kwargs vary
-        assert "Pass pipe=True" not in str(info.value)
+    # The same bytes from a source that cannot seek: one message for every mode,
+    # detected or named, and it proposes only a seekable copy.
+    messages = set()
+    for fmt in (None, archivey.detect_format(io.BytesIO(data)).format):
+        for kwargs in ({}, {"streaming": True}, {"pipe": True}):
+            with pytest.raises(StreamNotSeekableError) as info:
+                archivey.open_archive(NonSeekableBytesIO(data), format=fmt, **kwargs)  # type: ignore[call-overload]  # kwargs vary
+            messages.add(str(info.value))
+    assert len(messages) == 1
+    (message,) = messages
+    assert "pipe=True" not in message
+    assert "a file or a BytesIO" in message
     # Without the flag, the seekable source reads as usual.
     with archivey.open_archive(io.BytesIO(data)) as reader:
         assert reader.members()
@@ -323,14 +331,108 @@ def test_a_volume_set_is_refused_under_pipe(kind: str, tmp_path: Path) -> None:
         assert [m for m, _ in reader.stream_members()]
 
 
+@pytest.mark.parametrize("kind", ["streams", "mixed"])
+def test_a_list_of_parts_is_refused_under_pipe_before_it_is_read(
+    kind: str, tmp_path: Path
+) -> None:
+    first = _split_zip(tmp_path)
+    second = tmp_path / "s.zip.002"
+    streams = [_SeekCounting(first.read_bytes()), _SeekCounting(second.read_bytes())]
+    parts: list[object] = list(streams) if kind == "streams" else [first, streams[1]]
+    with pytest.raises(ArchiveyUsageError, match="volume set of 2 parts"):
+        archivey.open_archive(parts, pipe=True)  # type: ignore[call-overload]  # source kinds vary
+    assert all(s.seeks == 0 and s.tell() == 0 for s in streams)
+
+
+def test_a_rar_set_beside_its_path_is_refused_under_pipe() -> None:
+    with pytest.raises(ArchiveyUsageError, match="volume set of"):
+        archivey.open_archive(RAR_FIXTURES / "stdin_vol.part1.rar", pipe=True)
+
+
 @pytest.mark.skipif(
     not unrar_reads_from_pipes(), reason="requires RARLAB unrar 7.00 or later"
 )
-def test_a_rar_volume_set_is_refused_under_pipe() -> None:
+def test_a_rar_volume_from_a_pipe_says_to_open_the_files() -> None:
+    data = (RAR_FIXTURES / "stdin_vol.part1.rar").read_bytes()
     with pytest.raises(
         StreamNotSeekableError, match="cannot be read as a pipe"
     ) as info:
-        archivey.open_archive(RAR_FIXTURES / "stdin_vol.part1.rar", pipe=True)
+        archivey.open_archive(NonSeekableBytesIO(data), pipe=True)
     message = str(info.value)
-    assert "without pipe=True" in message
+    assert "first volume by its path, without pipe=True" in message
     assert "Open the volumes as files" not in message
+
+
+# --- pipe=True reads without seeking, and keeps what a pipe can carry --------------
+
+
+class _SeekCounting(io.BytesIO):
+    """A ``BytesIO`` that counts the calls that could move it."""
+
+    seeks = 0
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        self.seeks += 1
+        return super().seek(offset, whence)
+
+
+def test_pipe_never_seeks_a_caller_file(tmp_path: Path) -> None:
+    path = tmp_path / "a.zip"
+    path.write_bytes(_zip_with_symlink())
+    calls: list[tuple[int, int]] = []
+
+    class Recording(io.BufferedRandom):
+        def seek(self, offset: int, whence: int = 0) -> int:
+            calls.append((offset, whence))
+            return super().seek(offset, whence)
+
+    with (
+        Recording(io.FileIO(path, "r+")) as source,
+        archivey.open_archive(source, pipe=True) as reader,
+    ):
+        list(reader.stream_members())
+    assert calls == []
+
+
+def test_pipe_keeps_the_name_hint(tmp_path: Path) -> None:
+    # LZMA Alone has no magic: only the name says what it is. A path, an open file and
+    # a pipe carrying that name give one result under pipe=True.
+    import lzma
+
+    path = tmp_path / "hello.lzma"
+    path.write_bytes(lzma.compress(b"hello", format=lzma.FORMAT_ALONE))
+
+    class NamedPipe(NonSeekableBytesIO):
+        name = str(path)
+
+    results = []
+    with open(path, "rb") as opened:
+        for source in (path, opened, NamedPipe(path.read_bytes())):
+            with archivey.open_archive(source, pipe=True) as reader:  # type: ignore[call-overload]  # source kinds vary
+                results.append(
+                    [
+                        (m.name, s.read() if s else None)
+                        for m, s in reader.stream_members()
+                    ]
+                )
+    assert results == [[("hello", b"hello")]] * 3
+
+
+def test_pipe_keeps_remote_change_checks_and_request_progress() -> None:
+    fsspec = pytest.importorskip("fsspec")
+    fs = fsspec.filesystem("memory")
+    fs.pipe("/pipe-mode/a.zip", _zip_with_symlink())
+
+    def observe(**kwargs: bool) -> tuple[dict, list]:
+        events: list = []
+        config = archivey.ArchiveyConfig(on_source_read=events.append)
+        source = fsspec.open("memory://pipe-mode/a.zip")
+        with archivey.open_archive(source, config=config, **kwargs) as reader:  # type: ignore[call-overload]  # kwargs vary
+            list(reader.stream_members())
+            counts = dict(reader.diagnostics.counts)
+        return counts, [(e.name, e.size, e.requests, e.request_done) for e in events]
+
+    try:
+        assert observe(pipe=True) == observe(streaming=True)
+    finally:
+        fs.rm("/pipe-mode", recursive=True)

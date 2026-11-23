@@ -81,10 +81,12 @@ format, and so does `extract_all`. Streams from the pass never seek.
 ### Reading from a pipe
 
 A pipe, a socket or an HTTP response can be read only once, so open it with `pipe=True`, as in the
-example above. Without it, `open_archive` raises `StreamNotSeekableError`. `pipe=True` reads the
+example above. Without it, `open_archive` raises `StreamNotSeekableError`, after detection has
+already read the start of the stream, so open the source again for the retry. `pipe=True` reads the
 archive in one pass, as `streaming=True` does, and reads it the way a pipe is read: from where
 the source is to its end, without going back, even if the source can seek. So the same call gives
-the same result on a pipe and on a file, and you can test code meant for a pipe on a file.
+the same result on a pipe and on a file carrying the same bytes under the same name, and you can
+test code meant for a pipe on a file.
 
 What a pipe gives isn't always what a file gives, and that is why archivey doesn't switch to it on
 its own. TAR, ZIP, cpio, ar, deb, RPM and makeself archives and single compressed files can come

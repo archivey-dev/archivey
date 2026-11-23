@@ -80,7 +80,7 @@ def test_seek_only_format_never_proposes_pipe(
 
     message = str(excinfo.value)
     assert "streaming=True" not in message
-    assert "Pass pipe=True" not in message, (
+    assert "pipe=True" not in message, (
         f"{fmt.display_name} refuses pipe=True as well, so proposing it is a "
         f"dead end: {message}"
     )
@@ -90,11 +90,11 @@ def test_seek_only_format_never_proposes_pipe(
 
 @pytest.mark.parametrize("fmt", _NEEDS_SEEK, ids=lambda f: f.display_name)
 def test_seek_only_format_refuses_both_modes_alike(fmt: ArchiveFormat) -> None:
-    """Same source, either access mode, same answer — the mode was never the problem."""
+    """Same source, any mode, same answer — the mode was never the problem."""
     messages = set()
-    for streaming in (False, True):
+    for mode in ({}, {"streaming": True}, {"pipe": True}):
         with pytest.raises(StreamNotSeekableError) as excinfo:
-            open_archive(NonSeekableBytesIO(b""), format=fmt, streaming=streaming)
+            open_archive(NonSeekableBytesIO(b""), format=fmt, **mode)  # type: ignore[call-overload]  # modes vary
         messages.add(str(excinfo.value))
     assert len(messages) == 1, messages
 
@@ -106,8 +106,10 @@ def test_forward_only_format_proposes_pipe(fmt: ArchiveFormat, streaming: bool) 
     with pytest.raises(StreamNotSeekableError) as excinfo:
         open_archive(NonSeekableBytesIO(b""), format=fmt, streaming=streaming)
 
-    assert "Pass pipe=True" in str(excinfo.value)
-    assert "streaming=True" not in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "pass pipe=True" in message
+    assert "open a new one" in message  # detection has read from this one
+    assert "streaming=True" not in message
     assert excinfo.value.source_format is fmt
 
 

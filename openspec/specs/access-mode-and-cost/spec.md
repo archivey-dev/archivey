@@ -37,19 +37,34 @@ other fix (maintainer ruling, 2026-11-21: pipe reading is opt-in, so a caller wh
 over a non-seekable object by accident learns it at open, instead of getting pipe
 results silently).
 
-Under `pipe=True` a source that can seek SHALL be wrapped at the boundary
-(`ArchiveSource.read_as_pipe`) so that detection and the backend see the non-seekable
-raw shape: no path, no volume paths, no fact size, a detection replay prefix and
-full-count gathering. What pipe mode gives SHALL therefore depend only on the bytes
-from the source's position and the arguments, never on whether the object can seek. A
-directory has no bytes to carry: `pipe=True` on one raises `ArchiveyUsageError`.
+Under `pipe=True` a source that can seek SHALL be wrapped at the boundary so that
+detection and the backend see the non-seekable raw shape: no path, no volume paths, no
+fact size, a detection replay prefix and full-count gathering. A caller's stream SHALL
+be wrapped before anything measures it, so pipe mode never seeks it, nor decodes ahead
+in a seekable decoder stream to learn its size; a source archivey opens itself (a path,
+an fsspec `OpenFile`) is wrapped once opened (`ArchiveSource.read_as_pipe`). The wrapper
+keeps the name, the one hint a pipe can carry, and an `OpenFile`'s range sources, so a
+remote object's change checks (`SOURCE_CHANGE_UNDETECTABLE`, `SourceChangedError`) and
+per-request `on_source_read` reports stay as in the other modes. What pipe mode gives
+SHALL therefore depend only on the bytes from the source's position, the name it
+carries and the arguments, never on whether the object can seek: equal bytes under an
+equal name give an equal result, and an anonymous stream can differ from a named one
+(a gzip member's name, a format only the name identifies). A directory has no bytes to
+carry: `pipe=True` on one raises `ArchiveyUsageError`, and so does a volume set (a list
+of two or more parts, refused before any part is read, or a set found beside a path),
+whose parts one stream cannot join.
+
+A refusal at open comes after detection, which has read from the source by then, so a
+refusal of a source that cannot seek SHALL ask for a new source, or a copy from the
+archive's start, rather than a retry on the same object.
 
 Pipe mode reads **only where the backend reads front to back** (TAR, ZIP, the
 single-file compressors, and RAR with RARLAB `unrar` 7.00 or later, whose refusal
 otherwise names that program). A format that cannot be read as a pipe (ISO, 7z) SHALL be
 refused with one message naming a seekable source as the fix, in every mode, rather
-than proposing a `pipe=True` retry the same call would then refuse; under `pipe=True`
-the message says the format cannot be read as a pipe and to open it without the flag.
+than proposing a `pipe=True` retry the same call would then refuse. Only when the
+object the caller passed can seek and `pipe=True` made it a pipe does the message
+instead say the format cannot be read as a pipe and to open it without the flag.
 That refusal SHALL come before the format's availability check: a pipe cannot be read
 even with the optional package installed, so a missing package MUST NOT be reported
 first. The refusal of a non-seekable source without `pipe=True` for a format that does
@@ -130,12 +145,15 @@ never handed past the boundary, so no wrapper a backend adds can reach it except
 | --- | --- |
 | `streaming=False` on indexed ZIP | Central directory loaded; random access available |
 | `streaming=True` on `.tar.gz` | No full-archive index scan; members as stream is read |
-| `streaming=False` or `streaming=True` on non-seekable source, backend reads front to back | `StreamNotSeekableError` at open (before member data) naming `pipe=True`, the same message in both modes — library does not buffer |
+| `streaming=False` or `streaming=True` on non-seekable source, backend reads front to back | `StreamNotSeekableError` at open (before member data) naming `pipe=True` and asking for a new source, since detection has read from this one; the same message in both modes — library does not buffer |
 | `pipe=True` on non-seekable source, backend reads front to back | Opens; one forward pass, as `streaming=True` |
 | `pipe=True` on a seekable source (a path, a `BytesIO`, an `OpenFile`) | Read as a pipe carrying the same bytes: the same members, metadata and errors as the non-seekable case, `cost.stream_capability` is `FORWARD_ONLY`, and the ZIP backend walks local headers |
 | `pipe=True` on a directory | `ArchiveyUsageError` at open |
+| `pipe=True` on a list of two or more parts (paths, streams, or both), or on a path whose set is found beside it | `ArchiveyUsageError` at open, naming the volume set; no part of a list is read or seeked |
+| `pipe=True` on a seekable caller stream | The stream is never seeked, not even to learn its size |
+| `pipe=True` on an `OpenFile` read by range | The same `SOURCE_CHANGE_UNDETECTABLE` and per-request `on_source_read` reports as `streaming=True` |
 | `pipe=True` + `concurrent_operations=True` | `ArchiveyUsageError` at open, as `streaming=True` |
-| Any mode on non-seekable source, backend needs seek | Same error and same message in every mode, naming a seekable source (buffer to disk or a `BytesIO`) — library does not buffer |
+| Any mode on non-seekable source, backend needs seek, detected or named by `format=` | Same error and the same message in every mode, `pipe=True` included, naming only a copy from the archive's start to a file or a `BytesIO`; no mention of `pipe=True` — library does not buffer |
 | `pipe=True` on a seekable source, backend needs seek | `StreamNotSeekableError` saying the format cannot be read as a pipe and to open it without `pipe=True` |
 | Any mode on non-seekable source, backend needs seek, its optional package missing (a plugin that needs seek and a package that is not installed) | The same seekability error, not `PackageNotInstalledError` |
 | `streaming=False` on non-seekable source, backend reads front to back, its codec package missing (`.tar.lz4` without `lz4`) | `PackageNotInstalledError` first; the `pipe=True` hint follows once the package is installed |
