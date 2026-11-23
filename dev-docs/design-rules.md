@@ -1309,8 +1309,8 @@ reaches him.
   (DR-12a), or anything an open decision touches (the list is in `AGENTS.md`, and
   `scripts/review/review_prep.py tier` finds most of it). Size alone is not one of them. Any
   other one an agent may merge once its review approves and CI is green; on standard and
-  deep that approval includes the Opus pass, and on deep Cursor's too (maintainer,
-  2026-10-31).
+  deep that approval includes the Opus pass (maintainer, 2026-10-31), and on deep a
+  Codex or Cursor review's too (maintainer, 2026-11-22).
 
 How to ask is in `AGENTS.md` §Working with the maintainer.
 
