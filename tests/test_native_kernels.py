@@ -6,6 +6,7 @@ installed. The read tests use the real package and skip without it.
 
 from __future__ import annotations
 
+import gc
 import io
 import logging
 import random
@@ -14,7 +15,7 @@ import types
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, NoReturn
 
 import pytest
 
@@ -33,13 +34,17 @@ from archivey import (
     open_archive,
     open_stream,
 )
-from archivey.internal import native
+from archivey.internal import native, native_child
 from archivey.internal.backends import lha_reader, zipcrypto
-from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs import decoder_child, decoder_worker, deps
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
 from archivey.internal.streams.codecs.bcj2_filter import (
     _BLOCK as _BCJ2_BLOCK,
     Bcj2DecoderStream,
+)
+from archivey.internal.streams.codecs.decoder_child import (
+    DecoderChildStartError,
+    rebuild_error,
 )
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, ISOLATED
 from archivey.internal.streams.codecs.lzma_filter_decoder import (
@@ -234,6 +239,20 @@ def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamesp
     return module
 
 
+def _child_kernels(monkeypatch: pytest.MonkeyPatch, module: object) -> list[frozenset]:
+    """Make ``native_child.open_kernels``, the kernels run in a decoder child under
+    ``NATIVE_DECODERS``, return ``module`` (``None``: no child can run them). Returns
+    the ``excluded`` sets it was called with."""
+    calls: list[frozenset] = []
+
+    def open_kernels(excluded: frozenset) -> object:
+        calls.append(excluded)
+        return module
+
+    monkeypatch.setattr(native_child, "open_kernels", open_kernels)
+    return calls
+
+
 # ── Selection ─────────────────────────────────────────────────────────────────────────
 
 
@@ -371,10 +390,10 @@ def test_a_panic_in_a_zipcrypto_read_is_corruption(
 @pytest.mark.parametrize(
     ("filter_id", "kernel"), [(FILTER_ARM64, "arm64"), (FILTER_RISCV, "riscv")]
 )
-def test_branch_filters_use_the_kernel_unless_switched_off_or_isolated(
+def test_branch_filters_use_the_kernel_unless_switched_off_or_no_child(
     monkeypatch: pytest.MonkeyPatch, filter_id: int, kernel: str
 ) -> None:
-    _fake(monkeypatch, **{kernel: 1})
+    module = _fake(monkeypatch, **{kernel: 1})
 
     def built(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> object:
         make = branch_maker(
@@ -388,10 +407,13 @@ def test_branch_filters_use_the_kernel_unless_switched_off_or_isolated(
 
     assert isinstance(built(frozenset(), isolated=False), native.NativeBranch)
     assert _FakeBranch.built == [0x1000]
-    # Turned off, or under NATIVE_DECODERS until the decoder child runs the kernel.
     assert isinstance(built(EXCLUDED, isolated=False), PythonBranch)
+    # Under NATIVE_DECODERS: the decoder child's kernel, else the Python filter.
+    _child_kernels(monkeypatch, None)
     assert isinstance(built(frozenset(), isolated=True), PythonBranch)
-    assert _FakeBranch.built == [0x1000]
+    _child_kernels(monkeypatch, module)
+    assert isinstance(built(frozenset(), isolated=True), native.NativeBranch)
+    assert _FakeBranch.built == [0x1000, 0x1000]
 
 
 def test_an_old_branch_kernel_is_not_used(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -451,13 +473,18 @@ def test_a_panic_in_a_7z_riscv_read_is_corruption(
         assert all(reader.read(m) for m in reader.members())
 
 
-def test_lzw_uses_the_kernel_unless_switched_off_or_isolated(
+def test_lzw_uses_the_kernel_unless_switched_off_or_no_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _fake(monkeypatch, lzw=1)
+    module = _fake(monkeypatch, lzw=1)
     assert native.lzw(frozenset(), isolated=False) is not None
     assert native.lzw(EXCLUDED, isolated=False) is None
+    _child_kernels(monkeypatch, None)
     assert native.lzw(frozenset(), isolated=True) is None
+    calls = _child_kernels(monkeypatch, module)
+    assert native.lzw(frozenset(), isolated=True) is not None
+    assert native.lzw(EXCLUDED, isolated=True) is None
+    assert calls == [frozenset()]
     _fake(monkeypatch, lzw=0)
     assert native.lzw(frozenset(), isolated=False) is None
 
@@ -505,7 +532,7 @@ def test_a_panic_in_a_z_read_is_corruption(monkeypatch: pytest.MonkeyPatch) -> N
 _LZO_BLOCK = bytes([19]) + b"ab" + b"\x20" + bytes(3) + bytes([200, 4, 0]) + b"\x11\0\0"
 
 
-def test_lzo_uses_the_kernel_unless_switched_off_or_isolated(
+def test_lzo_uses_the_kernel_unless_switched_off_or_no_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -513,7 +540,8 @@ def test_lzo_uses_the_kernel_unless_switched_off_or_isolated(
         "compress_utils",
         deps.LazyOptional(OptionalLibrary.COMPRESS_UTILS, present=False),
     )
-    _fake(monkeypatch, lzo1x=1)
+    module = _fake(monkeypatch, lzo1x=1)
+    _child_kernels(monkeypatch, None)
     for excluded, natives, used in (
         (frozenset(), IN_PROCESS, True),
         (EXCLUDED, IN_PROCESS, False),
@@ -524,6 +552,12 @@ def test_lzo_uses_the_kernel_unless_switched_off_or_isolated(
         assert decode(_LZO_BLOCK, 1000) == lzo1x_decompress_python(_LZO_BLOCK, 1000)
         assert bool(_FakeLzo1x.calls) is used
         assert (decode is lzo1x_decompress_python) is not used
+    # The decoder child's kernel (here the fake stands in for it).
+    _child_kernels(monkeypatch, module)
+    _FakeLzo1x.calls = []
+    decode = lzo1x_decompressor(frozenset(), ISOLATED)
+    assert decode(_LZO_BLOCK, 1000) == lzo1x_decompress_python(_LZO_BLOCK, 1000)
+    assert _FakeLzo1x.calls
     _fake(monkeypatch, lzo1x=0)
     assert lzo1x_decompressor(frozenset(), IN_PROCESS) is lzo1x_decompress_python
 
@@ -1015,13 +1049,16 @@ def test_cab_lzx_uses_the_kernel_and_reads_the_same() -> None:
                 )
 
 
-def test_cab_lzx_kernel_is_not_used_when_switched_off_or_isolated(
+def test_cab_lzx_kernel_is_not_used_when_switched_off_or_no_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _fake(monkeypatch, lzx=2)
+    module = _fake(monkeypatch, lzx=2)
     assert native.lzx(frozenset(), isolated=False) is not None
     assert native.lzx(EXCLUDED, isolated=False) is None
+    _child_kernels(monkeypatch, None)
     assert native.lzx(frozenset(), isolated=True) is None
+    _child_kernels(monkeypatch, module)
+    assert native.lzx(frozenset(), isolated=True) is not None
     _fake(monkeypatch, lzx=1)
     assert native.lzx(frozenset(), isolated=False) is None
 
@@ -1321,3 +1358,300 @@ def test_bcj2_kernel_seek_forward_decodes_one_block_at_a_time(
     assert stream.seek(size - 10) == size - 10
     assert stream.read(100) == bytes(10)
     assert 0 < _CountingBcj2.largest <= _BCJ2_BLOCK
+
+
+# ── In the decoder child (NATIVE_DECODERS) ────────────────────────────────────────────
+
+ISOLATED_CONFIG = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+
+
+@pytest.fixture
+def child_builds(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The kernel objects built in a decoder child, by their name in the package
+    (``"lzo1x"`` for each block decoded)."""
+    built: list[str] = []
+    build, lzo1x = native_child.ChildCodecs.build, native_child.ChildCodecs._lzo1x
+
+    def spy_build(
+        self: native_child.ChildCodecs, name: str, *args: object, **kwargs: object
+    ) -> object:
+        built.append(name)
+        return build(self, name, *args, **kwargs)
+
+    def spy_lzo1x(
+        self: native_child.ChildCodecs, block: bytes, *, max_size: int
+    ) -> bytes:
+        built.append("lzo1x")
+        return lzo1x(self, block, max_size=max_size)
+
+    monkeypatch.setattr(native_child.ChildCodecs, "build", spy_build)
+    monkeypatch.setattr(native_child.ChildCodecs, "_lzo1x", spy_lzo1x)
+    return built
+
+
+@needs_codecs
+@requires("ncompress")
+def test_z_in_the_child_reads_the_same(child_builds: list[str]) -> None:
+    data = (bytes(range(256)) * 50 + b"text " * 30000) * 3
+    raw = make_unix_compress(data)
+    cases = [raw, raw[:-7], raw[:3]]
+    for at in (300, 500, 1100):
+        bad = bytearray(raw)
+        bad[at] ^= 0xFF
+        cases.append(bytes(bad))
+    for case in cases:
+        assert _read_z(case, ISOLATED_CONFIG, 4096) == _read_z(case, OFF, 4096)
+    assert _read_z(raw, ISOLATED_CONFIG, -1)[0] == data
+    assert set(child_builds) == {"lzw.Decompressor"}
+
+
+@needs_codecs
+def test_cab_lzx_in_the_child_reads_the_same(child_builds: list[str]) -> None:
+    rng = random.Random(31)
+    for _, raw, names in _lzx_cabs()[:2]:
+        start = raw.index(b"a.txt\0") + 32
+        variants = [raw, raw[: len(raw) // 2]]
+        for _ in range(4):
+            bad = bytearray(raw)
+            bad[rng.randrange(start, len(bad))] ^= rng.randrange(1, 256)
+            variants.append(bytes(bad))
+        for variant in variants:
+            for order in (names, names[::-1]):
+                assert _cab_results(variant, ISOLATED_CONFIG, order) == (
+                    _cab_results(variant, OFF, order)
+                )
+    assert "lzx.Decompressor" in child_builds
+
+
+@needs_codecs
+def test_cab_lzx_failed_block_in_the_child_reads_the_same(
+    child_builds: list[str],
+) -> None:
+    """A failed block's error comes from the frame that reads it, with the kernel in
+    a child."""
+    text = b"".join(b"line %d\n" % i for i in range(30000))
+    files = [CabFile("a", text[:66536]), CabFile("b", text[66536:])]
+    encoder = LzxEncoder(
+        window_bits=15, blocks=("verbatim", "uncompressed"), block_size=9000
+    )
+    raw = write_cab(files, [CabFolder("lzx", 15, encoder)])
+    blocks = _cab_blocks(raw)
+    for failed in (1, len(blocks) // 2):
+        unchecked, size = blocks[failed - 1]
+        for back in (1, size // 2):
+            bad = bytearray(raw)
+            bad[unchecked : unchecked + 4] = bytes(4)
+            bad[unchecked + 8 + size - back] ^= 0x40
+            bad[blocks[failed][0]] ^= 1
+            for order in (["a", "b"], ["b", "a"]):
+                assert _cab_results(bytes(bad), ISOLATED_CONFIG, order) == (
+                    _cab_results(bytes(bad), OFF, order)
+                )
+    assert "lzx.Decompressor" in child_builds
+
+
+@needs_codecs
+@pytest.mark.parametrize("name", ["riscv_lzma2.7z", "riscv_special_lzma2.7z"])
+def test_7z_riscv_in_the_child_reads_the_same(
+    name: str, child_builds: list[str]
+) -> None:
+    results = []
+    for config in (ISOLATED_CONFIG, OFF):
+        with open_archive(RISCV_7Z.with_name(name), config=config) as reader:
+            results.append([reader.read(m) for m in reader.members()])
+    assert results[0] == results[1]
+    assert set(child_builds) == {"filters.RiscvDecoder"}
+
+
+@needs_codecs
+@pytest.mark.parametrize("damage", [None, 400])
+def test_lzop_in_the_child_reads_the_same(
+    damage: int | None, child_builds: list[str]
+) -> None:
+    raw = bytearray(LZOP_TEXT.read_bytes())
+    if damage is not None:
+        raw[damage] ^= 0x55
+    results = []
+    for config in (ISOLATED_CONFIG, PYTHON_LZO):
+        try:
+            with open_stream(io.BytesIO(bytes(raw)), config=config) as stream:
+                results.append(("ok", stream.read()))
+        except (CorruptionError, TruncatedError) as exc:
+            results.append((type(exc).__name__, str(exc)))
+    assert results[0] == results[1]
+    assert (results[0] == ("ok", LZOP_DATA)) is (damage is None)
+    assert set(child_builds) == {"lzo1x"}
+
+
+def test_a_panic_in_the_child_is_reported_as_one() -> None:
+    """PyO3's panic is a ``BaseException`` the worker would not report, so its host
+    raises ``KernelPanic``; the parent rebuilds that as ``ChildPanic``, which the
+    wrappers take for a panic: ``CorruptionError``, and every later call refused."""
+
+    class _Kernel:
+        def decode(self, data: bytes) -> bytes:
+            raise PanicException("index out of bounds")
+
+    module = types.SimpleNamespace(
+        filters=types.SimpleNamespace(Arm64Decoder=lambda start: _Kernel())
+    )
+    host = decoder_worker._Codecs(module)
+    host.build("filters.Arm64Decoder", [0], {})
+    with pytest.raises(decoder_worker.KernelPanic) as raised:
+        host.decode(b"\0" * 8)
+    payload = decoder_worker.error_payload(raised.value)
+    rebuilt = rebuild_error(payload, native_child._ERRORS)
+    assert isinstance(rebuilt, native_child.ChildPanic)
+    assert native.is_panic(rebuilt)
+
+    class _Proxy:
+        calls = 0
+
+        def decode(self, data: bytes) -> bytes:
+            self.calls += 1
+            raise rebuild_error(payload, native_child._ERRORS)
+
+        def flush(self) -> bytes:
+            return b""
+
+    proxy = _Proxy()
+    branch = native.NativeBranch(proxy, "ARM64")
+    with pytest.raises(CorruptionError, match="ARM64 decoder failed") as info:
+        branch.decode(b"\0" * 8)
+    assert isinstance(info.value.__cause__, native_child.ChildPanic)
+    with pytest.raises(CorruptionError) as again:
+        branch.flush()
+    assert again.value is info.value
+    assert proxy.calls == 1
+
+
+def test_the_childs_codec_errors_are_rebuilt_as_the_packages() -> None:
+    for name, kind in (
+        ("CorruptDataError", native_child.ChildCorruptDataError),
+        ("TruncatedDataError", native_child.ChildTruncatedDataError),
+        ("UnsupportedDataError", native_child.ChildUnsupportedDataError),
+        ("CodecError", native_child.ChildCodecError),
+    ):
+        error = type(name, (ValueError,), {"__module__": "_codecs"})("bad code 7")
+        rebuilt = rebuild_error(
+            decoder_worker.error_payload(error), native_child._ERRORS
+        )
+        assert type(rebuilt) is kind
+        assert str(rebuilt) == "bad code 7"
+        assert isinstance(rebuilt, native_child.ChildCodecs.CodecError)
+
+
+@pytest.mark.parametrize("how", ["no child", "start fails", "import fails"])
+def test_no_child_means_the_python_twin(
+    how: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """When no child can run archivey-codecs, the Python twin decodes in this
+    process: it is not native, so NATIVE_DECODERS' promise holds. The failure is
+    remembered, so later streams start no child to see it fail again."""
+    _fake(monkeypatch, lzw=1)
+    monkeypatch.setattr(native_child, "_table", [])
+    monkeypatch.setattr(native_child, "_failed", [])
+    asked: list[str] = []
+
+    def unavailable(name: str) -> str | None:
+        asked.append(name)
+        return "frozen" if how == "no child" else None
+
+    monkeypatch.setattr(native_child, "decoder_child_unavailable_reason", unavailable)
+    starts = []
+    error = (
+        DecoderChildStartError
+        if how == "start fails"
+        else decoder_child.DecoderChildImportError
+    )
+
+    def refuse(*args: object, **kwargs: object) -> NoReturn:
+        starts.append(args)
+        raise error("cannot start the decoder process: no")
+
+    monkeypatch.setattr(native_child, "DecoderChild", refuse)
+    with caplog.at_level(logging.DEBUG, logger="archivey"):
+        for _ in range(3):
+            assert native.lzw(frozenset(), isolated=True) is None
+    assert len(asked) == 1
+    assert len(starts) == (0 if how == "no child" else 1)
+    logged = "cannot be imported" if how == "import fails" else "cannot run in a"
+    assert sum(logged in r.message for r in caplog.records) == 1
+    assert deps.archivey_codecs.child_import_failed is (how == "import fails")
+    assert _FakeLzw.built == 0
+
+
+@needs_codecs
+def test_the_packages_errors_have_the_module_the_child_matches() -> None:
+    """The child's errors are rebuilt by their module and name
+    (``native_child._ERRORS``): PyO3 sets that module to ``_codecs``."""
+    import archivey_codecs
+
+    for name in (
+        "CodecError",
+        "CorruptDataError",
+        "TruncatedDataError",
+        "UnsupportedDataError",
+    ):
+        kind = getattr(archivey_codecs, name)
+        assert (kind.__module__, kind.__qualname__) in native_child._ERRORS
+
+
+@needs_codecs
+def test_cab_members_open_at_once_give_their_children_back(
+    child_builds: list[str],
+) -> None:
+    """Two LZX folders' members open together both park when they close: the one
+    replaced gives back its decoder child at once (the leak oracle checks)."""
+    text = b"".join(b"line %d\n" % i for i in range(9000))
+    folders = [
+        CabFolder("lzx", 15, LzxEncoder(window_bits=15)),
+        CabFolder("lzx", 15, LzxEncoder(window_bits=15)),
+    ]
+    raw = write_cab(
+        [CabFile("a", text, folder=0), CabFile("b", text, folder=1)], folders
+    )
+    config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    gc_was = gc.isenabled()
+    gc.disable()
+    try:
+        with open_archive(
+            io.BytesIO(raw), config=config, concurrent_operations=True
+        ) as reader:
+            first, second = reader.open("a"), reader.open("b")
+            assert first.read() == second.read() == text
+            first.close()
+            second.close()
+            leased = [
+                child
+                for child in gc.get_objects()
+                if isinstance(child, decoder_child.DecoderChild)
+                and child._lease.process is not None
+            ]
+            assert len(leased) == 1  # the parked one, given back at close
+    finally:
+        if gc_was:
+            gc.enable()
+    assert child_builds.count("lzx.Decompressor") == 2
+
+
+def test_an_excluded_package_starts_no_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake(monkeypatch, lzw=1)
+    monkeypatch.setattr(native_child, "_table", [])
+
+    def refuse(*args: object, **kwargs: object) -> NoReturn:
+        raise AssertionError("a child was started")
+
+    monkeypatch.setattr(native_child, "DecoderChild", refuse)
+    assert native.lzw(EXCLUDED, isolated=True) is None
+    assert native_child.open_kernels(EXCLUDED) is None
+
+
+@needs_codecs
+def test_an_old_kernel_in_the_child_is_not_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(native_child, "_table", [{"lzw": 0, "lzx": 2}])
+    monkeypatch.setattr(native, "_too_old_logged", set())
+    assert native.lzw(frozenset(), isolated=True) is None
+    assert native.lzx(frozenset(), isolated=True) is not None

@@ -631,6 +631,7 @@ def test_anti_item_removes_a_read_only_file_this_run_wrote(
         _Claim,
         _RunState,
     )
+    from archivey.internal.placements import Placements
 
     _refuse_read_only(monkeypatch)
     dest = tmp_path / "out"
@@ -647,7 +648,7 @@ def test_anti_item_removes_a_read_only_file_this_run_wrote(
         reader=cast("BaseArchiveReader", SimpleNamespace()),
         links=LinkWatch(dest.resolve(), None),
         written_paths={written},
-        collision_map={"f": _Claim(written, 0, written)},
+        placements=Placements(by_key={"f": _Claim(written, 0, written, "f")}),
     )
     anti = ArchiveMember(type=MemberType.ANTI, name="f")
     result = coordinator._apply_anti_item(anti, written)
@@ -1486,6 +1487,42 @@ def test_short_name_alias_collides_with_the_member_it_names(
             ExtractionStatus.FAILED,
             ExtractionStatus.NOT_OVERWRITTEN,
         )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the alias is simulated with a hard link")
+@pytest.mark.parametrize(
+    "policy", [ExtractionPolicy.STANDARD, ExtractionPolicy.TRUSTED]
+)
+def test_short_name_of_a_hard_linked_file_does_not_reach_its_other_link(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    """``other.txt`` is a hard link of ``longfilename.txt``, so one file has two
+    claimed entries, and the file alone cannot tell which of them ``LONGFI~1.TXT``
+    names. The write goes where the member asked, and ``other.txt`` keeps its
+    content and its result."""
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(
+            _tar(
+                [
+                    ("file", "longfilename.txt", b"1"),
+                    ("hard", "other.txt", "longfilename.txt"),
+                    ("file", "LONGFI~1.TXT", b"2"),
+                ]
+            )
+        ),
+        dest,
+        filter=_alias_after_first(dest, "longfilename.txt", "LONGFI~1.TXT"),
+        policy=policy,
+        overwrite=OverwritePolicy.REPLACE,
+        on_error=OnError.CONTINUE,
+    )
+    _one, link, three = report.results
+    assert link.status is ExtractionStatus.EXTRACTED
+    assert (dest / "other.txt").read_bytes() == b"1"
+    assert three.status is ExtractionStatus.EXTRACTED
+    assert three.path == dest / "LONGFI~1.TXT"
+    assert three.path.read_bytes() == b"2"
 
 
 @pytest.mark.parametrize("overwrite", [OverwritePolicy.ERROR, OverwritePolicy.REPLACE])

@@ -639,17 +639,39 @@ class CabReader(IndexedReader[_Location]):
             parked, self._parked = self._parked, None
         if parked is not None and parked.index == index and parked.position <= offset:
             stream = parked
-        elif folder.method == _STORED:
-            # Stored blocks need no history: start at the block holding ``offset``.
-            stream = _FolderStream(self, index, folder, table, _block_at(table, offset))
         else:
-            stream = _FolderStream(self, index, folder, table, 0)
-        stream.skip(offset - stream.position)
+            if parked is not None:
+                parked.release()
+            stream = self._new_folder_stream(index, folder, table, offset)
+        try:
+            stream.skip(offset - stream.position)
+        except BaseException:
+            stream.release()
+            raise
         return stream
 
+    def _new_folder_stream(
+        self, index: int, folder: _Folder, table: _BlockTable, offset: int
+    ) -> _FolderStream:
+        if folder.method == _STORED:
+            # Stored blocks need no history: start at the block holding ``offset``.
+            return _FolderStream(self, index, folder, table, _block_at(table, offset))
+        return _FolderStream(self, index, folder, table, 0)
+
     def _park(self, stream: _FolderStream) -> None:
+        # Two members open at once (``concurrent_operations``) can both park: the one
+        # replaced gives back its decoder child now.
         with self._lock:
-            self._parked = stream
+            old, self._parked = self._parked, stream
+        if old is not None and old is not stream:
+            old.release()
+
+    @override
+    def close(self) -> None:
+        with self._lock:
+            parked, self._parked = self._parked, None
+        if parked is not None:
+            parked.release()
 
     @override
     def archive_info(self) -> ReaderArchiveInfo:
@@ -795,6 +817,13 @@ class _FolderStream:
                 # The kernel sets the last frame's length from the folder's size.
                 size = table.output[-1] if table.complete else None
                 self._lzx = make(folder.window_bits, self._lzx_more, size)
+
+    def release(self) -> None:
+        """Give back the decoder child the LZX kernel holds under ``NATIVE_DECODERS``
+        now, not when the stream is collected. The stream is not read after this."""
+        lzx, self._lzx = self._lzx, None
+        if isinstance(lzx, native.NativeLzx):
+            lzx.close()
 
     def _payload(self, number: int) -> bytes:
         block = self._table.blocks[number]
@@ -959,6 +988,8 @@ class _MemberStream(io.RawIOBase):
         if folder is not None and not folder.failed:
             # The next member of the folder goes on from here.
             self._reader._park(folder)
+        elif folder is not None:
+            folder.release()
         super().close()
 
 
