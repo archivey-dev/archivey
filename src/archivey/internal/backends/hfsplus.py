@@ -34,6 +34,7 @@ from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
+    exception_detail,
 )
 from archivey.formats import ReaderContext, ReaderSource
 from archivey.internal import native
@@ -429,8 +430,8 @@ class _BTree:
         _, _, kind, _, _, _ = _NODE.unpack_from(head)
         if kind != _HEADER:
             raise CorruptionError(f"the HFS+ {name} B-tree has no header node")
-        (depth, root, _, first_leaf, _, node_size, _, total_nodes, _, _, _, _,
-         compare, _) = _BTREE_HEADER.unpack_from(head, _NODE.size)  # fmt: skip
+        (depth, root, leaf_count, first_leaf, last_leaf, node_size, _, total_nodes,
+         _, _, _, _, compare, _) = _BTREE_HEADER.unpack_from(head, _NODE.size)  # fmt: skip
         if not 512 <= node_size <= 32768 or node_size & (node_size - 1):
             raise CorruptionError(f"the HFS+ {name} B-tree's node size {node_size}")
         if total_nodes * node_size > fork.size:
@@ -441,6 +442,8 @@ class _BTree:
         self.depth = depth
         self.root = root
         self.first_leaf = first_leaf
+        self.last_leaf = last_leaf
+        self.leaf_count = leaf_count
         self.node_size = node_size
         self.total_nodes = total_nodes
         self.compare = compare
@@ -494,14 +497,30 @@ class _BTree:
 
     def leaf_records(self, limit: int | None = None) -> Iterator[tuple[bytes, bytes]]:
         """Every leaf record, in key order, following the leaf chain. A node reached
-        twice, or one that is not a leaf, raises ``CorruptionError``."""
+        twice, or one that is not a leaf, raises ``CorruptionError``. So does a whole
+        walk that ends elsewhere than the header's ``lastLeafNode``, or that yields
+        another number of records than its ``leafRecords``: a leaf chain cut short
+        would otherwise drop the records past the cut. That error comes after the
+        records the walk found."""
+        last = 0
         yielded = 0
-        for _, records in self._chain(self.first_leaf, set()):
+        for number, records in self._chain(self.first_leaf, set()):
             for record in records:
                 yield record
                 yielded += 1
                 if limit is not None and yielded >= limit:
                     return
+            last = number
+        if last != self.last_leaf:
+            raise CorruptionError(
+                f"the HFS+ {self._name} B-tree's leaf chain ends at node {last}, not at "
+                f"its last leaf node {self.last_leaf}"
+            )
+        if yielded != self.leaf_count:
+            raise CorruptionError(
+                f"the HFS+ {self._name} B-tree's leaf chain holds {yielded} records, "
+                f"not the {self.leaf_count} its header declares"
+            )
 
     def _chain(
         self, number: int, seen: set[int]
@@ -1156,7 +1175,7 @@ def _decode_chunk(
     except (CorruptionError, TruncatedError) as exc:
         # A kernel panic stays the cause: it is a bug, not damage (native.py).
         raise CorruptionError(
-            f"the compressed data of file {cnid}: {exc}"
+            f"the compressed data of file {cnid}: {exception_detail(exc)}"
         ) from native.panic_of(exc)
     if len(out) != want:
         raise CorruptionError(

@@ -1011,6 +1011,7 @@ def write_hfsplus(
     dirty: bool = False,
     patch_catalog: Callable[[list[CatalogRecord]], None] | None = None,
     patch_catalog_nodes: Callable[[list[bytearray]], None] | None = None,
+    patch_attributes_nodes: Callable[[list[bytearray]], None] | None = None,
     patch_header: Callable[[bytearray], None] | None = None,
     patch_volume: Callable[[bytearray, Hfs], None] | None = None,
     attributes_in_fork: Sequence[str] = (),
@@ -1026,7 +1027,8 @@ def write_hfsplus(
 
     The hooks break things: ``patch_catalog`` edits the leaf records before they are
     sorted and packed, ``patch_catalog_nodes`` edits the packed nodes (a leaf loop, bad
-    record offsets), ``patch_header`` the volume header, and ``patch_volume`` the whole
+    record offsets), ``patch_attributes_nodes`` the attributes B-tree's packed nodes,
+    ``patch_header`` the volume header, and ``patch_volume`` the whole
     volume once it is laid out.
 
     ``journal`` writes a journaled volume, with ``.journal_info_block`` and ``.journal``
@@ -1458,6 +1460,7 @@ def write_hfsplus(
         variable_index_keys=True,
         min_nodes=8,
         block_size=block_size,
+        patch_nodes=patch_attributes_nodes,
     )
 
     # ── lay out the special files after the data ──
