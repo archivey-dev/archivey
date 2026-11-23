@@ -19,6 +19,7 @@ use kernels::error::DecodeError;
 use kernels::{bcj2, crc16, filters, lzo, lzw, lzx, state, zipcrypto};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyEOFError, PyTypeError, PyValueError};
+use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::sync::critical_section::with_critical_section;
 use pyo3::types::{PyByteArray, PyBytes, PyDict, PyInt, PyMemoryView};
@@ -127,6 +128,80 @@ fn input<'a>(obj: &'a Bound<'_, PyAny>) -> PyResult<Cow<'a, [u8]>> {
     let view = PyMemoryView::from(obj)?;
     let bytes = with_critical_section(&owner, || view.call_method0("tobytes"))?;
     Ok(Cow::Owned(bytes.cast::<PyBytes>()?.as_bytes().to_vec()))
+}
+
+// ── Int arguments ─────────────────────────────────────────────────────────────────
+
+// PyO3 raises `OverflowError` for an int outside a parameter's Rust type, with a
+// message that differs by platform (a C `long` has 32 bits on Windows). These take the
+// argument as any object instead, so the message is the same everywhere and the
+// Python twins can give the same one. A non-int still raises PyO3's `TypeError`.
+
+/// `obj` as an int, as `operator.index` gives it: `TypeError` for anything else.
+fn as_int<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyInt>> {
+    // SAFETY: `PyNumber_Index` takes a borrowed object and returns a new reference,
+    // or null with an exception set.
+    let int = unsafe { Bound::from_owned_ptr_or_err(obj.py(), ffi::PyNumber_Index(obj.as_ptr())) }?;
+    Ok(int.cast_into::<PyInt>()?)
+}
+
+/// `error` as PyO3 gives it for argument `name` of a typed parameter: a `TypeError`
+/// prefixed with the name, any other error as it is.
+fn argument_error(py: Python<'_>, name: &str, error: PyErr) -> PyErr {
+    if error.get_type(py).is(py.get_type::<PyTypeError>()) {
+        PyTypeError::new_err(format!("argument '{name}': {}", error.value(py)))
+    } else {
+        error
+    }
+}
+
+/// An int argument in 0 to 2**64 - 1, else `ValueError` naming it.
+fn u64_in(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<u64> {
+    if let Ok(v) = obj.extract::<u64>() {
+        return Ok(v);
+    }
+    let int = as_int(obj)?;
+    int.extract::<u64>()
+        .map_err(|_| PyValueError::new_err(format!("{name} {int} is outside 0 to 2**64 - 1")))
+}
+
+/// A parameter type for a size or offset named `$name`: [`u64_in`]. As for any typed
+/// parameter, PyO3 prefixes a `TypeError` with the name.
+macro_rules! u64_param {
+    ($ty:ident, $name:literal) => {
+        #[derive(Clone, Copy)]
+        struct $ty(u64);
+
+        impl<'a, 'py> FromPyObject<'a, 'py> for $ty {
+            type Error = PyErr;
+
+            fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+                u64_in(&obj.to_owned(), $name).map($ty)
+            }
+        }
+    };
+}
+
+u64_param!(StartOffset, "start_offset");
+u64_param!(OutputSize, "output_size");
+u64_param!(OutSize, "out_size");
+u64_param!(MaxSize, "max_size");
+
+/// A `max_length`: any int; a negative one means no limit, and one past `i64::MAX`
+/// is no limit in practice, so it is taken as `i64::MAX`.
+struct MaxLength(i64);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for MaxLength {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        if let Ok(v) = obj.extract::<i64>() {
+            return Ok(MaxLength(v));
+        }
+        // A `TypeError` here is prefixed by PyO3, as for any typed parameter.
+        let int = as_int(&obj.to_owned())?;
+        Ok(MaxLength(if int.gt(0)? { i64::MAX } else { -1 }))
+    }
 }
 
 // ── Saved state ─────────────────────────────────────────────────────────────────────
@@ -301,11 +376,13 @@ impl Crc16Arc {
 fn lzo1x_decompress<'py>(
     py: Python<'py>,
     block: &Bound<'py, PyAny>,
-    out_size: Option<usize>,
-    max_size: Option<usize>,
+    out_size: Option<OutSize>,
+    max_size: Option<MaxSize>,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let limit = match (out_size, max_size) {
-        (Some(n), None) | (None, Some(n)) => n,
+    let out_size = out_size.map(|OutSize(n)| n);
+    // On a 64-bit platform, the only kind built, `usize` holds any `u64`.
+    let limit = match (out_size, max_size.map(|MaxSize(n)| n)) {
+        (Some(n), None) | (None, Some(n)) => usize::try_from(n).unwrap_or(usize::MAX),
         _ => {
             return Err(PyTypeError::new_err(
                 "lzo1x.decompress() takes exactly one of out_size= and max_size=",
@@ -318,7 +395,7 @@ fn lzo1x_decompress<'py>(
         .detach(|| lzo::lzo1x_decompress(slice, limit))
         .map_err(to_py0)?;
     if let Some(n) = out_size {
-        if out.len() != n {
+        if out.len() as u64 != n {
             return Err(CorruptDataError::new_err(format!(
                 "the block decodes to {} bytes, not {n}",
                 out.len()
@@ -444,8 +521,9 @@ macro_rules! branch_decoder {
         #[pymethods]
         impl $rust {
             #[new]
-            #[pyo3(signature = (start_offset = 0))]
-            fn new(start_offset: u64) -> Self {
+            #[pyo3(signature = (start_offset = StartOffset(0)))]
+            fn new(start_offset: StartOffset) -> Self {
+                let StartOffset(start_offset) = start_offset;
                 $rust {
                     inner: BranchState {
                         kind: $kind,
@@ -718,10 +796,13 @@ impl LzwDecompressor {
     #[new]
     #[pyo3(signature = (*, max_width = None, block_mode = None, nine_bit_widens = None))]
     fn new(
-        max_width: Option<u32>,
+        max_width: Option<&Bound<'_, PyAny>>,
         block_mode: Option<bool>,
         nine_bit_widens: Option<bool>,
     ) -> PyResult<Self> {
+        let max_width = max_width
+            .map(|w| as_int(w).map_err(|e| argument_error(w.py(), "max_width", e)))
+            .transpose()?;
         // As in the Python twin, `max_width` needs `block_mode`, and a lone
         // `block_mode` is ignored (the header is read from the stream).
         if max_width.is_some() && block_mode.is_none() {
@@ -729,13 +810,18 @@ impl LzwDecompressor {
                 "give block_mode with max_width (a stream without its header)",
             ));
         }
-        if let Some(w) = max_width {
-            if !(9..=16).contains(&w) {
-                return Err(PyValueError::new_err(format!(
-                    "max_width {w} is outside 9 to 16"
-                )));
-            }
-        }
+        // Any int is compared, however large.
+        let max_width = match &max_width {
+            None => None,
+            Some(w) => match w.extract::<u32>() {
+                Ok(w @ 9..=16) => Some(w),
+                _ => {
+                    return Err(PyValueError::new_err(format!(
+                        "max_width {w} is outside 9 to 16"
+                    )))
+                }
+            },
+        };
         Ok(LzwDecompressor {
             inner: lzw::LzwState::new(max_width, block_mode, nine_bit_widens),
             held: Vec::new(),
@@ -750,13 +836,14 @@ impl LzwDecompressor {
         })
     }
 
-    #[pyo3(signature = (data, max_length = -1))]
+    #[pyo3(signature = (data, max_length = MaxLength(-1)))]
     fn decompress<'py>(
         &mut self,
         py: Python<'py>,
         data: &Bound<'py, PyAny>,
-        max_length: i64,
+        max_length: MaxLength,
     ) -> PyResult<Bound<'py, PyBytes>> {
+        let max_length = max_length.0;
         if self.eof() {
             return Err(PyEOFError::new_err("End of stream already reached"));
         }
@@ -806,8 +893,13 @@ impl LzwDecompressor {
 
     /// Mark the end of the input and return the rest of the output, at most
     /// `max_length` bytes a call; `eof` is true once all of it is returned.
-    #[pyo3(signature = (max_length = -1))]
-    fn flush<'py>(&mut self, py: Python<'py>, max_length: i64) -> PyResult<Bound<'py, PyBytes>> {
+    #[pyo3(signature = (max_length = MaxLength(-1)))]
+    fn flush<'py>(
+        &mut self,
+        py: Python<'py>,
+        max_length: MaxLength,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let max_length = max_length.0;
         self.flushed = true;
         let out = self.produce(py, max_length)?;
         Ok(PyBytes::new(py, &out))
@@ -1211,8 +1303,19 @@ impl LzxDecompressor {
 impl LzxDecompressor {
     #[new]
     #[pyo3(signature = (window_bits, *, output_size = None))]
-    fn new(window_bits: u32, output_size: Option<u64>) -> PyResult<Self> {
-        Self::fresh(window_bits, output_size)
+    fn new(window_bits: &Bound<'_, PyAny>, output_size: Option<OutputSize>) -> PyResult<Self> {
+        // Any int outside the range is refused as damage, as the kernel refuses one.
+        let window_bits = match window_bits.extract::<u32>() {
+            Ok(bits) => bits,
+            Err(_) => {
+                let bits = as_int(window_bits)
+                    .map_err(|e| argument_error(window_bits.py(), "window_bits", e))?;
+                return Err(CorruptDataError::new_err(format!(
+                    "LZX window of 2**{bits} bytes"
+                )));
+            }
+        };
+        Self::fresh(window_bits, output_size.map(|OutputSize(n)| n))
     }
 
     /// Give the declared output size once it is known, before the last frame ends.
@@ -1223,7 +1326,8 @@ impl LzxDecompressor {
     /// give the input back when the decoder has already dropped it from its buffer, or
     /// when the decoder was restored from a state saved after it read that input: the
     /// input then stays consumed and the error stays.
-    fn set_output_size(&mut self, output_size: u64) -> PyResult<()> {
+    fn set_output_size(&mut self, output_size: OutputSize) -> PyResult<()> {
+        let OutputSize(output_size) = output_size;
         let decoded = self.inner.decoded();
         if output_size < decoded {
             return Err(PyValueError::new_err(format!(
@@ -1266,18 +1370,19 @@ impl LzxDecompressor {
 
     /// Start again with an empty window, as at the start of a cabinet folder.
     #[pyo3(signature = (output_size = None))]
-    fn reset(&mut self, output_size: Option<u64>) -> PyResult<()> {
-        *self = Self::fresh(self.inner.window_bits(), output_size)?;
+    fn reset(&mut self, output_size: Option<OutputSize>) -> PyResult<()> {
+        *self = Self::fresh(self.inner.window_bits(), output_size.map(|OutputSize(n)| n))?;
         Ok(())
     }
 
-    #[pyo3(signature = (data, max_length = -1))]
+    #[pyo3(signature = (data, max_length = MaxLength(-1)))]
     fn decompress<'py>(
         &mut self,
         py: Python<'py>,
         data: &Bound<'py, PyAny>,
-        max_length: i64,
+        max_length: MaxLength,
     ) -> PyResult<Bound<'py, PyBytes>> {
+        let max_length = max_length.0;
         if self.eof() {
             return Err(PyEOFError::new_err("End of stream already reached"));
         }
@@ -1298,8 +1403,13 @@ impl LzxDecompressor {
     /// Mark the end of the input and return the rest of the output, at most
     /// `max_length` bytes a call; a frame the input still does not cover raises
     /// `TruncatedDataError`.
-    #[pyo3(signature = (max_length = -1))]
-    fn flush<'py>(&mut self, py: Python<'py>, max_length: i64) -> PyResult<Bound<'py, PyBytes>> {
+    #[pyo3(signature = (max_length = MaxLength(-1)))]
+    fn flush<'py>(
+        &mut self,
+        py: Python<'py>,
+        max_length: MaxLength,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let max_length = max_length.0;
         self.ended = true;
         let out = self.run(py, max_length)?;
         Ok(PyBytes::new(py, &out))
@@ -1580,9 +1690,9 @@ impl Bcj2Decompressor {
         call: &Bound<'_, PyAny>,
         jump: &Bound<'_, PyAny>,
         rc: &Bound<'_, PyAny>,
-        out_size: u64,
+        out_size: OutSize,
     ) -> PyResult<Self> {
-        Self::build([main, call, jump, rc], bcj2::Bcj2::new(), out_size)
+        Self::build([main, call, jump, rc], bcj2::Bcj2::new(), out_size.0)
     }
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
@@ -1603,8 +1713,13 @@ impl Bcj2Decompressor {
     /// Up to `max_length` bytes of output (all of it when negative); `b""` at the end.
     /// `read(0)` decodes nothing and reads no input: it raises an error the decoder
     /// holds, else returns `b""`.
-    #[pyo3(signature = (max_length = -1))]
-    fn read<'py>(&mut self, py: Python<'py>, max_length: i64) -> PyResult<Bound<'py, PyBytes>> {
+    #[pyo3(signature = (max_length = MaxLength(-1)))]
+    fn read<'py>(
+        &mut self,
+        py: Python<'py>,
+        max_length: MaxLength,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let max_length = max_length.0;
         if max_length == 0 {
             if let Some(err) = self.raise_failure(py) {
                 return Err(err);

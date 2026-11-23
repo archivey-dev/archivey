@@ -1100,3 +1100,111 @@ def test_lzw_state_restores_with_clear_padding_still_to_come() -> None:
         assert out == whole.decompress(data) + whole.flush(), cut
         restored += 1
     assert restored > 0
+
+
+# ── Bad arguments ──────────────────────────────────────────────────────────────────
+
+_BIG = 2**64
+_EMPTY = io.BytesIO
+
+
+def _bcj2(codecs: object, *, out_size: object = 4, main: object = None) -> object:
+    """A BCJ2 decoder whose main stream reads as ``main`` gives, if given."""
+    first = types.SimpleNamespace(read=lambda n: main) if main is not None else _EMPTY()
+    return codecs.bcj2.Decompressor(
+        first, _EMPTY(), _EMPTY(), _EMPTY(bytes(5)), out_size=out_size
+    )
+
+
+# Each call gives an argument of the wrong type, or an int outside what the argument
+# takes. Bytes inputs take any buffer and nothing else; int arguments take any int
+# (``operator.index``), so a float is refused; ``max_length`` takes any int.
+_BAD_ARGUMENTS: dict[str, Callable[[object], object]] = {
+    "crc16 data list": lambda c: c.crc16_arc([1, 2]),
+    "crc16 data int": lambda c: c.crc16_arc(3),
+    "crc16 data str": lambda c: c.crc16_arc("ab"),
+    "crc16 value float": lambda c: c.crc16_arc(b"a", 1.0),
+    "crc16 value big": lambda c: c.crc16_arc(b"a", _BIG),
+    "zipcrypto password list": lambda c: c.zipcrypto.Decryptor([1, 2]),
+    "zipcrypto password int": lambda c: c.zipcrypto.Decryptor(3),
+    "zipcrypto password str": lambda c: c.zipcrypto.Decryptor("ab"),
+    "zipcrypto data list": lambda c: c.zipcrypto.Decryptor(b"a").decrypt([1]),
+    "arm64 start_offset negative": lambda c: c.filters.Arm64Decoder(-1),
+    "arm64 start_offset big": lambda c: c.filters.Arm64Decoder(_BIG),
+    "arm64 start_offset float": lambda c: c.filters.Arm64Decoder(1.0),
+    "arm64 start_offset None": lambda c: c.filters.Arm64Decoder(None),
+    "riscv start_offset negative": lambda c: c.filters.RiscvDecoder(-1),
+    "arm64 data list": lambda c: c.filters.Arm64Decoder().decode([1, 2, 3, 4]),
+    "lzo1x block list": lambda c: c.lzo1x.decompress([0x11, 0, 0], max_size=9),
+    "lzo1x max_size negative": lambda c: c.lzo1x.decompress(b"\x11\0\0", max_size=-1),
+    "lzo1x max_size big": lambda c: c.lzo1x.decompress(b"\x11\0\0", max_size=_BIG),
+    "lzo1x out_size negative": lambda c: c.lzo1x.decompress(b"\x11\0\0", out_size=-1),
+    "lzo1x out_size float": lambda c: c.lzo1x.decompress(b"\x11\0\0", out_size=1.0),
+    "lzw max_width negative": lambda c: c.lzw.Decompressor(
+        max_width=-1, block_mode=True
+    ),
+    "lzw max_width big": lambda c: c.lzw.Decompressor(max_width=_BIG, block_mode=True),
+    "lzw max_width float": lambda c: c.lzw.Decompressor(
+        max_width=12.0, block_mode=True
+    ),
+    "lzw block_mode int": lambda c: c.lzw.Decompressor(max_width=12, block_mode=1),
+    "lzw nine_bit_widens int": lambda c: c.lzw.Decompressor(nine_bit_widens=1),
+    "lzw data list": lambda c: c.lzw.Decompressor().decompress([1, 2]),
+    "lzw max_length float": lambda c: c.lzw.Decompressor().decompress(b"", 1.0),
+    "lzw flush max_length float": lambda c: c.lzw.Decompressor().flush(1.0),
+    "lzx window_bits negative": lambda c: c.lzx.Decompressor(-1),
+    "lzx window_bits big": lambda c: c.lzx.Decompressor(_BIG),
+    "lzx window_bits float": lambda c: c.lzx.Decompressor(15.0),
+    "lzx output_size negative": lambda c: c.lzx.Decompressor(15, output_size=-1),
+    "lzx output_size big": lambda c: c.lzx.Decompressor(15, output_size=_BIG),
+    "lzx set_output_size negative": lambda c: c.lzx.Decompressor(15).set_output_size(
+        -1
+    ),
+    "lzx set_output_size big": lambda c: c.lzx.Decompressor(15).set_output_size(_BIG),
+    "lzx set_output_size None": lambda c: c.lzx.Decompressor(15).set_output_size(None),
+    "lzx data str": lambda c: c.lzx.Decompressor(15).decompress("a"),
+    "lzx max_length float": lambda c: c.lzx.Decompressor(15).decompress(b"", 1.0),
+    "lzx flush max_length float": lambda c: c.lzx.Decompressor(15).flush(1.0),
+    "bcj2 out_size negative": lambda c: _bcj2(c, out_size=-1),
+    "bcj2 out_size big": lambda c: _bcj2(c, out_size=_BIG),
+    "bcj2 out_size float": lambda c: _bcj2(c, out_size=1.0),
+    "bcj2 max_length float": lambda c: _bcj2(c).read(1.0),
+    "bcj2 stream reads a list": lambda c: _bcj2(c, main=[0]).read(),
+    "bcj2 stream reads a str": lambda c: _bcj2(c, main="a").read(),
+}
+
+
+def _raised(fn: Callable[[], object]) -> tuple[str, object]:
+    """:func:`outcome`, with ``TypeError`` too."""
+    try:
+        return outcome(fn)
+    except TypeError as exc:
+        return ("TypeError", str(exc))
+
+
+@pytest.mark.parametrize("call", _BAD_ARGUMENTS.values(), ids=_BAD_ARGUMENTS.keys())
+def test_a_bad_argument_raises_the_same_error_on_both_sides(
+    call: Callable[[object], object],
+) -> None:
+    # The messages are fixed, not PyO3's ``OverflowError`` ones, which differ by
+    # platform: the twins give the same everywhere.
+    got = _raised(lambda: call(PYTHON))
+    assert got[0] != "ok", got
+    assert _raised(lambda: call(RUST)) == got
+
+
+@BOTH
+@pytest.mark.parametrize(
+    ("max_length", "expected"), [(-_BIG, b"abc"), (_BIG, b"abc"), (-2, b"abc")]
+)
+def test_any_int_is_a_max_length(
+    codecs: object, max_length: int, expected: bytes
+) -> None:
+    # Negative is no limit, and one past 2**63 - 1 is no limit in practice.
+    bcj2 = _bcj2(codecs, out_size=3, main=b"abc")
+    assert bcj2.read(max_length) == expected
+
+
+@BOTH
+def test_none_is_a_crc16_value_of_0(codecs: object) -> None:
+    assert codecs.crc16_arc(b"abc", None) == codecs.crc16_arc(b"abc")

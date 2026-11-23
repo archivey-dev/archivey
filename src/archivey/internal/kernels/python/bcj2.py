@@ -47,6 +47,7 @@ import struct
 from typing import Protocol
 
 from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.internal.kernels.python._args import index, u64
 from archivey.internal.kernels.python._buffers import raw_bytes
 
 # Every input is read in blocks of this size. Output is produced a main block at a
@@ -210,6 +211,7 @@ class Decompressor:
         *,
         out_size: int,
     ) -> None:
+        out_size = u64(out_size, "out_size")
         self._streams = tuple(_Counted(s) for s in (main, call, jump, rc))
         self._main_stream = self._streams[0]
         self._main = b""
@@ -262,6 +264,7 @@ class Decompressor:
         """Up to ``max_length`` bytes of output (all of it when negative); ``b""`` at
         the end. ``read(0)`` decodes nothing and reads no input: it raises an error
         the decoder holds, else returns ``b""``."""
+        max_length = index(max_length, "max_length")
         if max_length == 0:
             if self._failure is not None:
                 raise self._failure

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from archivey.internal.kernels.python._args import u64
 from archivey.internal.kernels.python._buffers import raw_bytes
 from archivey.internal.streams.codecs.arm64_filter import arm64_decode
 from archivey.internal.streams.codecs.riscv_filter import riscv_decode
@@ -26,7 +27,9 @@ class _BranchDecoder:
     _decode: Callable[[bytes, int], bytes]
 
     def __init__(self, start_offset: int = 0) -> None:
-        self._position = start_offset  # pc of the first byte in self._raw
+        self._position = u64(
+            start_offset, "start_offset"
+        )  # pc of the first byte in self._raw
         self._raw = b""  # input not yet decoded: the few bytes decode left
         self.total_in = 0
         self.total_out = 0

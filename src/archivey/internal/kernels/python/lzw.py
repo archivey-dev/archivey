@@ -8,6 +8,7 @@ gives it the package's API, a port of the package's ``LzwDecompressor`` wrapper.
 from __future__ import annotations
 
 from archivey.exceptions import CorruptionError
+from archivey.internal.kernels.python._args import flag, index
 from archivey.internal.kernels.python._buffers import raw_bytes
 
 # Bytes of a ``.Z`` header: the magic and the flags byte.
@@ -45,6 +46,10 @@ class Decompressor:
             LzwState,
         )
 
+        if max_width is not None:
+            max_width = index(max_width, "max_width")
+        block_mode = flag(block_mode, "block_mode")
+        nine_bit_widens = flag(nine_bit_widens, "nine_bit_widens")
         # As in the package, ``max_width`` needs ``block_mode``, and a lone
         # ``block_mode`` is ignored (the header is read from the stream).
         if max_width is not None and block_mode is None:
@@ -116,6 +121,7 @@ class Decompressor:
     def decompress(
         self, data: bytes | bytearray | memoryview, max_length: int = -1
     ) -> bytes:
+        max_length = index(max_length, "max_length")
         if self.eof:
             raise EOFError("End of stream already reached")
         if self._flushed:
@@ -144,6 +150,7 @@ class Decompressor:
     def flush(self, max_length: int = -1) -> bytes:
         """Mark the end of the input and return the rest of the output, at most
         ``max_length`` bytes a call; ``eof`` is true once all of it is returned."""
+        max_length = index(max_length, "max_length")
         self._flushed = True
         return self._produce(max_length)
 

@@ -41,7 +41,10 @@ if d.truncation is not None:
 ```
 
 Errors are `CorruptDataError`, `TruncatedDataError` and `UnsupportedDataError`, all
-subclasses of `CodecError`, which is a `ValueError`. `KERNELS` maps each kernel name to
+subclasses of `CodecError`, which is a `ValueError`. A bad argument raises
+`TypeError` for the wrong type (a `str` or a `list` for bytes, a `float` for an int)
+and `ValueError` for an int outside its range, with the same message on every
+platform; `max_length` takes any int. `KERNELS` maps each kernel name to
 its revision; a decoder's `getstate()` names that revision, and `from_state()` refuses
 a state from another one. Decoders release the GIL while they read `bytes` input (the
 CRC only above 64 KiB, where the release pays off); other buffers are copied first.

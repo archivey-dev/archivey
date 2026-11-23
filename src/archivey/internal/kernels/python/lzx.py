@@ -9,6 +9,7 @@ mode; this class gives it the package's API, a port of the package's
 from __future__ import annotations
 
 from archivey.exceptions import ArchiveyError
+from archivey.internal.kernels.python._args import index, u64
 from archivey.internal.kernels.python._buffers import raw_bytes
 
 
@@ -42,7 +43,9 @@ class Decompressor:
             LzxDecoder,
         )
 
-        self._d = LzxDecoder(window_bits)
+        self._d = LzxDecoder(index(window_bits, "window_bits"))
+        if output_size is not None:
+            output_size = u64(output_size, "output_size")
         self._output_size = output_size
         # The last frame decoded, returned from ``_out_pos`` on.
         self._out = b""
@@ -92,6 +95,7 @@ class Decompressor:
             FRAME_SIZE,
         )
 
+        output_size = u64(output_size, "output_size")
         d = self._d
         decoded = d.decoded
         if output_size < decoded:
@@ -125,6 +129,7 @@ class Decompressor:
     def decompress(
         self, data: bytes | bytearray | memoryview, max_length: int = -1
     ) -> bytes:
+        max_length = index(max_length, "max_length")
         if self.eof:
             raise EOFError("End of stream already reached")
         if self._ended:
@@ -141,6 +146,7 @@ class Decompressor:
         """Mark the end of the input and return the rest of the output, at most
         ``max_length`` bytes a call; a frame the input still does not cover raises
         ``TruncatedError``."""
+        max_length = index(max_length, "max_length")
         if not self._ended:
             self._ended = True
             self._d.end()
