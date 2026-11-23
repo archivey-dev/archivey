@@ -2415,7 +2415,8 @@ class ExtractionCoordinator:
         if _wrote_at_path(result):
             self._mark_overwritten(prior or self._replaced_kept_partial())
             # A directory that landed over a file: the file's claim goes with it.
-            # A file landing retires it in ``_register_collision_key``.
+            # Any other member that lands retires it when it claims its own path
+            # (``_register_collision_key`` -> ``Placements.land``).
             if transformed.type == MemberType.DIRECTORY:
                 self._retire_owner()
             if transformed.type == MemberType.DIRECTORY and result.path is not None:
@@ -4487,8 +4488,9 @@ class ExtractionCoordinator:
     def _retire_owner(self) -> bool:
         """Under REPLACE, retire the claim of the file this member's destination held
         (``_MemberState.owner``) once that file is gone: a directory landed over it,
-        or the member removed it and then failed. A file landing retires it in
-        ``Placements.land`` instead. Whether a claim was retired."""
+        or the member removed it and then failed. Any other member that lands
+        retires it when it claims its own path (``_register_collision_key`` ->
+        ``Placements.land``). Whether a claim was retired."""
         owner = self._current.owner
         if owner is None or self._overwrite is not OverwritePolicy.REPLACE:
             return False

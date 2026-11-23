@@ -237,11 +237,12 @@ class Placements:
                 if claim is not None and self.is_live(claim) and _is_file_of(claim, st):
                     return claim
         # The file's only claim: one folded entry key, spelled one way.
-        spellings = next(iter(entries.values()))
-        if len(entries) == 1 and len(spellings) == 1:
-            (claim,) = spellings.values()
-            if self.is_live(claim) and _is_file_of(claim, st):
-                return claim
+        if len(entries) == 1:
+            (spellings,) = entries.values()
+            if len(spellings) == 1:
+                (claim,) = spellings.values()
+                if self.is_live(claim) and _is_file_of(claim, st):
+                    return claim
         return None
 
     def _index_new_claims(self) -> None:
