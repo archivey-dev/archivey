@@ -448,7 +448,7 @@ class ListingLimits:
     keeps, rounded up. What the count leaves out is the object overhead of ordinary text
     fields and the fixed cost of each member, about 1.5 KiB, whose total ``max_members``
     bounds. So a listing usually uses more memory than this counts: about 1.7 times the
-    count, plus that cost per member.
+    count for ordinary text, plus that cost per member.
 
     Counts member names (and raw names), comments, link targets, owner and group names
     and the string or bytes values in ``extra``, plus the keys of a dict nested in it
