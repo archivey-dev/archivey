@@ -27,7 +27,7 @@ import pytest
 from archivey.internal.streams.codecs.adc_decoder import adc_decompress
 from archivey.internal.streams.codecs.lzfse_decoder import lzfse_decompress
 from tests import dmg_build as d
-from tests.conftest import run_7z, sevenzip_version
+from tests.conftest import requires, run_7z, sevenzip_version
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "external" / "dmg_hdiutil"
 
@@ -723,3 +723,34 @@ def test_7zip_reads_layout_options(tmp_path: Path, options: dict) -> None:
     )
     assert not unsupported, text
     assert files.get("a.txt") == b"layout\n" * 100
+
+
+# ── Encrypted images against the hdiutil fixtures ────────────────────────────────────
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("name", ["hfs-UDZO-AES-128.dmg", "apfs-UDZO-AES-256.dmg"])
+def test_encrypted_header_fields_match_hdiutil(name: str) -> None:
+    fixture = (_FIXTURES / name).read_bytes()
+    key_bits = int(name[-7:-4])
+    ours = d.encrypt_dmg(bytes(4096), key_bits=key_bits)
+    header = d.ENCRYPTED_HEADER
+
+    def fields(image: bytes) -> tuple:
+        f = header.unpack_from(image)
+        # Everything but the UUID and the data size.
+        return (*f[:8], f[9], f[11], f[12])
+
+    def entry(image: bytes) -> tuple:
+        return d.KEY_ENTRY.unpack_from(image, header.size)
+
+    def blob(image: bytes) -> tuple:
+        _, offset, _ = entry(image)
+        f = d.PASSWORD_BLOB.unpack_from(image, offset)
+        # KDF, PRNG, salt size, IV size, then wrapping bits, cipher, padding, mode,
+        # wrapped-key size: not the iterations, salt or IV.
+        return (f[0], f[1], f[3], f[5], *f[7:])
+
+    assert fields(ours) == fields(fixture)
+    assert entry(ours) == entry(fixture)
+    assert blob(ours) == blob(fixture)

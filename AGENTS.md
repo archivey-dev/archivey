@@ -25,7 +25,9 @@ session needs and points at the rest.
    maintainer).
 5. **Public-repo rules.** No internal-tracker URLs or keys anywhere in the repo, PR text or
    commits — write "tracked internally". End every comment and review you post with the
-   agent attribution footer (§Review workflow). Do not edit `CHANGELOG.md` in a PR.
+   agent attribution footer (§Review workflow). A `CHANGELOG.md` line goes under
+   `## [Unreleased]`, merged into a line on the same topic when one exists; a plain bug
+   fix needs no line (CONTRIBUTING.md §Cutting a release).
 
 ## What this repo is
 
@@ -231,7 +233,8 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
 - An agent may merge a straightforward PR once its review approves and CI is green
   (maintainer, 2026-09-25: "go ahead with merge straightforward ones … if there's a
   tricky one, you can ask me to take a look before merging").
-  On standard and deep that approval includes the Opus pass, and on deep Cursor's too.
+  On standard and deep that approval includes the Opus pass, and on deep a Codex or
+  Cursor review's too (maintainer, 2026-11-22).
   The maintainer merges a PR that makes a decision of theirs (maintainer, 2026-10-31),
   so their merges go to the PRs that need their judgement, not to every deep one. The tier
   command's `merge:` line says which, run from the base branch's copy as
@@ -265,7 +268,11 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
   notices, in plain words for a reader who has not seen the code (maintainer,
   2026-11-19). The template's comment says what goes in it. Keep it true as the PR
   changes, like the rest of the body.
-- Do not edit `CHANGELOG.md` in a PR; the release writes it.
+- A PR may add or edit `CHANGELOG.md` lines under `## [Unreleased]` when they fit its
+  sections: merge into an existing line on the same topic and keep the list short and
+  user-facing. A plain bug fix needs no line; the release counts those in the shared
+  **Fixed** line, which PRs leave alone. The release PR does
+  the final pass (CONTRIBUTING.md §Cutting a release).
 
 **Outside the repo.** Upstream bug reports are drafted by agents and filed by the
 maintainer. Repository settings, publishing and the PyPI name are the maintainer's.

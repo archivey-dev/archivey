@@ -645,17 +645,18 @@ def probe_streams() -> Generator[None]:
         _PROBE_STREAM.reset(token)
 
 
-# Set to the caller's ``recover_partial_data`` while its codec stream opens
-# (:func:`partial_data_recovery`).
-_RECOVER_PARTIAL: ContextVar[bool] = ContextVar(
-    "archivey_recover_partial", default=True
+# Set to ``StreamConfig.redecode_before_damage`` while a codec stream opens
+# (:func:`redecoding_before_damage`).
+_REDECODE_BEFORE_DAMAGE: ContextVar[bool] = ContextVar(
+    "archivey_redecode_before_damage", default=True
 )
 
 
 @contextmanager
-def partial_data_recovery(recover: bool) -> Generator[None]:
+def redecoding_before_damage(recover: bool) -> Generator[None]:
     """Streams built inside this block decode again to hand back the bytes before an
-    error only when ``recover`` is true (``ArchiveyConfig.recover_partial_data``).
+    error only when ``recover`` is true (``StreamConfig.redecode_before_damage``: the
+    caller's ``ArchiveyConfig.recover_partial_data`` is not ``OFF``).
 
     Without it, a stream does no extra work for those bytes: on a source that can seek
     it does not decode again to the failing byte (``_redecode_to_error``), and on a pipe
@@ -664,18 +665,18 @@ def partial_data_recovery(recover: bool) -> Generator[None]:
     bytes its decoder call would have returned are lost. Bytes a decoder hands back
     before an error at no extra cost (the in-house decoders, bzip3) still come back.
     """
-    token = _RECOVER_PARTIAL.set(recover)
+    token = _REDECODE_BEFORE_DAMAGE.set(recover)
     try:
         yield
     finally:
-        _RECOVER_PARTIAL.reset(token)
+        _REDECODE_BEFORE_DAMAGE.reset(token)
 
 
-def recovers_partial_data() -> bool:
+def redecodes_before_damage() -> bool:
     """Whether a stream built here would recover the bytes before an error: what a
-    stream built later, outside the :func:`partial_data_recovery` block, re-enters it
+    stream built later, outside the :func:`redecoding_before_damage` block, re-enters it
     with (the accelerator's standard-library fallback)."""
-    return _RECOVER_PARTIAL.get()
+    return _REDECODE_BEFORE_DAMAGE.get()
 
 
 # The step of large bounded reads over a decompressed stream; this module does not
@@ -1110,7 +1111,7 @@ class DecompressorStream(ReadOnlyIOStream):
         self._file_index = seekable and file_index
         # A probe's stream raises where it meets an error (probe_streams).
         self._probe = _PROBE_STREAM.get()
-        self._recover = _RECOVER_PARTIAL.get()
+        self._recover = _REDECODE_BEFORE_DAMAGE.get()
         # Used once, in place of the decoder's index scan (see _ensure_index_built).
         self._initial_index = initial_index
         self._refuse_input_after_end = refuse_input_after_end
@@ -1848,7 +1849,7 @@ class DecompressorStream(ReadOnlyIOStream):
 
         Only on a source that can seek back, not in a probe's stream
         (:func:`probe_streams`), and not when the caller turned recovery off
-        (:func:`partial_data_recovery`). It returns ``b""`` when it cannot run or
+        (:func:`redecoding_before_damage`). It returns ``b""`` when it cannot run or
         recovers nothing, and the error raises as it would have. The cost is a second
         decode from the seek point and one more per probe that raises, paid only on
         damaged data.

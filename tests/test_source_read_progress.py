@@ -99,6 +99,81 @@ def test_a_nested_reader_reports_at_its_nest_level(tmp_path: Path) -> None:
     assert all(c.nest_level == 0 for c in seen.calls[:before])
 
 
+def test_a_nested_reader_reports_the_member_size(tmp_path: Path) -> None:
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.writestr("x.bin", os.urandom(2 * LOCAL_REPORT_STEP))
+    path = tmp_path / "outer.zip"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("inner.zip", inner.getvalue())
+    seen = _Recorder()
+    config = ArchiveyConfig(on_source_read=seen)
+    with (
+        open_archive(path, config=config, seekable_members=True) as outer,
+        outer.open("inner.zip") as member,
+        open_archive(member, parent=outer) as nested,
+    ):
+        nested.read("x.bin")
+    # The member's size is known, so a caller can draw a bar for the nested archive.
+    nested_calls = [c for c in seen.calls if c.nest_level == 1]
+    assert nested_calls
+    assert all(c.size == len(inner.getvalue()) for c in nested_calls)
+
+
+class _HintedPipe(io.RawIOBase):
+    """A non-seekable stream with an fsspec-style ``size`` claim."""
+
+    def __init__(self, data: bytes, size: int | None) -> None:
+        self._data = io.BytesIO(data)
+        if size is not None:
+            self.size = size
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: Any) -> int:
+        chunk = self._data.read(len(b))
+        b[: len(chunk)] = chunk
+        return len(chunk)
+
+
+@pytest.mark.parametrize("ratio", [1, 8])
+def test_a_size_hint_is_reported_but_does_not_set_the_report_step(
+    tmp_path: Path, ratio: int
+) -> None:
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        payload = os.urandom(8 * LOCAL_REPORT_STEP)
+        info = tarfile.TarInfo("big.bin")
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+    data = buf.getvalue()
+
+    def reports(size: int | None) -> list[SourceProgress]:
+        seen = _Recorder()
+        config = ArchiveyConfig(on_source_read=seen)
+        with (
+            open_archive(
+                _HintedPipe(data, size), config=config, streaming=True
+            ) as reader,
+            reader.stream_members() as members,
+        ):
+            for _, stream in members:
+                if stream is not None:
+                    stream.read()
+        return seen.calls
+
+    unhinted = reports(None)
+    hint = len(data) // ratio
+    hinted = reports(hint)
+    # The hint fills in ``size``; a hint that understates does not make every read
+    # past it report.
+    assert all(c.size == hint for c in hinted)
+    assert len(hinted) == len(unhinted)
+
+
 def test_a_nested_reader_with_its_own_callback_reports_there(tmp_path: Path) -> None:
     inner = io.BytesIO()
     with zipfile.ZipFile(inner, "w") as zf:
@@ -771,6 +846,41 @@ def test_a_mixed_volume_list_reports_local_and_remote_parts() -> None:
         assert seen.calls[-1].bytes_read == local_bytes + remote_bytes
     finally:
         fs.rm("/mixed", recursive=True)
+
+
+def test_a_mixed_volume_list_reports_local_parts_after_a_url(
+    tmp_path: Path,
+) -> None:
+    fsspec = pytest.importorskip("fsspec")
+    fs = fsspec.filesystem("memory")
+    data = _small_zip({f"m{i}.bin": os.urandom(100_000) for i in range(5)})
+    step = len(data) // 5 + 1
+    chunks = [data[i : i + step] for i in range(0, len(data), step)]
+    assert len(chunks) == 5
+    parts: list[Any] = []
+    local_size = 0
+    for i, chunk in enumerate(chunks):
+        if i % 2:
+            fs.pipe(f"/mixed3/a.zip.{i + 1:03d}", chunk)
+            parts.append(fsspec.open(f"memory://mixed3/a.zip.{i + 1:03d}"))
+        else:
+            part = tmp_path / f"a.zip.{i + 1:03d}"
+            part.write_bytes(chunk)
+            parts.append(part)
+            local_size += len(chunk)
+    try:
+        seen = _Recorder()
+        config = ArchiveyConfig(on_source_read=seen, source_read_step=0)
+        with open_archive(parts, config=config) as r:
+            for m in r.members():
+                r.read(m)
+        local = [c for c in seen.calls if c.request_start is None]
+        local_bytes = sum(c.position - (c.read_start or 0) for c in local)
+        # Parts 2 and 4 start after a URL part; their bytes count too.
+        assert local_bytes >= local_size
+        assert max(c.position for c in local) == len(data)
+    finally:
+        fs.rm("/mixed3", recursive=True)
 
 
 def test_a_caller_thread_named_like_archivey_s_still_reports(tmp_path: Path) -> None:

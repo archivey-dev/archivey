@@ -1,4 +1,4 @@
-"""The 7z RISC-V branch filter (method ``0x0B``), decoded in Python.
+"""The 7z RISC-V branch filter (method ``0x0B``), decoded by archivey-codecs or in Python.
 
 The oracles are 7-Zip 24 or later (two committed archives 7-Zip 26.05 wrote from real
 RISC-V code, and, when a 7-Zip that has the filter is on ``PATH``, archives and with
@@ -22,13 +22,41 @@ from archivey.exceptions import TruncatedError, UnsupportedFeatureError
 from archivey.internal.backends import sevenzip_parser, sevenzip_pipeline
 from archivey.internal.backends.sevenzip_parser import SevenZipCoder
 from archivey.internal.backends.sevenzip_pipeline import plan_folder
+from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs.isolated import IN_PROCESS
 from archivey.internal.streams.codecs.lzma_filter_decoder import (
+    BranchFilterDecoder,
     FilterStream,
-    PythonBranchFilterDecoder,
+    PythonBranch,
+    branch_maker,
 )
 from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV, riscv_decode
-from archivey.types import CompressionAlgorithm
+from archivey.types import CompressionAlgorithm, OptionalLibrary
 from tests.conftest import run_7z, sevenzip_with_riscv
+
+
+@pytest.fixture(params=["python", "codecs"])
+def excluded(request: pytest.FixtureRequest) -> frozenset[OptionalLibrary]:
+    """The excluded libraries for a run with the Python filter, or with
+    archivey-codecs' kernel (skipped when the package is not installed)."""
+    if request.param == "python":
+        return frozenset({OptionalLibrary.ARCHIVEY_CODECS})
+    if not deps.archivey_codecs.available():
+        pytest.skip("archivey-codecs is not installed")
+    return frozenset()
+
+
+def _decoder(
+    excluded: frozenset[OptionalLibrary], start_offset: int, unpack_size: int
+) -> BranchFilterDecoder:
+    make_branch = branch_maker(
+        FILTER_RISCV, start_offset, excluded=excluded, natives=IN_PROCESS
+    )
+    assert make_branch is not None
+    python = OptionalLibrary.ARCHIVEY_CODECS in excluded
+    assert isinstance(make_branch(), PythonBranch) is python
+    return BranchFilterDecoder(make_branch=make_branch, unpack_size=unpack_size)
+
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "sevenzip"
 _RISCV = b"\x0b"
@@ -224,15 +252,15 @@ def test_short_input(size: int) -> None:
 
 
 @pytest.mark.parametrize("tail_length", range(8))
-def test_tail_is_passed_through(tail_length: int) -> None:
+def test_tail_is_passed_through(
+    tail_length: int, excluded: frozenset[OptionalLibrary]
+) -> None:
     # A JAL-shaped tail is not converted: its last 7 bytes never are.
     tail = (b"\xef\x00\x00\x00\x17\x01\x00")[:tail_length]
     for items in (0, 1, 9):
         data = _payload(items, tail=tail, seed=items)
         encoded = _encode(data, 0)
-        decoder = PythonBranchFilterDecoder(
-            decode=riscv_decode, start_offset=0, unpack_size=len(data)
-        )
+        decoder = _decoder(excluded, 0, len(data))
         out = decoder.feed(encoded).data + decoder.flush().data
         assert out == data
         assert decoder.pending_error is None
@@ -240,13 +268,13 @@ def test_tail_is_passed_through(tail_length: int) -> None:
 
 @pytest.mark.parametrize("piece", [1, 2, 3, 7, 4097, 65537])
 @pytest.mark.parametrize("max_length", [-1, 3, 4096])
-def test_chunk_boundaries(piece: int, max_length: int) -> None:
+def test_chunk_boundaries(
+    piece: int, max_length: int, excluded: frozenset[OptionalLibrary]
+) -> None:
     pc = 0x1002
     data = _PAYLOAD[: 3 * 4097 + 5] if piece < 8 else _PAYLOAD
     encoded = _encode(data, pc)
-    decoder = PythonBranchFilterDecoder(
-        decode=riscv_decode, start_offset=pc, unpack_size=len(data)
-    )
+    decoder = _decoder(excluded, pc, len(data))
     out = bytearray()
     for start in range(0, len(encoded), piece):
         out += decoder.feed(encoded[start : start + piece], max_length).data
@@ -258,12 +286,15 @@ def test_chunk_boundaries(piece: int, max_length: int) -> None:
     assert decoder.pending_error is None
 
 
-def test_filter_stream_reads_in_small_pieces_and_seeks_back() -> None:
+def test_filter_stream_reads_in_small_pieces_and_seeks_back(
+    excluded: frozenset[OptionalLibrary],
+) -> None:
     encoded = _encode(_PAYLOAD, 0)
     stream = FilterStream(
         io.BytesIO(encoded),
         lzma_filter={"id": FILTER_RISCV},
         unpack_size=len(_PAYLOAD),
+        excluded=excluded,
         seekable=True,
     )
     try:
@@ -277,10 +308,13 @@ def test_filter_stream_reads_in_small_pieces_and_seeks_back() -> None:
         stream.close()
 
 
-def test_truncated_input_is_reported() -> None:
+def test_truncated_input_is_reported(excluded: frozenset[OptionalLibrary]) -> None:
     encoded = _encode(_PAYLOAD[:4096], 0)
     stream = FilterStream(
-        io.BytesIO(encoded[:-5]), lzma_filter={"id": FILTER_RISCV}, unpack_size=4096
+        io.BytesIO(encoded[:-5]),
+        lzma_filter={"id": FILTER_RISCV},
+        unpack_size=4096,
+        excluded=excluded,
     )
     try:
         with pytest.raises(TruncatedError):

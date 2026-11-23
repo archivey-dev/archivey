@@ -60,8 +60,11 @@ filters with `decode(data)` and `flush()`, ZipCrypto with `decrypt(data)`) SHALL
 at most the input given plus the bytes it held back from the previous call, and
 `flush()` SHALL return the held-back bytes. A block function whose output size is known
 (LZO, later LZFSE) SHALL be `decompress(block, *, out_size)` and SHALL never allocate
-more than `out_size` bytes. Every allocation SHALL be bounded by a constructor argument,
-`max_length`, the input length or `out_size`.
+more than `out_size` bytes; LZO SHALL also take `max_size=` in its place, for a
+container that records only the most a block may decode to (SquashFS), returning the
+block's output and never allocating more than `max_size` bytes. Every allocation SHALL be
+bounded by a constructor argument, `max_length`, the input length, `out_size` or
+`max_size`.
 
 #### Scenario: decoder interface
 
@@ -83,6 +86,7 @@ more than `out_size` bytes. Every allocation SHALL be bounded by a constructor a
 | ARM64 `decode()` on 6 bytes, then `flush()` | `decode()` returns 4 bytes and holds 2; `flush()` returns the 2 unchanged |
 | ZipCrypto `decrypt(data)` | Exactly `len(data)` bytes |
 | `lzo1x.decompress(block, out_size=n)` whose output is shorter or longer than `n` | `CorruptDataError`; never more than `n` bytes allocated |
+| `lzo1x.decompress(block, max_size=n)` whose output is longer than `n` | `CorruptDataError`; never more than `n` bytes allocated |
 | Corrupt input | `CorruptDataError`, a `CodecError` and `ValueError` |
 | Input ends inside the stream | `TruncatedDataError` |
 | A parameter the kernel does not support | `UnsupportedDataError` |

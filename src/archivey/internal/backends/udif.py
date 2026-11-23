@@ -25,14 +25,16 @@ Detection keeps the ``koly`` signatures here (:data:`MAGIC`, :data:`TRAILER`): a
 from __future__ import annotations
 
 import bisect
+import contextlib
 import io
 import plistlib
 import struct
 import xml.parsers.expat
+import zlib
 from array import array
 from collections import OrderedDict
-from collections.abc import Callable
-from typing import TYPE_CHECKING, BinaryIO, NamedTuple
+from collections.abc import Callable, Generator
+from typing import TYPE_CHECKING, BinaryIO, NamedTuple, NoReturn
 
 from archivey.diagnostics import (
     ArchiveEofContext,
@@ -144,6 +146,8 @@ CACHE_RUNS = 8
 # At open, beyond the property list, the physical bytes read plus the bytes decoded
 # must stay within this (design §7).
 OPEN_BUDGET = 64 << 20
+# The checksum pass feeds raw bytes to the CRC in slices of this size.
+CHECK_SLICE = 1 << 20
 # What a run costs in the packed arrays: a u32 type and four u64 fields.
 _RUN_BYTES = 36
 # Offsets must stay below 2^63 (``ReaderSource`` takes Python ints, but a disk of more
@@ -193,6 +197,66 @@ def parse_koly(raw: bytes, at: int) -> Koly | None:
     )
 
 
+# ── CRC-32 over zero bytes, without the bytes ────────────────────────────────────────
+
+# zlib's CRC-32 polynomial, reflected.
+_CRC_POLY = 0xEDB88320
+
+
+def _gf2_times(matrix: list[int], vector: int) -> int:
+    """``matrix`` (32 columns over GF(2)) applied to the 32-bit ``vector``."""
+    out = 0
+    i = 0
+    while vector:
+        if vector & 1:
+            out ^= matrix[i]
+        vector >>= 1
+        i += 1
+    return out
+
+
+def _zero_operators() -> list[list[int]]:
+    """For each ``k`` below 64, the operator that runs the raw CRC-32 register over
+    ``2**k`` zero bytes: the one-zero-bit operator squared ``3 + k`` times."""
+    operator = [_CRC_POLY] + [1 << i for i in range(31)]  # one zero bit
+    for _ in range(3):  # 2, 4, then 8 zero bits: one zero byte
+        operator = [_gf2_times(operator, column) for column in operator]
+    operators = []
+    for _ in range(64):
+        operators.append(operator)
+        operator = [_gf2_times(operator, column) for column in operator]
+    return operators
+
+
+_ZERO_OPERATORS: list[list[int]] | None = None
+
+
+def crc32_zeros(crc: int, n: int) -> int:
+    """``zlib.crc32(bytes(n), crc)``, in time that grows with the number of bits of
+    ``n``: the zero-extension operator of zlib's ``crc32_combine``. A zero-fill run of
+    2^50 bytes costs a few dozen small matrix products, not a walk over its bytes."""
+    global _ZERO_OPERATORS
+    if n <= 0:
+        return crc
+    if n < 64:
+        return zlib.crc32(bytes(n), crc)
+    if n >= 1 << 64:
+        raise ValueError(f"{n} zero bytes is more than a disk can hold")
+    operators = _ZERO_OPERATORS
+    if operators is None:
+        operators = _ZERO_OPERATORS = _zero_operators()
+    # zlib inverts the register before and after; zero bytes act linearly on the raw
+    # register in between.
+    register = crc ^ 0xFFFFFFFF
+    k = 0
+    while n:
+        if n & 1:
+            register = _gf2_times(operators[k], register)
+        n >>= 1
+        k += 1
+    return register ^ 0xFFFFFFFF
+
+
 def crc32_value(checksum: tuple[int, int, bytes]) -> int | None:
     """A checksum field's CRC-32 (type 2, 32 bits), or ``None`` for any other kind."""
     kind, bits, value = checksum
@@ -239,6 +303,10 @@ class UdifImage:
         # The open budget: the physical bytes read and the bytes decoded since the
         # property list, until ``end_open`` (design §7). ``None`` once open is done.
         self._budget: int | None = OPEN_BUDGET
+        self._budget_total = OPEN_BUDGET
+        self._budget_what = "opening the UDIF image"
+        # Whether served zeros count against the budget (only inside ``budget()``).
+        self._count_zeros = False
         size = source.size
         if size is None:
             with source.view(0) as whole:
@@ -392,8 +460,9 @@ class UdifImage:
             xml.parsers.expat.ExpatError,
             ValueError,
             TypeError,
-            KeyError,
-            IndexError,
+            # KeyError and IndexError from the parser, and an XML declaration that
+            # names an unknown or non-text codec.
+            LookupError,
             OverflowError,
             RecursionError,
             struct.error,
@@ -457,6 +526,8 @@ class UdifImage:
                 f"Listing limit reached: max_metadata_bytes={budget} (the UDIF run "
                 f"tables hold {total_runs} runs, {total_runs * _RUN_BYTES} bytes kept)"
             )
+        # The master checksum in the koly block is a CRC-32 of these, in this order.
+        self.plist_checksums = [table[3] for table in parsed]
         parsed.sort(key=lambda table: (table[1], table[2]))
         previous_end = 0
         previous_name = ""
@@ -531,14 +602,40 @@ class UdifImage:
         budget."""
         self._budget = None
 
+    @contextlib.contextmanager
+    def budget(self, nbytes: int, what: str) -> Generator[None]:
+        """Count the bytes read inside the block against ``nbytes``:
+        ``ResourceLimitError`` names ``what`` when they would exceed it. For a bounded
+        step after the open, such as the APFS checkpoint scan (design §6A.2). The
+        physical bytes read and the bytes decoded count, as the open budget counts
+        them, and so do the bytes served from zero-fill runs, ignored runs and gaps:
+        those cost nothing to store, and the step's work is per byte served."""
+        saved = (
+            self._budget,
+            self._budget_total,
+            self._budget_what,
+            self._count_zeros,
+        )
+        self._budget, self._budget_total, self._budget_what = nbytes, nbytes, what
+        self._count_zeros = True
+        try:
+            yield
+        finally:
+            (
+                self._budget,
+                self._budget_total,
+                self._budget_what,
+                self._count_zeros,
+            ) = saved
+
     def _spend(self, nbytes: int) -> None:
         if self._budget is None:
             return
         self._budget -= nbytes
         if self._budget < 0:
             raise ResourceLimitError(
-                f"opening the UDIF image read and decoded more than the "
-                f"{OPEN_BUDGET >> 20} MiB archivey allows at open"
+                f"{self._budget_what} read and decoded more than the "
+                f"{self._budget_total >> 20} MiB archivey allows for it"
             )
 
     def _read_file(self, offset: int, n: int, what: str) -> bytes:
@@ -572,9 +669,11 @@ class UdifImage:
             f"offset {origin + self._offset[index]})"
         )
 
-    def _decode_run(self, index: int) -> bytes:
-        """Compressed run ``index``, decoded and cached. Its bounds are checked before
-        any of its bytes is read; it must decode to exactly its sectors."""
+    def _decode_run(self, index: int, *, keep: bool = True) -> bytes:
+        """Compressed run ``index``, decoded and cached (unless ``keep`` is false: the
+        checksum pass reads each run once, and must not push out the runs a listing
+        or a read keeps). Its bounds are checked before any of its bytes is read; it
+        must decode to exactly its sectors."""
         cached = self._cache.get(index)
         if cached is not None:
             self._cache.move_to_end(index)
@@ -619,9 +718,10 @@ class UdifImage:
                 f"{self._where(index)} decodes to {got} bytes, not the {decoded} "
                 f"bytes of its {self._count[index]} sectors"
             )
-        self._cache[index] = data
-        if len(self._cache) > CACHE_RUNS:
-            self._cache.popitem(last=False)
+        if keep:
+            self._cache[index] = data
+            if len(self._cache) > CACHE_RUNS:
+                self._cache.popitem(last=False)
         return data
 
     def _through_archivey(
@@ -656,6 +756,8 @@ class UdifImage:
                 following = index + 1
                 gap_end = starts[following] * SECTOR if following < len(starts) else end
                 take = min(end, gap_end) - pos
+                if self._count_zeros:
+                    self._spend(take)
                 parts.append(bytes(take))
                 pos += take
                 continue
@@ -665,14 +767,11 @@ class UdifImage:
             within = pos - run_start
             kind = self._kind[index]
             if kind in _STORED_NOTHING:
+                if self._count_zeros:
+                    self._spend(take)
                 parts.append(bytes(take))
             elif kind == RAW:
-                decoded = self._count[index] * SECTOR
-                if self._length[index] != decoded:
-                    raise CorruptionError(
-                        f"{self._where(index)} stores {self._length[index]} bytes for "
-                        f"{decoded}: a raw run must store exactly its sectors"
-                    )
+                self._check_raw(index)
                 parts.append(
                     self._read_file(
                         self._offset[index] + within, take, self._where(index)
@@ -681,12 +780,115 @@ class UdifImage:
             elif kind in _COMPRESSED:
                 parts.append(self._decode_run(index)[within : within + take])
             else:
-                raise UnsupportedFeatureError(
-                    f"UDIF run type 0x{kind:08x} (for disk sector {starts[index]}) is "
-                    "not supported"
-                )
+                self._refuse_kind(index)
             pos += take
         return b"".join(parts)
+
+    def _check_raw(self, index: int) -> None:
+        decoded = self._count[index] * SECTOR
+        if self._length[index] != decoded:
+            raise CorruptionError(
+                f"{self._where(index)} stores {self._length[index]} bytes for "
+                f"{decoded}: a raw run must store exactly its sectors"
+            )
+
+    def _refuse_kind(self, index: int) -> NoReturn:
+        raise UnsupportedFeatureError(
+            f"UDIF run type 0x{self._kind[index]:08x} (for disk sector "
+            f"{self._start[index]}) is not supported"
+        )
+
+    # ── Checksums (the partition pass, design §7.2) ──────────────────────────────────
+
+    def crc_covers(self, start: int, length: int) -> bool:
+        """Whether every byte of the disk range is in a run of a table that stores a
+        CRC-32: no gap between runs, and no table without one, inside the range."""
+        if length <= 0:
+            return False
+        first = start // SECTOR
+        end = -(-(start + length) // SECTOR)
+        checked = array("B", bytes(len(self._kind)))
+        for table in self.tables:
+            if table.checksum is not None:
+                for i in range(table.first_run, table.end_run):
+                    checked[i] = 1
+        starts = self._start
+        index = bisect.bisect_right(starts, first) - 1
+        if index < 0:
+            return False
+        pos = first
+        while pos < end:
+            if (
+                index >= len(starts)
+                or starts[index] > pos
+                or pos >= starts[index] + self._count[index]
+                or not checked[index]
+            ):
+                return False
+            pos = starts[index] + self._count[index]
+            index += 1
+        return True
+
+    def tables_over(self, start: int, length: int) -> list[int]:
+        """The indexes in ``tables`` of the tables with a CRC-32 whose sectors share a
+        byte with the disk range."""
+        end = start + length
+        return [
+            i
+            for i, table in enumerate(self.tables)
+            if table.checksum is not None
+            and _overlap(
+                table.first_sector * SECTOR,
+                (table.first_sector + table.sector_count) * SECTOR,
+                start,
+                end,
+            )
+        ]
+
+    def table_crc(
+        self, table: UdifTable, draw: Callable[[int], None] | None = None
+    ) -> int:
+        """The CRC-32 of ``table``'s runs as the format defines it: every run but the
+        ignore runs, decoded, in sector order. One run is in memory at a time (a raw
+        one in slices); a zero-fill run is folded in without its bytes. Decode errors
+        raise, naming the run. ``draw(n)`` is told the size of each run that stores
+        bytes (compressed or raw) before any of it is read, and may raise to stop:
+        runs may share stored bytes, so even raw runs can read far more than the
+        file holds."""
+        crc = 0
+        for index in range(table.first_run, table.end_run):
+            kind = self._kind[index]
+            size = self._count[index] * SECTOR
+            if kind == IGNORE:
+                continue
+            if kind == ZERO_FILL:
+                crc = crc32_zeros(crc, size)
+            elif kind == RAW:
+                self._check_raw(index)
+                if draw is not None:
+                    draw(size)
+                for at in range(0, size, CHECK_SLICE):
+                    n = min(CHECK_SLICE, size - at)
+                    data = self._read_file(
+                        self._offset[index] + at, n, self._where(index)
+                    )
+                    crc = zlib.crc32(data, crc)
+            elif kind in _COMPRESSED:
+                if draw is not None:
+                    draw(size)
+                crc = zlib.crc32(self._decode_run(index, keep=False), crc)
+            else:
+                self._refuse_kind(index)
+        return crc
+
+    def data_fork_crc(self) -> int:
+        """The CRC-32 of the data fork's stored bytes, read in slices."""
+        crc = 0
+        start, length = self.koly.data_fork_offset, self.koly.data_fork_length
+        for at in range(0, length, CHECK_SLICE):
+            n = min(CHECK_SLICE, length - at)
+            crc = zlib.crc32(self._read_file(start + at, n, "the UDIF data fork"), crc)
+        return crc
 
 
 class UdifSource(ReaderSource):
@@ -706,7 +908,7 @@ class UdifSource(ReaderSource):
 
         def view(offset: int, n: int | None) -> BinaryIO:
             span = length - offset if n is None else min(n, length - offset)
-            raw = _DiskView(read_at, offset, max(0, span))
+            raw = DiskView(read_at, offset, max(0, span))
             return io.BufferedReader(raw, buffer_size=64 << 10)
 
         super().__init__(view, length, None, read_at)
@@ -722,7 +924,7 @@ class UdifSource(ReaderSource):
         return data
 
 
-class _DiskView(io.RawIOBase):
+class DiskView(io.RawIOBase):
     """A seekable stream over ``length`` bytes of a :class:`UdifSource` from
     ``start``."""
 

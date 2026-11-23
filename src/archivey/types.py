@@ -559,6 +559,11 @@ class OptionalLibrary(StrEnum):
     CRC32C = "crc32c"
     """``crc32c``: the CRC-32C of ``.sz`` files, used when ``google-crc32c`` is not
     installed."""
+    ARCHIVEY_CODECS = "archivey_codecs"
+    """``archivey-codecs``: Rust versions of decoders archivey otherwise runs in
+    Python (so far the CRC-16 of LHA archives and traditional ZIP encryption). They
+    give the same bytes and the same errors, faster. The package is not on PyPI
+    yet; until it is installed, this switch changes nothing."""
 
 
 OptionalLibraryStr = Literal[
@@ -578,6 +583,8 @@ OptionalLibraryStr = Literal[
     "google_crc32c",
     "google-crc32c",
     "crc32c",
+    "archivey_codecs",
+    "archivey-codecs",
 ]
 """The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
 
@@ -1196,9 +1203,12 @@ class MemberExtra(dict[str, object]):
     * ``arj.file_type`` (``int``) — the ARJ file type: 0 binary, 1 text, 3 directory,
       4 volume label, 5 chapter label, 6 Unix special file.
     * ``dmg.xattrs`` (``dict[str, bytes | None]``) — DMG. The extended attributes of
-      the HFS+ file, by name, with each value up to 1 KiB; a longer value is ``None``.
-      Absent when the file has none. Extraction does not write them. A transparently
-      compressed file's ``com.apple.decmpfs`` holds its data and is not listed.
+      the HFS+ or APFS file, by name, with each value up to 1 KiB; a longer value, or
+      one APFS stores apart from the record, is ``None``. Absent when the file has
+      none. Extraction does not write them. A transparently compressed file's
+      ``com.apple.decmpfs`` holds its data and is not listed, nor are APFS's
+      ``com.apple.fs.symlink`` (the symlink target) and ``com.apple.ResourceFork``
+      (the resource fork).
     * ``dmg.resource_fork_size`` (``int``) — DMG. The size of the file's resource
       fork, when it has one; its bytes are not read. Absent on a compressed file,
       whose resource fork holds its data.
@@ -1326,7 +1336,10 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``makeself.encryption`` (``str``)
     * ``makeself.payloads`` (``int``)
     * ``makeself.signed`` (``bool``)
-    * ``dmg.filesystem`` (``str``) — ``"HFS+"`` or ``"HFSX"``, the first volume's.
+    * ``dmg.filesystem`` (``str``) — ``"HFS+"``, ``"HFSX"`` or ``"APFS"``, the first
+      volume's.
+    * ``dmg.apfs_volumes`` (``list[str]``) — the names of the APFS volumes archivey
+      lists, in container order; absent when the image holds none.
     * ``dmg.volume_name`` (``str``) — the volume's name, when the image holds one.
     * ``dmg.volumes`` (``list[str]``) — every volume's name, in partition order. With
       more than one, each volume's members are under a top-level directory named
@@ -1338,6 +1351,8 @@ class ArchiveInfoExtra(dict[str, object]):
       sorted: ``"raw"``, ``"adc"``, ``"zlib"``, ``"bzip2"``, ``"lzfse"``, ``"xz"``.
     * ``dmg.code_signature`` (``bool``) — the image carries a code signature (not
       checked).
+    * ``dmg.encryption`` (``str``) — ``"AES-128"``, ``"AES-192"`` or ``"AES-256"``
+      for an encrypted image (``hdiutil`` writes 128 and 256); absent otherwise.
     """
 
     __slots__ = ()
@@ -1403,11 +1418,15 @@ class ArchiveInfoExtra(dict[str, object]):
     @overload
     def __getitem__(self, key: Literal["dmg.volumes"], /) -> list[str]: ...
     @overload
+    def __getitem__(self, key: Literal["dmg.apfs_volumes"], /) -> list[str]: ...
+    @overload
     def __getitem__(self, key: Literal["dmg.partition_scheme"], /) -> str: ...
     @overload
     def __getitem__(self, key: Literal["dmg.run_codecs"], /) -> list[str]: ...
     @overload
     def __getitem__(self, key: Literal["dmg.code_signature"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.encryption"], /) -> str: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override
@@ -2141,6 +2160,27 @@ class OnError(Enum):
     CONTINUE = "continue"
     """The failure is recorded in the report as ``FAILED``, its partial output is
     removed, and extraction goes on with the next member."""
+    KEEP_PARTIAL = "keep_partial"
+    """As ``CONTINUE``, except that a file whose data fails part-way stays on disk,
+    holding the bytes its data gave before the failure, as ``unrar x -kb``, 7-Zip and
+    GNU tar leave it. A member whose only damage is a failed CRC or size check keeps
+    every byte, unless the decoder makes that check itself (gzip's trailer CRC), which
+    can lose the last bytes it decoded: the member is read as under
+    ``PartialDataRecovery.ALL``, whatever the config says. The result is
+    ``FAILED`` with the error, and its ``path`` names the partial file. The file lands
+    as a complete one would, so under ``OverwritePolicy.REPLACE`` it replaces an entry
+    already at its name.
+
+    When the same damage also ends the archive's list of members (a cut TAR), the call
+    raises instead of returning a report, and a note on that error names each partial
+    file the run kept.
+
+    Nothing is kept when no byte was written, when the member failed before its data
+    was read (an existing entry under ``OverwritePolicy.ERROR``), when a limit refused
+    it, in a dry run, or for a hard link. The partial file gets none of the member's
+    metadata: its modification time is when it was written, and its mode is the one
+    archivey creates files with (``0o600``, or ``0o666`` less the umask for a member
+    with no stored mode under ``TRUSTED``)."""
 
 
 # The string spellings of ``OnError``, so a type checker flags a bad one at the
@@ -2148,7 +2188,7 @@ class OnError(Enum):
 # ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
 # case, and a literal can express neither, so this is the canonical spelling.
 # Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
-OnErrorStr = Literal["stop", "continue"]
+OnErrorStr = Literal["stop", "continue", "keep_partial", "keep-partial"]
 
 
 class OnBlocked(StrEnum):
@@ -2249,7 +2289,8 @@ class ExtractionStatus(StrEnum):
     """Refused by a safety check or by the policy."""
     FAILED = "failed"
     """Extraction failed: damaged data, a limit such as the expansion ratio, or a write
-    error."""
+    error. Nothing of the member is left at its destination, except the partial file
+    that ``OnError.KEEP_PARTIAL`` keeps, which ``path`` then names."""
     LINK_TARGET_UNAVAILABLE = "link_target_unavailable"
     """A symlink whose target the archive never recorded, so it cannot be written. Not a
     failure: extraction goes on whatever ``on_error`` says. The archive is reported with
@@ -2394,7 +2435,10 @@ class ExtractionResult:
     are filled in late may still change; treat it as read-only."""
 
     path: Path | None
-    """Where the member was written, or ``None`` if it was not."""
+    """Where the member was written, or ``None`` if it was not. On a ``FAILED``
+    result it is ``None``, except under ``OnError.KEEP_PARTIAL``, where it names the
+    partial file kept for the
+    member."""
 
     status: ExtractionStatus
     """What happened to the member."""

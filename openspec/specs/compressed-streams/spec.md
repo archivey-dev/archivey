@@ -1076,16 +1076,34 @@ prefix of the decoder it replaces. A decoder that hands out every byte before an
 before it raises it ("In-house decoders hand back their bytes before an error") already
 gives that prefix, and SHALL NOT be decoded again for it.
 
-With `ArchiveyConfig.recover_partial_data=False` a stream SHALL NOT decode again: the
+With `ArchiveyConfig.recover_partial_data=OFF` a stream SHALL NOT decode again: the
 read that meets the error raises the same error, and MAY lose the bytes the failing
 decoder call gave before it. On a pipe a deflate decoder SHALL NOT copy its state for
 them either ("A pipe loses at most the call that failed" then holds to its bound for
 deflate too). What costs no extra work still holds under it: "In-house decoders hand
 back their bytes before an error" and "A read that meets a decoder error returns what it
 holds first". Brotli's replay to find its stream's end is not recovery and runs under
-both settings, since it decides the error. A compressed TAR's own stream SHALL recover
+every level, since it decides the error. A compressed TAR's own stream SHALL recover
 its bytes whatever the setting, so every member that ends before the damage reads whole
-under both settings.
+at every level.
+
+With `recover_partial_data=ALL`, recovery is as under the default (`BEFORE_DAMAGE`), and
+a member stream from `open()` or `stream_members()` SHALL also return the bytes of a
+read whose checksum or size check fails; the next read SHALL raise the error the default
+raises, and the member's verification level SHALL NOT rise. A `read()` to the end SHALL
+return every byte read before a failure that finds the data damaged (a
+`CorruptionError`, or an error raised from one) and raise it on the next read. A
+resource limit, a raised diagnostic or the caller's `on_source_read` exception SHALL
+raise from the read that meets it, at every level. A bool for the field SHALL raise
+`ArchiveyUsageError`, naming the level that does what it did.
+
+#### Scenario: a CRC failure at ALL
+
+- **GIVEN** a ZIP member whose CRC is wrong and whose data decodes cleanly
+- **WHEN** it is read at `ALL` in sized steps, or with one `read()`, from a file, with
+  `streaming=True` or from a pipe
+- **THEN** the reads return every byte of the member, and the next read raises
+  `CorruptionError`, the error the default raises
 
 #### Scenario: read sizes
 
@@ -1115,7 +1133,7 @@ call that raised. Each call SHALL be fed compressed input up to the next multipl
 64 KiB of compressed offset from where the decoder started (a short source read is fed
 as it is) and SHALL ask for what the read asks, at most 64 KiB.
 
-Unless the caller set `recover_partial_data=False`, a gzip, zlib or raw deflate decoder
+Unless the caller set `recover_partial_data=OFF`, a gzip, zlib or raw deflate decoder
 on such a source SHALL lose nothing: it keeps a copy of its zlib state
 (`decompressobj.copy()`) taken before the call or up to 256 calls, 1 MiB of compressed
 input or 8 MiB of output earlier, and when a call raises, the copy decodes the calls
