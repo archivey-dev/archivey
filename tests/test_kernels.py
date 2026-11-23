@@ -18,7 +18,7 @@ import weakref
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import ClassVar, NoReturn
+from typing import Any, ClassVar, NoReturn
 
 import pytest
 
@@ -2042,6 +2042,75 @@ def test_a_panic_in_the_child_is_reported_as_one() -> None:
         branch.flush()
     _assert_raised_again(again.value, info.value)
     assert proxy.calls == 1
+
+
+class _IntLike:
+    """An int as a NumPy integer is one: ``__index__`` only."""
+
+    def __init__(self, value: int) -> None:
+        self._value = value
+
+    def __index__(self) -> int:
+        return self._value
+
+
+# Each takes ``kernels`` with isolation on or off. The proxy in front of the decoder
+# child checks and converts the arguments as the package's methods do, so the child
+# gets only what marshal takes, and ``None`` data is not taken as no input.
+_THROUGH_THE_CHILD: dict[str, Callable[[Callable[..., Any]], object]] = {
+    "arm64 int-like start_offset": lambda k: (
+        k("filters").Arm64Decoder(_IntLike(4)).decode(bytes(8))
+    ),
+    "arm64 negative start_offset": lambda k: k("filters").Arm64Decoder(-1),
+    "arm64 decode None": lambda k: k("filters").Arm64Decoder().decode(None),
+    "riscv int-like start_offset": lambda k: (
+        k("filters").RiscvDecoder(_IntLike(4)).decode(bytes(8))
+    ),
+    "lzw int-like max_width": lambda k: (
+        k("lzw")
+        .Decompressor(max_width=_IntLike(12), block_mode=True)
+        .decompress(b"", _IntLike(5))
+    ),
+    "lzw block_mode int": lambda k: k("lzw").Decompressor(max_width=12, block_mode=1),
+    "lzw decompress None": lambda k: k("lzw").Decompressor().decompress(None),
+    "lzx int-like sizes": lambda k: (
+        k("lzx").Decompressor(_IntLike(15), output_size=_IntLike(0)).flush(_IntLike(5))
+    ),
+    "lzx set_output_size float": lambda k: (
+        k("lzx").Decompressor(15).set_output_size(1.0)
+    ),
+    "lzx decompress None": lambda k: k("lzx").Decompressor(15).decompress(None),
+    "lzo1x int-like max_size": lambda k: k("lzo1x").decompress(
+        b"\x11\0\0", max_size=_IntLike(9)
+    ),
+    "lzo1x block None": lambda k: k("lzo1x").decompress(None, max_size=9),
+}
+
+
+@needs_codecs
+@pytest.mark.parametrize(
+    "call", _THROUGH_THE_CHILD.values(), ids=_THROUGH_THE_CHILD.keys()
+)
+def test_an_argument_reads_the_same_in_the_child(
+    call: Callable[[Callable[..., Any]], object],
+) -> None:
+    def outcome(isolated: bool) -> tuple[str, object]:
+        def kernel(name: str) -> Any:
+            got = getattr(kernels, name)(frozenset(), isolated=isolated)
+            # The package's kernel, in process or in the child: not a twin.
+            if name == "filters":
+                assert got.Arm64Decoder is not filters_twin.Arm64Decoder
+            else:
+                assert got.library is not None
+            return got
+
+        try:
+            return ("ok", call(kernel))
+        except Exception as exc:  # noqa: BLE001 - the error is what is compared
+            return (type(exc).__name__, str(exc))
+
+    in_process = outcome(isolated=False)
+    assert outcome(isolated=True) == in_process
 
 
 def test_the_childs_codec_errors_are_rebuilt_as_the_packages() -> None:

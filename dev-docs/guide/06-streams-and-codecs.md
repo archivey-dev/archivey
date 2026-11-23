@@ -226,9 +226,9 @@ child.
 ## Encryption
 
 AES (7z, RAR 5, WinZip AES in ZIP) runs through the `cryptography` package
-(`streams/crypto.py`); ZipCrypto is archivey's own (`backends/zipcrypto.py`, its cipher in
-`kernels/python/zipcrypto.py` or archivey-codecs). Encryption
-is a stage in the stack, below the decoder. Password handling is shared: candidates come
+(`streams/crypto.py`); ZipCrypto is archivey's own (`backends/zipcrypto.py`, its cipher
+in `kernels/python/zipcrypto.py` or archivey-codecs). Encryption is a stage in the
+stack, below the decoder. Password handling is shared: candidates come
 from `password.py`, and `password_confirm.py` has the ladder that decides whether a
 candidate is right when a format's own check can accept a wrong password: a cheap key
 check, then a stored CRC over a small decodable prefix, then "does the decoder reject

@@ -11,6 +11,7 @@ checkout with archivey-codecs installed: ``uv run pytest packages/archivey-codec
 from __future__ import annotations
 
 import gc
+import inspect
 import io
 import os
 import random
@@ -1354,6 +1355,29 @@ class _Index:
         return self._value
 
 
+# An int ``str()`` refuses: more digits than Python's default limit of 4300.
+_HUGE = 10**5000
+
+
+class _Flip:
+    """An ``__index__`` that gives -1, then 0 on each later call: a value read twice
+    would pass a range check the first value fails."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __index__(self) -> int:
+        self.calls += 1
+        return -1 if self.calls == 1 else 0
+
+
+class _Refusing:
+    """An ``__index__`` that raises ``OSError``, as a callback can."""
+
+    def __index__(self) -> int:
+        raise OSError("refused")
+
+
 def _bcj2(codecs: object, *, out_size: object = 4, main: object = None) -> object:
     """A BCJ2 decoder whose main stream reads as ``main`` gives, if given."""
     first = types.SimpleNamespace(read=lambda n: main) if main is not None else _EMPTY()
@@ -1373,6 +1397,8 @@ _BAD_ARGUMENTS: dict[str, Callable[[object], object]] = {
     "crc16 value big": lambda c: c.crc16_arc(b"a", _BIG),
     "crc16 value __index__ big": lambda c: c.crc16_arc(b"a", _Index(70000)),
     "crc16 value __index__ negative": lambda c: c.crc16_arc(b"a", _Index(-1)),
+    "crc16 value huge": lambda c: c.crc16_arc(b"a", _HUGE),
+    "crc16 value __index__ flips": lambda c: c.crc16_arc(b"a", _Flip()),
     "zipcrypto password list": lambda c: c.zipcrypto.Decryptor([1, 2]),
     "zipcrypto password int": lambda c: c.zipcrypto.Decryptor(3),
     "zipcrypto password str": lambda c: c.zipcrypto.Decryptor("ab"),
@@ -1382,6 +1408,8 @@ _BAD_ARGUMENTS: dict[str, Callable[[object], object]] = {
     "arm64 start_offset float": lambda c: c.filters.Arm64Decoder(1.0),
     "arm64 start_offset None": lambda c: c.filters.Arm64Decoder(None),
     "riscv start_offset negative": lambda c: c.filters.RiscvDecoder(-1),
+    "arm64 start_offset huge": lambda c: c.filters.Arm64Decoder(_HUGE),
+    "arm64 start_offset __index__ flips": lambda c: c.filters.Arm64Decoder(_Flip()),
     "arm64 data list": lambda c: c.filters.Arm64Decoder().decode([1, 2, 3, 4]),
     "lzo1x block list": lambda c: c.lzo1x.decompress([0x11, 0, 0], max_size=9),
     "lzo1x max_size negative": lambda c: c.lzo1x.decompress(b"\x11\0\0", max_size=-1),
@@ -1398,6 +1426,7 @@ _BAD_ARGUMENTS: dict[str, Callable[[object], object]] = {
         max_width=-1, block_mode=True
     ),
     "lzw max_width big": lambda c: c.lzw.Decompressor(max_width=_BIG, block_mode=True),
+    "lzw max_width huge": lambda c: c.lzw.Decompressor(max_width=_HUGE, block_mode=True),
     "lzw max_width float": lambda c: c.lzw.Decompressor(
         max_width=12.0, block_mode=True
     ),
@@ -1408,6 +1437,12 @@ _BAD_ARGUMENTS: dict[str, Callable[[object], object]] = {
     "lzw flush max_length float": lambda c: c.lzw.Decompressor().flush(1.0),
     "lzx window_bits negative": lambda c: c.lzx.Decompressor(-1),
     "lzx window_bits big": lambda c: c.lzx.Decompressor(_BIG),
+    "lzx window_bits huge": lambda c: c.lzx.Decompressor(_HUGE),
+    "lzx window_bits __index__ flips": lambda c: c.lzx.Decompressor(_Flip()),
+    "lzx output_size huge": lambda c: c.lzx.Decompressor(15, output_size=_HUGE),
+    "lzx max_length raises": lambda c: c.lzx.Decompressor(15).decompress(
+        b"", _Refusing()
+    ),
     "lzx window_bits float": lambda c: c.lzx.Decompressor(15.0),
     "lzx output_size negative": lambda c: c.lzx.Decompressor(15, output_size=-1),
     "lzx output_size big": lambda c: c.lzx.Decompressor(15, output_size=_BIG),
@@ -1432,22 +1467,79 @@ _BAD_ARGUMENTS: dict[str, Callable[[object], object]] = {
 
 
 def _raised(fn: Callable[[], object]) -> tuple[str, object]:
-    """:func:`outcome`, with ``TypeError`` too."""
+    """:func:`outcome`, with ``TypeError`` and ``OSError`` too."""
     try:
         return outcome(fn)
-    except TypeError as exc:
-        return ("TypeError", str(exc))
+    except (TypeError, OSError) as exc:
+        return (type(exc).__name__, str(exc))
 
 
 @pytest.mark.parametrize("call", _BAD_ARGUMENTS.values(), ids=_BAD_ARGUMENTS.keys())
 def test_a_bad_argument_raises_the_same_error_on_both_sides(
-    call: Callable[[object], object],
+    call: Callable[[object], object], capfd: pytest.CaptureFixture[str]
 ) -> None:
     # The messages are fixed, not PyO3's ``OverflowError`` ones, which differ by
-    # platform: the twins give the same everywhere.
+    # platform: the twins give the same everywhere. Nothing goes to stderr (an
+    # unraisable error while making a message).
     got = _raised(lambda: call(PYTHON))
     assert got[0] != "ok", got
     assert _raised(lambda: call(RUST)) == got
+    assert capfd.readouterr().err == ""
+
+
+_ONE_INDEX_CALL: dict[str, Callable[[object, object], object]] = {
+    "crc16 value": lambda c, v: c.crc16_arc(b"a", v),
+    "arm64 start_offset": lambda c, v: c.filters.Arm64Decoder(v),
+    "lzo1x max_size": lambda c, v: c.lzo1x.decompress(b"\x11\0\0", max_size=v),
+    "lzw max_width": lambda c, v: c.lzw.Decompressor(max_width=v, block_mode=True),
+    "lzx window_bits": lambda c, v: c.lzx.Decompressor(v),
+    "lzx output_size": lambda c, v: c.lzx.Decompressor(15, output_size=v),
+    "lzx max_length": lambda c, v: c.lzx.Decompressor(15).decompress(b"", v),
+    "bcj2 out_size": lambda c, v: _bcj2(c, out_size=v),
+}
+
+
+@BOTH
+@pytest.mark.parametrize("call", _ONE_INDEX_CALL.values(), ids=_ONE_INDEX_CALL.keys())
+def test_an_int_argument_calls_its_index_hook_once(
+    codecs: object, call: Callable[[object, object], object]
+) -> None:
+    value = _Flip()
+    _raised(lambda: call(codecs, value))
+    assert value.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("rust", "twin"),
+    [
+        (RUST.filters.Arm64Decoder, PYTHON.filters.Arm64Decoder),
+        (RUST.filters.RiscvDecoder, PYTHON.filters.RiscvDecoder),
+        (RUST.lzw.Decompressor.decompress, PYTHON.lzw.Decompressor.decompress),
+        (RUST.lzw.Decompressor.flush, PYTHON.lzw.Decompressor.flush),
+        (RUST.lzx.Decompressor.decompress, PYTHON.lzx.Decompressor.decompress),
+        (RUST.lzx.Decompressor.flush, PYTHON.lzx.Decompressor.flush),
+        (RUST.bcj2.Decompressor.read, PYTHON.bcj2.Decompressor.read),
+    ],
+    ids=[
+        "arm64",
+        "riscv",
+        "lzw decompress",
+        "lzw flush",
+        "lzx decompress",
+        "lzx flush",
+        "bcj2 read",
+    ],
+)
+def test_a_default_reads_as_the_twins(rust: object, twin: object) -> None:
+    # ``inspect.signature`` gives the default a caller can pass back in.
+    def defaults(fn: object) -> dict[str, object]:
+        return {
+            name: p.default
+            for name, p in inspect.signature(fn).parameters.items()
+            if p.default is not inspect.Parameter.empty
+        }
+
+    assert defaults(rust) == defaults(twin)
 
 
 @BOTH

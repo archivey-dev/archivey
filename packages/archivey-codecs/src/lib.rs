@@ -138,6 +138,10 @@ fn input<'a>(obj: &'a Bound<'_, PyAny>) -> PyResult<Cow<'a, [u8]>> {
 // message that differs by platform (a C `long` has 32 bits on Windows). These take the
 // argument as any object instead, so the message is the same everywhere and the
 // Python twins can give the same one. A non-int still raises PyO3's `TypeError`.
+//
+// Each argument goes through `as_int` once, before any range check: a second
+// `__index__` call could give another value or raise another error. A range error
+// names the range, not the value: an int too long for `str()` cannot be shown.
 
 /// `obj` as an int, as `operator.index` gives it: `TypeError` for anything else.
 fn as_int<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyInt>> {
@@ -159,12 +163,9 @@ fn argument_error(py: Python<'_>, name: &str, error: PyErr) -> PyErr {
 
 /// An int argument in 0 to 2**64 - 1, else `ValueError` naming it.
 fn u64_in(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<u64> {
-    if let Ok(v) = obj.extract::<u64>() {
-        return Ok(v);
-    }
-    let int = as_int(obj)?;
-    int.extract::<u64>()
-        .map_err(|_| PyValueError::new_err(format!("{name} {int} is outside 0 to 2**64 - 1")))
+    as_int(obj)?
+        .extract::<u64>()
+        .map_err(|_| PyValueError::new_err(format!("{name} is outside 0 to 2**64 - 1")))
 }
 
 /// A parameter type for a size or offset named `$name`: [`u64_in`]. As for any typed
@@ -197,11 +198,11 @@ impl<'a, 'py> FromPyObject<'a, 'py> for MaxLength {
     type Error = PyErr;
 
     fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
-        if let Ok(v) = obj.extract::<i64>() {
-            return Ok(MaxLength(v));
-        }
         // A `TypeError` here is prefixed by PyO3, as for any typed parameter.
         let int = as_int(&obj.to_owned())?;
+        if let Ok(v) = int.extract::<i64>() {
+            return Ok(MaxLength(v));
+        }
         Ok(MaxLength(if int.gt(0)? { i64::MAX } else { -1 }))
     }
 }
@@ -305,11 +306,8 @@ fn crc16_arc(
     // A CRC-16 has 16 bits: a value outside them is refused rather than masked, since
     // it can only be a caller's mistake. Any int is compared, however large.
     // An `__index__` object (a NumPy integer) is compared as its int.
-    let value = as_int(value)?;
-    let Ok(value) = value.extract::<u16>() else {
-        return Err(PyValueError::new_err(format!(
-            "CRC-16 value {value} is outside 0 to 0xFFFF"
-        )));
+    let Ok(value) = as_int(value)?.extract::<u16>() else {
+        return Err(PyValueError::new_err("CRC-16 value is outside 0 to 0xFFFF"));
     };
     Ok(u32::from(crc16_update(py, value, data)?))
 }
@@ -586,7 +584,9 @@ macro_rules! branch_decoder {
         #[pymethods]
         impl $rust {
             #[new]
-            #[pyo3(signature = (start_offset = StartOffset(0)))]
+            // PyO3 shows a default it cannot render as `...`: the text signature
+            // gives `inspect.signature` the 0 that the twin shows.
+            #[pyo3(signature = (start_offset = StartOffset(0)), text_signature = "(start_offset=0)")]
             fn new(start_offset: StartOffset) -> Self {
                 let StartOffset(start_offset) = start_offset;
                 $rust {
@@ -880,11 +880,7 @@ impl LzwDecompressor {
             None => None,
             Some(w) => match w.extract::<u32>() {
                 Ok(w @ 9..=16) => Some(w),
-                _ => {
-                    return Err(PyValueError::new_err(format!(
-                        "max_width {w} is outside 9 to 16"
-                    )))
-                }
+                _ => return Err(PyValueError::new_err("max_width is outside 9 to 16")),
             },
         };
         Ok(LzwDecompressor {
@@ -901,7 +897,7 @@ impl LzwDecompressor {
         })
     }
 
-    #[pyo3(signature = (data, max_length = MaxLength(-1)))]
+    #[pyo3(signature = (data, max_length = MaxLength(-1)), text_signature = "($self, data, max_length=-1)")]
     fn decompress<'py>(
         &mut self,
         py: Python<'py>,
@@ -958,7 +954,7 @@ impl LzwDecompressor {
 
     /// Mark the end of the input and return the rest of the output, at most
     /// `max_length` bytes a call; `eof` is true once all of it is returned.
-    #[pyo3(signature = (max_length = MaxLength(-1)))]
+    #[pyo3(signature = (max_length = MaxLength(-1)), text_signature = "($self, max_length=-1)")]
     fn flush<'py>(
         &mut self,
         py: Python<'py>,
@@ -1370,15 +1366,12 @@ impl LzxDecompressor {
     #[pyo3(signature = (window_bits, *, output_size = None))]
     fn new(window_bits: &Bound<'_, PyAny>, output_size: Option<OutputSize>) -> PyResult<Self> {
         // Any int outside the range is refused as damage, as the kernel refuses one.
-        let window_bits = match window_bits.extract::<u32>() {
-            Ok(bits) => bits,
-            Err(_) => {
-                let bits = as_int(window_bits)
-                    .map_err(|e| argument_error(window_bits.py(), "window_bits", e))?;
-                return Err(CorruptDataError::new_err(format!(
-                    "LZX window of 2**{bits} bytes"
-                )));
-            }
+        let bits =
+            as_int(window_bits).map_err(|e| argument_error(window_bits.py(), "window_bits", e))?;
+        let Ok(window_bits) = bits.extract::<u32>() else {
+            return Err(CorruptDataError::new_err(
+                "LZX window bits outside 0 to 2**32 - 1",
+            ));
         };
         Self::fresh(window_bits, output_size.map(|OutputSize(n)| n))
     }
@@ -1440,7 +1433,7 @@ impl LzxDecompressor {
         Ok(())
     }
 
-    #[pyo3(signature = (data, max_length = MaxLength(-1)))]
+    #[pyo3(signature = (data, max_length = MaxLength(-1)), text_signature = "($self, data, max_length=-1)")]
     fn decompress<'py>(
         &mut self,
         py: Python<'py>,
@@ -1468,7 +1461,7 @@ impl LzxDecompressor {
     /// Mark the end of the input and return the rest of the output, at most
     /// `max_length` bytes a call; a frame the input still does not cover raises
     /// `TruncatedDataError`.
-    #[pyo3(signature = (max_length = MaxLength(-1)))]
+    #[pyo3(signature = (max_length = MaxLength(-1)), text_signature = "($self, max_length=-1)")]
     fn flush<'py>(
         &mut self,
         py: Python<'py>,
@@ -1778,7 +1771,7 @@ impl Bcj2Decompressor {
     /// Up to `max_length` bytes of output (all of it when negative); `b""` at the end.
     /// `read(0)` decodes nothing and reads no input: it raises an error the decoder
     /// holds, else returns `b""`.
-    #[pyo3(signature = (max_length = MaxLength(-1)))]
+    #[pyo3(signature = (max_length = MaxLength(-1)), text_signature = "($self, max_length=-1)")]
     fn read<'py>(
         &mut self,
         py: Python<'py>,

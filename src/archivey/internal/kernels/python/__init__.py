@@ -34,7 +34,7 @@ def crc16_arc(data: bytes | bytearray | memoryview, value: int | None = 0, /) ->
     value = 0 if value is None else operator.index(value)
     if not 0 <= value <= 0xFFFF:
         # As the package: a CRC-16 has 16 bits, so a value outside them is a mistake.
-        raise ValueError(f"CRC-16 value {value} is outside 0 to 0xFFFF")
+        raise ValueError("CRC-16 value is outside 0 to 0xFFFF")
     table = _CRC16_TABLE
     crc = value
     for byte in raw_bytes(data):

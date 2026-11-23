@@ -10,17 +10,17 @@ streams:
   (Jcc rel32);
 - **rc**: one range-coded bit per branch candidate: was this one converted?
 
-Decoding copies ``main`` up to and including the next candidate opcode, decodes one
-bit, and on a 1 takes a target from ``call`` or ``jump``, turns it back into a
-relative one (``target - (position + 4)``) and emits it little-endian. The bit's
-probability model has 258 contexts: one per preceding byte for ``E8``, one for ``E9``,
-one for ``Jcc``. The range coder is LZMA's (11-bit probabilities, 5 move bits, a
-5-byte start). Its five start bytes are read with the first output byte, so an empty
-output reads no ``rc`` byte at all (9.20 reads them first; the output is the same). When
-the start is read, it is refused as 7-Zip 23.01's ``Bcj2Dec_Decode`` refuses it: a nonzero
-first byte, which no encoder writes, or a code of ``0xFFFFFFFF``. A folder with no output
-never reads it, so refuses nothing there. The decoding itself is 7-Zip 9.20's
-``Bcj2_Decode`` (``C/Bcj2.c``); later 7-Zip restructured the code, not the format.
+Decoding copies ``main`` up to and including the next candidate opcode, decodes one bit,
+and on a 1 takes a target from ``call`` or ``jump``, turns it back into a relative one
+(``target - (position + 4)``) and emits it little-endian. The bit's probability model
+has 258 contexts: one per preceding byte for ``E8``, one for ``E9``, one for ``Jcc``.
+The range coder is LZMA's (11-bit probabilities, 5 move bits, a 5-byte start). Its five
+start bytes are read with the first output byte, so an empty output reads no ``rc`` byte
+at all (9.20 reads them first; the output is the same). When the start is read, it is
+refused as 7-Zip 23.01's ``Bcj2Dec_Decode`` refuses it: a nonzero first byte, which no
+encoder writes, or a code of ``0xFFFFFFFF``. A folder with no output never reads it, so
+refuses nothing there. The decoding itself is 7-Zip 9.20's ``Bcj2_Decode``
+(``C/Bcj2.c``); later 7-Zip restructured the code, not the format.
 
 Where the time goes. The Python loop runs once per *candidate* (``E8``, ``E9``,
 ``0F 8x``), not per byte; real x86 code has one every 30 bytes or so, and a hostile

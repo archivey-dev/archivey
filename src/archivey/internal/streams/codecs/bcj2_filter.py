@@ -2,8 +2,9 @@
 stream over its four input streams.
 
 The decoder is :func:`archivey.internal.kernels.bcj2`'s: archivey-codecs' when it is
-installed and allowed, else the Python one in :mod:`archivey.internal.kernels.python.bcj2`,
-which describes the format. Both give the same bytes and errors.
+installed and allowed, else the Python one in
+:mod:`archivey.internal.kernels.python.bcj2`, which describes the format. Both give the
+same bytes and errors.
 """
 
 from __future__ import annotations

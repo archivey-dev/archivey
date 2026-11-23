@@ -5,8 +5,8 @@ process, so under it the decoding kernels (ARM64, RISC-V, LZW, LZO1X, LZX) run i
 archivey's decoder child, as zlib and lzma do (openspec change ``rust-codecs-package``,
 question 13). :func:`open_kernels` gives a stand-in for the ``archivey_codecs`` module
 whose kernel objects each live in a child of their own (``decoder_worker._Codecs``):
-the wrappers in :mod:`archivey.internal.kernels.rust` use it as they use the module, so the
-bytes and errors are the same as in-process. The package is never imported here.
+the wrappers in :mod:`archivey.internal.kernels.rust` use it as they use the module, so
+the bytes and errors are the same as in-process. The package is never imported here.
 
 A panic in the child comes back as :class:`ChildPanic`, which
 :func:`archivey.internal.kernels.is_panic` counts as a panic, so it reaches the caller
@@ -23,6 +23,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from archivey.internal import logs
+from archivey.internal.kernels.python._args import flag, index, u64
+from archivey.internal.kernels.python._buffers import raw_bytes
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.decoder_child import (
     DecoderChild,
@@ -90,6 +92,9 @@ class _KernelProxy(_ChildProxy):
     that raised asks for them again: a wrapper may read some after an error."""
 
     def _call(self, method: str, data: bytes | None, *args: object) -> bytes:
+        # The callers have checked and converted the arguments, as the package's
+        # methods would: marshal takes only exact types, and ``None`` data means no
+        # input to the transport.
         try:
             return self._child.call(method, data, args)
         except Exception:
@@ -116,7 +121,7 @@ class ChildBranchDecoder(_Counted):
     """``filters.Arm64Decoder`` or ``RiscvDecoder`` in a child."""
 
     def decode(self, data: bytes) -> bytes:
-        return self._call("decode", data)
+        return self._call("decode", raw_bytes(data))
 
     def flush(self) -> bytes:
         return self._call("flush", None)
@@ -126,10 +131,12 @@ class ChildLzwDecompressor(_Counted):
     """``lzw.Decompressor`` in a child."""
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
-        return self._call("decompress", data, max_length)
+        return self._call(
+            "decompress", raw_bytes(data), index(max_length, "max_length")
+        )
 
     def flush(self, max_length: int = -1) -> bytes:
-        return self._call("flush", None, max_length)
+        return self._call("flush", None, index(max_length, "max_length"))
 
     @property
     def eof(self) -> bool:
@@ -166,13 +173,15 @@ class ChildLzxDecompressor(_Counted):
     """``lzx.Decompressor`` in a child."""
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
-        return self._call("decompress", data, max_length)
+        return self._call(
+            "decompress", raw_bytes(data), index(max_length, "max_length")
+        )
 
     def flush(self, max_length: int = -1) -> bytes:
-        return self._call("flush", None, max_length)
+        return self._call("flush", None, index(max_length, "max_length"))
 
     def set_output_size(self, output_size: int) -> None:
-        self._call("set_output_size", None, output_size)
+        self._call("set_output_size", None, u64(output_size, "output_size"))
 
     @property
     def eof(self) -> bool:
@@ -196,8 +205,12 @@ class _ChildLzx:
     def __call__(
         self, window_bits: int, *, output_size: int | None = None
     ) -> ChildLzxDecompressor:
+        if output_size is not None:
+            output_size = u64(output_size, "output_size")
         child = self._kernels.build(
-            "lzx.Decompressor", window_bits, output_size=output_size
+            "lzx.Decompressor",
+            index(window_bits, "window_bits"),
+            output_size=output_size,
         )
         return ChildLzxDecompressor(child)
 
@@ -214,18 +227,14 @@ class ChildCodecs:
     def __init__(self, kernels: Mapping[str, int]) -> None:
         self.KERNELS = kernels
         self.filters = SimpleNamespace(
-            Arm64Decoder=lambda start: ChildBranchDecoder(
-                self.build("filters.Arm64Decoder", start)
+            Arm64Decoder=lambda start_offset=0: ChildBranchDecoder(
+                self.build("filters.Arm64Decoder", u64(start_offset, "start_offset"))
             ),
-            RiscvDecoder=lambda start: ChildBranchDecoder(
-                self.build("filters.RiscvDecoder", start)
+            RiscvDecoder=lambda start_offset=0: ChildBranchDecoder(
+                self.build("filters.RiscvDecoder", u64(start_offset, "start_offset"))
             ),
         )
-        self.lzw = SimpleNamespace(
-            Decompressor=lambda **kwargs: ChildLzwDecompressor(
-                self.build("lzw.Decompressor", **kwargs)
-            )
-        )
+        self.lzw = SimpleNamespace(Decompressor=self._lzw)
         self.lzx = SimpleNamespace(Decompressor=_ChildLzx(self))
         self.lzo1x = SimpleNamespace(decompress=self._lzo1x)
 
@@ -239,9 +248,31 @@ class ChildCodecs:
             raise
         return child
 
+    def _lzw(
+        self,
+        *,
+        max_width: int | None = None,
+        block_mode: bool | None = None,
+        nine_bit_widens: bool | None = None,
+    ) -> ChildLzwDecompressor:
+        if max_width is not None:
+            max_width = index(max_width, "max_width")
+        child = self.build(
+            "lzw.Decompressor",
+            max_width=max_width,
+            block_mode=flag(block_mode, "block_mode"),
+            nine_bit_widens=flag(nine_bit_widens, "nine_bit_widens"),
+        )
+        return ChildLzwDecompressor(child)
+
     def _lzo1x(
         self, block: bytes, *, out_size: int | None = None, max_size: int | None = None
     ) -> bytes:
+        block = raw_bytes(block)
+        if out_size is not None:
+            out_size = u64(out_size, "out_size")
+        if max_size is not None:
+            max_size = u64(max_size, "max_size")
         child = _start()
         try:
             return child.call("lzo1x", block, (out_size, max_size))

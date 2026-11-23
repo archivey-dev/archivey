@@ -9,8 +9,8 @@ mode; this class gives it the package's API, a port of the package's
 
 from __future__ import annotations
 
-from archivey.exceptions import ArchiveyError
-from archivey.internal.kernels.python._args import index, u64
+from archivey.exceptions import ArchiveyError, CorruptionError
+from archivey.internal.kernels.python._args import U32_MAX, index, u64
 from archivey.internal.kernels.python._buffers import raw_bytes
 
 
@@ -45,8 +45,12 @@ class Decompressor:
             LzxDecoder,
         )
 
-        self._window_bits = index(window_bits, "window_bits")
-        self._d = LzxDecoder(self._window_bits)
+        bits = index(window_bits, "window_bits")
+        if not 0 <= bits <= U32_MAX:
+            # As the package: a value its kernel cannot take, named by its range.
+            raise CorruptionError("LZX window bits outside 0 to 2**32 - 1")
+        self._window_bits = bits
+        self._d = LzxDecoder(bits)
         if output_size is not None:
             output_size = u64(output_size, "output_size")
         self._output_size = output_size

@@ -242,9 +242,9 @@ f.seek(stream_start + point[1])         # feed input from total_in; output resum
 
 `archivey_codecs.KERNELS` maps each kernel name to a revision, raised whenever the
 kernel's observable behaviour changes (output, error kind or message, seek points).
-archivey's `internal/kernels/_select.py` holds the minimum revision it needs per kernel and uses
-a kernel only at that revision or newer; otherwise it uses the Python decoder and logs
-once at DEBUG. The dependency range is `archivey-codecs>=0.1,<1` (question 7).
+archivey's `internal/kernels/_select.py` holds the minimum revision it needs per kernel
+and uses a kernel only at that revision or newer; otherwise it uses the Python decoder
+and logs once at DEBUG. The dependency range is `archivey-codecs>=0.1,<1` (question 7).
 
 So adding a kernel never breaks an older archivey, an old package with a new archivey
 loses only the kernels that changed, and neither package's release waits for the
@@ -344,10 +344,9 @@ the twins and the package.
   in-process. The streaming kernels push input as the child protocol already expects;
   BCJ2's four input streams need the protocol to carry four inputs (task 2.7); until
   then BCJ2 runs as the Python twin in the caller's process under `NATIVE_DECODERS`
-  (D4a). If no
-  child can start, archivey uses the Python twin in the caller's process, as if
-  `ARCHIVEY_CODECS` were excluded: a Python decoder is not native, so the promise holds,
-  and the read gives the same bytes as without the package. LZO then goes to
+  (D4a). If no child can start, archivey uses the Python twin in the caller's process,
+  as if `ARCHIVEY_CODECS` were excluded: a Python decoder is not native, so the promise
+  holds, and the read gives the same bytes as without the package. LZO then goes to
   compress-utils, which raises `ResourceUnavailableError` as today, and to Python only
   when compress-utils is absent.
 - LZO order: archivey-codecs, then compress-utils, then Python (question 11), because
