@@ -440,11 +440,15 @@ class ListingLimits:
     max_metadata_bytes: int | None = 64 * 2**20
     """Most bytes of text a listing may retain across its members. 64 MiB.
 
-    This is an estimate that keeps a hostile archive from filling memory with its
-    listing, not a cap on memory. It counts the text and bytes the archive controls,
-    plus a fixed weight for each kind of small entry an archive can repeat without
-    adding members. It does not count the memory Python adds around each object, so
-    the reader uses more than this (``max_members`` bounds the cost per member).
+    This is a safety weight that keeps a hostile archive from filling memory with its
+    listing, not a measurement of memory. It counts the text and bytes the archive
+    controls. A record that an archive can repeat without adding a member (a PAX
+    keyword, a key of a dict nested in ``extra``, a ZIP extra field, a sparse map entry)
+    also counts a fixed weight per record, mostly the measured cost of the objects it
+    keeps, rounded up. What the count leaves out is the object overhead of ordinary text
+    fields and the fixed cost of each member, about 1.5 KiB, whose total ``max_members``
+    bounds. So a listing usually uses more memory than this counts: about 1.7 times the
+    count, plus that cost per member.
 
     Counts member names (and raw names), comments, link targets, owner and group names
     and the string or bytes values in ``extra``, plus the keys of a dict nested in it
@@ -452,12 +456,12 @@ class ListingLimits:
     archive comment. Each distinct PAX keyword also counts 256 bytes once while its header
     is parsed. The top-level ``extra`` keys are fixed per format and do not
     count. Non-ASCII text counts four bytes per character, so it is an upper bound
-    rather than an exact size. A TAR sparse member's map, which the listing keeps to
-    read the member, counts 24 bytes per entry, and each ZIP extra field kept in
-    ``extra["zip.extra_fields"]`` counts 72 bytes plus its data. A cabinet's block
-    tables, read as members of each folder are first opened and kept for the reader's
-    life, count 256 bytes per data block on a running total of their own, so opening a
-    member can raise too.
+    on the text's size rather than an exact size. A TAR sparse member's map, which the
+    listing keeps to read the member, counts 24 bytes per entry, and each ZIP extra
+    field kept in ``extra["zip.extra_fields"]`` counts 72 bytes plus its data. A
+    cabinet's block tables, read as members of each folder are first opened and kept for
+    the reader's life, count 256 bytes per data block on a running total of their own,
+    so opening a member can raise too.
 
     A ZIP read from a stream that cannot seek also keeps the data of each member
     short enough to be a symlink until its directory says which members are links.
