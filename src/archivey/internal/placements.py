@@ -28,7 +28,7 @@ from archivey.internal.long_paths import long_path
 from archivey.types import ExtractionPolicy
 
 _FileId = tuple[int, int]
-_EntryId = tuple[str, int, int]
+_FoldedEntryKey = tuple[str, int, int]
 
 
 @dataclass(frozen=True)
@@ -73,16 +73,14 @@ class Placements:
     # claim after a symlink in its path was replaced and the path resolves elsewhere.
     _key_of: dict[str, str] = field(default_factory=dict)
     # (st_dev, st_ino) -> entry (folded name, parent st_dev, parent st_ino) -> claim.
-    # Names that fold to one entry id can still be distinct entries (``A`` beside
-    # ``a`` on a case-sensitive filesystem), so each entry id holds its claims by
+    # Names that fold to one entry key can still be distinct entries (``A`` beside
+    # ``a`` on a case-sensitive filesystem), so each entry key holds its claims by
     # exact spelling.
-    _by_id: dict[_FileId, dict[_EntryId, dict[str, Claim]]] = field(
+    _by_id: dict[_FileId, dict[_FoldedEntryKey, dict[str, Claim]]] = field(
         default_factory=dict
     )
-    # How many claims each file has indexed, for the only-claim answer.
-    _count: dict[_FileId, int] = field(default_factory=dict)
     # Where each indexed claim sits in ``_by_id``, by ``id``, so retiring it is cheap.
-    _slot: dict[int, tuple[_FileId, _EntryId, str]] = field(default_factory=dict)
+    _slot: dict[int, tuple[_FileId, _FoldedEntryKey, str]] = field(default_factory=dict)
     _unindexed: list[Claim] = field(default_factory=list)
 
     def __bool__(self) -> bool:
@@ -158,10 +156,8 @@ class Placements:
         del spellings[spelling]
         if not spellings:
             del entries[entry]
-        self._count[file_id] -= 1
         if not entries:
             del self._by_id[file_id]
-            del self._count[file_id]
 
     def release(self, path: Path, key: str) -> bool:
         """Drop the claim made for ``path``, under ``key`` (as for :meth:`at_path`),
@@ -240,8 +236,9 @@ class Placements:
                     (claim,) = spellings.values()
                 if claim is not None and self.is_live(claim) and _is_file_of(claim, st):
                     return claim
-        if self._count[file_id] == 1:
-            (spellings,) = entries.values()
+        # The file's only claim: one folded entry key, spelled one way.
+        spellings = next(iter(entries.values()))
+        if len(entries) == 1 and len(spellings) == 1:
             (claim,) = spellings.values()
             if self.is_live(claim) and _is_file_of(claim, st):
                 return claim
@@ -266,7 +263,6 @@ class Placements:
                 self._unindex(earlier)
                 spellings = self._by_id.setdefault(file_id, {}).setdefault(entry, {})
             spellings[claim.path.name] = claim
-            self._count[file_id] = self._count.get(file_id, 0) + 1
             self._slot[id(claim)] = (file_id, entry, claim.path.name)
         self._unindexed.clear()
 
