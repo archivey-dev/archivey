@@ -38,7 +38,13 @@ indexed reader can read a member that is an archive the same way. A sequential
 format whose library decodes each member hands archivey a stream of the decoded bytes
 (:attr:`MemberSpan.data`) instead of a count of stored bytes. What the first version
 leaves out: an indexed format inside a compression stream, self-extracting stubs,
-multi-volume sets, passwords, and new diagnostic codes.
+multi-volume sets, and new diagnostic codes.
+
+A format that can be encrypted sets :attr:`FormatHandler.supports_password` and, where a
+unit needs the caller's password, hands archivey a :class:`NeedsPassword` request
+instead of reading the password itself: archivey tries the caller's passwords on it, in
+the same order and with the same messages as for a built-in format, and calls back with
+the one that worked.
 """
 
 from __future__ import annotations
@@ -47,7 +53,7 @@ import io
 import struct
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
@@ -73,6 +79,7 @@ from archivey.exceptions import ArchiveyError, ArchiveyUsageError, TruncatedErro
 from archivey.internal.arg_checks import check_bool
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.overrides import override
+from archivey.internal.password import PasswordConfirmVerdict
 from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.streamtools import ensure_bufferedio
 from archivey.internal.timestamps import dos_to_datetime, unix_to_datetime
@@ -91,7 +98,6 @@ from archivey.types import (
 
 if TYPE_CHECKING:
     from archivey.internal.nesting import NestDraws
-    from archivey.internal.password import _PasswordCandidates
     from archivey.internal.resource_usage import ResourceUsageRecorder
     from archivey.internal.salvage import WalkSalvage
 
@@ -110,6 +116,8 @@ __all__ = [
     "MemberDigest",
     "MemberRecord",
     "MemberSpan",
+    "NeedsPassword",
+    "PasswordConfirmVerdict",
     "PluginContainer",
     "PluginStream",
     "ReaderArchiveInfo",
@@ -151,6 +159,12 @@ class MemberRecord(NamedTuple, Generic[LocatorT]):
     locator: LocatorT
     """Anything the reader needs to find the member's data again. archivey stores it
     and hands it back to :meth:`IndexedReader.open_member`."""
+
+    unlocked: PasswordConfirmVerdict | None = None
+    """For an encrypted member whose data the listing already unlocked (a whole
+    encrypted image): how sure that unlock was. ``CONFIRMED`` makes the member's
+    ``verified`` ``UNLOCKED`` from the listing. ``None`` (the default) makes no claim:
+    an encrypted member stays ``NONE`` until a read proves more."""
 
 
 class Hasher(Protocol):
@@ -230,6 +244,14 @@ class MemberData(NamedTuple):
     more than ``size`` bytes either way, but a stream that breaks the promise has
     its extra bytes go unreported, where they would raise ``CorruptionError``."""
 
+    unlocked: PasswordConfirmVerdict | None = None
+    """How sure the password that unlocked this stream is: the verdict archivey passed
+    to :attr:`NeedsPassword.then`. With ``INCONCLUSIVE``, a digest archivey checks
+    (``ArchiveMember.hashes``, ``digests``) that fails at the end raises the
+    ``EncryptionError`` that says the password is wrong or the data damaged, and a
+    stream closed before that digest is reached reports
+    ``ENCRYPTED_MEMBER_UNVERIFIED``. ``None`` for data that is not encrypted."""
+
     ranges: tuple[tuple[int, int], ...] = ()
     """The spans ``(start, end)`` of the archive the stream reads, in archive
     offsets, end exclusive: the member's stored or compressed bytes. An archive read
@@ -291,6 +313,9 @@ class MemberSpan(NamedTuple):
     they do not match once read to the end. Only with ``data``: archivey refuses it on
     a span of stored bytes."""
 
+    unlocked: PasswordConfirmVerdict | None = None
+    """As :attr:`MemberRecord.unlocked`, for a member whose data the walk unlocked."""
+
 
 class ReaderArchiveInfo(NamedTuple):
     """What the reader knows about the archive that archivey cannot work out."""
@@ -305,6 +330,81 @@ class ReaderArchiveInfo(NamedTuple):
     extra: Mapping[str, object] = {}
     """Format-specific values, under keys that start with the format's name
     (``"zoo.method"``)."""
+
+    is_encrypted: bool = False
+    """The member list itself is encrypted: a password is needed to list the archive,
+    as for a 7z or RAR archive with encrypted headers. ``ArchiveInfo.is_encrypted``
+    reports it. An archive whose members are encrypted but whose list is not says so on
+    each member (``ArchiveMember.is_encrypted``) instead."""
+
+
+UnlockedT = TypeVar("UnlockedT")
+"""What one password unlocks for a reader: a derived key, a cipher state, a decrypted
+header."""
+
+ResultT = TypeVar("ResultT")
+"""What the plugin call returns once the unit is unlocked: the reader, or a
+:class:`MemberData`."""
+
+
+@dataclass(frozen=True)
+class NeedsPassword(Generic[UnlockedT, ResultT]):
+    """A request for the caller's password, for one encrypted unit.
+
+    A reader whose handler sets :attr:`FormatHandler.supports_password` hands one to
+    archivey where a unit (a member, a payload, the whole archive) needs a password,
+    instead of reading the password itself. archivey tries the caller's ``password=``
+    on it: the password that last unlocked a unit of this archive first, then the
+    passwords given, then the caller's password provider, one answer at a time,
+    skipping one already tried. The reader writes only the check.
+
+    How it is handed over:
+
+    - :meth:`IndexedFormatHandler.open` and :meth:`IndexedReader.open_member` return it,
+      with ``then``, in place of the reader or the :class:`MemberData`. archivey calls
+      ``then(unlocked, verdict)``, which returns what the call would have (or another
+      request, for a second key).
+    - :meth:`IndexedReader.iter_members` and :meth:`SequentialReader.walk` yield it,
+      with no ``then``, and get ``(unlocked, verdict)`` back from the ``yield``:
+      ``params, verdict = yield NeedsPassword(...)``.
+
+    archivey raises the errors, the same for every format, all ``EncryptionError``:
+    "{what} is encrypted: pass password= to read it" when no password was given; "Wrong
+    password for {what}" when ``check`` rejected every one; and "Wrong password for
+    {what}, or its data is damaged" when ``full_check`` rejected at least one, since a
+    checksum fails under the right password too when the unit is damaged. An exception
+    from ``check``, ``full_check`` or ``then`` ends the search and goes through
+    ``translate_exception`` like any other.
+    """
+
+    what: str
+    """Names the unit in archivey's messages: ``"makeself payload 2"``, ``"the disk
+    image"``, a member's name."""
+
+    check: Callable[[bytes], tuple[UnlockedT | None, PasswordConfirmVerdict]]
+    """Tries one password and returns what it unlocked, with a
+    :class:`PasswordConfirmVerdict`. ``CONFIRMED`` wins at once. ``INCONCLUSIVE`` is set
+    aside while the other passwords given are tried. ``REJECTED`` (with ``None``) moves
+    on to the next. Call :meth:`ReaderContext.charge_key_derivation` in it, before a
+    key derivation."""
+
+    full_check: (
+        Callable[[bytes], tuple[UnlockedT | None, PasswordConfirmVerdict]] | None
+    ) = None
+    """A slower check that settles a password ``check`` left ``INCONCLUSIVE``: decode
+    the whole unit and test its checksum, say. archivey runs it when several passwords
+    given pass ``check``, when one alone does while the provider could still be
+    asked, and on each provider answer that passes ``check``. It exists only where the
+    reader can read the unit again."""
+
+    member: ArchiveMember | None = None
+    """The member the unit belongs to, which the password provider is shown
+    (``PasswordRequest.member``), or ``None`` for a unit of the whole archive."""
+
+    then: Callable[[UnlockedT, PasswordConfirmVerdict], ResultT] | None = None
+    """For a returned request: called with what the winning password unlocked and the
+    verdict it won with, and returns the reader or the :class:`MemberData` (or another
+    request). ``None`` for a yielded request."""
 
 
 class ReaderSource:
@@ -616,13 +716,16 @@ class _TakenBytes(io.RawIOBase):
 
 class _SpanningCheck(Protocol):
     """A check over the data of several members, which a built-in reader runs itself
-    (a makeself payload's digests). The adapter's ``SpanningCheck`` implements it."""
+    (a makeself payload's digests, a DMG partition's CRC-32s). The adapter's
+    ``SpanningCheck`` implements it."""
 
-    def cover(self, member: ArchiveMember) -> None: ...
+    def cover(self, member: ArchiveMember, *, proves_data: bool = True) -> None: ...
 
     def passed(self) -> None: ...
 
     def failed(self, message: str) -> ArchiveyError: ...
+
+    def did_not_run(self, cause: BaseException | None) -> None: ...
 
 
 class ReaderContext:
@@ -631,10 +734,14 @@ class ReaderContext:
     # ``_spanning_check(key)`` returns the check for one spanning check of the
     # archive. Internal, set by the adapter; not for plugins.
     _spanning_check: Callable[[object], _SpanningCheck] | None = None
-    # The caller's ``password=`` (``internal.password._PasswordCandidates``), for a
-    # built-in reader that decrypts (makeself's openssl payloads). Internal, set by
-    # the adapter; not for plugins.
-    _passwords: _PasswordCandidates | None = None
+    # ``_spanning_pass(run)`` registers ``run``, for a check over several members
+    # whose bytes no member read reaches (DMG's partition CRC-32s, which cover
+    # filesystem metadata and free space too). ``verify_all()`` calls ``run()`` after
+    # it has read the members, every call; ``run`` decodes what it needs itself,
+    # reports through its ``_spanning_check`` checks (``passed`` or ``failed``, whose
+    # error ``verify_all()`` returns for every covered file) and keeps its result, so
+    # a second call decodes nothing. Internal, set by the adapter; not for plugins.
+    _spanning_pass: Callable[[Callable[[], None]], None] | None = None
     # ``_decompress_coder(data, stream_format, size)`` decodes ``data``, a container
     # coder's whole data in ``stream_format``, as ``decompress`` does, except that a
     # byte after the end raises ``CorruptionError`` (as for a ZIP member) instead of
@@ -649,6 +756,12 @@ class ReaderContext:
     # reader that decodes past members itself (CAB's folder skip). Internal, set by
     # the adapter; not for plugins.
     _nest: NestDraws | None = None
+    # ``_track_decoded(stream)`` counts and draws ``stream``'s bytes as a member
+    # stream's are (the measurement counter, the nest's decoded-byte cap, and the
+    # listing's while listing work runs), for a built-in reader that decodes a member
+    # outside its stream (ARJ's password full check). Internal, set by the adapter;
+    # not for plugins.
+    _track_decoded: Callable[[BinaryIO], BinaryIO] | None = None
     # ``_listing_draw(n)`` counts ``n`` bytes the reader decodes itself (DMG's runs)
     # toward ``ListingLimits.max_decoded_bytes``, raising past the cap. It counts only
     # while listing work runs on this thread, so a member read is not counted.
@@ -659,6 +772,12 @@ class ReaderContext:
     # salvage or reads that layer forward only. Internal, set by the adapter; not
     # for plugins.
     _salvage: Callable[[ForwardStream], WalkSalvage | None] | None = None
+    # ``_keep_metadata(n, what)`` counts ``n`` bytes the reader keeps for as long as
+    # it is open (DMG's APFS object maps and trees) toward
+    # ``ListingLimits.max_metadata_bytes``, with what the listing holds, at any time:
+    # unlike ``charge_metadata`` the charge outlives the walk. Internal, set by the
+    # adapter; not for plugins.
+    _keep_metadata: Callable[[int, str], None] | None = None
 
     def __init__(
         self,
@@ -684,8 +803,10 @@ class ReaderContext:
         open_nested: Callable[[BinaryIO, ArchiveFormat], Iterator[MemberSpan]]
         | None = None,
         usage: ResourceUsageRecorder | None = None,
+        charge_key_derivation: Callable[[int], None] | None = None,
     ) -> None:
         self._encoding = encoding
+        self._charge_key_derivation = charge_key_derivation
         # The open reader's resource-usage recorder, for a built-in reader that checks
         # a declared allocation itself (``check_decoder_memory``), or that calls a
         # package itself (SquashFS's lz4) and records it for
@@ -815,6 +936,28 @@ class ReaderContext:
         for the life of the archive bounds it by ``config.listing_limits`` itself.
         """
         self._charge_metadata(nbytes, what)
+
+    def charge_key_derivation(self, rounds: int) -> None:
+        """Count ``rounds`` of key derivation the archive asks for (PBKDF2 iterations,
+        the rounds of an SHA-256 chain) against
+        ``DecoderLimits.max_key_derivation_rounds``.
+
+        Call it in a :class:`NeedsPassword` check, before each derivation whose result
+        the reader has not kept from an earlier one, with the count the archive
+        declares. The rounds add up for the whole archive, with every other
+        derivation archivey runs for it, and ``ResourceLimitError`` is raised before
+        the work when the total would pass the limit; the total is then unchanged.
+        ``rounds`` is an ``int`` of 0 or more (0 for a mode with no iterations).
+        """
+        if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 0:
+            raise ArchiveyUsageError(
+                f"charge_key_derivation() takes an int of 0 or more, not {rounds!r}"
+            )
+        if self._charge_key_derivation is None:
+            raise ArchiveyUsageError(
+                "charge_key_derivation() is for a reader that archivey opened"
+            )
+        self._charge_key_derivation(rounds)
 
     def open_nested(
         self, data: BinaryIO | io.RawIOBase, format: ArchiveFormat
@@ -1066,14 +1209,24 @@ class IndexedReader(FormatReader, Generic[LocatorT]):
     archive; ``False`` when :meth:`iter_members` walks headers through the file."""
 
     @abstractmethod
-    def iter_members(self) -> Iterator[MemberRecord[LocatorT]]:
+    def iter_members(
+        self,
+    ) -> (
+        Iterator[MemberRecord[LocatorT]]
+        | Generator[MemberRecord[LocatorT] | NeedsPassword[Any, Any], Any, None]
+    ):
         """Yield every member once, in archive order. The order must be the same on a
-        second call."""
+        second call. Where the listing itself is encrypted, yield a
+        :class:`NeedsPassword` (with no ``then``) and take its winner back from the
+        yield: ``unlocked, verdict = yield NeedsPassword(...)``."""
 
     @abstractmethod
-    def open_member(self, member: ArchiveMember, locator: LocatorT) -> MemberData:
+    def open_member(
+        self, member: ArchiveMember, locator: LocatorT
+    ) -> MemberData | NeedsPassword[Any, MemberData]:
         """Open the data of a ``FILE`` member. ``locator`` is the one its
-        :class:`MemberRecord` carried."""
+        :class:`MemberRecord` carried. An encrypted member returns a
+        :class:`NeedsPassword` whose ``then`` returns the :class:`MemberData`."""
 
 
 class SequentialReader(FormatReader):
@@ -1118,7 +1271,12 @@ class SequentialReader(FormatReader):
     data streams over that layer a second time."""
 
     @abstractmethod
-    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+    def walk(
+        self, stream: ForwardStream
+    ) -> (
+        Iterator[MemberSpan]
+        | Generator[MemberSpan | NeedsPassword[Any, Any], Any, None]
+    ):
         """Yield every member once, and return at the end of the archive. Each span's
         data starts where the stream is when it is yielded, so the stream only moves
         forward; members usually come in archive order, but a format may need another
@@ -1129,7 +1287,10 @@ class SequentialReader(FormatReader):
         archivey may walk again from the start, with a new stream; the members and
         their order must be the same. A walk may start while an earlier one is still
         open (to reach decoded ``MemberSpan.data`` again, possibly from several
-        threads), so keep a walk's state in the generator, not on the reader."""
+        threads), so keep a walk's state in the generator, not on the reader. Where
+        what follows is encrypted, yield a :class:`NeedsPassword` (with no ``then``)
+        and take its winner back from the yield:
+        ``unlocked, verdict = yield NeedsPassword(...)``."""
 
 
 class FormatHandler(ABC):
@@ -1164,6 +1325,11 @@ class FormatHandler(ABC):
     :meth:`ReaderContext.decode_name`). When ``False``, a caller's ``encoding=`` is
     reported as unused."""
 
+    supports_password: ClassVar[bool] = False
+    """Whether the format can be encrypted, so that its reader may hand archivey a
+    :class:`NeedsPassword` request. When ``False``, a ``password=`` value (or a list of
+    them) given for it is reported as unused, and a request is a plugin bug."""
+
     requires: ClassVar[tuple[str, ...]] = ()
     """Modules the reader imports. The format reports ``FormatSupport.NONE`` when one
     is missing."""
@@ -1192,9 +1358,12 @@ class IndexedFormatHandler(FormatHandler):
     generic reason."""
 
     @abstractmethod
-    def open(self, source: ReaderSource, context: ReaderContext) -> IndexedReader[Any]:
+    def open(
+        self, source: ReaderSource, context: ReaderContext
+    ) -> IndexedReader[Any] | NeedsPassword[Any, IndexedReader[Any]]:
         """Open the archive. Raise ``CorruptionError`` or ``TruncatedError`` when its
-        structure is damaged, as a built-in reader does."""
+        structure is damaged, as a built-in reader does. An archive encrypted as a
+        whole returns a :class:`NeedsPassword` whose ``then`` returns the reader."""
 
 
 class SequentialFormatHandler(FormatHandler):

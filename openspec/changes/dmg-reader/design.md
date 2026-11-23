@@ -64,7 +64,8 @@ no archive may cause unbounded memory, disk, hang or crash), DR-15b (fail at ope
 no work proportional to the archive there), DR-20 (parse in Python; native code that can
 crash runs in a child), DR-21a (do not ship what cannot be tested), DR-24 (tests against
 real producers). PRs open with the "For dummies" section from
-`.github/pull_request_template.md`. Do not edit `CHANGELOG.md`.
+`.github/pull_request_template.md`. A `CHANGELOG.md` line goes under `## [Unreleased]`
+(CONTRIBUTING.md §Cutting a release).
 
 ---
 
@@ -525,7 +526,7 @@ attribute: header `<4sIQ` (magic `fpmc`, type, uncompressed size), then data.
 | 4 | zlib, in the resource fork (resource-map layout, 64 KiB blocks) | |
 | 7 | LZVN inline (first byte `0x06` = stored) | |
 | 8 | LZVN in resource fork (offset table, 64 KiB blocks) | **The fixture `compressed.txt` is type 8** (360,000 bytes), so this path has real data |
-| 10 | raw in resource fork | No tool here reads it (7-Zip refuses it), so the table layout is unconfirmed: the prototype and the test writer use the type 8 offset table. Check on a real file before relying on it. |
+| 10 | raw in resource fork (type 8 offset table), each chunk after a `0xCC` byte | The macOS kernel reads only this layout and refuses the table without the byte (the macOS check, `tasks.md` §M), so a chunk without it is `CorruptionError`. 7-Zip refuses type 10. |
 | 11 | LZFSE inline (`0xFF` = stored) | |
 | 12 | LZFSE in resource fork | |
 | other | | `UnsupportedFeatureError` at that member's read |
@@ -539,13 +540,15 @@ chunk).
 Resource-fork types (4, 8, 10, 12): the fork holds `n = ceil(size / 64 KiB)` chunks,
 located by the type's table (type 4: the resource-map layout, a 256-byte resource fork
 header, then the `cmpf` resource with a count and (offset, length) pairs; types 8 and
-12, and as the prototype reads it type 10: `n + 1` little-endian u32 offsets). The table must
-have exactly `n` chunks and every chunk inside the fork (else `CorruptionError`). Each
-chunk must decode to exactly 64 KiB, the last to `size - 64 KiB * (n - 1)`. A chunk
-that starts with its type's stored marker (`0xFF` for types 4 and 12, `0x06` for type 8)
-is the raw block after that byte, not encoded data: macOS stores a chunk that does not
-shrink that way, and 7-Zip reads it. Decode chunk
-by chunk through `block_stream`, not the whole file in memory like the prototype.
+12, and type 10: `n + 1` little-endian u32 offsets). The table must have exactly `n`
+chunks and every chunk inside the fork (else `CorruptionError`). Each chunk must decode
+to exactly 64 KiB, the last to `size - 64 KiB * (n - 1)`. A chunk that starts with its
+type's stored marker (`0xFF` for types 4 and 12, `0x06` for type 8) is the raw block
+after that byte, not encoded data: macOS stores a chunk that does not shrink that way,
+and 7-Zip reads it. A type 10 chunk is always its raw block after a `0xCC` byte, and one
+without it is `CorruptionError`: the macOS check (`tasks.md` §M) found the kernel reads
+that layout and refuses the table without the byte. Decode chunk by chunk through
+`block_stream`, not the whole file in memory like the prototype.
 
 Missing pieces: a file with `UF_COMPRESSED` but no `com.apple.decmpfs` attribute, a
 fork type whose resource fork is missing or empty, and an attribute shorter than its
@@ -717,7 +720,10 @@ of oids the same way. Every later lookup checks these ranges:
   fixture's `random.bin`, id 22 for both, so an interval would also catch its extents):
   its inode record `(oid, 3)`; the directory record that names it, `(parent, 9, name)`;
   and the xattrs that change what it is, `(oid, 4, "com.apple.fs.symlink")` for a
-  symlink and `(oid, 4, "com.apple.decmpfs")` for a file with `UF_COMPRESSED`. If any of
+  symlink and `(oid, 4, "com.apple.decmpfs")` for a file with `UF_COMPRESSED`. The
+  comparison leaves names out: a directory record compares as `(parent, 9)` and an xattr
+  as `(oid, 4)`, since hashed directory keys may collide, so a range whose bound shares
+  that prefix counts as holding the key (it refuses more, never less). If any of
   those keys falls in a damaged range, the member is not listed (its type and size
   cannot be trusted), and the end-of-listing `CorruptionError` counts it. Other xattrs
   in a damaged range leave the member listed with those names missing from `extra`, and
@@ -790,6 +796,15 @@ both with
 (DR-4: not corrupt, archivey just cannot read it).
 
 ### 6B.2 The v2 header (verify against the fixtures)
+
+> **Confirmed in Part G (2026-11-22)** on the four `hdiutil` fixtures; the confirmed
+> layout is in `dev-docs/formats/dmg.md` §2.1.1. Two differences from what follows:
+> macOS 26 wraps the key with **AES-192**-CBC (cipher `0x80000001`), stating an IV size
+> of 8 but using the IV field's first 16 bytes, and its blocks are **512** bytes. Part G
+> reads the wrap by its cipher field (AES, or 3DES as below for older images) and
+> block sizes 512 and 4096. The unwrapped key ends with the mark `CKIE\0`. The API
+> calls are the merged plugin password API (`NeedsPassword` from the handler's `open`),
+> not the `ReaderContext.unlock` of §6B.0.
 
 Big-endian. Layout as documented by vfdecrypt, dmg2img and the libyal notes on the
 "encrypted disk image" format; the implementer confirms each offset on
@@ -1214,7 +1229,7 @@ depend on A; the order after B is flexible except where noted.
 | **D. Hidden-content and edge polish** | Anything Part B's review defers: journal hiding cases, directory hard links if a fixture appears, xattr value caps, extra checks found by the corpus run. May be empty. | B | agent |
 | **E. APFS** | §6A: `apfs.py`, the reader using it, `write_apfs` builder, APFS fixtures, D5 multi-volume listing, Fletcher-64, refusals (encrypted volume, sealed, Fusion), fuzz target, handbook page section. | B | maintainer (new filesystem; davi decision D5) |
 | **F. Partition CRC-32 spanning check** | D4, as a partition pass (details in §7.2). | B | maintainer (changes a verification guarantee) |
-| **G. Encrypted images** | §6B: `dmg_crypto.py`, TripleDES key unwrap, password flow, `EncryptedDmgSource`, `encrypt_dmg` builder, AES fixtures. Starts by confirming §6B.2 on the fixtures and writing the confirmed layout into the handbook page. Works for HFS+ at once and for APFS once E is in. | B, and the plugin-interface password change (§6B.0); E for APFS images | maintainer (password handling, new crypto code) |
+| **G. Encrypted images** | §6B: `dmg_encrypted.py`, AES and TripleDES key unwrap, password flow, `EncryptedDmgSource`, `encrypt_dmg` builder, AES fixtures. Starts by confirming §6B.2 on the fixtures and writing the confirmed layout into the handbook page. Works for HFS+ at once and for APFS once E is in. | B, and the plugin-interface password change (§6B.0); E for APFS images | maintainer (password handling, new crypto code) |
 | **H. LZFSE accelerator** | D3 as ruled in A0.2: archivey's own LZFSE and LZVN kernel in the `archivey-codecs` Rust package, with a bounded output and the same checks as the Python decoder, so the result never changes. archivey uses it when the package is installed. Tests that both decoders agree on every fixture and on the A0 fuzz corpus; `--all-configs` run. | A, and the `archivey-codecs` package | maintainer (new dependency) |
 
 Each part's PR body says which part of this plan it implements and lists any place it
