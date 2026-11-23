@@ -119,18 +119,29 @@ Locator = FileData | ApfsData | None
 def volume_names(labels: list[str]) -> list[str]:
     """The top-level directory names for several volumes (D1): the label, ``Untitled``
     when it is empty, ``.`` or ``..``, and a name already taken (exactly, or but for
-    case) gets `` 1``, `` 2``, ... as macOS names its mount points."""
+    case) gets `` 1``, `` 2``, ... as macOS names its mount points.
+
+    Linear in the number of labels: ``taken`` holds the names casefolded, and
+    ``tried`` the last suffix used for each casefolded base. Every suffix up to it is
+    taken (names are only added), so the next probe starts after it."""
     taken: set[str] = set()
+    tried: dict[str, int] = {}
     names = []
     for label in labels:
         base = label.replace("/", ":")
         if base in ("", ".", ".."):
             base = _UNTITLED
-        name, n = base, 0
-        while name in taken or name.casefold() in {t.casefold() for t in taken}:
-            n += 1
-            name = f"{base} {n}"
-        taken.add(name)
+        name = base
+        if name.casefold() in taken:
+            key = base.casefold()
+            n = tried.get(key, 0)
+            while True:
+                n += 1
+                name = f"{base} {n}"
+                if name.casefold() not in taken:
+                    break
+            tried[key] = n
+        taken.add(name.casefold())
         names.append(name)
     return names
 

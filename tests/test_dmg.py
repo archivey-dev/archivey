@@ -684,6 +684,56 @@ def test_volume_names_follow_the_mount_points() -> None:
     ]
 
 
+def _volume_names_by_probing(labels: list[str]) -> list[str]:
+    """The naming rule spelled out: probe `` 1``, `` 2``, ... against every name
+    taken so far, compared but for case."""
+    taken: list[str] = []
+    for label in labels:
+        base = label.replace("/", ":")
+        if base in ("", ".", ".."):
+            base = "Untitled"
+        name, n = base, 0
+        while name.casefold() in {t.casefold() for t in taken}:
+            n += 1
+            name = f"{base} {n}"
+        taken.append(name)
+    return taken
+
+
+def test_volume_names_match_the_probing_rule() -> None:
+    import random
+
+    rng = random.Random(1786)
+    pieces = [
+        "a",
+        "A",
+        "a 1",
+        "A 2",
+        "ß",
+        "SS",
+        "ss",
+        "",
+        ".",
+        "Untitled",
+        "UNTITLED 1",
+    ]
+    for _ in range(2000):
+        labels = rng.choices(pieces, k=rng.randint(1, 12))
+        assert volume_names(labels) == _volume_names_by_probing(labels), labels
+
+
+@pytest.mark.timeout(30)
+def test_volume_names_that_differ_only_in_case_are_named_in_linear_time() -> None:
+    """Each suffix probe rebuilt the casefolded set of the names taken, so labels
+    that differ only in case took cubic time (800 of them took seconds)."""
+    labels = ["a", "A"] * 10_000
+    start = time.perf_counter()
+    names = volume_names(labels)
+    assert time.perf_counter() - start < 5
+    assert names[:4] == ["a", "A 1", "a 2", "A 3"]
+    assert len({n.casefold() for n in names}) == len(labels)
+
+
 def test_a_damaged_apfs_container_beside_hfs_fails_after_the_hfs_members() -> None:
     names = []
     with (
