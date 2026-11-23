@@ -1371,6 +1371,8 @@ class _ApfsWalk:
                 _, sparse = apfs.stream_reader(
                     self._volume, tree, inode.stream, inode.size, what
                 )
+            except ResourceLimitError:
+                raise  # the archive is over a limit, not this member damaged
             except ArchiveyError as exc:
                 return ApfsData(self._index, oid, False, (type(exc), str(exc)))
             member.is_sparse = sparse
@@ -1396,6 +1398,8 @@ class _ApfsWalk:
                 f"the com.apple.decmpfs attribute of {what}",
             )
             member.size = hfsplus.parse_decmpfs(value).size
+        except ResourceLimitError:
+            raise  # the archive is over a limit, not this member damaged
         except ArchiveyError as exc:
             member.size = 0
             return ApfsData(
@@ -1443,6 +1447,8 @@ class _ApfsWalk:
                 hfsplus.SYMLINK_MAX + 1,
                 f"the target of {quoted(member.name)}",
             )
+        except ResourceLimitError:
+            raise  # the archive is over a limit, not this member damaged
         except ArchiveyError as exc:
             self._context.link_target_unavailable(
                 member,

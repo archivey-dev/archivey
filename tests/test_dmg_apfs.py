@@ -571,24 +571,47 @@ class _Stub:
         return bytes(n)
 
 
-def test_inodes_sharing_one_data_stream_check_its_extents_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    files = 40
-    nodes = [d.Node(f"f{i:02d}", data=b"same") for i in range(files)]
+def _sparse_extents(records: list, stream: int, count: int) -> None:
+    for i in range(1, count + 1):
+        key = struct.pack("<QQ", stream | apfs.EXTENT << 60, i * 4096)
+        value = struct.pack("<QQQ", 4096, 0, 0)
+        records.append(a._Record(stream, apfs.EXTENT, (i * 4096,), key, value))
 
-    def share(records: list) -> None:
-        inodes = [r for r in records if r.kind == apfs.INODE and r.path]
-        shared = inodes[0].oid
-        for rec in inodes:
-            value = bytearray(rec.value)
-            struct.pack_into("<Q", value, 8, shared)  # private_id: the stream
-            rec.value = bytes(value)
-        for i in range(1, 101):  # sparse extents past the data, as many as fit
-            key = struct.pack("<QQ", shared | apfs.EXTENT << 60, i * 4096)
-            value = struct.pack("<QQQ", 4096, 0, 0)
-            records.append(a._Record(shared, apfs.EXTENT, (i * 4096,), key, value))
 
+def _share_one_stream(records: list) -> None:
+    """Every file inode names the first one's data stream, which gets 100 sparse
+    extents past its data, as many as fit."""
+    inodes = [r for r in records if r.kind == apfs.INODE and r.path]
+    shared = inodes[0].oid
+    for rec in inodes:
+        value = bytearray(rec.value)
+        struct.pack_into("<Q", value, 8, shared)  # private_id: the stream
+        rec.value = bytes(value)
+    _sparse_extents(records, shared, 100)
+
+
+def _attribute_as_stream(path: str, name: str) -> Callable[[list], None]:
+    """Store ``path``'s attribute ``name`` as a 16-byte stream of sparse extents."""
+
+    def patch(records: list) -> None:
+        raw = name.encode() + b"\0"
+        rec = next(
+            r
+            for r in records
+            if r.path == path and r.kind == apfs.XATTR and r.secondary == (raw,)
+        )
+        stream = 0x7000
+        inner = struct.pack("<Q", stream) + struct.pack("<QQQQQ", 16, 4096, 0, 16, 0)
+        rec.value = struct.pack("<HH", 0x1, len(inner)) + inner  # XATTR_STREAM
+        records.append(a._Record(stream, apfs.EXTENT, (0,),
+                                 struct.pack("<QQ", stream | apfs.EXTENT << 60, 0),
+                                 struct.pack("<QQQ", 4096, 0, 0)))  # fmt: skip
+        _sparse_extents(records, stream, 30)
+
+    return patch
+
+
+def _count_checks(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     checked: list[int] = []
     check = apfs._check_stream
 
@@ -597,14 +620,56 @@ def test_inodes_sharing_one_data_stream_check_its_extents_once(
         return check(flat, damage, stream, bs, count)
 
     monkeypatch.setattr(apfs, "_check_stream", counted)
-    members, data = _read_all(
-        a.apfs_dmg(a.write_apfs(nodes, patch_records=share).container)
-    )
+    return checked
+
+
+def test_inodes_sharing_one_data_stream_check_its_extents_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files = 40
+    nodes = [d.Node(f"f{i:02d}", data=b"same") for i in range(files)]
+    checked = _count_checks(monkeypatch)
+    written = a.write_apfs(nodes, patch_records=_share_one_stream)
+    members, data = _read_all(a.apfs_dmg(written.container))
     assert sorted(data) == [f"f{i:02d}" for i in range(files)]
     assert set(data.values()) == {b"same"}
     assert not any(m.is_sparse for m in members.values())
     # One check of the 101 extents serves the listing and every read.
     assert len(checked) == 1
+
+
+@pytest.mark.parametrize(
+    ("nodes", "patch"),
+    [
+        (
+            [d.Node(f"f{i:02d}", data=b"same") for i in range(40)],
+            _share_one_stream,
+        ),
+        (
+            [d.Node("link", kind="symlink", target="f"), d.Node("f", data=b"f")],
+            _attribute_as_stream("link", apfs.SYMLINK_XATTR),
+        ),
+        (
+            [d.Node("c", data=b"c" * 100, compression=3)],
+            _attribute_as_stream("c", apfs.DECMPFS_XATTR),
+        ),
+    ],
+    ids=["file data", "symlink target", "decmpfs attribute"],
+)
+def test_a_stream_check_over_max_metadata_bytes_ends_the_listing(
+    monkeypatch: pytest.MonkeyPatch, nodes: list, patch: Callable[[list], None]
+) -> None:
+    # The kept check's charge is what crosses the limit: the listing stops there,
+    # and does not take it as one member's damage and check the stream again.
+    checked = _count_checks(monkeypatch)
+    monkeypatch.setattr(apfs, "_VIEW_COST", 1 << 40)
+    written = a.write_apfs(nodes, patch_records=patch)
+    with (
+        _open(a.apfs_dmg(written.container)) as reader,
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+    ):
+        reader.members()
+    assert len(checked) == len(set(checked))  # no stream checked twice
 
 
 def test_a_stream_check_is_kept_and_charged_only_when_it_is_costly() -> None:

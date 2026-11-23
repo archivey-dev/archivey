@@ -804,7 +804,9 @@ class FsTree:
         self.siblings: dict[int, int] = {}
         self.damage = DamageIndex(charge)
         # Per data stream: its checked extents, for a stream costly to check
-        # (``stream_reader``).
+        # (``stream_reader``). A kept check stays true for the life of the tree:
+        # ``extents`` and ``damage`` are complete once ``ApfsVolume.walk`` returns,
+        # and nothing adds to them after it.
         self.stream_views: dict[int, _StreamView] = {}
         self._charge = charge
 
@@ -1027,6 +1029,18 @@ class _StreamView(NamedTuple):
     peaks: tuple[float, ...]
 
 
+def _offsets(each: Damage, prefix: tuple[int, int]) -> tuple[int, float]:
+    """The lowest and highest offsets of the extent keys of stream ``prefix`` that the
+    damaged range ``each`` may hold."""
+    low = each.low[2] if each.low is not None and each.low[:2] == prefix else 0
+    high = (
+        each.high[2]
+        if each.high is not None and each.high[:2] == prefix
+        else float("inf")
+    )
+    return low, high
+
+
 def _check_stream(
     flat: array[int], damage: DamageIndex, stream: int, bs: int, count: int
 ) -> _StreamView:
@@ -1054,12 +1068,7 @@ def _check_stream(
     prefix = (stream, EXTENT)
     peak = float("-inf")
     for each in damage.holding(prefix):
-        low = each.low[2] if each.low is not None and each.low[:2] == prefix else 0
-        high = (
-            each.high[2]
-            if each.high is not None and each.high[:2] == prefix
-            else float("inf")
-        )
+        low, high = _offsets(each, prefix)
         peak = max(peak, high)
         lows.append(low)
         peaks.append(peak)
@@ -1118,9 +1127,11 @@ def stream_reader(
         below = bisect.bisect_left(lows, stop)
         first = bisect.bisect_right(peaks, before)
         if first < below:
-            each = next(
-                itertools.islice(tree.damage.holding((stream, EXTENT)), first, None)
-            )
+            # The view kept the bounds only; the range is found again, the same
+            # one since the tree's damage does not change after the walk.
+            prefix = (stream, EXTENT)
+            each = next(itertools.islice(tree.damage.holding(prefix), first, None))
+            assert _offsets(each, prefix)[0] == lows[first]
             raise CorruptionError(
                 f"the extents of {what} from byte {at} are in a damaged node of "
                 f"the filesystem tree (block {each.address}: {each.reason})"
