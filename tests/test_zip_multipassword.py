@@ -33,7 +33,7 @@ from archivey.exceptions import (
     EncryptionError,
     TruncatedError,
 )
-from archivey.internal import password as password_module, password_confirm
+from archivey.internal import kernels, password as password_module, password_confirm
 from archivey.internal.backends import zip_reader, zipcrypto
 from archivey.internal.password import is_wrong_password
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_PREFIX_BYTES
@@ -513,7 +513,7 @@ def test_confirmed_winner_is_reopened_fresh(monkeypatch: pytest.MonkeyPatch) -> 
 
     def tracking_keys(
         password: bytes, header: bytes, *args: Any
-    ) -> tuple[zipcrypto.CipherState, int]:
+    ) -> tuple[kernels.ZipCryptoDecryptor, int]:
         # One call per decrypt stage the reader opens.
         tried.append(password)
         return original(password, header, *args)
