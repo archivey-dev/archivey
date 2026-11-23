@@ -284,6 +284,7 @@ def test_a_format_that_needs_seek_is_refused_under_pipe(make) -> None:
     ) as info:
         archivey.open_archive(io.BytesIO(data), pipe=True)
     assert "without pipe=True" in str(info.value)
+    assert "where the stream was when this call began" in str(info.value)
     # The same bytes from a source that cannot seek: one message for every mode, and
     # it proposes only a seekable copy. Only whether detection read from the source
     # (format= skips it) changes the advice.
@@ -528,3 +529,86 @@ def test_cli_opens_seekable_stdin_in_streaming_mode_and_a_pipe_in_pipe_mode(
         {"pipe": True, "streaming": True},
         {"pipe": False, "streaming": False},
     ]
+
+
+class _ReadOnlyRaw(io.RawIOBase):
+    """A raw stream with ``read()`` alone: ``readinto`` is ``RawIOBase``'s abstract
+    one, which raises ``NotImplementedError``."""
+
+    def __init__(self, data: bytes, *, seekable: bool) -> None:
+        super().__init__()
+        self._data = data
+        self._pos = 0
+        self._seekable = seekable
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return self._seekable
+
+    def read(self, size: int = -1) -> bytes:
+        end = len(self._data) if size is None or size < 0 else self._pos + size
+        chunk = self._data[self._pos : end]
+        self._pos += len(chunk)
+        return chunk
+
+    def readinto(self, b):  # type: ignore[no-untyped-def,override]  # RawIOBase's own
+        raise NotImplementedError
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        if not self._seekable:
+            raise io.UnsupportedOperation("seek")
+        base = {0: 0, 1: self._pos, 2: len(self._data)}[whence]
+        self._pos = base + offset
+        return self._pos
+
+    def tell(self) -> int:
+        return self._pos
+
+
+class _NoReadinto(io.BytesIO):
+    """A buffered stream whose optional ``readinto`` is refused."""
+
+    def readinto(self, b):  # type: ignore[no-untyped-def,override]  # refused
+        raise io.UnsupportedOperation("readinto")
+
+
+def test_pipe_reads_a_stream_whose_readinto_is_missing() -> None:
+    data = _zip_with_symlink()
+    with archivey.open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
+        expected = _final(reader)
+    for source in (
+        _ReadOnlyRaw(data, seekable=False),
+        _ReadOnlyRaw(data, seekable=True),
+        _NoReadinto(data),
+    ):
+        with archivey.open_archive(source, pipe=True) as reader:  # type: ignore[call-overload]  # source kinds vary
+            assert _final(reader) == expected
+
+
+def test_pipe_yields_a_zip_directory_s_data_when_bit_3_is_clear() -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("d/"), b"x" * 12)
+    for source in (io.BytesIO(buf.getvalue()), NonSeekableBytesIO(buf.getvalue())):
+        with archivey.open_archive(source, pipe=True) as reader:
+            streams = [
+                (m.name, s.read() if s is not None else None)
+                for m, s in reader.stream_members()
+            ]
+        assert streams == [("d/", b"x" * 12)]
+
+
+def test_the_seekable_refusal_retry_works_from_the_archive_start() -> None:
+    # The archive starts at byte 33 of the stream: the retry the message names, from
+    # where the stream was when the call began, opens it.
+    data = b"\0" * 33 + minimal_iso()
+    stream = io.BytesIO(data)
+    stream.seek(33)
+    with pytest.raises(StreamNotSeekableError) as info:
+        archivey.open_archive(stream, format=archivey.ArchiveFormat.ISO, pipe=True)
+    assert "where the stream was when this call began" in str(info.value)
+    stream.seek(33)
+    with archivey.open_archive(stream, format=archivey.ArchiveFormat.ISO) as reader:
+        assert reader.members()

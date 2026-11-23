@@ -417,6 +417,7 @@ def open_archive(
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
     parent: ForwardArchiveReader | None = None,
+    salvage: bool = False,
 ) -> ForwardArchiveReader: ...
 
 
@@ -1237,7 +1238,8 @@ def _backend_for_source(
             message = (
                 f"Format {resolved_format.display_name} cannot be read as a pipe "
                 f"({refused_cls.NON_SEEKABLE_REASON}). Open it again without "
-                "pipe=True, from the start of the file or stream."
+                "pipe=True, from the position where the archive starts (where the "
+                "stream was when this call began)."
             )
         else:
             # One message whatever the mode: no flag makes this source readable.

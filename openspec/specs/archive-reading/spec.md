@@ -806,7 +806,7 @@ cumulative snapshot without being retained twice. A standalone `ArchiveStream`
 `MEMBER_DIRECTORY_DATA_IGNORED`) SHALL be paired with a stream when its size is known as
 the pass reaches it, which holds in every format and both access modes but one: a ZIP
 directory whose local header defers its sizes to a data descriptor (bit 3, which every
-writer to a pipe sets), read from a source that cannot seek, is paired with `None`,
+writer to a pipe sets), read as a pipe (`pipe=True`), is paired with `None`,
 since its data has gone past before the descriptor says it is data (`format-zip`, "Two
 shapes read differently from a pipe"). That stream SHALL deliver the bytes `open()`
 delivers for the directory, under the same checks (the stored digest,
@@ -821,7 +821,7 @@ agree: a stream where `open()` reads, `None` where it refuses.
 | --- | --- |
 | Directory member declaring no data | Stream `None` |
 | ZIP directory written with a data descriptor (bit 3) declaring 12 bytes, under `pipe=True`, whether or not the source can seek | Stream `None`; `MEMBER_DIRECTORY_DATA_IGNORED` when the central directory arrives, its message saying the pass yields no stream for it; from a seekable source without `pipe=True`, the row below |
-| Directory member declaring 12 bytes (ZIP, RAR, an old-style TAR `d/`), opened in random access or a one-pass read (a ZIP only without `pipe=True`; RAR and TAR under `pipe=True` too) | A stream; `read()` returns the 12 bytes `open()` returns, and raises the `CorruptionError` `open()` raises when they fail the CRC-32 |
+| Directory member declaring 12 bytes (ZIP, RAR, an old-style TAR `d/`), opened in random access or a one-pass read, `pipe=True` included (a ZIP's under `pipe=True` only when bit 3 is clear: the row above covers bit 3) | A stream; `read()` returns the 12 bytes `open()` returns, and raises the `CorruptionError` `open()` raises when they fail the CRC-32 |
 | TAR `DIRTYPE` header with a size the walk cannot tell from the trailer | Stream `None` (no `size`; `open()` refuses it) |
 | `MemberType.ANTI` | Stream `None` |
 
