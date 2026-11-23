@@ -1440,6 +1440,11 @@ class _ApfsWalk:
                 _, sparse = apfs.stream_reader(
                     self._volume, tree, inode.stream, inode.size, what
                 )
+            except ResourceLimitError:
+                # Only the charge of a kept stream check raises it here (no byte is
+                # read): the archive is over max_metadata_bytes, not this member
+                # damaged.
+                raise
             except ArchiveyError as exc:
                 return ApfsData(self._index, oid, False, (type(exc), str(exc)))
             member.is_sparse = sparse
@@ -1456,6 +1461,10 @@ class _ApfsWalk:
                     f"{what} has the compressed flag and no com.apple.decmpfs attribute",
                 ),
             )
+        # The stream check's charge is the archive's, so it is outside the ``try``;
+        # what reading the bytes raises is this member's damage.
+        if attr.value is None:
+            apfs.stream_view(self._volume, tree, attr.stream)
         try:
             value = apfs.xattr_value(
                 self._volume,
@@ -1504,6 +1513,9 @@ class _ApfsWalk:
                 target_in_archive=True,
             )
             return
+        # As for the decmpfs attribute: the stream check's charge is the archive's.
+        if target.value is None:
+            apfs.stream_view(self._volume, self._tree, target.stream)
         try:
             raw = apfs.xattr_value(
                 self._volume,

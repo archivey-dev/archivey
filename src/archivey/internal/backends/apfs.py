@@ -114,6 +114,13 @@ _RECORD_COST = 64
 # What one damaged range holds beyond its reason's text (the tuple, its bounds and
 # the index's entry for it), measured on CPython 3.11.
 _DAMAGE_COST = 200
+# A data stream with more extents and damaged ranges than this has its check kept
+# (``stream_reader``). One kept check holds at most _VIEW_COST bytes, and
+# _VIEW_RANGE_COST more per damaged range it bounds (the range itself is charged
+# already); measured on CPython 3.11.
+_KEPT_VIEW_MIN = 16
+_VIEW_COST = 256
+_VIEW_RANGE_COST = 64
 
 
 def fletcher64(block: bytes) -> int:
@@ -852,6 +859,17 @@ class FsTree:
         # Per inode: how many sibling-link records (one per hard-link name) it has.
         self.siblings: dict[int, int] = {}
         self.damage = DamageIndex(charge)
+        # Per data stream: its checked extents, for a stream costly to check
+        # (``stream_reader``). A kept check stays true for the life of the tree:
+        # ``extents`` and ``damage`` are complete once ``ApfsVolume.walk`` returns,
+        # and nothing adds to them after it.
+        self.stream_views: dict[int, _StreamView] = {}
+        self._charge = charge
+
+    def keep_view(self, stream: int, view: _StreamView) -> None:
+        if self._charge is not None:
+            self._charge(_VIEW_COST + _VIEW_RANGE_COST * len(view.lows))
+        self.stream_views[stream] = view
 
     def damaged(self, oid: int, kind: int) -> Damage | None:
         """The damaged range that may hold a record (``oid``, ``kind``), if any."""
@@ -1051,6 +1069,83 @@ def _xattr(key: bytes, value: bytes) -> tuple[bytes, Xattr]:
 # ── Data streams ─────────────────────────────────────────────────────────────────────
 
 
+class _StreamView(NamedTuple):
+    """What checking a data stream's extents found; nothing in it depends on the size
+    read or on the name of the file."""
+
+    # The first bad extent: ("overlap", its start, 0) or ("past", its first block,
+    # its end block); None when every extent is good.
+    fault: tuple[str, int, int] | None
+    # A read to a size above this meets a hole or a zero extent.
+    sparse_from: int
+    # The damaged ranges that may hold the stream's extent keys, in key order (the
+    # index's merged ranges are disjoint, so their lowest offsets ascend): those
+    # lowest offsets, and the running maximum of their highest offsets.
+    lows: tuple[int, ...]
+    peaks: tuple[float, ...]
+
+
+def _offsets(each: Damage, prefix: tuple[int, int]) -> tuple[int, float]:
+    """The lowest and highest offsets of the extent keys of stream ``prefix`` that the
+    damaged range ``each`` may hold."""
+    low = each.low[2] if each.low is not None and each.low[:2] == prefix else 0
+    high = (
+        each.high[2]
+        if each.high is not None and each.high[:2] == prefix
+        else float("inf")
+    )
+    return low, high
+
+
+def _check_stream(
+    flat: array[int], damage: DamageIndex, stream: int, bs: int, count: int
+) -> _StreamView:
+    """Check the extents ``flat`` of ``stream`` (in key order) once, and gather the
+    damaged ranges that may hold more of them."""
+    fault: tuple[str, int, int] | None = None
+    sparse_from: int | None = None
+    pos = 0
+    for i in range(0, len(flat), 3):
+        start, length, address = flat[i], flat[i + 1], flat[i + 2]
+        if start < pos:
+            fault = ("overlap", start, 0)
+            break
+        if start > pos and sparse_from is None:
+            sparse_from = pos
+        if address == 0:
+            if sparse_from is None or start < sparse_from:
+                sparse_from = start
+        elif address + -(-length // bs) > count:
+            fault = ("past", address, address + -(-length // bs))
+            break
+        pos = start + length
+    lows: list[int] = []
+    peaks: list[float] = []
+    prefix = (stream, EXTENT)
+    peak = float("-inf")
+    for each in damage.holding(prefix):
+        low, high = _offsets(each, prefix)
+        peak = max(peak, high)
+        lows.append(low)
+        peaks.append(peak)
+    sparse_from = pos if sparse_from is None else min(sparse_from, pos)
+    return _StreamView(fault, sparse_from, tuple(lows), tuple(peaks))
+
+
+def stream_view(volume: ApfsVolume, tree: FsTree, stream: int) -> _StreamView:
+    """The check of data stream ``stream``'s extents: kept on ``tree``, and charged,
+    when it is costly (``stream_reader``). Only the charge raises
+    (``ResourceLimitError``); a bad extent is recorded in the view, for the read."""
+    view = tree.stream_views.get(stream)
+    if view is None:
+        blocks = volume.container._blocks
+        flat = tree.extents.get(stream, array("Q"))
+        view = _check_stream(flat, tree.damage, stream, blocks.size, blocks.count)
+        if len(flat) // 3 + len(view.lows) > _KEPT_VIEW_MIN:
+            tree.keep_view(stream, view)
+    return view
+
+
 def stream_reader(
     volume: ApfsVolume, tree: FsTree, stream: int, size: int, what: str
 ) -> tuple[Callable[[int, int], bytes], bool]:
@@ -1058,7 +1153,12 @@ def stream_reader(
     exactly ``n`` bytes, or ``TruncatedError`` past ``size``; and whether the stream
     has holes. Holes read as zeros, except where a damaged node may hold the extent
     that fills them (``CorruptionError``). The extents are checked here, so a bad
-    extent fails the read that opens the stream."""
+    extent fails the read that opens the stream.
+
+    Inodes may share a stream, and each one opens it: a stream whose check costs more
+    than ``_KEPT_VIEW_MIN`` extents and damaged ranges is checked once and its
+    :class:`_StreamView` kept on ``tree`` and charged, so the calls together cost
+    what the stream holds and not that times the inodes."""
     blocks = volume.container._blocks
     bs = blocks.size
     if stream in tree.encrypted_streams:
@@ -1066,49 +1166,42 @@ def stream_reader(
             f"{what} has an extent with an encryption id on an unencrypted volume"
         )
     flat = tree.extents.get(stream, array("Q"))
-    starts = flat[0::3]
-    lengths = flat[1::3]
-    addresses = flat[2::3]
-    sparse = False
-    pos = 0
-    for start, length, address in zip(starts, lengths, addresses):
-        if start < pos:
-            raise CorruptionError(f"{what} has overlapping extents at byte {start}")
-        if start > pos and pos < size:
-            sparse = True
-        if address == 0 and start < size:
-            sparse = True
-        elif address and address + -(-length // bs) > blocks.count:
-            raise CorruptionError(
-                f"an extent of {what} (blocks {address} to {address + -(-length // bs)}) "
-                f"is past the container's {blocks.count} blocks"
-            )
-        pos = start + length
-    if pos < size:
-        sparse = True
-    # The damaged offsets of this stream's extent keys: [low, high] each.
-    lost: list[tuple[int, float, Damage]] = []
-    prefix = (stream, EXTENT)
-    for each in tree.damage.holding(prefix):
-        low = each.low[2] if each.low is not None and each.low[:2] == prefix else 0
-        high = (
-            each.high[2]
-            if each.high is not None and each.high[:2] == prefix
-            else float("inf")
+    view = stream_view(volume, tree, stream)
+    if view.fault is not None:
+        kind, first, last = view.fault
+        if kind == "overlap":
+            raise CorruptionError(f"{what} has overlapping extents at byte {first}")
+        raise CorruptionError(
+            f"an extent of {what} (blocks {first} to {last}) "
+            f"is past the container's {blocks.count} blocks"
         )
-        lost.append((low, high, each))
+    sparse = view.sparse_from < size
+    lows, peaks = view.lows, view.peaks
+    extents = range(len(flat) // 3)
+
+    def start_of(i: int) -> int:
+        return flat[3 * i]
 
     def hole(at: int, stop: int) -> None:
         """Serve zeros over [``at``, ``stop``), unless an extent the records cannot
         show may start between the last known extent before ``at`` and ``stop``."""
-        index = bisect.bisect_right(starts, at) - 1
-        before = starts[index] if index >= 0 else -1
-        for low, high, each in lost:
-            if low < stop and high > before:
-                raise CorruptionError(
-                    f"the extents of {what} from byte {at} are in a damaged node of "
-                    f"the filesystem tree ({each.place}: {each.reason})"
-                )
+        index = bisect.bisect_right(extents, at, key=start_of) - 1
+        before = flat[3 * index] if index >= 0 else -1
+        # The ranges that start below ``stop`` are the first ``below`` (they are in
+        # key order), and the first range whose high end is past ``before`` is where
+        # ``peaks`` first passes it: a scan of every range finds the same one.
+        below = bisect.bisect_left(lows, stop)
+        first = bisect.bisect_right(peaks, before)
+        if first < below:
+            # The view kept the bounds only; the range is found again, the same
+            # one since the tree's damage does not change after the walk.
+            prefix = (stream, EXTENT)
+            each = next(itertools.islice(tree.damage.holding(prefix), first, None))
+            assert _offsets(each, prefix)[0] == lows[first]
+            raise CorruptionError(
+                f"the extents of {what} from byte {at} are in a damaged node of "
+                f"the filesystem tree ({each.place}: {each.reason})"
+            )
 
     source = volume.container.source
 
@@ -1120,27 +1213,23 @@ def stream_reader(
         parts: list[bytes] = []
         at = offset
         end = offset + n
-        index = max(0, bisect.bisect_right(starts, at) - 1)
+        index = max(0, bisect.bisect_right(extents, at, key=start_of) - 1)
         while at < end:
-            if (
-                index < len(starts)
-                and starts[index] <= at < starts[index] + lengths[index]
-            ):
-                take = min(end, starts[index] + lengths[index]) - at
-                address = addresses[index]
-                if address:
-                    parts.append(
-                        source.read_exact(address * bs + at - starts[index], take)
-                    )
-                else:
-                    parts.append(bytes(take))
-                at += take
-                index += 1
-                continue
-            if index < len(starts) and starts[index] + lengths[index] <= at:
-                index += 1
-                continue
-            following = starts[index] if index < len(starts) else end
+            if index < len(extents):
+                start, length, address = flat[3 * index : 3 * index + 3]
+                if start <= at < start + length:
+                    take = min(end, start + length) - at
+                    if address:
+                        parts.append(source.read_exact(address * bs + at - start, take))
+                    else:
+                        parts.append(bytes(take))
+                    at += take
+                    index += 1
+                    continue
+                if start + length <= at:
+                    index += 1
+                    continue
+            following = flat[3 * index] if index < len(extents) else end
             take = min(end, following) - at
             hole(at, at + take)
             parts.append(bytes(take))
