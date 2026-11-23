@@ -779,8 +779,11 @@ def _end(w: BitWriter, pad: int = 8) -> bytes:
 
 
 def _decoder(data: bytes) -> LzxDecoder:
-    chunks = iter([data])
-    return LzxDecoder(15, lambda: next(chunks, None))
+    """A decoder given all of ``data``, for tests that call its readers directly."""
+    decoder = LzxDecoder(15)
+    decoder.feed(data)
+    decoder.end()
+    return decoder
 
 
 @pytest.mark.parametrize(
@@ -1713,3 +1716,146 @@ def test_members_before_a_bad_record_read_unchecked() -> None:
             stream.read()
             seen.append((member.name, member.verified))
     assert seen == [(NAMES[0], Verification.LENGTH), (NAMES[1], Verification.LENGTH)]
+
+
+def _lzx_push(window: int, data: bytes, sizes: list[int], pieces: list[int]):
+    """Decode ``data`` pushed in ``pieces``-sized slices, a slice each time a frame
+    runs out of input: the output and the error, if any."""
+    decoder = LzxDecoder(window)
+    out = bytearray()
+    at = feeds = 0
+    try:
+        for size in sizes:
+            while (frame := decoder.try_frame(size)) is None:
+                if at >= len(data):
+                    decoder.end()
+                    continue
+                n = pieces[feeds % len(pieces)] if pieces else len(data)
+                feeds += 1
+                decoder.feed(data[at : at + n])
+                at += n
+            out += frame
+    except (CorruptionError, TruncatedError) as exc:
+        return bytes(out), (type(exc), str(exc))
+    return bytes(out), None
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_lzx_push_in_any_pieces_decodes_as_all_at_once(seed: int) -> None:
+    """The push decoder keeps its place inside a frame: fed in slices down to one
+    byte, it gives the same frames and the same error as fed everything at once, on
+    valid streams and damaged ones."""
+    from tests.cab_util import FRAME, LzxEncoder
+
+    rng = random.Random(seed)
+    window = rng.choice((15, 16, 17, 21))
+    size = rng.randint(1, 3 * FRAME)
+    data = bytes(rng.choice(b"abcde\xe8\x00") for _ in range(size))
+    enc = LzxEncoder(
+        window_bits=window,
+        blocks=rng.choice(
+            [
+                ("verbatim",),
+                ("aligned",),
+                ("uncompressed",),
+                ("verbatim", "uncompressed", "aligned"),
+            ]
+        ),
+        block_size=rng.choice((FRAME, 10_000, 1_000)),
+        e8_file_size=rng.choice((0, size)),
+    )
+    stream = b"".join(enc.encode(data))
+    sizes = [min(FRAME, size - i) for i in range(0, size, FRAME)]
+    streams = [stream]
+    for _ in range(3):
+        damaged = bytearray(stream)
+        damaged[rng.randrange(len(damaged))] ^= 1 << rng.randrange(8)
+        streams.append(bytes(damaged))
+    streams.append(stream[: rng.randrange(len(stream))])
+    for s in streams:
+        whole = _lzx_push(window, s, sizes, [])
+        if s is stream:
+            assert whole == (data, None)
+        for pieces in ([1], [3, 1, 7], [rng.randint(1, 5000) for _ in range(5)]):
+            assert _lzx_push(window, s, sizes, pieces) == whole
+
+
+def test_lzx_push_frame_that_read_nothing_may_change_size() -> None:
+    """A frame that ran out of input before reading anything is not started, so the
+    next call may ask for another size; once it read something, it may not."""
+    from tests.cab_util import FRAME, LzxEncoder
+
+    rng = random.Random(4)
+    data = bytes(rng.choice(b"abcde\xe8\x00") for _ in range(2 * FRAME))
+    stream = b"".join(LzxEncoder(window_bits=15, blocks=("verbatim",)).encode(data))
+    decoder = LzxDecoder(15)
+    decoder.feed(stream[:1])
+    assert decoder.try_frame(FRAME) is None
+    decoder.feed(stream[1:])
+    decoder.end()
+    assert decoder.try_frame(100) == data[:100]
+
+    decoder = LzxDecoder(15)
+    decoder.feed(stream[:200])
+    assert decoder.try_frame(FRAME) is None
+    with pytest.raises(ValueError, match="for a frame started at 32768"):
+        decoder.try_frame(100)
+
+
+def _empty_stored_blocks(count: int, tail: bytes) -> bytes:
+    """An LZX stream of ``count`` empty uncompressed blocks, then one holding
+    ``tail``: no output until the last block."""
+    w = BitWriter()
+    w.bits(0, 1)  # no E8 translation
+    for length in [0] * count + [len(tail)]:
+        w.bits(3, 3)
+        w.bits(length, 24)
+        w.align(whole_word_if_aligned=True)
+        w.raw(b"\x01\0\0\0" * 3)
+        if length:
+            w.raw(tail)
+            if length & 1:
+                w.raw(b"\0")
+    return w.take()
+
+
+def test_lzx_input_is_dropped_inside_a_frame_of_empty_blocks() -> None:
+    """A frame's input has no bound (a block may be empty), so the input read is
+    dropped at each block header too, not only when a frame starts."""
+    tail = bytes(range(100))
+    stream = _empty_stored_blocks(20_000, tail)
+    chunks = iter([stream[i : i + 4096] for i in range(0, len(stream), 4096)])
+    decoder = LzxDecoder(15, lambda: next(chunks, None))
+    assert decoder.decode_frame(100) == tail
+    assert len(decoder._buf) < 3 * lzx_decoder._TRIM_AT
+
+
+def test_lzx_a_block_header_fed_byte_by_byte_is_read_once() -> None:
+    """A block header that runs out of input goes on from the length symbol it was
+    in, not from its start: fed one byte at a time, its trees take about as many
+    pretree reads as fed at once."""
+    from tests.cab_util import FRAME, LzxEncoder
+
+    rng = random.Random(3)
+    data = bytes(rng.choice(b"abcdefghij\xe8") for _ in range(2 * FRAME))
+    enc = LzxEncoder(window_bits=21, blocks=("verbatim", "aligned"), block_size=1000)
+    stream = b"".join(enc.encode(data))
+    sizes = [FRAME, FRAME]
+    reads = 0
+    real = LzxDecoder._read_symbol
+
+    def counting(self: LzxDecoder, tree: lzx_decoder.Tree | None, what: str) -> int:
+        nonlocal reads
+        reads += 1
+        return real(self, tree, what)
+
+    counts = []
+    for pieces in ([], [1]):
+        reads = 0
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(LzxDecoder, "_read_symbol", counting)
+            assert _lzx_push(21, stream, sizes, pieces) == (data, None)
+        counts.append(reads)
+    whole, by_byte = counts
+    # Each stall reads at most the one symbol it stopped in again.
+    assert by_byte < 2 * whole, counts

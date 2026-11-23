@@ -514,6 +514,8 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 NOT_RELEASE_GATES = {
     "benchmark-wall.yml": "the release checklist §2 runs the benchmark by hand",
     "conflict-notice.yml": "comments on conflicted pull requests; it tests nothing",
+    "dmg-macos.yml": "it checks the DMG test writer and reader against Apple's tools; "
+    "a new check, so it starts outside the gates until its runs have been green",
     "ppmd-native-stress.yml": "it finds pyppmd's known native crashes, which archivey "
     "contains in a child process; a red run must not hold a release",
     "review-tally.yml": "counts review findings into a job summary; it tests nothing",
