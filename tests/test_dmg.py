@@ -16,6 +16,7 @@ import sys
 import time
 import unicodedata
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
@@ -684,6 +685,56 @@ def test_volume_names_follow_the_mount_points() -> None:
     ]
 
 
+def _volume_names_by_probing(labels: list[str]) -> list[str]:
+    """The naming rule spelled out: probe `` 1``, `` 2``, ... against every name
+    taken so far, compared but for case."""
+    taken: list[str] = []
+    for label in labels:
+        base = label.replace("/", ":")
+        if base in ("", ".", ".."):
+            base = "Untitled"
+        name, n = base, 0
+        while name.casefold() in {t.casefold() for t in taken}:
+            n += 1
+            name = f"{base} {n}"
+        taken.append(name)
+    return taken
+
+
+def test_volume_names_match_the_probing_rule() -> None:
+    import random
+
+    rng = random.Random(1786)
+    pieces = [
+        "a",
+        "A",
+        "a 1",
+        "A 2",
+        "ß",
+        "SS",
+        "ss",
+        "",
+        ".",
+        "Untitled",
+        "UNTITLED 1",
+    ]
+    for _ in range(2000):
+        labels = rng.choices(pieces, k=rng.randint(1, 12))
+        assert volume_names(labels) == _volume_names_by_probing(labels), labels
+
+
+@pytest.mark.timeout(30)
+def test_volume_names_that_differ_only_in_case_are_named_in_linear_time() -> None:
+    """Each suffix probe rebuilt the casefolded set of the names taken, so labels
+    that differ only in case took cubic time (800 of them took seconds)."""
+    labels = ["a", "A"] * 10_000
+    start = time.perf_counter()
+    names = volume_names(labels)
+    assert time.perf_counter() - start < 5
+    assert names[:4] == ["a", "A 1", "a 2", "A 3"]
+    assert len({n.casefold() for n in names}) == len(labels)
+
+
 def test_a_damaged_apfs_container_beside_hfs_fails_after_the_hfs_members() -> None:
     names = []
     with (
@@ -738,6 +789,48 @@ def test_a_partition_type_that_disagrees_is_reported_and_read() -> None:
     with _open(image) as reader:
         assert reader.read("a.txt") == b"a"
         assert "partition_name" in _structures(reader)
+
+
+def test_overlapping_apm_entries_use_the_run_tables() -> None:
+    """Two map entries over the same sectors: the map is refused, as a GPT's would be,
+    so the volume is listed once."""
+    hfs = d.write_hfsplus([d.Node("a.txt", data=b"a")])
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+
+    def same_start(index: int, entry: bytearray) -> None:
+        if index == 2:  # the second partition's entry starts at the first's sector
+            struct.pack_into(">I", entry, 8, 64)
+
+    disk = d.write_apm(
+        [d.Partition(volume, name="one"), d.Partition(bytes(len(volume)), name="two")],
+        patch_map=same_start,
+    )
+    image = d.write_udif(disk.segments, tables=disk.tables).image
+    with _open(image) as reader:
+        assert [m.name for m in reader.members() if m.is_file] == ["a.txt"]
+        assert reader.info.extra["dmg.partition_scheme"] == "none"
+        assert "partition_map" in _structures(reader)
+
+
+def test_overlapping_gpt_entries_use_the_run_tables() -> None:
+    """The GPT twin of the test above: the second entry starts at the first's
+    sector (the CRCs are computed after the patch)."""
+    hfs = d.write_hfsplus([d.Node("a.txt", data=b"a")])
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+
+    def same_start(entries: bytearray) -> None:
+        (first,) = struct.unpack_from("<Q", entries, 32)
+        struct.pack_into("<Q", entries, 128 + 32, first)
+
+    disk = d.write_gpt(
+        [d.Partition(volume, name="one"), d.Partition(bytes(len(volume)), name="two")],
+        patch_entries=same_start,
+    )
+    image = d.write_udif(disk.segments, tables=disk.tables).image
+    with _open(image) as reader:
+        assert [m.name for m in reader.members() if m.is_file] == ["a.txt"]
+        assert reader.info.extra["dmg.partition_scheme"] == "none"
+        assert "partition_map" in _structures(reader)
 
 
 def test_a_damaged_primary_gpt_falls_back_to_the_backup() -> None:
@@ -884,6 +977,97 @@ def test_an_extents_file_short_of_its_blocks_is_corruption() -> None:
     ):
         reader.members()
         reader.read("a.bin")
+
+
+def _count_extents_nodes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The node numbers the extents overflow B-tree reads, in order."""
+    from archivey.internal.backends import hfsplus
+
+    reads: list[int] = []
+    node = hfsplus._BTree.node
+
+    def counted(self, number: int):  # type: ignore[no-untyped-def]
+        if self._name == "extents":
+            reads.append(number)
+        return node(self, number)
+
+    monkeypatch.setattr(hfsplus._BTree, "node", counted)
+    return reads
+
+
+def test_overflow_extents_are_read_along_the_leaf_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fork with many overflow records finds the first one down the index and walks
+    the leaf chain from there: each extents node is read once per fork reader, not
+    once per record."""
+    data = bytes(range(256)) * 2 * 400  # 400 blocks of 512 bytes
+    image = d.dmg_of(
+        [d.Node("a.bin", data=data, fragment=400)],
+        hfs_options={"block_size": 512, "node_size": 512},
+    )
+    reads = _count_extents_nodes(monkeypatch)
+    with _open(image, seekable_members=True) as reader:
+        assert reader.read("a.bin") == data
+        with reader.open("a.bin") as stream:
+            for at in (0, 511, 512, 100_000, len(data) - 1):
+                stream.seek(at)
+                assert stream.read(700) == data[at : at + 700]
+    # 49 overflow records of 8 extents, about 10 to a 512-byte node.
+    assert max(Counter(reads).values()) <= 2  # one walk per fork reader: read, open
+    assert len(set(reads)) < 15
+
+
+@pytest.mark.parametrize("link", ["skip", "loop"])
+def test_a_broken_extents_leaf_chain_falls_back_to_a_search(
+    monkeypatch: pytest.MonkeyPatch, link: str
+) -> None:
+    """When the extents leaf chain does not lead to the next overflow record (it skips
+    a leaf, or loops), that record is searched for from the root, so the file reads
+    as before."""
+    from archivey.internal.backends import hfsplus
+
+    data = bytes(range(256)) * 2 * 400
+    image = d.dmg_of(
+        [d.Node("a.bin", data=data, fragment=400)],
+        hfs_options={"block_size": 512, "node_size": 512},
+    )
+    node = hfsplus._BTree.node
+    broken: list[int] = []
+
+    def relinked(self, number: int):  # type: ignore[no-untyped-def]
+        flink, kind, height, records = node(self, number)
+        if self._name == "extents" and kind == -1 and flink and not broken:
+            broken.append(number)
+            flink = flink + 1 if link == "skip" else number
+        return flink, kind, height, records
+
+    monkeypatch.setattr(hfsplus._BTree, "node", relinked)
+    with _open(image) as reader:
+        assert reader.read("a.bin") == data
+    assert broken
+
+
+def test_extents_past_the_fork_size_are_not_looked_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Blocks allocated past a fork's size are never read, so their overflow records
+    are not looked up: a 0-byte fork listing many extents costs no extents read."""
+
+    def zero_size(body: bytearray) -> None:
+        struct.pack_into(">Q", body, 88, 0)  # the data fork's logicalSize
+
+    image = d.dmg_of(
+        [d.Node("a.bin", data=bytes(512 * 200), fragment=200)],
+        hfs_options={
+            "block_size": 512,
+            "patch_catalog": _patch_file("a.bin", zero_size),
+        },
+    )
+    reads = _count_extents_nodes(monkeypatch)
+    with _open(image) as reader:
+        assert reader.read("a.bin") == b""
+    assert reads == []
 
 
 def _attribute_extent_records(
@@ -1116,6 +1300,76 @@ def test_a_folder_parent_loop_delivers_the_other_members() -> None:
             seen.append(member.name)
     assert {"m/one", "z/two", "top"} <= set(seen)
     assert not any(name.startswith("a/") for name in seen)
+
+
+@pytest.mark.parametrize(
+    "stored", ["..", ".", "", "a\0b"], ids=["dotdot", "dot", "empty", "nul"]
+)
+def test_an_hfs_name_that_cannot_be_a_path_component_is_damage(stored: str) -> None:
+    """A catalog name that is ``..``, ``.``, empty or holds a NUL is left out, the
+    other members are listed, and the listing ends with the error (DR-2)."""
+    nodes = [
+        d.Node("sub/bad", data=b"x", raw_name=stored.encode("utf-16-be")),
+        d.Node("sub/ok", data=b"ok"),
+        d.Node("top", data=b"t"),
+    ]
+    seen: list[str] = []
+    with (
+        _open(_image(nodes)) as reader,
+        pytest.raises(CorruptionError, match="cannot be a path component"),
+    ):
+        for member in reader:
+            seen.append(member.name)
+    assert sorted(seen) == ["sub/", "sub/ok", "top"]
+
+
+def test_a_bad_name_beside_an_orphan_names_both() -> None:
+    nodes = [
+        d.Node("sub/bad", data=b"x", raw_name="..".encode("utf-16-be")),
+        d.Node("o/orph", data=b"o"),
+        d.Node("top", data=b"t"),
+    ]
+
+    def orphan(records: list[d.CatalogRecord]) -> None:
+        raw = "orph".encode("utf-16-be")
+        next(r for r in records if r.name == raw).parent = 9999
+
+    seen: list[str] = []
+    with (
+        _open(_image(nodes, hfs_options={"patch_catalog": orphan})) as reader,
+        pytest.raises(
+            CorruptionError,
+            match=r"\('\.\.' in the folder 'sub'\) and is not listed; also, 1 record is",
+        ),
+    ):
+        for member in reader:
+            seen.append(member.name)
+    assert sorted(seen) == ["o/", "sub/", "top"]
+
+
+def test_an_hfs_folder_named_dotdot_leaves_out_what_it_holds() -> None:
+    """A folder stored as ``..`` listed its child as ``../evil.txt``."""
+    nodes = [
+        d.Node("up", kind="dir", raw_name="..".encode("utf-16-be")),
+        d.Node("up/deeper/evil.txt", data=b"evil"),
+        d.Node("ok", data=b"ok"),
+    ]
+    seen: list[str] = []
+    with (
+        _open(_image(nodes)) as reader,
+        pytest.raises(
+            CorruptionError, match=r"'\.\.' in the folder '/'.*nor are 2 records inside"
+        ),
+    ):
+        for member in reader:
+            seen.append(member.name)
+    assert seen == ["ok"]
+
+
+def test_an_hfs_name_with_a_slash_is_listed_with_a_colon() -> None:
+    nodes = [d.Node("a", data=b"a", raw_name="x/y".encode("utf-16-be"))]
+    _, data = _read_all(_image(nodes))
+    assert data == {"x:y": b"a"}
 
 
 def test_type_9_without_its_marker_is_unsupported(

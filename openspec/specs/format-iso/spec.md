@@ -237,8 +237,12 @@ same way, with `MEMBER_HEADER_RECORD_SKIPPED` and `record="NM"`, as Linux's isof
 falls back.
 
 In the Rock Ridge namespace the relocation directory (a root-level directory
-every child of which is a relocated directory, its `..` carrying a PL record)
-SHALL NOT be listed; the relocated subtrees appear at their logical place.
+every child of which is a relocated directory: its `..` carries a PL record and a
+CL record the listing reaches points at its extent) SHALL NOT be listed; the
+relocated subtrees appear at their logical place. A directory whose `..` carries a PL
+record, and whose extent no CL record the listing reaches points at, SHALL be listed
+where it is stored, with its files. A CL record that the listing can reach only through
+that directory, such as one inside its own subtree, does not count.
 
 #### Scenario: ISO record matrix
 
@@ -262,6 +266,8 @@ SHALL NOT be listed; the relocated subtrees appear at their logical place.
 | Rock Ridge directory whose `NM` flags are 3, 5, 6 or 7 | The image lists; that member carries `MEMBER_HEADER_RECORD_SKIPPED` with `list_truncated` |
 | Directory record pointing back at an ancestor extent | `CorruptionError` at open: the tree loops |
 | Rock Ridge tree 12 directories deep | Logical tree lists in full; no `rr_moved` member |
+| Rock Ridge directory under `rr_moved` whose `..` carries PL, with no CL pointing at it | Listed where stored: `rr_moved/` and the directory's files list |
+| Rock Ridge directory under `rr_moved` whose only CL sits inside its own subtree | Listed where stored; every file of the tree lists |
 
 ### Requirement: Decode Rock Ridge and plain names as UTF-8 first
 
