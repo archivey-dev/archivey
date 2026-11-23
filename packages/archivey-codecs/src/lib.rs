@@ -1007,8 +1007,9 @@ struct LzxDecompressor {
     finished: bool,
     /// The kernel used all the input given and needs more for the next frame.
     starved: bool,
-    /// After a decode error: the error, raised again by every later call (the kernel
-    /// is left where the error found it).
+    /// After a decode error: the error, raised again by every later decoding call while
+    /// it is held (the kernel is left where the error found it). A late output size
+    /// that gives back the input it was met in clears it.
     failed: Option<(u8, String)>,
     /// Bytes the kernel took from the queue.
     taken: u64,
@@ -1197,13 +1198,14 @@ impl LzxDecompressor {
         Self::fresh(window_bits, output_size)
     }
 
-    /// Give the declared output size once it is known, before the last frame starts.
+    /// Give the declared output size once it is known, before the last frame ends.
     ///
     /// Without an output size the decoder may already have read input after the
     /// stream as the start of a next frame or block. A size that ends the output there gives
-    /// that input back as unused, and drops an error the decoder met in it. A decoder
-    /// restored from a state saved after it read that input cannot give it back: the
-    /// input stays consumed and the error stays.
+    /// that input back as unused, and drops an error the decoder met in it. It cannot
+    /// give the input back when the decoder has already dropped it from its buffer, or
+    /// when the decoder was restored from a state saved after it read that input: the
+    /// input then stays consumed and the error stays.
     fn set_output_size(&mut self, output_size: u64) -> PyResult<()> {
         let decoded = self.inner.decoded();
         if output_size < decoded {
