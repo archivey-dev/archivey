@@ -116,6 +116,14 @@ class ApfsData(NamedTuple):
 Locator = FileData | ApfsData | None
 
 
+def _bad_name(name: str) -> bool:
+    """Whether a stored directory-entry name cannot be one component of a member
+    path: empty, ``.``, ``..``, or holding ``/`` or a NUL. Only damage or a crafted
+    image stores one. Both walks use it; an HFS+ name never holds ``/`` here, since
+    ``hfsplus`` shows a stored ``/`` as ``:``."""
+    return name in ("", ".", "..") or "/" in name or "\0" in name
+
+
 def volume_names(labels: list[str]) -> list[str]:
     """The top-level directory names for several volumes (D1): the label, ``Untitled``
     when it is empty, ``.`` or ``..``, and a name already taken (exactly, or but for
@@ -851,6 +859,11 @@ class _VolumeWalk:
         self._paths: dict[int, str | None] = {hfsplus.ROOT_FOLDER: ""}
         self._hidden: dict[int, bool] = {hfsplus.ROOT_FOLDER: False}
         self._looped: set[int] = set()
+        # (parent path, name) of each record whose name cannot be a path component,
+        # and the records left out because a folder above them has such a name.
+        self._bad_names: list[tuple[str, str]] = []
+        self._inside_bad = 0
+        self._bad_above: dict[int, bool] = {hfsplus.ROOT_FOLDER: False}
         orphans = 0
         try:
             for entry in hfsplus.catalog_entries(volume):
@@ -868,6 +881,21 @@ class _VolumeWalk:
             failure = CorruptionError(
                 f"the HFS+ folder {first}'s parent chain loops, so {orphans} "
                 "records of the catalog are not listed"
+            )
+        elif failure is None and self._bad_names:
+            where, bad = self._bad_names[0]
+            count = len(self._bad_names)
+            records = "1 record" if count == 1 else f"{count} records"
+            has, are = ("has", "is") if count == 1 else ("have", "are")
+            below = ""
+            if self._inside_bad:
+                inside = self._inside_bad
+                more = "is 1 record" if inside == 1 else f"are {inside} records"
+                below = f", nor {more} inside such folders"
+            failure = CorruptionError(
+                f"{records} of the HFS+ catalog {has} a name that cannot be a path "
+                f"component (the first is {quoted(bad)} in the folder "
+                f"{quoted(where or '/')}) and {are} not listed{below}"
             )
         elif failure is None and orphans:
             failure = CorruptionError(
@@ -892,6 +920,24 @@ class _VolumeWalk:
             self._hidden[each] = hidden
         return hidden
 
+    def _in_bad_folder(self, cnid: int) -> bool:
+        """Whether folder ``cnid``, or a folder above it, has a name that cannot be a
+        path component. Its parent chain reaches the root: ``folder_path`` checked
+        it."""
+        folders = self._catalog.folders
+        chain = []
+        at = cnid
+        while at not in self._bad_above:
+            if _bad_name(folders[at][1]):
+                self._bad_above[at] = True
+                break
+            chain.append(at)
+            at = folders[at][0]
+        bad = self._bad_above[at]
+        for each in chain:
+            self._bad_above[each] = bad
+        return bad
+
     def _member(self, entry: hfsplus.Entry) -> MemberRecord[Locator] | None | _Orphan:
         folder = hfsplus.is_folder(entry)
         if folder and entry.cnid == hfsplus.ROOT_FOLDER:
@@ -912,6 +958,12 @@ class _VolumeWalk:
             and entry.parent == hfsplus.ROOT_FOLDER
             and self._is_journal(entry)
         ):
+            return None
+        if self._in_bad_folder(entry.parent):
+            self._inside_bad += 1
+            return None
+        if _bad_name(entry.name):
+            self._bad_names.append((parent, entry.name))
             return None
         within = f"{parent}/{entry.name}" if parent else entry.name
         path = f"{self._top}/{within}" if self._top else within
@@ -1186,7 +1238,7 @@ class _ApfsWalk:
             below: list[tuple[int, str]] = []
             for child in sorted(tree.children.get(parent, ()), key=lambda c: c.name):
                 entry = self._context.decode_name(child.name)
-                if "/" in entry or entry in ("", ".", ".."):
+                if _bad_name(entry):
                     problems.append(f"a directory record names {quoted(entry)}")
                     continue
                 within = prefix + entry

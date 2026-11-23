@@ -180,7 +180,10 @@ several volumes, each volume's members sit under a top-level directory named aft
 volume (D1), with `Untitled` and ` 1`, ` 2`, ... suffixes as macOS names mount points.
 
 Damage in a catalog node stops that volume's listing: the members before it are
-delivered, the other volumes are listed, then the error is raised.
+delivered, the other volumes are listed, then the error is raised. A record whose name
+cannot be a path component (empty, `.`, `..`, or holding a NUL; a stored `/` is shown
+as `:`) is left out with everything inside it when it is a folder, and the volume's
+listing ends with `CorruptionError`, as for an orphan.
 
 The first listing, per APFS container (`ApfsContainer.load`, also reached from
 `archive_info()`):
@@ -218,9 +221,9 @@ whose type disagrees is `ARCHIVE_STRUCTURE_INCONSISTENT`, `structure="member_typ
 The first path to an inode is the member, later ones `HARDLINK` to it. A symlink's
 target is its `com.apple.fs.symlink` attribute. Names are passed through as stored
 (APFS preserves normalization: `café.txt` is composed on the fixtures, decomposed on
-HFS+). A name holding `/`, an empty name, `.` or `..`, an entry naming an inode the
-tree does not hold, and a directory reached twice are left out and fail the listing
-after the others.
+HFS+). A name holding `/` or a NUL, an empty name, `.` or `..`, an entry naming an
+inode the tree does not hold, and a directory reached twice are left out and fail the
+listing after the others.
 
 **Damaged nodes (D7).** Every object's Fletcher-64, type, own id and transaction are
 checked. A node that fails, or does not parse, or whose keys are out of order, is

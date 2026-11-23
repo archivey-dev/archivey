@@ -1054,6 +1054,52 @@ def test_a_folder_parent_loop_delivers_the_other_members() -> None:
     assert not any(name.startswith("a/") for name in seen)
 
 
+@pytest.mark.parametrize(
+    "stored", ["..", ".", "", "a\0b"], ids=["dotdot", "dot", "empty", "nul"]
+)
+def test_an_hfs_name_that_cannot_be_a_path_component_is_damage(stored: str) -> None:
+    """A catalog name that is ``..``, ``.``, empty or holds a NUL is left out, the
+    other members are listed, and the listing ends with the error (DR-2)."""
+    nodes = [
+        d.Node("sub/bad", data=b"x", raw_name=stored.encode("utf-16-be")),
+        d.Node("sub/ok", data=b"ok"),
+        d.Node("top", data=b"t"),
+    ]
+    seen: list[str] = []
+    with (
+        _open(_image(nodes)) as reader,
+        pytest.raises(CorruptionError, match="cannot be a path component"),
+    ):
+        for member in reader:
+            seen.append(member.name)
+    assert sorted(seen) == ["sub/", "sub/ok", "top"]
+
+
+def test_an_hfs_folder_named_dotdot_leaves_out_what_it_holds() -> None:
+    """A folder stored as ``..`` listed its child as ``../evil.txt``."""
+    nodes = [
+        d.Node("up", kind="dir", raw_name="..".encode("utf-16-be")),
+        d.Node("up/deeper/evil.txt", data=b"evil"),
+        d.Node("ok", data=b"ok"),
+    ]
+    seen: list[str] = []
+    with (
+        _open(_image(nodes)) as reader,
+        pytest.raises(
+            CorruptionError, match=r"'\.\.' in the folder '/'.*nor are 2 records inside"
+        ),
+    ):
+        for member in reader:
+            seen.append(member.name)
+    assert seen == ["ok"]
+
+
+def test_an_hfs_name_with_a_slash_is_listed_with_a_colon() -> None:
+    nodes = [d.Node("a", data=b"a", raw_name="x/y".encode("utf-16-be"))]
+    _, data = _read_all(_image(nodes))
+    assert data == {"x:y": b"a"}
+
+
 def test_type_9_without_its_marker_is_unsupported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
