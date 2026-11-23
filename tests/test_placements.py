@@ -28,6 +28,13 @@ def _file(path: Path, data: bytes = b"x") -> Path:
     return path
 
 
+def _alias(existing: Path, alias: Path) -> None:
+    """Make ``alias`` a second name of ``existing``. A case- or normalization-
+    insensitive filesystem (macOS) has made it one already."""
+    if not os.path.lexists(alias):
+        os.link(existing, alias)
+
+
 @posix_inodes
 def test_owner_is_none_with_nothing_claimed(tmp_path: Path) -> None:
     assert Placements().owner(_file(tmp_path / "a"), "a", occupied=True) is None
@@ -37,7 +44,7 @@ def test_owner_is_none_with_nothing_claimed(tmp_path: Path) -> None:
 def test_a_name_no_key_reaches_finds_the_claim_of_its_file(tmp_path: Path) -> None:
     placements = Placements()
     first = placements.claim(_file(tmp_path / "A"), "A", tmp_path / "A", 0)
-    os.link(tmp_path / "A", tmp_path / "a")
+    _alias(tmp_path / "A", tmp_path / "a")
     # ``a`` is another name of the file ``A`` claimed: its owner, whatever its key.
     assert placements.owner(tmp_path / "a", "a", occupied=True) is first
     # A name with no entry falls back to the key.
@@ -48,7 +55,7 @@ def test_a_name_no_key_reaches_finds_the_claim_of_its_file(tmp_path: Path) -> No
 def test_a_landing_retires_the_claim_it_replaced(tmp_path: Path) -> None:
     placements = Placements()
     first = placements.claim(_file(tmp_path / "A"), "A", tmp_path / "A", 0)
-    os.link(tmp_path / "A", tmp_path / "a")
+    _alias(tmp_path / "A", tmp_path / "a")
     owner = placements.owner(tmp_path / "a", "a", occupied=True)
     assert owner is first
     second = placements.land(tmp_path / "a", "a", tmp_path / "a", 1, replaced=owner)
@@ -84,17 +91,17 @@ def test_a_landing_on_its_own_name_keeps_one_claim(tmp_path: Path) -> None:
 def test_the_key_decides_between_hard_links_of_one_file(tmp_path: Path) -> None:
     placements = Placements()
     first = placements.claim(_file(tmp_path / "A"), "A", tmp_path / "A", 0)
-    os.link(tmp_path / "A", tmp_path / "b")
+    _alias(tmp_path / "A", tmp_path / "b")
     link = placements.claim(tmp_path / "b", "b", tmp_path / "b", 1)
     # One inode, two claims: each name's own key answers for it.
     assert placements.owner(tmp_path / "A", "A", occupied=True) is first
     assert placements.owner(tmp_path / "b", "b", occupied=True) is link
     # A name no key reaches finds the claim of the name it folds to.
-    os.link(tmp_path / "A", tmp_path / "a")
+    _alias(tmp_path / "A", tmp_path / "a")
     assert placements.owner(tmp_path / "a", "a", occupied=True) is first
     # A name that folds to neither (an 8.3 short name stands for one of the two)
     # cannot tell which entry it reaches: no claim answers for it.
-    os.link(tmp_path / "A", tmp_path / "c")
+    _alias(tmp_path / "A", tmp_path / "c")
     assert placements.owner(tmp_path / "c", "c", occupied=True) is None
 
 
@@ -105,7 +112,7 @@ def test_a_name_that_folds_to_no_claim_finds_its_file_s_only_claim(
     placements = Placements()
     only = placements.claim(_file(tmp_path / "LongFileName"), "L", tmp_path / "L", 0)
     # ``LONGFI~1`` names the one entry the file has a claim for.
-    os.link(tmp_path / "LongFileName", tmp_path / "LONGFI~1")
+    _alias(tmp_path / "LongFileName", tmp_path / "LONGFI~1")
     assert placements.owner(tmp_path / "LONGFI~1", "LONGFI~1", occupied=True) is only
 
 
@@ -113,9 +120,9 @@ def test_a_name_that_folds_to_no_claim_finds_its_file_s_only_claim(
 def test_a_retired_claim_leaves_the_identity_index(tmp_path: Path) -> None:
     placements = Placements()
     first = placements.claim(_file(tmp_path / "A"), "A", tmp_path / "A", 0)
-    os.link(tmp_path / "A", tmp_path / "b")
+    _alias(tmp_path / "A", tmp_path / "b")
     link = placements.claim(tmp_path / "b", "b", tmp_path / "b", 1)
-    os.link(tmp_path / "A", tmp_path / "c")
+    _alias(tmp_path / "A", tmp_path / "c")
     assert placements.owner(tmp_path / "c", "c", occupied=True) is None
     # With ``A``'s claim retired, ``b``'s is the file's only one.
     assert placements.retire(first)
@@ -160,11 +167,11 @@ def test_a_hard_link_elsewhere_with_the_same_name_is_another_entry(
     (tmp_path / "e").mkdir()
     placements = Placements()
     here = placements.claim(_file(tmp_path / "d" / "A"), "d/A", tmp_path / "d/A", 0)
-    os.link(tmp_path / "d" / "A", tmp_path / "e" / "a")
+    _alias(tmp_path / "d" / "A", tmp_path / "e" / "a")
     placements.claim(tmp_path / "e" / "a", "e/a", tmp_path / "e/a", 1)
     # ``d/a`` stands for the entry ``d/A`` (a case alias): ``e/a`` has its name, but
     # in another directory.
-    os.link(tmp_path / "d" / "A", tmp_path / "d" / "a")
+    _alias(tmp_path / "d" / "A", tmp_path / "d" / "a")
     assert placements.owner(tmp_path / "d" / "a", "d/a", occupied=True) is here
 
 
@@ -174,8 +181,8 @@ def test_a_name_folds_unicode_normalization_too(tmp_path: Path) -> None:
     nfd = unicodedata.normalize("NFD", "café")
     placements = Placements()
     first = placements.claim(_file(tmp_path / nfc), nfc, tmp_path / nfc, 0)
-    os.link(tmp_path / nfc, tmp_path / "b")
+    _alias(tmp_path / nfc, tmp_path / "b")
     placements.claim(tmp_path / "b", "b", tmp_path / "b", 1)
     # On APFS the NFD spelling is the entry the NFC one names.
-    os.link(tmp_path / nfc, tmp_path / nfd)
+    _alias(tmp_path / nfc, tmp_path / nfd)
     assert placements.owner(tmp_path / nfd, nfd, occupied=True) is first

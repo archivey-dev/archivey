@@ -2620,16 +2620,14 @@ class ExtractionCoordinator:
         # still retires its claim, and a partial file it kept loses its path; for
         # anything else there the key's answer serves, and costs no ``lstat``.
         placements = self._state.placements
-        occupied = self._occupied(requested) if placements else None
+        by_file = bool(placements) and (
+            self._policy is not ExtractionPolicy.TRUSTED
+            or self._overwrite is OverwritePolicy.REPLACE
+            or self._on_error is OnError.KEEP_PARTIAL
+        )
+        occupied = self._occupied(requested) if by_file else None
         prior = placements.owner(
-            requested,
-            self._collision_key(requested),
-            occupied=bool(occupied)
-            and (
-                self._policy is not ExtractionPolicy.TRUSTED
-                or self._overwrite is OverwritePolicy.REPLACE
-                or self._on_error is OnError.KEEP_PARTIAL
-            ),
+            requested, self._collision_key(requested), occupied=bool(occupied)
         )
         self._current.owner = prior
         collided = (
