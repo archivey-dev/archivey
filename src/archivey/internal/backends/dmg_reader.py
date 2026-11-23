@@ -678,9 +678,7 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
             stream = block_stream(
                 header.size,
                 hfsplus.DECMPFS_CHUNK,
-                self._image.member_reads(
-                    header.size, hfsplus.DECMPFS_CHUNK, read_chunk, locator.position
-                ),
+                self._image.member_reads(read_chunk, locator.position),
             )
             return MemberData(stream, bounded=True)
         fork = hfsplus.data_fork(record)
@@ -690,9 +688,7 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
         def read_piece(i: int) -> bytes:
             return read(i * piece, min(piece, fork.size - i * piece))
 
-        read_block = self._image.member_reads(
-            fork.size, piece, read_piece, locator.position
-        )
+        read_block = self._image.member_reads(read_piece, locator.position)
         return MemberData(block_stream(fork.size, piece, read_block), bounded=True)
 
     def _open_apfs(self, locator: ApfsData) -> MemberData:
@@ -707,10 +703,7 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
                 inode.size,
                 apfs.READ_PIECE,
                 self._image.member_reads(
-                    inode.size,
-                    apfs.READ_PIECE,
-                    apfs.read_pieces(inode.size, read),
-                    locator.position,
+                    apfs.read_pieces(inode.size, read), locator.position
                 ),
             )
             return MemberData(stream, bounded=True)
@@ -745,9 +738,7 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
         stream = block_stream(
             header.size,
             hfsplus.DECMPFS_CHUNK,
-            self._image.member_reads(
-                header.size, hfsplus.DECMPFS_CHUNK, read_chunk, locator.position
-            ),
+            self._image.member_reads(read_chunk, locator.position),
         )
         return MemberData(stream, bounded=True)
 

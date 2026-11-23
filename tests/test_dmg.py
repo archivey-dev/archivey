@@ -2150,24 +2150,27 @@ _BASE = 4096  # a block past those the builder allocates
 
 
 def _runs_image(
-    layout: dict[str, list[int]], extra: list[d.Node] | None = None
+    layout: dict[str, list[int]],
+    extra: list[d.Node] | None = None,
+    *,
+    blocks: int = 1,
 ) -> tuple[bytes, dict[str, bytes]]:
-    """An image of files of one-block extents, file ``name``'s extent ``j`` in run
-    ``layout[name][j]`` of 32 KiB runs, each extent in its run's next free block.
+    """An image of files of extents of ``blocks`` blocks, file ``name``'s extent
+    ``j`` in run ``layout[name][j]`` of 32 KiB runs, each at its run's next free blocks.
     Returns the image and each file's data (incompressible, so the archive-wide
     ratio on the output stays near 1:1)."""
     used: dict[int, int] = {}
     placed: dict[str, list[tuple[int, int]]] = {}
     for name, runs in layout.items():
-        blocks = []
+        extents = []
         for run in runs:
             slot = used.get(run, 0)
-            assert slot < _BLOCKS_PER_RUN
-            used[run] = slot + 1
-            blocks.append((_BASE + run * _BLOCKS_PER_RUN + slot, 1))
-        placed[name] = blocks
+            assert slot + blocks <= _BLOCKS_PER_RUN
+            used[run] = slot + blocks
+            extents.append((_BASE + run * _BLOCKS_PER_RUN + slot, blocks))
+        placed[name] = extents
     data = {
-        name: random.Random(name).randbytes(4096 * len(runs))
+        name: random.Random(name).randbytes(4096 * blocks * len(runs))
         for name, runs in layout.items()
     }
     nodes = [
@@ -2187,11 +2190,12 @@ def _runs_image(
     return image, data
 
 
-def _cycling_image(extents: int, runs: int) -> tuple[bytes, bytes]:
-    """One file of ``extents`` one-block extents, extent ``j`` in run ``j % runs``:
-    with more runs than the cache holds, each extent misses on a run the read
-    decoded before."""
-    image, data = _runs_image({"f": [j % runs for j in range(extents)]})
+def _cycling_image(extents: int, runs: int, blocks: int = 1) -> tuple[bytes, bytes]:
+    """One file of ``extents`` extents of ``blocks`` blocks, extent ``j`` in run
+    ``j % runs``: with more runs than the cache holds, each extent misses on a run
+    the read decoded before."""
+    layout = {"f": [j % runs for j in range(extents)]}
+    image, data = _runs_image(layout, blocks=blocks)
     return image, data["f"]
 
 
@@ -2200,15 +2204,25 @@ _TIGHT = ArchiveyConfig(
 )
 
 
-def test_a_member_read_that_decodes_its_runs_again_is_held_to_the_ratio() -> None:
-    # 64 extents over 9 runs, one more than the cache holds: 55 runs decoded again,
-    # about 1.7 MiB for a 256 KiB file, 7:1.
-    image, data = _cycling_image(64, 9)
+@pytest.mark.parametrize("blocks", [1, 2], ids=["4k", "8k"])
+def test_a_member_read_that_decodes_its_runs_again_is_held_to_the_ratio(
+    blocks: int,
+) -> None:
+    """Extents over 9 runs, one more than the cache holds: each decodes a run again.
+    The charge is against the image's size: with 8 KiB extents each 32 KiB run
+    costs 4 times the bytes it returns, so a charge against the member's size at
+    4:1 would never refuse it."""
+    image, data = _cycling_image(9 * _BLOCKS_PER_RUN // blocks, 9, blocks)
     with _open(image) as reader:
         assert reader.read("f") == data
+    # 63 (4 KiB) or 27 (8 KiB) runs of 32 KiB decoded again, from an image of about
+    # 300 KiB: past twice its size.
+    config = ArchiveyConfig(
+        decoder_limits=DecoderLimits(max_ratio=2.0, ratio_activation_threshold=0)
+    )
     with (
         pytest.raises(ResourceLimitError, match="decoded again"),
-        _open(image, config=_TIGHT) as reader,
+        _open(image, config=config) as reader,
     ):
         reader.read("f")
 
@@ -2293,7 +2307,7 @@ def test_runs_a_pass_decodes_again_are_held_to_the_ratio(
     with _open(image) as reader:
         assert {m.name: reader.read(m) for m in reader.members() if m.is_file} == data
     with (
-        pytest.raises(ResourceLimitError, match="listing order"),
+        pytest.raises(ResourceLimitError, match="decoded again"),
         _open(image, config=_TIGHT) as reader,
     ):
         if how == "stream_members":

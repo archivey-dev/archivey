@@ -279,21 +279,23 @@ again, is sorted (§4). The volume's walk is held whole to sort it, while it fit
 `max_members` and `max_metadata_bytes`; past either, it comes in listing order and the
 listing stops at the limit.
 
-**Runs decoded again.** What data order cannot fix is still charged, at
-`DecoderLimits.max_ratio`, past `ratio_activation_threshold`, with the error type
-the checksum pass raises (`ResourceLimitError`, which stops an extraction):
+**Runs decoded again.** What data order cannot fix is still charged. Each decode of a
+run that a member read already decoded adds its decoded size to one total per image,
+held to `DecoderLimits.max_ratio` times the image file's size, past
+`ratio_activation_threshold`, with the error the checksum pass raises
+(`AlwaysStopResourceLimitError`, which stops an extraction). Against the input, not
+the output: a run is up to 16 MiB, so extents of 24 KiB, each costing a whole run,
+would stay under any multiple of what they return. A run counts as decoded again when:
 
-- Within one member stream, the first decode of each run is free; a cache miss on a
-  run that stream decoded before counts against the member's size. A file whose
-  extents cycle over more runs than the cache holds would otherwise decode a whole run
-  for each extent.
-- Member streams opened in listing order (`stream_members()`, `extract_all`, or
-  `open()`/`read()` in that order, skipped members allowed) are one pass: a run any of
-  them decoded before counts against the bytes the pass has returned. Files that share
-  runs out of order (each file's first extent in one run, its others across more runs
-  than the cache holds) would otherwise decode a whole run per extent across files. A
-  stream opened for an earlier member starts a new pass, so reads in an order the
-  caller picks are charged per member only.
+- the same member stream decoded it before (a file whose extents cycle over more runs
+  than the cache holds, or a read that seeks back over them);
+- or the stream's pass decoded it before. Member streams opened in listing order
+  (`stream_members()`, `extract_all`, or `open()`/`read()` in that order, skipped
+  members allowed) are one pass. A stream opened for an earlier member starts a new
+  pass, so reads in an order the caller picks are charged within each stream only.
+
+Reading each member front to back, over a listing where each run decodes once, charges
+nothing. The first decode of a run is never charged; §7 says what that leaves.
 
 A compressed file (`UF_COMPRESSED` and `com.apple.decmpfs`)
 decodes its 64 KiB chunks one at a time from the inline attribute or the resource fork.
@@ -448,14 +450,23 @@ Choices made after the sweep:
   `members()` too, since there is one member order. Rejected: charging every cache miss
   against `max_ratio` times the file size (an honest image of 5,000 files of 200 bytes
   read in random order decoded 519 MB from a 649 KB image and was refused).
-- **What sorting leaves is charged, per pass in listing order and per member stream.**
-  A pass in listing order is held against the bytes it returned; a read the caller
-  orders some other way only against its own member, so reading small files in any
-  order is never charged. The 5,000-file image and every fixture read and extract
-  with no run decoded again, in listing order and in random order.
+- **What sorting leaves is charged, against the image's file size, once per image.**
+  A run decoded again by the same member stream or the same pass in listing order adds
+  to one total, held to `max_ratio` times the file size like the checksum pass. A first
+  charge against each member's size, then against the bytes a pass returned, let
+  extents of 24 KiB through (6.25 GB decoded from a 190 KB image): a whole run per
+  extent stays under any multiple of the output. Reads in an order the caller picks
+  are charged within each stream only, so reading small files in any order is never
+  charged. The 5,000-file image and every fixture read and extract with no run decoded
+  again, in listing order and in random order.
 
 ## 7. Open questions
 
+- A run decoded once is never charged. A file of one-block extents, each in its own
+  16 MiB run, decodes up to 4,096 times its size, bounded by the run count (36 bytes a
+  run against `max_metadata_bytes`). Reads in an order the caller picks are charged
+  only within each stream, not across members: that work is the caller's choice.
+  Recorded in [threat-model.md](../threat-model.md) §5.
 - No fixture has a 3DES key wrap or 4096-byte blocks: both follow vfdecrypt and are
   checked only against the test writer.
 

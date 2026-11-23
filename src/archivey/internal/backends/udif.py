@@ -57,7 +57,6 @@ from archivey.terminal import quoted
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
-    from archivey.config import DecoderLimits
 
 from archivey.types import (
     ArchiveFormat,
@@ -371,6 +370,8 @@ class UdifImage:
         # The pass over the members in listing order that member reads are part of,
         # while they come in that order (:meth:`member_reads`).
         self._pass: _PassRead | None = None
+        # The bytes of the runs member reads have decoded again (:meth:`_charge_again`).
+        self._again = 0
 
     # ── The koly block and the file's ranges ─────────────────────────────────────────
 
@@ -740,8 +741,8 @@ class UdifImage:
             draw(decoded)
         if keep:
             reading: _MemberRead | None = getattr(self._reading, "member", None)
-            if reading is not None:
-                reading.miss(index, decoded, len(self._kind))
+            if reading is not None and reading.again(index):
+                self._charge_again(decoded)
         try:
             if in_house is not None:
                 data = in_house[1](raw, decoded + 1)
@@ -765,42 +766,61 @@ class UdifImage:
 
     def member_reads(
         self,
-        size: int,
-        block_size: int,
         read_block: Callable[[int], bytes | BinaryIO],
         position: int | None = None,
     ) -> Callable[[int], bytes | BinaryIO]:
-        """``read_block`` for one member stream of ``size`` bytes in blocks of
-        ``block_size``, whose cache misses count as one member read's
-        (:class:`_MemberRead`).
+        """``read_block`` for one member stream. A cache miss on a run the stream
+        decoded before (a read that seeks back over more runs than the cache holds,
+        or a file whose extents cycle over them), or that its pass decoded before,
+        is charged (:meth:`_charge_again`). Reading each member front to back, over
+        a listing where each run decodes once (listing order, or data order after
+        ``DmgReader`` sorts it), charges nothing. A read that seeks back over more
+        runs than the cache holds can be charged.
 
         ``position`` is the member's place in the listing. A stream opened for a
         member listed after the one the last stream was opened for goes on the same
         pass (:class:`_PassRead`), as ``stream_members()``, ``extract_all`` and a
         loop of reads in listing order open them; any other starts a new one. A
         member with no position is on no pass."""
-        limits = self._context.config.decoder_limits
         on_pass: _PassRead | None = None
         if position is not None:
             on_pass = self._pass
             if on_pass is None or position <= on_pass.last:
-                on_pass = self._pass = _PassRead(limits, len(self._kind))
+                on_pass = self._pass = _PassRead(len(self._kind))
             on_pass.last = position
-        reading = _MemberRead(size, limits, on_pass)
+        reading = _MemberRead(len(self._kind), on_pass)
         local = self._reading
 
         def read(index: int) -> bytes | BinaryIO:
             previous = getattr(local, "member", None)
             local.member = reading
             try:
-                block = read_block(index)
+                return read_block(index)
             finally:
                 local.member = previous
-            if on_pass is not None:
-                on_pass.produced += max(0, min(block_size, size - index * block_size))
-            return block
 
         return read
+
+    def _charge_again(self, decoded: int) -> None:
+        """Count a run a member read decodes again, and hold the image's total to
+        ``DecoderLimits.max_ratio`` times the image file's size (one total per image,
+        for all streams and passes; past ``ratio_activation_threshold``), as the
+        checksum pass holds its runs. Against the input, not the output: a run is up to
+        16 MiB, so a file of extents of 21 KiB or more each costing a whole run would
+        stay under any
+        multiple of what it returns."""
+        self._again += decoded
+        # Imported here, as the checksum pass imports it: the bomb tracker is only
+        # needed once a run is decoded again.
+        from archivey.internal.bomb_tracker import refuse_past_archive_ratio
+
+        refuse_past_archive_ratio(
+            self._again,
+            limits=self._context.config.decoder_limits,
+            static_size=self.file_size,
+            consumed=None,
+            counted="UDIF runs that member reads decoded again",
+        )
 
     def decodes_twice(self, reads: Iterable[Iterable[tuple[int, int]]]) -> bool:
         """Whether reading the disk ranges ``(start, end)`` of each member in turn
@@ -1001,92 +1021,57 @@ class UdifImage:
         return crc
 
 
-class _Again:
-    """The runs a read has decoded, one bit per run of the image (allocated at the
-    first miss), and the bytes it decoded again: held to ``DecoderLimits.max_ratio``
-    times a size, as the checksum pass holds its runs."""
+class _Runs:
+    """A set of run indexes, one bit per run of the image, allocated at first use."""
 
-    __slots__ = ("_decoded", "_limits", "_runs", "again")
+    __slots__ = ("_bits", "_runs")
 
-    def __init__(self, limits: DecoderLimits, runs: int) -> None:
-        self._limits = limits
+    def __init__(self, runs: int) -> None:
         self._runs = runs
-        self._decoded: bytearray | None = None
-        self.again = 0
+        self._bits: bytearray | None = None
 
-    def charge(self, index: int, decoded: int, size: int, what: str) -> None:
-        """Run ``index`` missed the cache: free the first time, else charged."""
-        seen = self._decoded
-        if seen is None:
-            seen = self._decoded = bytearray((self._runs + 7) // 8)
+    def add(self, index: int) -> bool:
+        """Add run ``index``; whether it was there already."""
+        bits = self._bits
+        if bits is None:
+            bits = self._bits = bytearray((self._runs + 7) // 8)
         byte, bit = divmod(index, 8)
-        if not seen[byte] >> bit & 1:
-            seen[byte] |= 1 << bit
-            return
-        self.again += decoded
-        limits = self._limits
-        ratio = limits.max_ratio
-        if (
-            ratio is None
-            or self.again <= limits.ratio_activation_threshold
-            or self.again <= ratio * max(size, 1)
-        ):
-            return
-        # Imported here, as the checksum pass imports it.
-        from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError
-
-        raise AlwaysStopResourceLimitError(
-            f"Decompression ratio {self.again / max(size, 1):.0f}:1 exceeds limit "
-            f"max_ratio={ratio:.0f}:1 ({self.again} bytes of UDIF runs {what} "
-            "decoded again)"
-        )
+        if bits[byte] >> bit & 1:
+            return True
+        bits[byte] |= 1 << bit
+        return False
 
 
-class _PassRead(_Again):
-    """The member reads that come in listing order, as one pass: a run any of them
-    decoded before and decodes again is charged against the bytes the pass has
-    returned so far. Each run is decoded once by a pass over a listing in data
-    order (``DmgReader.iter_members``), so only an image whose files share runs out
-    of order pays."""
+class _PassRead:
+    """The member reads that come in listing order, as one pass, and the runs they
+    have decoded. Over a listing in data order (``DmgReader.iter_members``) a pass
+    decodes each run once, so only files that share runs out of order decode one
+    again."""
 
-    __slots__ = ("last", "produced")
+    __slots__ = ("last", "runs")
 
-    def __init__(self, limits: DecoderLimits, runs: int) -> None:
-        super().__init__(limits, runs)
+    def __init__(self, runs: int) -> None:
+        self.runs = _Runs(runs)
         self.last = -1
-        self.produced = 0
 
 
-class _MemberRead(_Again):
-    """One member stream's reads. The first decode of each run is free: a member
-    reads its runs once in order. A cache miss on a run this stream decoded before
-    is charged against the member's size: a file whose extents cycle over more runs
-    than the cache holds would otherwise decode a whole run for each extent. On a
-    pass, every miss is the pass's too."""
+class _MemberRead:
+    """One member stream's reads, and the runs it has decoded: a sequential read
+    decodes each run once, and so does a pass over a listing in data order."""
 
-    __slots__ = ("_on_pass", "_size")
+    __slots__ = ("on_pass", "runs")
 
-    def __init__(
-        self, size: int, limits: DecoderLimits, on_pass: _PassRead | None
-    ) -> None:
-        super().__init__(limits, on_pass._runs if on_pass is not None else 0)
-        self._size = size
-        self._on_pass = on_pass
+    def __init__(self, runs: int, on_pass: _PassRead | None) -> None:
+        self.runs = _Runs(runs)
+        self.on_pass = on_pass
 
-    def miss(self, index: int, decoded: int, runs: int) -> None:
-        self._runs = runs
-        self.charge(
-            index, decoded, self._size, f"one read of a {self._size}-byte member"
-        )
-        on_pass = self._on_pass
-        if on_pass is not None:
-            on_pass.charge(
-                index,
-                decoded,
-                on_pass.produced,
-                f"that a read of the members in listing order ({on_pass.produced} "
-                "bytes returned)",
-            )
+    def again(self, index: int) -> bool:
+        """Run ``index`` missed the cache: whether this stream, or the pass it is
+        on, decoded it before."""
+        mine = self.runs.add(index)
+        on_pass = self.on_pass
+        theirs = on_pass is not None and on_pass.runs.add(index)
+        return mine or theirs
 
 
 class UdifSource(ReaderSource):
