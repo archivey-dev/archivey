@@ -201,7 +201,7 @@ class Bcj2Decompressor(Protocol):
 
 
 class ZipCryptoFactory(Protocol):
-    def __call__(self, password: bytes, /) -> ZipCryptoDecryptor: ...
+    def __call__(self, password: Buffer) -> ZipCryptoDecryptor: ...
 
 
 class BranchFactory(Protocol):

@@ -361,6 +361,32 @@ def test_a_latch_raises_a_fresh_copy_each_time(panic: type[BaseException]) -> No
     assert raised[1][0] == raised[2][0]
 
 
+class _NestedLatched:
+    """A wrapper whose call raises a ``CorruptionError`` caused by another that a
+    panic caused, as a BCJ2 input callback can."""
+
+    def __init__(self) -> None:
+        self._latch = _select.Latch("bcj2")
+
+    def call(self) -> None:
+        with self._latch.guard():
+            try:
+                raise kernel_child.ChildPanic("index out of bounds")
+            except kernel_child.ChildPanic as panic:
+                try:
+                    raise CorruptionError("inner") from panic
+                except CorruptionError as inner:
+                    raise CorruptionError("outer") from inner
+
+
+def test_a_latch_keeps_a_panic_deeper_in_the_chain() -> None:
+    wrapper = _NestedLatched()
+    for _ in range(3):
+        with pytest.raises(CorruptionError, match="outer") as info:
+            wrapper.call()
+        assert kernels.caused_by_panic(info.value)
+
+
 def test_a_panic_in_an_lha_read_is_corruption(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake(monkeypatch, crc16_arc=1)
     raw = archive([Member(b"a.txt", b"hello")])
@@ -1021,6 +1047,17 @@ def test_the_switch_gives_the_same_signature_on_both_sides() -> None:
         kernels.lzx(frozenset(), isolated=False).Decompressor(15, out_size=3)
 
 
+@pytest.mark.parametrize("excluded", [frozenset(), EXCLUDED], ids=["rust", "python"])
+def test_a_zipcrypto_decryptor_takes_a_buffer_password_by_keyword(
+    excluded: frozenset[OptionalLibrary],
+) -> None:
+    """As ``ZipCryptoFactory`` types it: ``password=``, any buffer."""
+    make = kernels.zipcrypto(excluded).Decryptor
+    want = make(b"key").decrypt(b"abc")
+    assert make(password=bytearray(b"key")).decrypt(b"abc") == want
+    assert make(password=memoryview(b"key")).decrypt(b"abc") == want
+
+
 def test_the_child_does_not_send_lzx_buffered_input() -> None:
     """The worker reports no ``unused_data``: LZX's getter copies its buffered input,
     and no proxy reads it."""
@@ -1176,6 +1213,36 @@ def test_lzw_bad_code_inside_flush_raises_from_the_next_call() -> None:
         if first_flush == ("ok", True) and second_flush[0] != "ok":
             inside_flush += 1
     assert inside_flush > 0
+
+
+def test_lzw_drained_to_eof_raises_a_bad_code_one_flush_returns() -> None:
+    """The archivey-codecs README's example: ``flush()`` called until ``eof`` raises
+    a bad code that one ``flush()`` passes over, returning the output before it (after
+    a ``decompress()`` capped by ``max_length``, as a reader calls it)."""
+    make = kernels.lzw(frozenset(), isolated=False).Decompressor
+    rng = random.Random(11)
+    found = 0
+    for _ in range(200):
+        data = b"".join(
+            rng.choice((b"abc", b"hello ", bytes([rng.randrange(256)])))
+            for _ in range(rng.randint(50, 3000))
+        )
+        bad = bytearray(make_unix_compress(data))
+        for _ in range(rng.randint(1, 3)):
+            bad[rng.randrange(3, len(bad))] ^= rng.randrange(1, 256)
+        for d in (make(), lzw_twin.Decompressor()):
+            try:
+                d.decompress(bytes(bad), rng.choice((1, 50, 1000)))
+                d.flush()
+            except CorruptionError:
+                continue
+            if d.eof:
+                continue
+            found += 1
+            with pytest.raises(CorruptionError):
+                while not d.eof:
+                    d.flush()
+    assert found > 0
 
 
 @needs_codecs

@@ -78,7 +78,9 @@ class ZipCryptoDecryptor(_Guarded):
     __slots__ = ()
     _label = "ZipCrypto"
 
-    def __init__(self, module: ModuleType, password: bytes) -> None:
+    def __init__(
+        self, module: ModuleType, password: bytes | bytearray | memoryview
+    ) -> None:
         super().__init__(module, lambda: module.zipcrypto.Decryptor(password))
 
     @classmethod

@@ -121,17 +121,22 @@ def is_panic(exc: BaseException) -> bool:
     return kind.__name__ == "PanicException" and kind.__module__ == "pyo3_runtime"
 
 
-def caused_by_panic(exc: BaseException) -> bool:
-    """Whether a panic is in ``exc``'s ``__cause__`` chain: the error is a kernel bug,
-    never something the archive's data or a password could cause."""
+def panic_cause(exc: BaseException) -> BaseException | None:
+    """The first panic in ``exc``'s ``__cause__`` chain, if any."""
     seen: set[int] = set()
     cause = exc.__cause__
     while cause is not None and id(cause) not in seen:
         if is_panic(cause):
-            return True
+            return cause
         seen.add(id(cause))
         cause = cause.__cause__
-    return False
+    return None
+
+
+def caused_by_panic(exc: BaseException) -> bool:
+    """Whether a panic is in ``exc``'s ``__cause__`` chain: the error is a kernel bug,
+    never something the archive's data or a password could cause."""
+    return panic_cause(exc) is not None
 
 
 @contextlib.contextmanager
@@ -189,8 +194,14 @@ class Latch:
             with panic_to_corruption(self._kernel):
                 yield
         except CorruptionError as exc:
-            if caused_by_panic(exc) and exc.__cause__ is not None:
-                self._failure = (unraised(exc), unraised(exc.__cause__))
+            # The panic itself, wherever it is in the chain: a copy drops its own
+            # cause, so a copy of a cause that wraps the panic would lose it.
+            # The local goes before the raise: this frame is in the error's
+            # traceback, and the raised panic's own traceback holds the caller.
+            panic = panic_cause(exc)
+            if panic is not None:
+                self._failure = (unraised(exc), unraised(panic))
+            del panic
             raise
 
     @staticmethod
