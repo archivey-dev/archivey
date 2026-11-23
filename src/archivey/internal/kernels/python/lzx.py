@@ -60,16 +60,24 @@ class Decompressor:
 
     @property
     def eof(self) -> bool:
-        return self._drained() and self._at_end()
+        return self._drained() and self._at_end() and not self._pad_pending()
 
     @property
     def needs_input(self) -> bool:
+        if self._failed is not None or self._ended or not self._drained():
+            return False
+        if self._at_end():
+            return self._pad_pending()
+        return self._starved
+
+    def _pad_pending(self) -> bool:
+        """The output is complete, but the stream still owes the pad byte of an odd
+        uncompressed block and no input holds it yet: the stream does not end until
+        it arrives, or until ``flush()`` says it never will."""
         return (
-            self._failed is None
-            and not self._ended
-            and self._drained()
-            and not self._at_end()
-            and self._starved
+            not self._ended
+            and self._d.owes_pad_byte()
+            and not self._d.unread_input
         )
 
     def _drained(self) -> bool:

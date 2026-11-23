@@ -389,15 +389,38 @@ def test_lzx_eof_counts_stop_where_the_stream_does() -> None:
                 assert r.unused_data == b""
 
 
-def test_lzx_owed_pad_byte_in_a_later_call() -> None:
-    """The package only. An odd final uncompressed block owes a pad byte: fed in a
-    later call, it still belongs to the stream, so the split matches the one-call
-    decode; with no more input, ``flush()`` ends the stream without it."""
+def _odd_stored_lzx() -> bytes:
     from cab_util import LzxEncoder
 
-    stream = b"".join(
+    return b"".join(
         LzxEncoder(window_bits=15, blocks=("uncompressed",)).encode(b"hello")
     )
+
+
+@BOTH
+def test_lzx_waits_for_an_owed_pad_byte(codecs: object) -> None:
+    """An odd final uncompressed block owes a pad byte: until it arrives the stream
+    has not ended and needs input, and the byte fed in a later call is taken; with no
+    more input, ``flush()`` ends the stream without it."""
+    stream = _odd_stored_lzx()
+    lzx = codecs.lzx  # type: ignore[attr-defined]
+    d = lzx.Decompressor(15, output_size=5)
+    assert d.decompress(stream[:-1]) == b"hello"
+    assert (d.eof, d.needs_input) == (False, True)
+    assert d.decompress(stream[-1:] + b"trailer") == b""
+    assert d.eof
+    cut = lzx.Decompressor(15, output_size=5)
+    assert cut.decompress(stream[:-1]) == b"hello"
+    assert cut.flush() == b""
+    assert cut.eof
+
+
+def test_lzx_owed_pad_byte_in_a_later_call() -> None:
+    """The package only: the counts and the input after the stream. An odd final
+    uncompressed block owes a pad byte: fed in a later call, it still belongs to the
+    stream, so the split matches the one-call decode; with no more input, ``flush()``
+    ends the stream without it."""
+    stream = _odd_stored_lzx()
     lzx = archivey_codecs.lzx
     whole = lzx.Decompressor(15, output_size=5)
     assert whole.decompress(stream + b"trailer") == b"hello"

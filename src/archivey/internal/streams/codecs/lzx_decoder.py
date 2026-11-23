@@ -226,6 +226,16 @@ class LzxDecoder:
         """Whether a block has bytes still to decode, or its header is half read."""
         return self._block_remaining > 0 or self._header is not None
 
+    def owes_pad_byte(self) -> bool:
+        """Whether the stream still owes the pad byte after an uncompressed block of
+        odd length: the decoder skips it at the next block header, so at the end of
+        the stream it is unread, but it is part of the stream."""
+        return (
+            self._block_type == _UNCOMPRESSED
+            and self._block_remaining == 0
+            and self._block_length & 1 == 1
+        )
+
     def resize_frame(self, size: int) -> bool:
         """Give the frame in progress a new size once the output size is known late.
         It decodes as if it had that size from its start, as long as it has not
