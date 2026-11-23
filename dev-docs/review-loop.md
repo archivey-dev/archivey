@@ -83,14 +83,16 @@ was reviewed. `OUTCOME_LABELS` in the gate holds the mapping.
 `risk: light`, `risk: standard` or `risk: deep` when it opens and again on each push,
 from `python3 scripts/review/review_prep.py tier` (the review skill's §1 says what each tier
 asks of a reviewer). It runs the base branch's copy of the script, so a pull request
-cannot lower its own tier by editing the path lists. It only reports, like the outcome
-labels. A deep pull request's rounds end with a security pass, and so do those of a pull
-request whose format or codec code the template's `Security:` rules cover (skill §1).
-The same step adds `merge: maintainer` when the script's `merge:` line names a decision
-of the maintainer's, and takes it off when a push removes the last one. That label
-reports too: a fork's pull request gets none, a cancelled run leaves it stale, and a
-label can be removed by hand, so the merging agent runs the base branch's script itself
-(`address-review-findings` §7).
+cannot lower its own tier by editing the path lists. A `Review-Tier: deep (why)` trailer
+in any of the pull request's commits raises it to deep, for a change whose risk the
+paths do not show (skill §1). It only reports, like the outcome labels. A deep pull
+request's rounds end with a security pass, and so do those of a pull request that
+touches a release or review-loop file, or whose format or codec code the template's
+`Security:` rules cover (skill §1). The same step adds `merge: maintainer` when the
+script's `merge:` line names a decision of the maintainer's, and takes it off when a
+push removes the last one. That label reports too: a fork's pull request gets none, a
+cancelled run leaves it stale, and a label can be removed by hand, so the merging agent
+runs the base branch's script itself (`address-review-findings` §7).
 
 **Opus reviews standard and deep pull requests, first look and fixes; Sonnet reviews
 light ones.** The round installs the project at the pull request's own lockfile (`uv
@@ -270,16 +272,16 @@ the three `risk:` labels.
   `review_loop_close.sh`, the prompt template and its renderer, and the review skill all
   come from the pull request's checkout. So a pull request can edit the rules its own
   review runs under, and `claude-code-action` does not refuse it as it does an edited
-  workflow file. Instead, those files are deep (`review_prep.py` `DEEP_PROCESS`), and
-  the gate's own (`review_loop_gate.py`, `review_loop_close.sh`, `review_prep.py`,
-  `review-loop.yml`, `risk-label.yml`) make the maintainer merge. The tier and the merge
-  line come from the base branch's script (the merging agent runs that copy,
-  `address-review-findings` §7), so the pull request cannot take itself off either list
-  (davitf, 2026-10-29). Since 2026-10-31 an edit to the prompt or the skill merges like
-  the rest of the deep tier, after the Opus pass and Cursor; only the files that decide
-  whether a round runs and approves, and who merges, stay with the maintainer, and so
-  does an edit that talks about merging in the prose the merging agent follows
-  (`MERGE_RULE_FILES`).
+  workflow file. Instead, those files get the security pass with the pull request's
+  author as the attacker (`review_prep.py` `PROCESS_FILES`), and the gate's own
+  (`review_loop_gate.py`, `review_loop_close.sh`, `review_prep.py`, `review-loop.yml`,
+  `risk-label.yml`) make the maintainer merge. The tier and the merge line come from the
+  base branch's script (the merging agent runs that copy, `address-review-findings` §7),
+  so the pull request cannot take itself off either list (davitf, 2026-10-29). Since
+  2026-11-22 these files are standard, not deep: an edit to the prompt or the skill
+  merges after the Opus pass and its security pass. Only the files that decide whether a
+  round runs and approves, and who merges, stay with the maintainer, and so does an edit
+  that talks about merging in the prose the merging agent follows (`MERGE_RULE_FILES`).
 - **Cursor reviews a deep pull request's Opus round.** The workflow posts an
   `@cursoragent` request when that round starts, with the `CURSOR_TRIGGER_TOKEN`
   secret: a fine-grained personal token limited to pull request comments on this
