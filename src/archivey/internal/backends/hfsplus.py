@@ -33,6 +33,7 @@ from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
+    exception_detail,
 )
 from archivey.formats import ReaderContext, ReaderSource
 from archivey.internal.streams.codecs.lzfse_decoder import (
@@ -1090,7 +1091,9 @@ def _decode_chunk(
         else:
             out = data[1:] if data[:1] == b"\xff" else lzfse_decompress(data, want)
     except (CorruptionError, TruncatedError) as exc:
-        raise CorruptionError(f"the compressed data of file {cnid}: {exc}") from None
+        raise CorruptionError(
+            f"the compressed data of file {cnid}: {exception_detail(exc)}"
+        ) from None
     if len(out) != want:
         raise CorruptionError(
             f"a compressed chunk of file {cnid} (type {kind}) decodes to "

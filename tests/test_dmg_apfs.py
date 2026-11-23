@@ -31,7 +31,7 @@ from archivey import (
 )
 from archivey.formats import ReaderSource
 from archivey.internal.backends import apfs
-from archivey.terminal import quoted
+from archivey.terminal import escape_control_chars, quoted
 from tests import apfs_build as a, dmg_build as d
 from tests.conftest import requires
 
@@ -767,6 +767,32 @@ def test_a_refusal_found_at_listing_keeps_its_message_on_read() -> None:
     assert caught.value.raw_message == (
         f"the APFS file {quoted(name)} has overlapping extents at byte 4096"
     )
+
+
+def test_a_caught_error_in_a_new_message_keeps_one_escape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caught archivey error put into a new message is its raw text: ``{exc}`` gave
+    the escaped text, which the new message escaped again."""
+    name = "l\x1bk"
+
+    def unreadable(*args: object) -> bytes:
+        raise CorruptionError(f"the target of {quoted(name)} is damaged")
+
+    monkeypatch.setattr(apfs, "xattr_value", unreadable)
+    image = a.apfs_dmg(
+        a.write_apfs([d.Node(name, kind="symlink", target="t")]).container
+    )
+    with _open(image) as reader:
+        reader.members()
+        found = [
+            diag
+            for diag in reader.diagnostics.retained
+            if diag.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+    assert found
+    inner = escape_control_chars(f"the target of {quoted(name)} is damaged")
+    assert f"cannot be read: {inner}" in found[0].message
 
 
 def test_a_compressed_file_without_its_attribute_raises_on_read() -> None:
