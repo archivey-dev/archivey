@@ -526,9 +526,16 @@ def pytest_configure(config: pytest.Config) -> None:
     dependency; under ``[core-only]`` the import is absent and this is a no-op (the
     property module itself skips collection).
 
-    It also puts a WinRAR install on ``PATH`` first (:func:`_put_winrar_on_path`).
+    It also puts a WinRAR install on ``PATH`` first (:func:`_put_winrar_on_path`),
+    and with ``CODECS_REQUIRED=1`` (CI's run with the archivey-codecs wheel) stops when
+    the package does not import, so its tests fail instead of skipping.
     """
     _put_winrar_on_path()
+    if os.environ.get("CODECS_REQUIRED") == "1":
+        from archivey.internal.streams.codecs import deps
+
+        if not deps.archivey_codecs.available():
+            raise pytest.UsageError("CODECS_REQUIRED=1, but archivey-codecs is missing")
     try:
         from hypothesis import settings
     except ImportError:
