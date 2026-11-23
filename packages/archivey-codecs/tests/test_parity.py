@@ -251,6 +251,16 @@ def lzx_python(chunks: list[bytes], sizes: list[int], window: int):
     return bytes(out), ("ok", None)
 
 
+def lzx_state(d) -> bytes | None:
+    """``d.getstate()``, or ``None`` once a decode error was found (the bytes before
+    it were returned, and the next call raises it): no state is saved then."""
+    try:
+        return d.getstate()
+    except ValueError as exc:
+        assert "after a decode error" in str(exc)
+        return None
+
+
 def lzx_rust(
     chunks: list[bytes], output_size: int, window: int, rng: random.Random
 ) -> tuple[bytes, tuple[str, object]]:
@@ -275,8 +285,8 @@ def lzx_rust(
         else:
             out.extend(d.decompress(b"", cap))
         pick = rng.random()
-        if pick < 0.1:
-            restored = lzx.Decompressor.from_state(d.getstate())
+        if pick < 0.1 and (state := lzx_state(d)) is not None:
+            restored = lzx.Decompressor.from_state(state)
             assert restored.total_out == d.total_out
             assert restored.total_in == d.total_in
             at = d.total_in
@@ -294,10 +304,10 @@ def lzx_rust(
             out += got
             if not got:
                 break
-            if not d.eof and rng.random() < 0.3:
+            if not d.eof and rng.random() < 0.3 and (state := lzx_state(d)) is not None:
                 # Saved during flush(): the restored decoder is not flushed, so it
                 # takes the input from its total_in again, then flushes on.
-                restored = lzx.Decompressor.from_state(d.getstate())
+                restored = lzx.Decompressor.from_state(state)
                 assert restored.total_out == d.total_out
                 assert restored.total_in == d.total_in
                 assert restored.decompress(data[restored.total_in :], 0) == b""
@@ -406,6 +416,56 @@ def test_lzx_parity_clean_and_damaged() -> None:
             # The push decoder stops at the declared size; the Python decoder does
             # too, so what follows the last frame is not compared.
             assert py == rs, (case, trial)
+
+
+def lzx_python_pulls(chunks: list[bytes], sizes: list[int], window: int) -> list[int]:
+    """For the Python decoder fed one chunk per ``more()``: the output it had given
+    each time it asked for a chunk."""
+    out = 0
+    asked: list[int] = []
+    feed = iter(chunks)
+
+    def more() -> bytes | None:
+        asked.append(out)
+        return next(feed, None)
+
+    decoder = LzxDecoder(window, more)
+    try:
+        for size in sizes:
+            out += len(decoder.decode_frame(size))
+    except Exception:  # noqa: BLE001, S110 - only the pulls are compared
+        pass
+    return asked
+
+
+def test_lzx_push_takes_input_when_the_python_decoder_pulls_it() -> None:
+    """Fed one chunk (one cabinet data block) at a time, the push decoder gives the
+    output the Python decoder had given when it asked for the next chunk: it needs no
+    input early, so a damaged block is fetched, and its checksum checked, exactly
+    when the Python decoder would fetch it."""
+    rng = random.Random(7)
+    for case, window, frames, sizes, _data in lzx_streams(rng):
+        for trial in range(3):
+            chunks = list(frames)
+            if trial:
+                k = rng.randrange(len(chunks))
+                chunks[k] = damage(rng, chunks[k])
+            asked = lzx_python_pulls(chunks, sizes, window)
+            d = archivey_codecs.lzx.Decompressor(window, output_size=sum(sizes))
+            out = 0
+            given = []
+            try:
+                for chunk in chunks:
+                    if not d.needs_input:
+                        break
+                    given.append(out)
+                    out += len(d.decompress(chunk))
+            except archivey_codecs.CodecError:
+                pass
+            # The push decoder is given a chunk only when it needs one; the Python
+            # decoder asks once more at the end of the input.
+            assert given == asked[: len(given)], (case, trial)
+            assert len(given) in (len(asked), len(asked) - 1), (case, trial)
 
 
 def test_lzx_short_e8_last_frame_in_one_byte_slices() -> None:
@@ -865,3 +925,88 @@ def test_lzw_width_is_checked() -> None:
     rs = archivey_codecs.lzw.Decompressor(block_mode=False)
     rs.decompress(header)
     assert py.header_params == rs.header_params == (16, True)
+
+
+def test_lzx_without_output_size_flush_finishes_the_frame_in_progress() -> None:
+    """Without an output size, a frame whose input sits whole in the bit buffer is
+    still in progress at ``flush()``: it is decoded, not taken for the end."""
+    from cab_util import FRAME, LzxEncoder
+
+    rng = random.Random(11)
+    for layout in (("verbatim",), ("aligned",)):
+        data = sample_data(rng, 2 * FRAME)
+        blocks = LzxEncoder(window_bits=15, blocks=layout).encode(data)
+        d = archivey_codecs.lzx.Decompressor(15)
+        # The first data block only: the frame's last symbols look past it.
+        assert d.decompress(blocks[0]) == b"", layout
+        assert d.flush(FRAME) == data[:FRAME], layout
+
+
+def test_lzx_stored_stream_ending_on_a_frame_boundary() -> None:
+    """An uncompressed block reads no bits past its end, so the next frame runs out
+    of input at its first block header, having read nothing: it is not started.
+    So ``flush()`` without an output size sees the end, and a late
+    ``set_output_size()`` of the bytes decoded is accepted."""
+    from cab_util import FRAME, LzxEncoder
+
+    rng = random.Random(12)
+    lzx = archivey_codecs.lzx
+    for frames in (1, 2):
+        data = bytes(rng.randrange(4) + 97 for _ in range(frames * FRAME))
+        s = b"".join(LzxEncoder(window_bits=15, blocks=("uncompressed",)).encode(data))
+        d = lzx.Decompressor(15)
+        assert d.decompress(s) + d.flush() == data, frames
+        assert d.eof, frames
+        d = lzx.Decompressor(15)
+        assert d.decompress(s) == data, frames
+        d.set_output_size(len(data))
+        assert d.eof, frames
+
+
+def test_lzx_input_fed_byte_by_byte_resumes_where_it_stopped() -> None:
+    """Fed one byte at a time, the decoder keeps its place at the start of the
+    symbol it ran out in, also inside a block header's trees: ``total_in`` stays
+    within a few bytes of the input given, and a header is not read again from its
+    start each time (which kept it up to a whole header behind)."""
+    from cab_util import FRAME, LzxEncoder
+
+    rng = random.Random(13)
+    for layout in (("verbatim",), ("aligned",)):
+        data = sample_data(rng, 2 * FRAME)
+        s = b"".join(
+            LzxEncoder(window_bits=17, blocks=layout, block_size=1000).encode(data)
+        )
+        d = archivey_codecs.lzx.Decompressor(17, output_size=len(data))
+        out = bytearray()
+        for i in range(len(s)):
+            out += d.decompress(s[i : i + 1])
+            assert i + 1 - d.total_in <= 12, (layout, i)
+        assert bytes(out + d.flush()) == data, layout
+
+
+def test_lzx_output_size_given_late_gives_back_what_follows_the_stream() -> None:
+    """A stream that ends on a frame boundary, followed by other bytes: without an
+    output size the decoder starts the next frame and reads them as a block header
+    (and may fail on them). A late ``set_output_size()`` that ends the output there
+    gives them back: they are unused data, and no error is left for them."""
+    from cab_util import FRAME, LzxEncoder
+
+    rng = random.Random(14)
+    lzx = archivey_codecs.lzx
+    data = bytes(rng.randrange(4) + 97 for _ in range(FRAME))
+    stream = b"".join(LzxEncoder(window_bits=15, blocks=("uncompressed",)).encode(data))
+    for tail in (bytes(8), bytes.fromhex("20000080") + bytes(range(39))):
+        d = lzx.Decompressor(15)
+        out = d.decompress(stream + tail)
+        try:
+            out += d.decompress(b"")
+        except archivey_codecs.CorruptDataError:
+            pass
+        d.set_output_size(FRAME)
+        assert out == data, tail
+        assert d.eof, tail
+        assert d.flush() == b"", tail
+        assert d.unused_data == tail, tail
+        assert d.total_in == len(stream), tail
+        restored = lzx.Decompressor.from_state(d.getstate())
+        assert restored.total_in == len(stream), tail

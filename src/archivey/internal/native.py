@@ -14,7 +14,7 @@ A kernel is used when all of these hold:
 - its ``KERNELS`` revision for that kernel is at least :data:`MIN_REVISIONS`' (an older
   one may differ from this archivey's Python twin, so it is skipped, logged once at
   DEBUG);
-- for a decoding kernel (ARM64, RISC-V, LZW, LZO1X), the call's ``process_isolation``
+- for a decoding kernel (ARM64, RISC-V, LZW, LZO1X, LZX), the call's ``process_isolation``
   is not ``NATIVE_DECODERS``: until the decoder child runs these kernels, the Python
   twin keeps that setting's promise that no native decoder runs in this process.
 
@@ -44,6 +44,7 @@ MIN_REVISIONS: dict[str, int] = {
     "crc16_arc": 1,
     "lzo1x": 1,
     "lzw": 1,
+    "lzx": 2,
     "riscv": 1,
     "zipcrypto": 1,
 }
@@ -439,5 +440,90 @@ def lzw(
                 nine_bit_widens=nine_bit_widens,
             )
         return NativeLzw(module, d, header_in_stream=max_width is None)
+
+    return new
+
+
+# ── LZX ───────────────────────────────────────────────────────────────────────────────
+
+
+class NativeLzx:
+    """archivey-codecs' LZX decoder in the shape of the Python ``LzxDecoder``:
+    :meth:`decode_frame` returns the next frame, pulling input through ``more`` (the
+    next data block, or ``None`` after the last) and pushing it into the kernel.
+
+    The kernel keeps its place when its input runs out inside a frame, so it asks
+    for the next block exactly where the Python decoder pulls it. ``more`` raises
+    for a damaged block (its checksum fails), so its error comes from the same frame
+    as there.
+    """
+
+    __slots__ = ("_d", "_decoded", "_ended", "_latch", "_module", "_more", "_sized")
+
+    def __init__(
+        self,
+        module: ModuleType,
+        window_bits: int,
+        more: Callable[[], bytes | None],
+        output_size: int | None,
+    ) -> None:
+        self._module = module
+        self._latch = Latch("LZX")
+        with codec_errors(module, "LZX"):
+            self._d = module.lzx.Decompressor(window_bits, output_size=output_size)
+        self._more = more
+        self._ended = False  # ``more`` returned ``None`` and the kernel was flushed
+        self._sized = output_size is not None
+        self._decoded = 0  # the frames returned, each one whole
+
+    def decode_frame(self, frame_size: int) -> bytes:
+        """The next frame: ``frame_size`` bytes, 32 KiB except the last, as the
+        kernel's ``output_size`` sets them."""
+        with self._latch.guard(), codec_errors(self._module, "LZX"):
+            d = self._d
+            if not self._sized:
+                # Without an output size the kernel ends the stream where its input
+                # does, at a frame boundary. The Python decoder decodes the frame it
+                # is asked for from the zero padding instead (and fails on it), so
+                # the kernel is told this frame is wanted.
+                d.set_output_size(self._decoded + frame_size)
+            while True:
+                out = (
+                    d.flush(frame_size)
+                    if self._ended
+                    else d.decompress(b"", frame_size)
+                )
+                if out:
+                    self._decoded += len(out)
+                    return out
+                if self._ended or d.eof:
+                    # The Python decoder's refusal of a frame past its input's end.
+                    raise TruncatedError("LZX stream ends before its output")
+                data = self._more()
+                if data is None:
+                    self._ended = True
+                    continue
+                out = d.decompress(data, frame_size)
+                if out:
+                    self._decoded += len(out)
+                    return out
+
+
+def lzx(
+    excluded: frozenset[OptionalLibrary], *, isolated: bool
+) -> Callable[[int, Callable[[], bytes | None], int | None], NativeLzx] | None:
+    """A constructor of :class:`NativeLzx` taking ``(window_bits, more,
+    output_size)``, or ``None`` to use the Python ``LzxDecoder``. ``isolated`` as
+    for :func:`branch_filter`."""
+    if isolated:
+        return None
+    module = kernels("lzx", excluded)
+    if module is None:
+        return None
+
+    def new(
+        window_bits: int, more: Callable[[], bytes | None], output_size: int | None
+    ) -> NativeLzx:
+        return NativeLzx(module, window_bits, more, output_size)
 
     return new

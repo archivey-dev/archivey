@@ -58,7 +58,7 @@ const KERNELS: &[(&str, u32)] = &[
     ("crc16_arc", 1),
     ("lzo1x", 1),
     ("lzw", 1),
-    ("lzx", 1),
+    ("lzx", 2),
     ("riscv", 1),
     ("zipcrypto", 1),
 ];
@@ -929,9 +929,8 @@ impl LzwDecompressor {
 
 // ── LZX ─────────────────────────────────────────────────────────────────────────────
 
-/// How much input the LZX kernel takes from the queue at a time. A frame that runs out
-/// of input is undone from a checkpoint that copies the kernel's unread input, so this
-/// bounds that copy.
+/// How much input the LZX kernel takes from the queue at a time, so that the bytes it
+/// holds stay near what the frame in progress reads.
 const LZX_FEED: usize = 32 * 1024;
 
 /// The LZX kernel ran out of the input given so far, before the end of the input.
@@ -969,15 +968,37 @@ fn lzx_error(err: DecodeError<NeedMore>) -> PyErr {
     }
 }
 
+/// A decode error as kept to be raised again: its kind and message.
+fn lzx_error_parts(err: DecodeError<NeedMore>) -> (u8, String) {
+    match err {
+        DecodeError::Corrupt(m) => (0, m),
+        DecodeError::Truncated(m) => (1, m),
+        DecodeError::Unsupported(m) => (2, m),
+        DecodeError::Value(m) => (3, m),
+        DecodeError::Source(NeedMore) => (3, "LZX input ran out".into()),
+    }
+}
+
+fn lzx_error_again(err: &(u8, String)) -> PyErr {
+    let m = err.1.clone();
+    lzx_error(match err.0 {
+        0 => DecodeError::Corrupt(m),
+        1 => DecodeError::Truncated(m),
+        2 => DecodeError::Unsupported(m),
+        _ => DecodeError::Value(m),
+    })
+}
+
 /// LZX as Microsoft cabinets store it, with the `lzma.LZMADecompressor` interface.
 ///
-/// Output comes in frames of 32 KiB, the last one shorter: the kernel decodes a whole
-/// frame once its input has arrived, and returns it in `max_length` slices. A frame
-/// is tried only once the queued input is about twice what the last frame used (a
-/// frame the input does not cover is undone and tried again later), so output lags
-/// the input by up to two frames: call `flush()` at the end of the input for the
-/// rest, even when the input given covers it. After `flush()` the kernel reads up to
-/// two zero bytes past the input, as libmspack's lzxd does.
+/// Output comes in frames of 32 KiB, the last one shorter, returned in `max_length`
+/// slices. The kernel decodes as far as the input given goes: when it runs out inside
+/// a frame, it keeps its place (the start of the symbol it could not finish) and goes
+/// on from there with the next input, so each input byte is decoded once. A frame's
+/// output comes once the whole frame is decoded, and the look-ahead of its last
+/// symbols may need the first bytes after it: call `flush()` at the end of the input
+/// for the rest. After `flush()` the kernel reads up to two zero bytes past the
+/// input, as libmspack's lzxd does.
 #[pyclass(
     skip_from_py_object,
     module = "archivey_codecs.lzx",
@@ -997,12 +1018,11 @@ struct LzxDecompressor {
     ended: bool,
     /// Without an output size: the input ended at a frame boundary.
     finished: bool,
-    /// The queued input when the last frame ran out of it; the frame is tried again
-    /// once the queue has grown enough, so feeding small pieces stays linear.
-    starved_at: Option<usize>,
-    /// Input the last frame used: a frame is not tried before the queue holds about
-    /// twice that, since a try that runs out of input is a wasted decode.
-    last_used: usize,
+    /// The kernel used all the input given and needs more for the next frame.
+    starved: bool,
+    /// After a decode error: the error, raised again by every later call (the kernel
+    /// is left where the error found it).
+    failed: Option<(u8, String)>,
     /// Bytes the kernel took from the queue.
     taken: u64,
     total_out: u64,
@@ -1023,8 +1043,8 @@ impl LzxDecompressor {
             output_size,
             ended: false,
             finished: false,
-            starved_at: Some(0),
-            last_used: 0,
+            starved: true,
+            failed: None,
             taken: 0,
             total_out: 0,
             split_at_end: false,
@@ -1048,7 +1068,12 @@ impl LzxDecompressor {
                 (left > 0).then(|| left.min(lzx::FRAME_SIZE as u64) as usize)
             }
             None => {
-                if self.ended && self.queued() == 0 && self.inner.unread_input().is_empty() {
+                // A frame in progress may hold all its input in the bit buffer.
+                if self.ended
+                    && self.queued() == 0
+                    && self.inner.unread_input().is_empty()
+                    && self.inner.frame_in_progress().is_none()
+                {
                     self.finished = true;
                     None
                 } else {
@@ -1108,6 +1133,11 @@ impl LzxDecompressor {
         };
         let mut result = Vec::new();
         loop {
+            if let Some(err) = &self.failed {
+                if self.drained() && result.is_empty() {
+                    return Err(lzx_error_again(err));
+                }
+            }
             let n = (self.out.len() - self.out_pos).min(want - result.len());
             result.extend_from_slice(&self.out[self.out_pos..self.out_pos + n]);
             self.out_pos += n;
@@ -1118,56 +1148,52 @@ impl LzxDecompressor {
             let Some(frame) = self.next_frame() else {
                 break;
             };
-            let queued = self.queued();
-            if !self.ended {
-                let waiting = match self.starved_at {
-                    Some(at) => queued < at.saturating_mul(2).max(1) && queued < at + 64 * 1024,
-                    None => false,
-                };
-                // The look-ahead of a frame's last symbols reaches into the next
-                // block, so a queue the size of one frame's input usually runs out.
-                if waiting || queued < self.last_used.saturating_mul(2) {
-                    self.starved_at.get_or_insert(queued);
-                    break;
-                }
+            if self.failed.is_some() {
+                break;
+            }
+            // The kernel keeps its place when the input runs out, so a try with no new
+            // input would only run out again.
+            if self.starved && !self.ended && self.queued() == 0 {
+                break;
             }
             let ended = self.ended;
-            let before = self.consumed();
             let (inner, data) = (&mut self.inner, &self.pending[self.cursor..]);
             let (got, used) = py.detach(|| {
-                let point = inner.checkpoint();
                 let mut feed = Feed {
                     data,
                     pos: 0,
                     ended,
                 };
                 let got = inner.decode_frame(frame, &mut feed);
-                if got.is_err() {
-                    inner.rollback(point);
-                }
                 (got, feed.pos)
             });
+            // The kernel keeps the input it took, whether the frame ended or not.
+            self.cursor += used;
+            self.taken += used as u64;
+            if self.cursor > LZX_FEED && self.cursor * 2 > self.pending.len() {
+                self.pending.drain(..self.cursor);
+                self.cursor = 0;
+            }
             match got {
                 Ok(bytes) => {
-                    self.cursor += used;
-                    self.taken += used as u64;
-                    if self.cursor > LZX_FEED && self.cursor * 2 > self.pending.len() {
-                        self.pending.drain(..self.cursor);
-                        self.cursor = 0;
-                    }
                     self.out = bytes;
                     self.out_pos = 0;
-                    self.starved_at = None;
-                    self.last_used = (self.consumed() - before) as usize;
+                    self.starved = false;
                 }
                 Err(DecodeError::Source(NeedMore)) => {
-                    self.starved_at = Some(queued);
+                    self.starved = true;
                     break;
                 }
-                // The frame was undone, so the next call raises the same error: give
-                // back the bytes before it first.
-                Err(_) if !result.is_empty() => break,
-                Err(e) => return Err(lzx_error(e)),
+                // Give back the bytes before the error first; the next call raises it.
+                Err(e) => {
+                    let err = lzx_error_parts(e);
+                    let raise = result.is_empty();
+                    self.failed = Some(err);
+                    if raise {
+                        return Err(lzx_error_again(self.failed.as_ref().unwrap()));
+                    }
+                    break;
+                }
             }
         }
         Ok(result)
@@ -1183,6 +1209,12 @@ impl LzxDecompressor {
     }
 
     /// Give the declared output size once it is known, before the last frame starts.
+    ///
+    /// Without an output size the decoder may already have read input after the
+    /// stream as the start of a next frame. A size that ends the output there gives
+    /// that input back as unused, and drops an error the decoder met in it. A decoder
+    /// restored from a state saved after it read that input cannot give it back: the
+    /// input stays consumed and the error stays.
     fn set_output_size(&mut self, output_size: u64) -> PyResult<()> {
         let decoded = self.inner.decoded();
         if output_size < decoded {
@@ -1190,9 +1222,22 @@ impl LzxDecompressor {
                 "an output size of {output_size}, below the {decoded} bytes already decoded"
             )));
         }
+        if let Some((size, done)) = self.inner.frame_in_progress() {
+            let frame = (output_size - decoded).min(lzx::FRAME_SIZE as u64) as usize;
+            if frame == 0 && self.inner.rewind_frame() {
+                // The frame that read past the end is undone, and so is an error it
+                // met: it was in input after the stream.
+                self.failed = None;
+            } else if frame != size && !self.inner.resize_frame(frame) {
+                let so_far = decoded + done as u64;
+                return Err(PyValueError::new_err(format!(
+                    "an output size of {output_size}, below the {so_far} bytes already decoded"
+                )));
+            }
+        }
         self.output_size = Some(output_size);
         // The frame that waited for input may now be shorter: try it again.
-        self.starved_at = None;
+        self.starved = false;
         Ok(())
     }
 
@@ -1243,6 +1288,9 @@ impl LzxDecompressor {
     /// all the input from `total_in` (none, once the decoder has read past the end of
     /// its input) and call `flush()` at its end.
     fn getstate<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        if self.failed.is_some() {
+            return Err(PyValueError::new_err("getstate() after a decode error"));
+        }
         let mut out = state_header("lzx");
         self.inner.save(&mut out);
         state::put_bytes(&mut out, &self.out[self.out_pos..]);
@@ -1292,8 +1340,8 @@ impl LzxDecompressor {
             output_size,
             ended: false,
             finished: false,
-            starved_at: Some(0),
-            last_used: 0,
+            starved: true,
+            failed: None,
             taken: total_in,
             split_at_end,
         })
@@ -1308,7 +1356,7 @@ impl LzxDecompressor {
     fn needs_input(&self) -> bool {
         !self.ended
             && self.drained()
-            && (!self.at_end() && self.starved_at.is_some() || self.at_end() && self.pad_pending())
+            && (!self.at_end() && self.starved || self.at_end() && self.pad_pending())
     }
 
     /// After `eof`, the input that follows the stream.
