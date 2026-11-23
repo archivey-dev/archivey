@@ -263,12 +263,39 @@ design and are left out.
 
 A file's data fork is a `block_stream` of 1 MiB pieces over its extents; each piece
 reads the virtual disk through `UdifSource`, which decodes the runs it covers (eight
-decoded runs are cached). Within one member stream, the first decode of each run is
-free; a cache miss on a run that stream decoded before charges the run's decoded size,
-and that total is held to `DecoderLimits.max_ratio` times the member's size (past it,
-`ResourceLimitError`, which stops an extraction). A file whose extents cycle over more
-runs than the cache holds would otherwise decode a whole run for each extent. A
-compressed file (`UF_COMPRESSED` and `com.apple.decmpfs`)
+decoded runs are cached).
+
+**Member order.** Members come in listing order (§2.2), one volume after another. The
+one exception: when reading a volume's files in that order would decode a compressed
+run a second time, its members come in data order. The check replays the eight-run
+cache over each file's disk ranges (an HFS+ fork's eight extents in its record, an APFS
+stream's extents), with nothing decoded (`UdifImage.decodes_twice`). Then the order
+is: directories and the other members with no data ranges, in listing order (a
+directory still comes before its contents); the files, by the disk offset of their
+first byte; the hard links, in listing order (each after the member it names). Every
+fixture and every builder image in the tests keeps listing order: `hdiutil` lays
+files out as it copies them. A crafted layout, where each file would decode a whole run
+again, is sorted (§4). The volume's walk is held whole to sort it, while it fits
+`max_members` and `max_metadata_bytes`; past either, it comes in listing order and the
+listing stops at the limit.
+
+**Runs decoded again.** What data order cannot fix is still charged, at
+`DecoderLimits.max_ratio`, past `ratio_activation_threshold`, with the error type
+the checksum pass raises (`ResourceLimitError`, which stops an extraction):
+
+- Within one member stream, the first decode of each run is free; a cache miss on a
+  run that stream decoded before counts against the member's size. A file whose
+  extents cycle over more runs than the cache holds would otherwise decode a whole run
+  for each extent.
+- Member streams opened in listing order (`stream_members()`, `extract_all`, or
+  `open()`/`read()` in that order, skipped members allowed) are one pass: a run any of
+  them decoded before counts against the bytes the pass has returned. Files that share
+  runs out of order (each file's first extent in one run, its others across more runs
+  than the cache holds) would otherwise decode a whole run per extent across files. A
+  stream opened for an earlier member starts a new pass, so reads in an order the
+  caller picks are charged per member only.
+
+A compressed file (`UF_COMPRESSED` and `com.apple.decmpfs`)
 decodes its 64 KiB chunks one at a time from the inline attribute or the resource fork.
 Every member read counts in the archive-wide ratio, whatever runs serve the bytes.
 
@@ -334,17 +361,18 @@ The row in [`threat-model.md`](../threat-model.md). In short: every range and co
 checked before it is used (§2.2); zero-fill runs make large disks from tiny files, so
 member reads are bounded by the archive-wide ratio and the extraction limits, and every
 run a listing decodes, a cache miss included, counts toward
-`ListingLimits.max_decoded_bytes`, and a run a member stream decodes again counts toward
-`max_ratio` times the member's size (§2.3); the in-house ADC, LZFSE and LZVN decoders are bounded
-by their output length; `verify_all()`'s checksum pass holds the runs it decodes to the
-archive-wide ratio on its own total (§2.4); B-tree leaf chains, folder parent chains
-and overflow extents are loop-checked; the open is bounded by the open budget. APFS:
-every object's Fletcher-64 is checked and a bad node is skipped with its key range
-remembered (§2.2), B-tree nodes reached twice, directories reached twice and B-trees
-deeper than 32 levels are damage, the checkpoint scan has its own 64 MiB budget, and
-what the trees keep counts against `max_metadata_bytes`; a file of 1 TiB of holes stops
-at the ratio guard (`test_a_zero_extent_bomb_stops_at_the_ratio_guard`). The fuzz
-targets are `dmg` (HFS+) and `dmg_apfs` in `tests/atheris_fuzz/`. Encrypted images:
+`ListingLimits.max_decoded_bytes`; files whose layout would decode runs again in listing
+order are listed in data order, and a run a member stream or a pass in listing order
+decodes again counts toward `max_ratio` (§2.3); the in-house ADC, LZFSE and LZVN
+decoders are bounded by their output length; `verify_all()`'s checksum pass holds the
+runs it decodes to the archive-wide ratio on its own total (§2.4); B-tree leaf chains,
+folder parent chains and overflow extents are loop-checked; the open is bounded by the
+open budget. APFS: every object's Fletcher-64 is checked and a bad node is skipped with
+its key range remembered (§2.2), B-tree nodes reached twice, directories reached twice
+and B-trees deeper than 32 levels are damage, the checkpoint scan has its own 64 MiB
+budget, and what the trees keep counts against `max_metadata_bytes`; a file of 1 TiB of
+holes stops at the ratio guard (`test_a_zero_extent_bomb_stops_at_the_ratio_guard`). The
+fuzz targets are `dmg` (HFS+) and `dmg_apfs` in `tests/atheris_fuzz/`. Encrypted images:
 the header's counts and lengths are checked before any read (§2.1.1), the iteration
 count is charged to `max_key_derivation_rounds` before each derivation, and the image
 is decrypted a read at a time, so its memory is the reads' own; the `dmg` seeds hold
@@ -407,6 +435,24 @@ Choices made in Part G:
 - **A password is confirmed by the `koly` block, else by the `CKIE` mark**, so the
   right password on an encrypted read-write image gets its own refusal rather than
   "wrong password".
+
+Choices made after the sweep:
+
+- **Data order over listing order, only when listing order would decode a run twice.**
+  The same rule as CAB folders ([CAB §6](cab.md#6-decisions)) and SquashFS fragments
+  ([SquashFS §6](squashfs.md#6-decisions)), asked for by the maintainer (2026-11-23).
+  The sweep's image of 40 files whose extents cycle over 9 runs of 16 MiB decoded
+  5.35 GB for 1.3 MB of output in listing order; sorted, it decodes 15 runs (252 MB).
+  Listing order is kept whenever the replay of the eight-run cache says each run
+  decodes once, which is every fixture and builder image; the order changes for
+  `members()` too, since there is one member order. Rejected: charging every cache miss
+  against `max_ratio` times the file size (an honest image of 5,000 files of 200 bytes
+  read in random order decoded 519 MB from a 649 KB image and was refused).
+- **What sorting leaves is charged, per pass in listing order and per member stream.**
+  A pass in listing order is held against the bytes it returned; a read the caller
+  orders some other way only against its own member, so reading small files in any
+  order is never charged. The 5,000-file image and every fixture read and extract
+  with no run decoded again, in listing order and in random order.
 
 ## 7. Open questions
 
