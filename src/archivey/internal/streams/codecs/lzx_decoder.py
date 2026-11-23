@@ -205,6 +205,50 @@ class LzxDecoder:
         """Say the input has ended: past it come the zero bytes lzxd.c reads."""
         self._ended = True
 
+    @property
+    def decoded(self) -> int:
+        """Output bytes of the frames finished so far."""
+        return self._offset
+
+    @property
+    def unread_input(self) -> int:
+        """Input bytes given and not read yet (the zero padding past the end left
+        out)."""
+        return max(0, len(self._buf) - self._padding - self._pos)
+
+    def frame_in_progress(self) -> tuple[int, int] | None:
+        """The frame started and not finished: its size and the bytes it decoded."""
+        if self._frame_size is None:
+            return None
+        return self._frame_size, self._window_pos - self._frame_start
+
+    def inside_block(self) -> bool:
+        """Whether a block has bytes still to decode, or its header is half read."""
+        return self._block_remaining > 0 or self._header is not None
+
+    def owes_pad_byte(self) -> bool:
+        """Whether the stream still owes the pad byte after an uncompressed block of
+        odd length: the decoder skips it at the next block header, so at the end of
+        the stream it is unread, but it is part of the stream."""
+        return (
+            self._block_type == _UNCOMPRESSED
+            and self._block_remaining == 0
+            and self._block_length & 1 == 1
+        )
+
+    def resize_frame(self, size: int) -> bool:
+        """Give the frame in progress a new size once the output size is known late.
+        It decodes as if it had that size from its start, as long as it has not
+        decoded past it; a size of 0 leaves no frame in progress. ``False`` when it
+        has decoded past ``size``."""
+        progress = self.frame_in_progress()
+        if progress is None:
+            return False
+        if size > FRAME_SIZE or progress[1] > size:
+            return False
+        self._frame_size = size or None
+        return True
+
     # ── Input ────────────────────────────────────────────────────────────────────────
 
     def _refill(self, need: int) -> None:
