@@ -1069,10 +1069,12 @@ impl LzxDecompressor {
             }
             None => {
                 // A frame in progress may hold all its input in the bit buffer.
+                // A stream ends between blocks: one that ends inside a block is cut.
                 if self.ended
                     && self.queued() == 0
                     && self.inner.unread_input().is_empty()
                     && self.inner.frame_in_progress().is_none()
+                    && !self.inner.inside_block()
                 {
                     self.finished = true;
                     None
@@ -1211,7 +1213,7 @@ impl LzxDecompressor {
     /// Give the declared output size once it is known, before the last frame starts.
     ///
     /// Without an output size the decoder may already have read input after the
-    /// stream as the start of a next frame. A size that ends the output there gives
+    /// stream as the start of a next frame or block. A size that ends the output there gives
     /// that input back as unused, and drops an error the decoder met in it. A decoder
     /// restored from a state saved after it read that input cannot give it back: the
     /// input stays consumed and the error stays.
@@ -1228,6 +1230,11 @@ impl LzxDecompressor {
                 // The frame that read past the end is undone, and so is an error it
                 // met: it was in input after the stream.
                 self.failed = None;
+            } else if frame > 0 && frame == done && self.inner.rewind_block(frame) {
+                // The output ends where a block header started: what was read from
+                // there is input after the stream, and so is an error met in it.
+                self.failed = None;
+                self.inner.resize_frame(frame);
             } else if frame != size && !self.inner.resize_frame(frame) {
                 let so_far = decoded + done as u64;
                 return Err(PyValueError::new_err(format!(
@@ -1261,7 +1268,13 @@ impl LzxDecompressor {
         if self.ended {
             return Err(PyValueError::new_err("decompress() after flush()"));
         }
-        self.pending.extend_from_slice(&input(data)?);
+        let data = input(data)?;
+        // After a decode error the input is of no use: the call gives the output
+        // before the error, then raises it. What is queued stays, for a late output
+        // size that ends the stream before the error.
+        if self.failed.is_none() {
+            self.pending.extend_from_slice(&data);
+        }
         let out = self.run(py, max_length)?;
         Ok(PyBytes::new(py, &out))
     }
@@ -1325,11 +1338,24 @@ impl LzxDecompressor {
         let total_in = r.u64().map_err(to_py0)?;
         r.finish().map_err(to_py0)?;
         let decoded = inner.decoded();
-        if (out.len() as u64) > decoded || output_size.is_some_and(|n| n < decoded) {
+        // A frame in progress has the size the next call asks for, or that call
+        // refuses it with an error that is not about the data.
+        let frame_agrees = inner.frame_in_progress().is_none_or(|(size, _)| {
+            let next = match output_size {
+                Some(n) => n.saturating_sub(decoded).min(lzx::FRAME_SIZE as u64) as usize,
+                None => lzx::FRAME_SIZE,
+            };
+            size == next
+        });
+        if (out.len() as u64) > decoded || output_size.is_some_and(|n| n < decoded) || !frame_agrees
+        {
             return Err(CorruptDataError::new_err(
                 "the lzx state holds sizes that do not agree",
             ));
         }
+        let inner_done = inner
+            .frame_in_progress()
+            .is_some_and(|(size, done)| done == size);
         Ok(LzxDecompressor {
             total_out: decoded - out.len() as u64,
             inner,
@@ -1340,7 +1366,8 @@ impl LzxDecompressor {
             output_size,
             ended: false,
             finished: false,
-            starved: true,
+            // A frame that has decoded all its bytes finishes without more input.
+            starved: !inner_done,
             failed: None,
             taken: total_in,
             split_at_end,
@@ -1354,7 +1381,8 @@ impl LzxDecompressor {
 
     #[getter]
     fn needs_input(&self) -> bool {
-        !self.ended
+        self.failed.is_none()
+            && !self.ended
             && self.drained()
             && (!self.at_end() && self.starved || self.at_end() && self.pad_pending())
     }
