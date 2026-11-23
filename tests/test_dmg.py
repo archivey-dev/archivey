@@ -1036,12 +1036,17 @@ def _miscount(nodes_: list[bytearray]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("patch", "match"),
-    [(_cut_chain, "ends at node"), (_miscount, "header declares")],
+    ("patch", "match", "listed"),
+    [
+        (_cut_chain, "ends at node", lambda n: 0 < n < 60),
+        (_miscount, "header declares", lambda n: n == 60),
+    ],
     ids=["cut", "miscounted"],
 )
 def test_a_catalog_leaf_chain_short_of_its_header_is_corruption(
-    patch: Callable[[list[bytearray]], None], match: str
+    patch: Callable[[list[bytearray]], None],
+    match: str,
+    listed: Callable[[int], bool],
 ) -> None:
     """A leaf chain that ends before the header's lastLeafNode, or holds another
     number of records than its leafRecords, has lost members: the members it found
@@ -1056,8 +1061,28 @@ def test_a_catalog_leaf_chain_short_of_its_header_is_corruption(
     ):
         for member in reader:
             seen.append(member.name)
-    # The cut chain lists the first leaf's members; the miscounted one lists all.
-    assert 0 < len(seen) < 60 if patch is _cut_chain else len(seen) == 60
+    assert listed(len(seen))
+
+
+def test_an_attributes_leaf_chain_short_of_its_header_is_corruption() -> None:
+    """The attributes B-tree gets the same check: every member is listed, then the
+    error comes."""
+    nodes = [
+        d.Node(f"f{i}.txt", data=b"x", xattrs={"user.tag": b"t"}) for i in range(4)
+    ]
+    seen: list[str] = []
+    with (
+        _open(
+            _image(
+                nodes,
+                hfs_options={"patch_attributes_nodes": _miscount, "node_size": 512},
+            )
+        ) as reader,
+        pytest.raises(CorruptionError, match="attributes B-tree.*header declares"),
+    ):
+        for member in reader:
+            seen.append(member.name)
+    assert sorted(seen) == [f"f{i}.txt" for i in range(4)]
 
 
 def test_a_folder_parent_loop_delivers_the_other_members() -> None:
