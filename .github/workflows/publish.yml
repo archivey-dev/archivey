@@ -117,10 +117,13 @@ jobs:
   pypi:
     name: Publish to PyPI
     needs: [build]
-    # Real PyPI only from the canonical repo: a version tag, or an explicit manual run.
+    # Real PyPI only from the canonical repo: a version tag pushed, or a manual run with
+    # target=pypi. The event is checked too: a manual run started on a tag has a tag
+    # ref, and with target=testpypi it must not reach PyPI.
     if: >-
       github.repository == 'archivey-dev/archivey'
-      && (startsWith(github.ref, 'refs/tags/') || inputs.target == 'pypi')
+      && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+          || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi'))
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
