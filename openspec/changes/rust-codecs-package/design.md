@@ -98,7 +98,7 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
 | --- | --- | --- | --- |
 | LZX | `"lzx"` | `lzx.Decompressor` | `(window_bits, *, output_size=None)`; `set_output_size(n)`; `reset(output_size=None)` at a CAB folder start |
 | Unix `compress` | `"lzw"` | `lzw.Decompressor` | `(*, max_width=None, block_mode=None, nine_bit_widens=None)`; `flush(max_length=-1)`, `truncation`; `header_params`, `clear_offsets` |
-| LZO1X | `"lzo1x"` | `lzo1x.decompress` | `(block, *, out_size)` |
+| LZO1X | `"lzo1x"` | `lzo1x.decompress` | `(block, *, out_size)` or `(block, *, max_size)` |
 | ZipCrypto | `"zipcrypto"` | `zipcrypto.Decryptor` | `(password: bytes)`; `decrypt(data) -> bytes` |
 | BCJ2 | `"bcj2"` | `bcj2.Decompressor` | `(main, call, jump, rc, *, out_size)`, four readable binary streams |
 | ARM64 filter | `"arm64"` | `filters.Arm64Decoder` | `(start_offset=0)`; `decode(data) -> bytes`, `flush()` |
@@ -113,8 +113,12 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
   length sets where the input realigns and where the Intel E8 scan stops, so the kernel
   must know it whatever `max_length` the caller asks for. The caller gives the folder's
   declared output size with `output_size=` or, when the CAB reader learns it later,
-  with `set_output_size(n)` before the last frame starts. The kernel decodes one whole
-  frame into an internal buffer of at most 32 KiB and returns it in `max_length`
+  with `set_output_size(n)` before the last frame ends. A late size that ends the output
+  where a frame or a block header started gives back what the decoder read from there,
+  and drops an error met in it. It cannot give that input back once the decoder has
+  dropped it from its buffer, or when the decoder was restored from a state saved after
+  it read it: the input then stays consumed and the error stays. The kernel decodes one
+  whole frame into an internal buffer of at most 32 KiB and returns it in `max_length`
   slices. `eof` turns true when `total_out`, the bytes returned so far, reaches the
   output size. Without an output size, every frame is 32 KiB, and `eof` turns true at
   `flush()` once the last frame has used all the input.
@@ -122,13 +126,14 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
 - LZX also needs to know when the compressed input has ended, which an output size
   does not say: the CAB reader's `_lzx_more()` returns `None` after the last data
   block, and only then does the Python twin read zero padding past the end (at most
-  `_MAX_PADDING` bytes) for its last lookahead. Before that, a frame is tried only
-  once the queued input is about twice what the last frame used, so that a frame fed
-  block by block is decoded once, not retried at every block; output lags the input
-  by up to two frames, and `needs_input` is true while it waits. LZX therefore has
-  `flush(max_length=-1)`, like LZW: it marks the end of input, finishes the frame with
-  the twin's zero padding, and returns the rest. A frame that still cannot finish then
-  raises `TruncatedDataError`, as the twin's `TruncatedError`. This also covers a
+  `_MAX_PADDING` bytes) for its last lookahead. Before that, a frame is tried on every
+  new input: when the input runs out, the kernel keeps its place (the start of the
+  symbol, block-header length symbol or stored run it could not finish) and goes on from
+  there, so a frame fed block by block is decoded once and comes out as soon as its
+  input is in. `needs_input` is true while the frame in progress waits. LZX therefore
+  has `flush(max_length=-1)`, like LZW: it marks the end of input, finishes the frame
+  with the twin's zero padding, and returns the rest. A frame that still cannot finish
+  then raises `TruncatedDataError`, as the twin's `TruncatedError`. This also covers a
   folder whose output size is unknown (an incomplete block table).
 - Unix `compress` has no end marker: the stream ends where its source ends. An empty
   `decompress(b"")` only drains buffered output, as for `LZMADecompressor`, so LZW has
@@ -163,10 +168,14 @@ Two kinds of decoder (question 4):
 
 - **Streaming objects** for codecs whose state carries over: LZX, LZW, BCJ2, the ARM64
   and RISC-V filters, and (as a cipher) ZipCrypto.
-- **One-shot functions** for codecs whose blocks stand alone: LZO (lzop and SquashFS
-  record each block's sizes), later DMG's ADC and LZFSE chunks. `out_size` is
-  required and exact; output that ends short or would run past it is
+- **One-shot functions** for codecs whose blocks stand alone: LZO, later DMG's ADC and
+  LZFSE chunks. `out_size` is exact; output that ends short or would run past it is
   `CorruptDataError`. There is no state, and a seek point is the block's offset.
+  lzop records each block's decoded size, but SquashFS records only the most a block
+  may decode to, and most fragment blocks decode to less. So LZO also takes
+  `max_size=` instead: output up to that many bytes, and `CorruptDataError` past it.
+  Without it every short SquashFS block was decoded twice, about twice as slow as
+  compress-utils on an image of small files (review of the LZO hook, round 1).
 
 Seeking (question 4b). Every streaming object has (BCJ2 without `copy()`, as above):
 
@@ -318,9 +327,9 @@ contributors; it can be split out later with its history.
 
 ## D7. Wheels
 
-One workflow on `PyO3/maturin-action`. abi3 (cp311) wheels, one per platform:
-manylinux x86_64 and aarch64 (native arm runner), musllinux x86_64 and aarch64, macOS
-arm64 and x86_64 (cross-compiled), Windows x86_64 and arm64. About 300 KB each.
+One workflow on `PyO3/maturin-action`. abi3 (cp311) wheels, one per platform, each
+built on a native runner: manylinux_2_28 and musllinux_1_2 x86_64 and aarch64, macOS
+arm64 and x86_64, Windows x86_64 and arm64. About 300 KB each.
 
 - Free-threaded (3.13t, 3.14t, later 3.15t): per-version wheels on the same platforms
   (question 10). The module already declares `gil_used = false`.

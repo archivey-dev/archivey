@@ -29,6 +29,8 @@ src/archivey/
 └── internal/            everything else; not importable contract
     ├── base_reader.py   BaseArchiveReader ABC + the ReadBackend ABC
     ├── extraction.py    extraction coordinator
+    ├── placements.py    which result owns each file a run wrote, by key and by file
+    │                    identity (the coordinator's collision claims)
     ├── bomb_tracker.py  decompression-bomb tracker: byte, ratio and entry-count limits
     ├── dry_run.py       the dry run's scratch tree, what it copies in from dest, and
     │                    its path translation

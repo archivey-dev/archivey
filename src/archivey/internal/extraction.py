@@ -74,6 +74,7 @@ from archivey.exceptions import (
     LinkTargetNotFoundReason,
     NameCollisionError,
     NameRewrittenError,
+    ResourceLimitError,
     _UsageTypeError,
     exception_detail,
 )
@@ -100,6 +101,7 @@ from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, make_dirs, plain
 from archivey.internal.overrides import override
+from archivey.internal.placements import Claim as _Claim, Placements
 from archivey.internal.selection import CollectionSelector
 from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.win32_errors import (
@@ -380,6 +382,63 @@ def _passed_data(error: ArchiveyError | OSError) -> BinaryIO:
     return cast("BinaryIO", _PassedData(error))
 
 
+class _PartialThenError(io.RawIOBase):
+    """Stands in for a member's data whose staging failed part-way under
+    ``OnError.KEEP_PARTIAL`` (``_placement_data``): it reads the bytes staged before
+    the failure from ``partial``, and then raises ``error``, as the stream did."""
+
+    # A class default, so close() works on an instance whose __init__ did not run.
+    _file: io.BufferedReader | None = None
+
+    def __init__(self, partial: Path, error: ArchiveyError | OSError) -> None:
+        super().__init__()
+        self._partial = partial
+        self._error = error
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def readinto(self, b: WriteableBuffer, /) -> int:
+        # Opened on the first read, inside the member's write, so a failure to open
+        # it is that member's failure, handled as any read failure is.
+        if self._file is None:
+            self._file = open(long_path(self._partial), "rb")  # noqa: SIM115
+        n = self._file.readinto(b)
+        if not n:
+            raise self._error
+        return n
+
+    @override
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.close()
+        super().close()
+
+
+class _PartialKept(Exception):
+    """Under ``OnError.KEEP_PARTIAL``, a FILE write whose data failed part-way left the
+    bytes written before the failure at ``path`` (``_write_file_atomic``). ``error`` is
+    the failure as raised. A plain ``Exception``, so the per-member handlers let it
+    through to the caller that records the result (``_write_file``)."""
+
+    def __init__(self, path: Path, error: ArchiveyError | OSError) -> None:
+        super().__init__(str(error))
+        self.path = path
+        self.error = error
+
+
+def _wrote_at_path(result: ExtractionResult) -> bool:
+    """Whether ``result``'s member left an entry of its own at ``result.path``: it was
+    ``EXTRACTED``, or it ``FAILED`` and ``OnError.KEEP_PARTIAL`` kept its partial file
+    there (no other ``FAILED`` result has a path)."""
+    return result.path is not None and result.status in (
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.FAILED,
+    )
+
+
 def _report_stored_spelling(
     exc: ArchiveyError, on_disk: ArchiveMember, member: ArchiveMember
 ) -> None:
@@ -554,6 +613,8 @@ class _Staging:
     ``refused``: its local header's name was refused, so nothing was staged.
     ``reported``: the pass reported it to ``on_progress``. ``reversed``: it is the
     current copy of its name, though the stream holds another copy after it.
+    ``partial``: under ``OnError.KEEP_PARTIAL``, the bytes staged before ``error``,
+    which placement writes before it raises ``error`` again.
     """
 
     member: ArchiveMember
@@ -561,27 +622,11 @@ class _Staging:
     staged: Path | None = None
     staged_bytes: int = 0
     error: ArchiveyError | OSError | None = None
+    partial: Path | None = None
     refused: bool = False
     missing: CorruptionError | None = None
     reported: bool = True
     reversed: bool = False
-
-
-@dataclass(frozen=True)
-class _Claim:
-    """A destination claimed by a member written this run, with the index of that
-    member's result. A later ``REPLACE`` onto the destination revises that result to
-    ``OVERWRITTEN``.
-
-    ``physical`` is where the claimed file was when it was claimed, with every parent
-    resolved. The key is taken from it, and a collision is routed to it. ``path`` can
-    run through a caller's symlink that a later member replaces, so it can stop naming
-    that file.
-    """
-
-    path: Path
-    result_index: int
-    physical: Path
 
 
 @dataclass
@@ -642,20 +687,13 @@ class _RunState:
     forgotten_source: dict[Path, int] = field(default_factory=dict)
     # The entries this run has written under ``dest``.
     written_paths: set[Path] = field(default_factory=set)
-    # O2 collision map: casefold(NFC(relpath)) key (exact under TRUSTED) -> the claim
-    # (written path + claiming member's result index). Tracks non-directory members
-    # written THIS run so a second member resolving to the same key is a deterministic
-    # collision on every OS (not a platform-dependent silent merge), and so a REPLACE
+    # O2 collision claims (``Placements``): which result owns each non-directory
+    # entry this run wrote, by casefold(NFC(relpath)) key (exact under TRUSTED) and by
+    # file identity. A second member resolving to the same key is a deterministic
+    # collision on every OS (not a platform-dependent silent merge), and a REPLACE
     # resolution can revise the earlier member's result. See _write_member /
     # dev-docs/decisions/0013.
-    collision_map: dict[str, _Claim] = field(default_factory=dict)
-    # The key each claimed path was claimed under (see ``_claim``).
-    claim_keys: dict[Path, str] = field(default_factory=dict)
-    # Claimed files by identity, (st_dev, st_ino) -> the path claimed, for a name the
-    # filesystem makes a second name of one (``_alias_claim``). Filled lazily: a path
-    # waits in ``unindexed_claims`` until the first lookup after it was claimed.
-    claim_ids: dict[tuple[int, int], Path] = field(default_factory=dict)
-    unindexed_claims: list[Path] = field(default_factory=list)
+    placements: Placements = field(default_factory=Placements)
     # RENAME: the last ``N`` tried per collision key of the requested name, so the
     # next member colliding on that key resumes after it instead of rescanning from
     # ``(1)``. Cleared whenever a claim is released (a freed name may be the first
@@ -802,10 +840,19 @@ class _MemberState:
     # Intra-member progress emit while copying a FILE (None when on_progress is unset
     # or the member has no streamed body).
     emit_progress: Callable[[], None] | None = None
+    # The run's claim on the entry this member's destination names now
+    # (``Placements.owner``, from ``_resolve_collision``): by any spelling where the
+    # answer is used, and under TRUSTED outside REPLACE and KEEP_PARTIAL the key's
+    # claim. A REPLACE landing retires the claim of the file it replaces.
+    owner: _Claim | None = None
     # The member's data as the pass staged it (``_stage_then_place``): a FILE written
     # from it lands by renaming or linking it (``_write_file_atomic``), and its bytes
     # were counted when it was staged.
     staged: Path | None = None
+    # The member's bytes and entry were counted when the pass staged them, and its
+    # data is the partial file ``OnError.KEEP_PARTIAL`` kept then: the write copies it
+    # without counting it again (``_place_member``).
+    precounted: bool = False
     # A streaming pass's earlier copies of this member's name, left in place while it
     # is handled so it can replace one atomically: path -> index of the superseded
     # result. See ``_park_earlier_copies``.
@@ -886,6 +933,8 @@ class ExtractionCoordinator:
         self._on_error = on_error
         self._abort_on = frozenset(abort_on)
         self._on_progress = on_progress
+        # What ``on_progress`` last raised, until ``_keeps_partial`` reads it.
+        self._progress_error: BaseException | None = None
         # A predicate, never the caller's raw ``members=``: that argument may be a
         # one-shot iterable, so only the public entry point reads it, and the caller
         # passes the normalized result here.
@@ -1166,7 +1215,11 @@ class ExtractionCoordinator:
             # destination. Nothing partial exists for the triggering member — every
             # trigger fires before its write begins, and FILE writes land atomically
             # in any case.
+            self._note_kept_partials(abort.error)
             raise abort.error from None
+        except Exception as exc:
+            self._note_kept_partials(exc)
+            raise
         finally:
             # Also when the run stops early; first, while the destination root is
             # still writable (its own deferred metadata comes last).
@@ -1263,6 +1316,7 @@ class ExtractionCoordinator:
         current_by_name: dict[str, int] | None,
         members_done: int,
         staged: Path | None = None,
+        precounted: bool = False,
         fail_with: ArchiveyError | OSError | None = None,
         report: bool = True,
     ) -> int | None:
@@ -1275,10 +1329,11 @@ class ExtractionCoordinator:
         so no earlier copy is ever taken back (``_park_earlier_copies``).
         ``members_done`` is the number of members handled before this one. ``staged``
         is the member's data as a pass staged it (``_stage_then_place``): its bytes and
-        its entry were counted then, so they are not counted again. ``fail_with`` fails
-        a member the pass knows is bad, once the filter and the checks have let it
-        through, for a type that reads no ``stream``. ``report=False`` makes no
-        progress report for it.
+        its entry were counted then, so they are not counted again. ``precounted`` says
+        the same of a partial file kept while staging, which ``stream`` reads.
+        ``fail_with`` fails a member the pass knows is bad, once the filter and the
+        checks have let it through, for a type that reads no ``stream``.
+        ``report=False`` makes no progress report for it.
         """
         state = self._state
         results = state.results
@@ -1287,7 +1342,7 @@ class ExtractionCoordinator:
         recorded_index: int | None = None
         presented_name: str | None = None
         rewrites: frozenset[NameRewrite] = frozenset()
-        current = self._current = _MemberState(staged=staged)
+        current = self._current = _MemberState(staged=staged, precounted=precounted)
 
         def record(_error: object, failed: ExtractionResult) -> bool:
             nonlocal recorded_index
@@ -1330,7 +1385,7 @@ class ExtractionCoordinator:
                     current_by_name[original.name] = result_index
                 if fail_with is not None and transformed.type is not MemberType.FILE:
                     raise fail_with
-                if not original.is_anti and staged is None:
+                if not original.is_anti and staged is None and not precounted:
                     # Counted only now, once the selector, the filter and the
                     # universal check have accepted the member: a member skipped or
                     # rejected before this does not count toward max_entries.
@@ -1499,14 +1554,15 @@ class ExtractionCoordinator:
                 current_by_name=None,
                 members_done=members_done,
                 staged=entry.staged if stream is None else None,
+                precounted=entry.partial is not None,
                 fail_with=fail_with,
                 report=False,
             )
         finally:
             results = self._state.results
-            placed = index is not None and results[index].status in (
-                ExtractionStatus.EXTRACTED,
-                ExtractionStatus.OVERWRITTEN,
+            placed = index is not None and (
+                results[index].status is ExtractionStatus.OVERWRITTEN
+                or _wrote_at_path(results[index])
             )
             self._unstage(entry, placed=placed)
 
@@ -1564,11 +1620,21 @@ class ExtractionCoordinator:
                             original, members_done, tracker.member_bytes
                         )
 
+                kept: _PartialKept | None = None
                 try:
                     entry.staged = self._write_staged(stream, position, emit)
+                except _PartialKept as partial:
+                    kept = partial
                 except BaseException:
                     tracker.refund(tracker.member_bytes)
                     raise
+                if kept is not None:
+                    # Counted now, as a staged file is: placement copies the kept
+                    # bytes without counting them again, and ``_unstage`` refunds
+                    # them when the member is not placed.
+                    entry.partial = kept.path
+                    entry.staged_bytes = tracker.member_bytes
+                    raise kept.error
                 entry.staged_bytes = tracker.member_bytes
         self._report_progress(original, members_done + 1, entry.staged_bytes)
 
@@ -1642,7 +1708,9 @@ class ExtractionCoordinator:
         emit_progress: Callable[[], None] | None,
     ) -> Path:
         """Write data from ``stream`` to the staging directory under ``name``, and
-        return where; on any failure nothing of it stays.
+        return where; on any failure nothing of it stays, except where
+        ``OnError.KEEP_PARTIAL`` keeps what was written (``_keeps_partial``): then
+        ``_PartialKept`` is raised with the file.
 
         The directory is ``.archivey-tmp-`` and a random suffix, directly under the
         destination, created private on the first call. Each file is created at the
@@ -1659,6 +1727,7 @@ class ExtractionCoordinator:
         state.tracker.check_recorded_size()
         path = state.staging / name
         fd = _open_new_file(path, 0o666)
+        self._return_failed_chunks(stream)
         try:
             with os.fdopen(fd, "wb") as dst:
                 self._copy_to_fileobj(
@@ -1667,10 +1736,17 @@ class ExtractionCoordinator:
                     state.tracker,
                     emit_progress=emit_progress,
                 )
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(long_path(path))
-            raise
+        except BaseException as exc:
+            keep = False
+            if self._keeps_partial(exc):
+                with contextlib.suppress(OSError):
+                    keep = os.stat(long_path(path)).st_size > 0
+            if not keep:
+                with contextlib.suppress(OSError):
+                    os.unlink(long_path(path))
+                raise
+            assert isinstance(exc, (ArchiveyError, OSError))
+            raise _PartialKept(path, exc) from exc
         return path
 
     def _placement_data(
@@ -1719,6 +1795,10 @@ class ExtractionCoordinator:
                 None,
             )
         if entry.error is not None:
+            if is_file and entry.partial is not None:
+                return cast(
+                    "BinaryIO", _PartialThenError(entry.partial, entry.error)
+                ), None
             if is_file:
                 return _passed_data(entry.error), None
             return None, entry.error if member.type is MemberType.SYMLINK else None
@@ -1746,7 +1826,15 @@ class ExtractionCoordinator:
         """Remove ``entry``'s staged file if it is still there, and stop counting what
         the bomb limits counted for it: its bytes, and its entry too unless its member
         was ``placed`` (a link placed without its data). The archive-wide ratio keeps
-        its bytes: they were decoded."""
+        its bytes: they were decoded. A partial file ``OnError.KEEP_PARTIAL`` kept
+        while staging is removed too, as placement copied it; its bytes and entry are
+        refunded unless the member was ``placed`` (its partial file landed)."""
+        partial, entry.partial = entry.partial, None
+        if partial is not None:
+            if not placed:
+                self._state.tracker.refund(entry.staged_bytes, entry=True)
+            with contextlib.suppress(OSError):
+                os.unlink(long_path(partial))
         staged = entry.staged
         if staged is None:
             return
@@ -1806,8 +1894,8 @@ class ExtractionCoordinator:
         state = self._state
         parked = self._current.parked
         for path, index in state.unremoved.pop(name, {}).items():
-            claim = state.collision_map.get(self._claimed_key(path))
-            if claim is not None and claim.path == path and claim.result_index == index:
+            claim = state.placements.at_path(path, self._claimed_key(path))
+            if claim is not None and claim.result_index == index:
                 parked[path] = index
                 self._release_claim(path)
         if earlier is not None:
@@ -1858,17 +1946,11 @@ class ExtractionCoordinator:
         # Whether another directory entry still holds the earlier copy's content: a
         # hardlink made to it before the later copy arrived.
         content_kept = False
-        if (
-            prior.status is ExtractionStatus.EXTRACTED
-            and path is not None
-            and path in state.written_paths
-        ):
-            claim = state.collision_map.get(self._claimed_key(path))
+        if _wrote_at_path(prior) and path is not None and path in state.written_paths:
+            claim = state.placements.at_path(path, self._claimed_key(path))
             # Where the copy was written: ``path`` no longer leads there once a later
             # member replaced a caller's symlink on its way.
-            physical = (
-                claim.physical if claim is not None and claim.path == path else path
-            )
+            physical = claim.physical if claim is not None else path
             self._release_claim(path)
             content_kept = self._forget_source_path(path)
             if prior.member.type == MemberType.DIRECTORY:
@@ -1938,7 +2020,7 @@ class ExtractionCoordinator:
         landed = (
             latest.path
             if latest is not None
-            and latest.status is ExtractionStatus.EXTRACTED
+            and _wrote_at_path(latest)
             and latest.path in state.written_paths
             else None
         )
@@ -2281,7 +2363,10 @@ class ExtractionCoordinator:
             # so that member's result must stop reporting it EXTRACTED. This member's
             # own result is recorded by the caller's handler.
             if self._current.removed_existing:
-                self._mark_overwritten(prior)
+                self._mark_overwritten(prior or self._replaced_kept_partial())
+                if self._retire_owner():
+                    # The name is free again for a later RENAME.
+                    self._state.rename_next.clear()
             raise
 
         return self._settle_placement(
@@ -2314,7 +2399,7 @@ class ExtractionCoordinator:
         # Record the intended destination. A REPLACE merge into a prior path is not a
         # rename, so it reports the actual (merged) path; every other outcome reports the
         # member's own intended destination, so RENAME shows up as requested_path != path.
-        if prior is not None and result.status is ExtractionStatus.EXTRACTED:
+        if prior is not None and _wrote_at_path(result):
             result = copy_with(
                 result, requested_path=result.path, collided_with=collided_with
             )
@@ -2325,9 +2410,15 @@ class ExtractionCoordinator:
 
         # A REPLACE that actually landed leaves the earlier member's content gone. Revise
         # that member's already-recorded result to OVERWRITTEN so the merge is visible in
-        # ``results`` instead of two members both reporting EXTRACTED at one path.
-        if result.status is ExtractionStatus.EXTRACTED:
-            self._mark_overwritten(prior)
+        # ``results`` instead of two members both reporting EXTRACTED at one path. A
+        # partial file ``OnError.KEEP_PARTIAL`` kept landed as well.
+        if _wrote_at_path(result):
+            self._mark_overwritten(prior or self._replaced_kept_partial())
+            # A directory that landed over a file: the file's claim goes with it.
+            # Any other member that lands retires it when it claims its own path
+            # (``_register_collision_key`` -> ``Placements.land``).
+            if transformed.type == MemberType.DIRECTORY:
+                self._retire_owner()
             if transformed.type == MemberType.DIRECTORY and result.path is not None:
                 self._state.written_dirs.setdefault(
                     self._collision_key(result.path), []
@@ -2374,7 +2465,8 @@ class ExtractionCoordinator:
                 f"Unsupported member type {transformed.type!r}",
                 member_name=transformed.name,
             )
-        if result.status is ExtractionStatus.EXTRACTED and result.path is not None:
+        if _wrote_at_path(result):
+            assert result.path is not None
             written_paths.add(result.path)
             if (
                 transformed.type == MemberType.SYMLINK
@@ -2523,11 +2615,24 @@ class ExtractionCoordinator:
             requested
         ):
             return requested, None, None
-        prior = self._state.collision_map.get(self._collision_key(requested))
-        if prior is None and self._policy is not ExtractionPolicy.TRUSTED:
-            # TRUSTED reports no collision event (``collided`` below), so an alias
-            # found there would change nothing; the guard saves its ``lstat``.
-            prior = self._alias_claim(requested)
+        # The owner of the entry there now: the claim under the key when the entry
+        # is its file, else the claim whose file it is, under any name the
+        # filesystem gives that file (a case variant on a case-insensitive
+        # filesystem, an 8.3 short name), else the claim under the key. Under TRUSTED
+        # it raises no collision (``collided`` below), but a REPLACE landing over it
+        # still retires its claim, and a partial file it kept loses its path; for
+        # anything else there the key's answer serves, and costs no ``lstat``.
+        placements = self._state.placements
+        by_file = bool(placements) and (
+            self._policy is not ExtractionPolicy.TRUSTED
+            or self._overwrite is OverwritePolicy.REPLACE
+            or self._on_error is OnError.KEEP_PARTIAL
+        )
+        occupied = self._occupied(requested) if by_file else None
+        prior = placements.owner(
+            requested, self._collision_key(requested), occupied=bool(occupied)
+        )
+        self._current.owner = prior
         collided = (
             prior.path
             if prior is not None and self._policy is not ExtractionPolicy.TRUSTED
@@ -2543,7 +2648,9 @@ class ExtractionCoordinator:
             self._check_collision_abort(original, collided, directory=prior is None)
         if self._overwrite is OverwritePolicy.RENAME:
             self._current.rename_base = requested
-            if prior is not None or self._occupied(requested):
+            if prior is not None or (
+                occupied if occupied is not None else self._occupied(requested)
+            ):
                 is_dir = transformed.type == MemberType.DIRECTORY
                 free = self._derive_free_name(requested, is_dir=is_dir)
                 return free, None, collided
@@ -2768,9 +2875,72 @@ class ExtractionCoordinator:
         """
         if self._on_error is OnError.STOP:
             return True
-        if self._on_error is OnError.CONTINUE:
+        if self._on_error is OnError.CONTINUE or self._on_error is OnError.KEEP_PARTIAL:
             return False
         assert_never(self._on_error)
+
+    def _keeps_partial(self, exc: BaseException) -> bool:
+        """Whether a FILE write that failed with ``exc`` while copying its data keeps
+        what it wrote (``OnError.KEEP_PARTIAL``).
+
+        Only a member's own failure, which the run goes on past: damaged data, a check
+        that fails at the end of the data, a write error. Never a refusal, a limit
+        (a limit refuses the content, it does not find it damaged), a diagnostic that
+        stops the run, the caller's own exception, an interrupt, or a dry run, which
+        writes no bytes."""
+        return (
+            self._on_error is OnError.KEEP_PARTIAL
+            and self._dry is None
+            and isinstance(exc, (ArchiveyError, OSError))
+            and not isinstance(
+                exc, (FilterRejectionError, ResourceLimitError, DiagnosticRaisedError)
+            )
+            and not from_source_callback(exc)
+            and not self._raised_by_progress(exc)
+        )
+
+    def _raised_by_progress(self, exc: BaseException) -> bool:
+        """Whether ``exc`` is what the caller's ``on_progress`` last raised, and forget
+        it: the record is only for the copy that the callback stopped."""
+        raised, self._progress_error = self._progress_error, None
+        return raised is exc
+
+    def _kept_partial_failure(
+        self, kept: _PartialKept, member: ArchiveMember
+    ) -> ExtractionResult:
+        """The ``FAILED`` result of ``member`` whose partial file ``kept`` left, with
+        the error typed and named as ``_handling`` names a failure, and logged as
+        ``_stop_or_log`` logs one the run goes on past."""
+        exc = kept.error
+        spelled_from = self._current.spelled_from
+        if isinstance(exc, ArchiveyError) and spelled_from is not None:
+            _report_stored_spelling(exc, disk_spelled(spelled_from), spelled_from)
+        error, status = self._classify(exc, member.name)
+        # ``KEEP_PARTIAL`` never stops on a failure, and a refusal keeps nothing, so
+        # this is logged rather than passed to ``_stop_or_log``.
+        assert status is ExtractionStatus.FAILED
+        logger.warning(
+            "Kept the partial file of %s %r at %r: %s",
+            member.type.value,
+            member.name,
+            display_path(self._shown(kept.path)),
+            error,
+        )
+        return ExtractionResult(member, kept.path, status, error)
+
+    def _note_kept_partials(self, exc: BaseException) -> None:
+        """Name on ``exc``, the error the run raises with no report, each partial file
+        ``OnError.KEEP_PARTIAL`` kept before it, so a caller can find them."""
+        kept = [
+            r.path
+            for r in self._state.results
+            if r.status is ExtractionStatus.FAILED and r.path is not None
+        ]
+        if kept:
+            exc.add_note(
+                "Partial files kept for failed members: "
+                + ", ".join(repr(display_path(self._shown(path))) for path in kept)
+            )
 
     def _classify(
         self, exc: ArchiveyError | OSError, member_name: str
@@ -2802,7 +2972,7 @@ class ExtractionCoordinator:
     ) -> None:
         """Raise ``error`` (``exc`` as caught) if the run stops on it, else log it."""
         # OnError governs failures only. A BLOCKED stops the run only under the
-        # fail-closed AbortOn.BLOCKED_MEMBER opt-in, under either OnError value; its
+        # fail-closed AbortOn.BLOCKED_MEMBER opt-in, under every OnError value; its
         # recorded result is discarded with the rest of the report.
         if (self._stops_on_failure() and status is ExtractionStatus.FAILED) or (
             status is ExtractionStatus.BLOCKED
@@ -2850,76 +3020,39 @@ class ExtractionCoordinator:
         The claim carries ``result_index`` so a later REPLACE onto this destination can
         revise this member's result to OVERWRITTEN. Re-claiming a key transfers it: after
         a replacement, a third member colliding revises the second, not the first."""
-        if (
-            transformed.type != MemberType.DIRECTORY
-            and result.status is ExtractionStatus.EXTRACTED
-            and result.path is not None
-        ):
-            self._claim(result.path, result_index)
+        if transformed.type != MemberType.DIRECTORY and _wrote_at_path(result):
+            assert result.path is not None
+            # A REPLACE landed over the owner's file, so its claim goes with it, under
+            # whatever key it was made (``Placements.land``). Every other policy
+            # writes only where no entry was, or under a fresh name.
+            replaced = (
+                self._current.owner
+                if self._overwrite is OverwritePolicy.REPLACE
+                else None
+            )
+            self._claim(result.path, result_index, replaced=replaced)
 
     def _rel_name(self, path: Path) -> str:
         """``path`` relative to the extraction root, as written, for messages."""
         return path.relative_to(self._state.dest).as_posix()
 
-    def _claim(self, path: Path, index: int) -> None:
-        """Claim ``path`` for result ``index``, keyed on where it physically is now.
+    def _claim(self, path: Path, index: int, *, replaced: _Claim | None = None) -> None:
+        """Claim ``path`` for result ``index``, keyed on where it physically is now,
+        over the file of ``replaced`` when one was there (``Placements.land``).
 
         The key is remembered per path, so releasing the claim later finds it even after
         a symlink in ``path`` was replaced and ``path`` resolves somewhere else."""
-        key = self._collision_key(path)
-        self._state.collision_map[key] = _Claim(path, index, self._physical_path(path))
-        self._state.claim_keys[path] = key
-        self._state.unindexed_claims.append(path)
-
-    def _alias_claim(self, path: Path) -> _Claim | None:
-        """The claim on the file at ``path`` when ``path`` is another name the
-        filesystem gives a file this run wrote under its own name; else ``None``.
-
-        An 8.3 short name (``LONGFI~1.TXT`` for ``longfilename.txt``) is such a name on
-        Windows, on a volume that makes them; so is a spelling that NTFS's upcase table
-        folds and ``casefold`` does not. The collision key does not see it, so without
-        this the member would meet the file as one already there: refused under
-        ``ERROR``, and under ``REPLACE`` written over the earlier member while that
-        member's result still says ``EXTRACTED``. Matched by identity
-        (``st_dev``, ``st_ino``) with the files this run claimed, so it goes through
-        the same collision handling as a case variant does. A filesystem that reports
-        inode 0 cannot be matched, and an entry there stays one already there.
-
-        Only a name that holds an entry and has no claim of its own gets here, so a
-        run into an empty destination costs nothing. Each claimed path is looked at
-        once, on the first lookup after it was claimed; a hit is checked against the
-        claimed path again, as that path may hold a newer file by now.
-        """
-        if not self._occupied(path):
-            return None
-        try:
-            st = os.lstat(long_path(path))
-        except OSError:
-            return None
-        if st.st_ino == 0:
-            return None
-        state = self._state
-        for claimed in state.unindexed_claims:
-            with contextlib.suppress(OSError):
-                cst = os.lstat(long_path(claimed))
-                state.claim_ids[cst.st_dev, cst.st_ino] = claimed
-        state.unindexed_claims.clear()
-        claimed = state.claim_ids.get((st.st_dev, st.st_ino))
-        if claimed is None or claimed == path:
-            return None
-        claim = state.collision_map.get(self._claimed_key(claimed))
-        if claim is None or claim.path != claimed:
-            return None
-        try:
-            if not os.path.samestat(st, os.lstat(long_path(claimed))):
-                return None
-        except OSError:
-            return None
-        return claim
+        self._state.placements.land(
+            path,
+            self._collision_key(path),
+            self._physical_path(path),
+            index,
+            replaced=replaced,
+        )
 
     def _claimed_key(self, path: Path) -> str:
         """The key ``path`` was claimed under, or its current key if it was not."""
-        key = self._state.claim_keys.get(path)
+        key = self._state.placements.claimed_key(path)
         return key if key is not None else self._collision_key(path)
 
     def _record_run_symlink(self, path: Path) -> None:
@@ -3165,9 +3298,9 @@ class ExtractionCoordinator:
         while True:
             candidate = parent / numbered_name(requested.name, n, is_dir=is_dir)
             candidate_key = self._collision_key(candidate)
-            if candidate_key not in self._state.collision_map and not self._occupied(
-                candidate
-            ):
+            if self._state.placements.at_key(
+                candidate_key
+            ) is None and not self._occupied(candidate):
                 rename_next[counter_key] = n + 1
                 return candidate
             n += 1
@@ -3181,14 +3314,28 @@ class ExtractionCoordinator:
         collision map, so it matches the way every other collision does: under STRICT
         and STANDARD, an anti-item ``readme`` deletes the ``README`` this run wrote,
         which on a case-insensitive filesystem is the file it names. TRUSTED keys on the
-        exact name, so there it is exact. Directories are not in the map, so a directory
-        matches only by its exact path. Nothing is deleted that this run did not write.
+        exact name, so there the name decides as the platform compares paths: on Windows
+        ``readme`` is the ``README`` this run wrote, and its claim is found by the file
+        (``Placements.owner``). Directories are not in the map, so a directory matches
+        only by its exact path. Nothing is deleted that this run did not write.
         """
         written_paths = self._state.written_paths
-        if dest_path not in written_paths:
-            claim = self._state.collision_map.get(self._collision_key(dest_path))
-            if claim is not None and claim.path in written_paths:
-                dest_path = claim.path
+        placements = self._state.placements
+        key = self._collision_key(dest_path)
+        claim = placements.at_key(key)
+        if claim is None and dest_path in written_paths and self._occupied(dest_path):
+            # A name the key does not fold that still reaches a written file: under
+            # TRUSTED on Windows, ``readme`` is the ``README`` this run claimed.
+            claim = placements.owner(dest_path, key, occupied=True)
+        # The claim's own spelling is the one the run wrote and claimed: on Windows
+        # ``readme`` is in ``written_paths`` when ``README`` is (``WindowsPath``
+        # equality folds case), and the claim is released by its spelling.
+        if (
+            claim is not None
+            and claim.path in written_paths
+            and (dest_path not in written_paths or claim.path == dest_path)
+        ):
+            dest_path = claim.path
         if dest_path not in written_paths:
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
@@ -3220,16 +3367,12 @@ class ExtractionCoordinator:
     def _release_claim(self, path: Path) -> None:
         """Drop the collision claim on ``path`` once its content is gone.
 
-        ``written_paths`` and ``collision_map`` both track what this run put on disk, so
+        ``written_paths`` and the claims both track what this run put on disk, so
         an anti-item delete has to clear both or the map keeps advertising a claim for
         content that no longer exists — which a later same-key member would see as a
         collision, aborting under ``AbortOn.NAME_COLLISION`` against an empty destination
         or revising an already-deleted member to ``OVERWRITTEN``."""
-        key = self._claimed_key(path)
-        collision_map = self._state.collision_map
-        claim = collision_map.get(key)
-        if claim is not None and claim.path == path:
-            del collision_map[key]
+        if self._state.placements.release(path, self._claimed_key(path)):
             # A freed name can be the first free one for a later RENAME again.
             self._state.rename_next.clear()
 
@@ -3249,11 +3392,44 @@ class ExtractionCoordinator:
         member that was yielded as a link and turned out a file; the file this run
         wrote for a RAR file copy's source (``_open_written_source``); or else
         ``stream``, or the staged file of a pass that stages its members.
+
+        Under ``OnError.KEEP_PARTIAL``, a copy that fails part-way returns a ``FAILED``
+        result whose ``path`` is the partial file kept (``_PartialKept``); every
+        other failure raises.
         """
         state = self._state
         declined = self._make_room(original, transformed, dest_path, atomic=True)
         if declined is not None:
             return declined
+        try:
+            dest_path = self._write_file_data(original, transformed, stream, dest_path)
+        except _PartialKept as kept:
+            # Not recorded as a source for hard links or file copies: its content is
+            # not the member's.
+            return self._kept_partial_failure(kept, original)
+        if self._dry is None and id(original) in state.declined:
+            # A file that cannot be looked at now is simply not copied from.
+            with contextlib.suppress(OSError):
+                state.written_files[original.member_id, dest_path] = _file_identity(
+                    os.stat(long_path(dest_path), follow_symlinks=False)
+                )
+
+        # Record this FILE's path under the ORIGINAL member id so later hardlinks whose
+        # link_target_member is this member can os.link against it.
+        self._record_source_path(original.member_id, dest_path)
+        return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
+
+    def _write_file_data(
+        self,
+        original: ArchiveMember,
+        transformed: ArchiveMember,
+        stream: BinaryIO | None,
+        dest_path: Path,
+    ) -> Path:
+        """Write a FILE member's bytes at ``dest_path`` for ``_write_file``, from where
+        it says, and return the name the file landed on. Raises ``_PartialKept`` when
+        ``OnError.KEEP_PARTIAL`` kept a partial file."""
+        state = self._state
         staged = self._current.staged
         if stream is None and staged is None and self._current.retyped:
             # The pass yielded this member as a link, with no data stream, before its
@@ -3268,38 +3444,27 @@ class ExtractionCoordinator:
                     member_name=original.name,
                 )
             with contextlib.closing(reader._lazy_member_stream(original)) as reopened:
-                dest_path = self._write_file_atomic(reopened, dest_path, transformed)
-        elif (
-            written_source := self._open_written_source(original, dest_path)
-        ) is not None:
+                return self._write_file_atomic(
+                    reopened, dest_path, transformed, keep_partial=True
+                )
+        written_source = self._open_written_source(original, dest_path)
+        if written_source is not None:
             # A file copy whose source this run wrote: its bytes come from that file,
             # and ``stream`` is closed unread, so nothing decodes the source again.
             # Read with no digest check, because none is needed: the source's write
             # read its stream to the end through the source's digest and size checks,
             # and a write that failed them recorded no identity to copy from.
             with written_source:
-                dest_path = self._write_file_atomic(
-                    written_source, dest_path, transformed
+                return self._write_file_atomic(
+                    written_source, dest_path, transformed, keep_partial=True
                 )
-        else:
-            state.streaming_now = id(original) if stream is not None else None
-            try:
-                dest_path = self._write_file_atomic(
-                    stream, dest_path, transformed, staged=staged
-                )
-            finally:
-                state.streaming_now = None
-        if self._dry is None and id(original) in state.declined:
-            # A file that cannot be looked at now is simply not copied from.
-            with contextlib.suppress(OSError):
-                state.written_files[original.member_id, dest_path] = _file_identity(
-                    os.stat(long_path(dest_path), follow_symlinks=False)
-                )
-
-        # Record this FILE's path under the ORIGINAL member id so later hardlinks whose
-        # link_target_member is this member can os.link against it.
-        self._record_source_path(original.member_id, dest_path)
-        return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
+        state.streaming_now = id(original) if stream is not None else None
+        try:
+            return self._write_file_atomic(
+                stream, dest_path, transformed, staged=staged, keep_partial=True
+            )
+        finally:
+            state.streaming_now = None
 
     def _keep_copy_source(self, source: ArchiveMember) -> bool:
         """Whether the pass keeps a RAR file copy's source for its copies.
@@ -3986,7 +4151,7 @@ class ExtractionCoordinator:
         prior = state.results[link.result_index].path
         if prior is not None:
             state.written_paths.discard(prior)
-            claim = state.collision_map.get(self._claimed_key(prior))
+            claim = state.placements.at_key(self._claimed_key(prior))
             if claim is not None and claim.result_index == link.result_index:
                 self._release_claim(prior)
 
@@ -4300,6 +4465,37 @@ class ExtractionCoordinator:
         unremoved.clear()
         return first
 
+    def _replaced_kept_partial(self) -> _Claim | None:
+        """Under TRUSTED, the claim of a partial file ``OnError.KEEP_PARTIAL`` kept at
+        the entry this member's destination names, or ``None``.
+
+        TRUSTED reports no collision, so ``_resolve_collision`` routes no prior claim
+        and an earlier member keeps its result when a later one lands on its file.
+        A kept partial file is different: its FAILED result must stop naming a path
+        that now holds the later member's content. The owner ``_resolve_collision``
+        found is the claim of the file there now (``Placements.owner``), so a name
+        the filesystem keeps apart finds nothing and both results stand."""
+        if self._policy is not ExtractionPolicy.TRUSTED:
+            return None
+        claim = self._current.owner
+        if claim is None:
+            return None
+        earlier = self._state.results[claim.result_index]
+        if earlier.status is not ExtractionStatus.FAILED or earlier.path is None:
+            return None
+        return claim
+
+    def _retire_owner(self) -> bool:
+        """Under REPLACE, retire the claim of the file this member's destination held
+        (``_MemberState.owner``) once that file is gone: a directory landed over it,
+        or the member removed it and then failed. Any other member that lands
+        retires it when it claims its own path (``_register_collision_key`` ->
+        ``Placements.land``). Whether a claim was retired."""
+        owner = self._current.owner
+        if owner is None or self._overwrite is not OverwritePolicy.REPLACE:
+            return False
+        return self._state.placements.retire(owner)
+
     def _mark_overwritten(self, prior: _Claim | None) -> None:
         """Revise a clobbered member's result to OVERWRITTEN: its content is gone.
 
@@ -4339,6 +4535,22 @@ class ExtractionCoordinator:
             # A superseded copy still on disk (a file the filesystem would not remove, or
             # a directory other members were written into): it keeps its status.
             return
+        if clobbered.status is ExtractionStatus.FAILED:
+            # A partial file ``OnError.KEEP_PARTIAL`` kept: it is gone, and the member
+            # still failed.
+            self._set_result(
+                index,
+                copy_with(
+                    clobbered,
+                    path=None,
+                    requested_path=(
+                        clobbered.requested_path
+                        if clobbered.requested_path is not None
+                        else clobbered.path
+                    ),
+                ),
+            )
+            return
         # The clobbered member was tallied as EXTRACTED when it completed, and is
         # no longer: ``_set_result`` moves the tally, or the final report would claim
         # more extracted members than ``results`` contains.
@@ -4377,9 +4589,10 @@ class ExtractionCoordinator:
         written_paths = state.written_paths
         if path in written_paths:
             return True
-        if not state.collision_map or not path.is_relative_to(state.dest):
+        placements = state.placements
+        if not placements or not path.is_relative_to(state.dest):
             return False
-        claim = state.collision_map.get(self._collision_key(path))
+        claim = placements.at_key(self._collision_key(path))
         if (
             claim is not None
             and claim.path in written_paths
@@ -4387,9 +4600,11 @@ class ExtractionCoordinator:
         ):
             return True
         # Another name of the claimed file itself: a case variant on a case-insensitive
-        # filesystem, under any policy, matched by identity (``_alias_claim``). A case
+        # filesystem, under any policy, matched by identity (``Placements``). A case
         # variant that is another file, on a case-sensitive filesystem, is not one.
-        alias = self._alias_claim(path)
+        if not self._occupied(path):
+            return False
+        alias = placements.by_identity(path)
         return alias is not None and alias.path in written_paths
 
     def _occupied(self, path: Path) -> bool:
@@ -4622,6 +4837,7 @@ class ExtractionCoordinator:
         *,
         staged: Path | None = None,
         copy_begins: Callable[[], None] | None = None,
+        keep_partial: bool = False,
     ) -> Path:
         """Write a FILE by streaming into a temp sibling, applying ``member``'s metadata,
         then moving it onto ``dest_path`` (``_swap_into_place``: ``os.replace``, or a
@@ -4652,14 +4868,22 @@ class ExtractionCoordinator:
 
         Returns the name the file landed on: ``dest_path``, or under RENAME another
         free name when another writer took ``dest_path`` first (``_land_on_free_name``).
-        Under SKIP, such a name raises ``_NameTakenSince``."""
+        Under SKIP, such a name raises ``_NameTakenSince``.
+
+        ``keep_partial`` lets ``OnError.KEEP_PARTIAL`` keep the file when the copy
+        fails part-way (``_keeps_partial``) and wrote at least one byte: the temp file
+        lands by the same swap, with none of ``member``'s metadata, and
+        ``_PartialKept`` is raised with where it landed. When the swap fails too, the
+        temp file is removed and the copy's error raised, as without it."""
         assert copy_begins is None or staged is None
         if staged is not None:
             return self._land_staged(staged, dest_path, member)
+        precounted = self._current.precounted
         # Every check that could still skip the member has passed, so a member whose
         # recorded size is already over the ratio is refused before any temp file
-        # exists.
-        self._state.tracker.check_recorded_size()
+        # exists. A precounted member was checked when it was staged.
+        if not precounted:
+            self._state.tracker.check_recorded_size()
         if self._effective_mode(member) is None:
             tmp = self._temp_sibling(self._parent(dest_path))
             fd = _open_new_file(tmp, 0o666)
@@ -4667,20 +4891,30 @@ class ExtractionCoordinator:
             # Write straight into the new file's fd (no close+reopen). Its 0o600 keeps
             # the content private until the chmod below.
             fd, tmp = self._new_temp_file(self._parent(dest_path))
+        if keep_partial:
+            self._return_failed_chunks(stream)
         try:
-            with os.fdopen(fd, "wb") as dst:
-                if copy_begins is not None:
-                    copy_begins()
-                # A dry run reads and verifies the body like a real one; only the bytes
-                # go nowhere, and the file is left empty.
-                self._copy_to_fileobj(
-                    stream,
-                    dst if self._dry is None else self._dry.sink,
-                    self._state.tracker,
-                    emit_progress=self._current.emit_progress,
-                )
+            try:
+                with os.fdopen(fd, "wb") as dst:
+                    if copy_begins is not None:
+                        copy_begins()
+                    # A dry run reads and verifies the body like a real one; only the
+                    # bytes go nowhere, and the file is left empty.
+                    self._copy_to_fileobj(
+                        stream,
+                        dst if self._dry is None else self._dry.sink,
+                        None if precounted else self._state.tracker,
+                        emit_progress=self._current.emit_progress,
+                    )
+            except (ArchiveyError, OSError) as exc:
+                if keep_partial and self._keeps_partial(exc):
+                    self._land_partial(tmp, dest_path, member, exc)
+                raise
             self._apply_metadata(tmp, member)
             return self._swap_into_place(tmp, dest_path, member, fresh=True)
+        except _PartialKept:
+            # The temp file is the partial file now, at the name it landed on.
+            raise
         except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
             # no .archivey-tmp-* file is left behind (the existing destination is untouched).
@@ -4697,6 +4931,40 @@ class ExtractionCoordinator:
                     unlink_exc,
                 )
             raise
+
+    def _return_failed_chunks(self, stream: BinaryIO | None) -> None:
+        """Have ``stream`` read at ``PartialDataRecovery.ALL`` when the write may keep
+        a partial file (``_keeps_partial``): the read whose check fails returns its
+        bytes and the next read raises, so a member whose only damage is a failed check
+        keeps every byte. A stream of no member handle (a staged copy) has no
+        verifier to set."""
+        if self._on_error is not OnError.KEEP_PARTIAL or self._dry is not None:
+            return
+        set_level = getattr(stream, "return_failed_chunks", None)
+        if set_level is not None:
+            set_level()
+
+    def _land_partial(
+        self,
+        tmp: Path,
+        dest_path: Path,
+        member: ArchiveMember,
+        exc: ArchiveyError | OSError,
+    ) -> None:
+        """Land the partial file ``tmp`` of a copy that failed with ``exc`` on
+        ``dest_path`` and raise ``_PartialKept``, for ``_write_file_atomic``. Returns,
+        landing nothing, when ``tmp`` is empty or the landing fails: the caller then
+        removes ``tmp`` and raises ``exc``."""
+        try:
+            if os.stat(long_path(tmp)).st_size == 0:
+                return
+            landed = self._swap_into_place(tmp, dest_path, member, fresh=True)
+        except (ArchiveyError, OSError, _NameTakenSince) as landing_exc:
+            logger.debug(
+                "Could not keep the partial file of %r: %s", member.name, landing_exc
+            )
+            return
+        raise _PartialKept(landed, exc) from exc
 
     def _land_staged(
         self, staged: Path, dest_path: Path, member: ArchiveMember
@@ -5317,18 +5585,26 @@ class ExtractionCoordinator:
         if self._on_progress is None:
             return
         state = self._state
-        self._on_progress(
-            ExtractionProgress(
-                member=member,
-                bytes_written=state.tracker.total_bytes,
-                total_bytes_estimated=state.total_estimate,
-                members_done=members_done,
-                members_total=state.members_total,
-                member_bytes_written=member_bytes_written,
-                members_extracted=state.members_extracted,
-                members_blocked=state.members_blocked,
+        try:
+            self._on_progress(
+                ExtractionProgress(
+                    member=member,
+                    bytes_written=state.tracker.total_bytes,
+                    total_bytes_estimated=state.total_estimate,
+                    members_done=members_done,
+                    members_total=state.members_total,
+                    member_bytes_written=member_bytes_written,
+                    members_extracted=state.members_extracted,
+                    members_blocked=state.members_blocked,
+                )
             )
-        )
+        except BaseException as exc:
+            # The caller's own exception, raised from inside a member's copy loop:
+            # it says nothing about the member's data, so it never keeps a partial
+            # file (``_keeps_partial``). Recorded here, not on the exception, which
+            # may refuse new attributes.
+            self._progress_error = exc
+            raise
 
     @staticmethod
     def _close(stream: BinaryIO | None) -> None:

@@ -58,12 +58,16 @@ class _JsonSafeContext:
     """Shared ``to_dict`` for the flat context dataclasses below.
 
     Subclasses declare their own fields (this base adds none). Every field is a
-    JSON-safe scalar (``str`` / ``int`` / ``None`` / ``Literal``), so
-    ``dataclasses.asdict`` is enough — no per-class boilerplate.
+    JSON-safe scalar (``str`` / ``int`` / ``bool`` / ``None`` / ``Literal``) or a tuple
+    of strings, so ``dataclasses.asdict`` is enough — no per-class boilerplate. A tuple
+    comes out as a list, the shape ``json.loads`` gives back.
     """
 
     def to_dict(self) -> dict[str, object]:
-        return dataclasses.asdict(self)
+        return {
+            name: list(value) if isinstance(value, tuple) else value
+            for name, value in dataclasses.asdict(self).items()
+        }
 
 
 class DiagnosticCode(StrEnum):
@@ -138,8 +142,9 @@ class DiagnosticCode(StrEnum):
     ARCHIVE_UNLISTED_DATA = "archive_unlisted_data"
     """A ZIP read from a pipe holds a member its central directory does not list. It
     is left out of the listing, as a read from a file never sees it. Or a DMG disk
-    image holds a partition beside the HFS+ volumes it lists whose contents archivey
-    does not read (an APFS container, an HFS volume, or no filesystem it knows)."""
+    image holds a partition beside the volumes it lists whose contents archivey does
+    not read (an HFS volume, an APFS container it refuses, or no filesystem it knows),
+    or an APFS volume it refuses (encrypted or sealed) beside the volumes it lists."""
     ARCHIVE_UNREAD_SESSION = "archive_unread_session"
     """A CD image holds a session its listing does not read, which another reading
     of the same file does. A raw image (a ``.bin``) read without its ``.cue`` sheet
@@ -155,7 +160,9 @@ class DiagnosticCode(StrEnum):
     read), a partition map that fails its checks (the run tables' ranges are read), a
     partition map or run table name that disagrees with the filesystem the partition
     holds (the filesystem decides), an HFS+ file whose mode and Finder type disagree on
-    whether it is a symlink (the mode decides). The listing comes from what the
+    whether it is a symlink (the mode decides), an APFS directory entry whose type
+    disagrees with its inode's mode (the mode decides), a newest APFS checkpoint that
+    is incomplete (an older one is read). The listing comes from what the
     read could check; another tool may read the damaged structure."""
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
     """A stored timestamp could not be used, so that time is left unset."""
@@ -279,6 +286,22 @@ class DiagnosticCode(StrEnum):
     file, a star or GNU incremental layout in the ustar prefix bytes, or a hard link
     to a symlink. archivey reads it as the format's own tool does; another reader may
     write another tree or refuse it. Advisory: the shapes come from real archives."""
+    MEMBER_FOUND_BY_SCAN = "member_found_by_scan"
+    """A reader opened with ``open_archive(salvage=True)`` found this member by
+    searching past damage, not by the format's normal walk. Its header passed the
+    format's own checks, but nothing says it belongs at this level of the archive: a
+    header of an archive stored inside a member passes too. The context says which
+    fields no check covers. Reported once per member, at listing. Salvage only."""
+    ARCHIVE_REGION_SKIPPED = "archive_region_skipped"
+    """A salvage search (``open_archive(salvage=True)``) stepped over a range of the
+    archive in which no header passed the format's checks, or stopped at a
+    :class:`~archivey.SalvageLimits` limit. The range may hold member data nothing
+    lists. Reported once per range, at listing. Salvage only."""
+    SALVAGE_UNAVAILABLE = "salvage_unavailable"
+    """``open_archive(salvage=True)`` opened a format whose salvage search cannot run:
+    the format has none, or its search cannot run on this reader (an archive inside
+    another one, read forward only). The archive is read as it is without
+    ``salvage=True``. The context's ``reason`` says which. Reported once, at open."""
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -379,6 +402,12 @@ DiagnosticCodeStr = Literal[
     "detection-decoder-limited",
     "member_path_refused",
     "member-path-refused",
+    "member_found_by_scan",
+    "member-found-by-scan",
+    "archive_region_skipped",
+    "archive-region-skipped",
+    "salvage_unavailable",
+    "salvage-unavailable",
 ]
 
 
@@ -607,13 +636,16 @@ class ArchiveEofContext(_JsonSafeContext):
       block, ``"iso"`` for the furthest of an ISO image's volume space, the partitions
       its MBR or GPT lists and the GPT backup header, ``"zip"`` for the end of a ZIP's
       end-of-central-directory record and its declared comment, ``"cpio"`` for the
-      CPIO trailer, ``"lha"`` for an LHA archive's end byte and ``"arj"`` for an ARJ
+      CPIO trailer, ``"lha"`` for an LHA archive's end byte, ``"arj"`` for an ARJ
       archive's end header (where the scan covers 64 KiB and also allows the DOS
-      end-of-file byte 0x1A); a format plugin names
-      its own format. ``observed_bytes`` is
-      that byte's offset past the end. RAR emits one per volume, and its offset counts from that
-      volume's end block, unlike member offsets, which count across the whole set; the
-      message names the volume.
+      end-of-file byte 0x1A) and ``"dmg"`` for the end of an encrypted DMG image's last
+      encrypted block; a format plugin names its own format. ``observed_bytes`` is that
+      byte's offset past the end. RAR emits one per volume, and its offset counts from
+      that volume's end block, unlike member offsets, which count across the whole set;
+      the message names the volume. The UDIF layer of a DMG image (an unencrypted
+      image's file, or an encrypted image's decrypted data) reports each range that no
+      structure its ``koly`` block declares covers, wherever it is, so there
+      ``observed_bytes`` is that byte's offset in that image, not past an end.
     - ``"directory_padding"`` (``ARCHIVE_TRAILING_DATA``) — an ISO directory block's
       padding, which starts at a zero length byte and fills the rest of the logical
       block, holds a non-zero byte. Every record before it is listed; a record whose
@@ -702,7 +734,21 @@ class ArchiveStructureContext(_JsonSafeContext):
       at different sectors; the map's range is read. ``offset`` is the map's start.
     - ``"member_type"``: an HFS+ file's BSD mode and its Finder type and creator
       disagree on whether it is a symlink; the mode decides. Reported on the member;
-      ``offset`` is the file's catalog id.
+      ``offset`` is the file's catalog id. Also an APFS directory entry whose type
+      disagrees with its inode's mode (the mode decides), with ``offset`` the inode id.
+    - ``"apfs_checkpoint"``: the newest APFS checkpoint is incomplete (a
+      checkpoint-map block is missing or damaged), so an older one is read.
+      ``offset`` is the disk offset of that newest container superblock.
+    - ``"link_count"``: an APFS file's sibling-link records (one per hard-link name)
+      disagree with its inode's link count; the directory records decide what is
+      listed. ``offset`` is the inode id.
+    - ``"key_entry"``: a password key entry of an encrypted DMG image that archivey
+      cannot use (another key derivation, cipher or mode, or a field out of range),
+      skipped because another password entry is usable. A password for it is
+      rejected as wrong. ``offset`` is the entry's file offset.
+    - ``"folder_thread"``: HFS+ folders whose thread record is missing, unreadable, or
+      names another parent or name than the folder record. Reported once per volume; the folder
+      records decide the paths, and ``offset`` is the first such folder's catalog id.
     """
 
     kind: Literal["archive_structure"] = "archive_structure"
@@ -1350,6 +1396,82 @@ class ReaderDisagreementContext(_JsonSafeContext):
     ] = "file_named_as_directory"
 
 
+@dataclass(frozen=True)
+class SalvageScanContext(_JsonSafeContext):
+    """A salvage search found a member past damage (``MEMBER_FOUND_BY_SCAN``).
+
+    ``format`` is the archive format's name. ``method`` says how the member was
+    found: ``"header_search"``, a forward search for a header that passes the
+    format's checks. ``offset`` is where the member's header starts, counted from the
+    start of its layer (``RegionSkippedContext.layer``).
+
+    ``confirmed`` is ``True`` when the header after the member's data passes the same
+    checks, or is the format's clean end. An unconfirmed member's sizes are checked by
+    nothing, so its data may run into other members' bytes.
+
+    ``unchecked`` names the fields no check covers. It always holds ``"position"``:
+    nothing says the member belongs at this level of the archive, since a header of an
+    archive stored inside a member passes the checks too. A format adds the fields its
+    damage could leave wrong, such as ``"name"`` when a long name may have been in
+    the lost region.
+    """
+
+    kind: Literal["salvage_scan"] = "salvage_scan"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    format: str = ""
+    method: Literal["header_search"] = "header_search"
+    offset: int = 0
+    confirmed: bool = False
+    unchecked: tuple[str, ...] = ("position",)
+
+
+@dataclass(frozen=True)
+class RegionSkippedContext(_JsonSafeContext):
+    """A salvage search stepped over a range (``ARCHIVE_REGION_SKIPPED``).
+
+    ``format`` is the archive format's name. ``layer`` is ``"archive"`` for the
+    archive's own bytes, or the name of the codec whose decoded stream was searched,
+    such as ``"gzip"``. ``offset`` is where the range starts in that layer, and
+    ``length`` its length in bytes, or ``None`` when it is not known.
+
+    ``reason`` says why the range was skipped:
+
+    - ``"no_header"``: no header in the range passes the format's checks.
+    - ``"search_limit"``: :attr:`SalvageLimits.max_search_bytes
+      <archivey.SalvageLimits.max_search_bytes>` stopped the search, which started at
+      ``offset``. Nothing after it is listed. ``length`` is ``None``.
+    - ``"report_limit"``: the record after the last one
+      :attr:`SalvageLimits.max_reported_regions
+      <archivey.SalvageLimits.max_reported_regions>` allows. ``offset`` is where the
+      first range not reported starts, ``length`` is ``None``, and the message counts
+      the ranges not reported.
+    """
+
+    kind: Literal["region_skipped"] = "region_skipped"
+    archive_name: str | None = None
+    format: str = ""
+    layer: str = "archive"
+    offset: int = 0
+    length: int | None = None
+    reason: Literal["no_header", "search_limit", "report_limit"] = "no_header"
+
+
+@dataclass(frozen=True)
+class SalvageUnavailableContext(_JsonSafeContext):
+    """``open_archive(salvage=True)`` opened a format whose salvage search cannot run
+    (``SALVAGE_UNAVAILABLE``). ``format`` is the archive format's name. ``reason`` is
+    ``"no_salvage_search"`` when archivey has no salvage search for the format, and
+    ``"forward_only_reader"`` when the format has one but it cannot run on this
+    reader: an archive inside another one, which archivey reads forward only."""
+
+    kind: Literal["salvage_unavailable"] = "salvage_unavailable"
+    archive_name: str | None = None
+    format: str = ""
+    reason: Literal["no_salvage_search", "forward_only_reader"] = "no_salvage_search"
+
+
 DiagnosticContext = (
     NameNormalizationContext
     | NameEncodingContext
@@ -1387,6 +1509,9 @@ DiagnosticContext = (
     | NameDuplicateContext
     | UnexpectedNameDuplicateContext
     | ReaderDisagreementContext
+    | SalvageScanContext
+    | RegionSkippedContext
+    | SalvageUnavailableContext
 )
 
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
@@ -1437,6 +1562,9 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_READERS_DISAGREE: "reader_disagreement",
         DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE: "source_change",
         DiagnosticCode.MEMBER_PATH_REFUSED: "path_refused",
+        DiagnosticCode.MEMBER_FOUND_BY_SCAN: "salvage_scan",
+        DiagnosticCode.ARCHIVE_REGION_SKIPPED: "region_skipped",
+        DiagnosticCode.SALVAGE_UNAVAILABLE: "salvage_unavailable",
     }
 )
 
@@ -1472,7 +1600,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-one codes are deliberately
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-four codes are deliberately
 **out**, and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -1550,6 +1678,10 @@ The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-one codes are delibe
   Their sibling ``MEMBER_NAME_DUPLICATE_UNEXPECTED`` is **in** the set: it reports a
   repeated name only in a format with no way to repeat one (CAB), where no writer
   makes the shape (maintainer, 2026-11-11).
+- ``MEMBER_FOUND_BY_SCAN``, ``ARCHIVE_REGION_SKIPPED`` and ``SALVAGE_UNAVAILABLE`` —
+  recorded only when the caller asked for ``salvage=True``, which lists past damage on
+  purpose. ``STRICT`` would stop the salvage listing at its first found member. The
+  damage itself still raises at the end of the listing, as without salvage.
 
 ``ARCHIVE_UNREAD_SESSION`` is **in** the set, as ``ARCHIVE_UNLISTED_DATA`` is: the
 listing leaves out a filesystem the file holds, which another reading of the same file
@@ -1564,6 +1696,7 @@ _INFO_LOG_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.MEMBER_NAME_DUPLICATE,
         DiagnosticCode.MEMBER_READERS_DISAGREE,
         DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE,
+        DiagnosticCode.SALVAGE_UNAVAILABLE,
     }
 )
 """Codes whose log record is INFO rather than WARNING (``logging`` spec).
@@ -1575,7 +1708,8 @@ and ``MEMBER_READERS_DISAGREE`` report shapes
 of ordinary archives that only matter to a caller comparing readers, who asks for them
 through the policy. ``SOURCE_CHANGE_UNDETECTABLE`` is recorded at every open of a
 remote archive whose store cannot pin a version, so a warning would fire on every one.
-The policy still collects, counts and raises them like any other code.
+``SALVAGE_UNAVAILABLE`` says how the caller's ``salvage=True`` was read, not what the
+archive holds. The policy still collects, counts and raises them like any other code.
 """
 
 
@@ -2124,6 +2258,9 @@ __all__ = [
     "OnDiagnostic",
     "PathRefusedContext",
     "ReaderDisagreementContext",
+    "RegionSkippedContext",
+    "SalvageScanContext",
+    "SalvageUnavailableContext",
     "ScanRaceContext",
     "SeekIndexContext",
     "SelectorUnmatchedContext",

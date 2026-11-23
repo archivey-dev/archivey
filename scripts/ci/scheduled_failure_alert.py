@@ -6,7 +6,9 @@ a scheduled or post-merge (``push``) run; that file says which runs and why. The
 open issue per workflow, titled ``Scheduled run failing: <workflow>``:
 
 - **A failed run** opens the issue, or comments on the open one. Each report lists the
-  jobs that failed (none when the run started no jobs or its jobs could not be read) and
+  jobs that failed or timed out, or when none did, the jobs that ended another way that
+  is not a pass (cancelled after a step ran, ``startup_failure`` and so on). The list
+  is empty when the run started no jobs or its jobs could not be read. It
   keeps that list in a hidden `MARKER` line. A job that the previous report's list did
   not name is marked **new**, so a second failure in a workflow that is already red does
   not read as the old one. A report with no earlier list marks nothing new.
@@ -16,7 +18,8 @@ open issue per workflow, titled ``Scheduled run failing: <workflow>``:
   as a failure although no code ran. When the workflow's previous scheduled or
   post-merge run on `main` lost a job the same way, the run reports as a failure that
   names the lost jobs, so a shortage that lasts, or a job no runner can ever take, is
-  not silent. A job that failed or timed out always reports the run.
+  not silent. A job that failed, timed out, or started and was then cancelled always
+  reports the run.
 - **A green scheduled run** closes the issue. A green ``push`` run closes nothing: some
   workflows search for much less time after a merge than on their schedule.
 
@@ -77,26 +80,42 @@ def title(workflow: str) -> str:
     return f"Scheduled run failing: {workflow}"
 
 
+#: Job conclusions that do not make a run red.
+_FINE = frozenset({"success", "skipped", "neutral"})
+
+
+def _is_lost(job: dict) -> bool:
+    return job.get("conclusion") == "cancelled" and not job.get("steps")
+
+
 def failed_jobs(jobs: list[dict]) -> list[str]:
-    """The names of the jobs that failed or timed out, sorted, each once."""
-    return sorted({j["name"] for j in jobs if j.get("conclusion") in FAILED})
+    """The names of the jobs that failed or timed out, sorted, each once.
+
+    When none did, the jobs that did not pass and were not lost (cancelled after a step
+    ran, ``startup_failure`` and so on), so the report of such a run still names the
+    job that made it red. A fail-fast run's other jobs, cancelled as it stopped, stay
+    out while a job failed.
+    """
+    failed = {j["name"] for j in jobs if j.get("conclusion") in FAILED}
+    if not failed:
+        failed = {
+            j["name"]
+            for j in jobs
+            if j.get("conclusion") not in _FINE and not _is_lost(j)
+        }
+    return sorted(failed)
 
 
 def lost_jobs(jobs: list[dict]) -> list[str]:
-    """The jobs GitHub cancelled before any step ran, when no job failed or timed out.
+    """The jobs GitHub cancelled before any step ran, when they are the run's only problem.
 
     Such a job was never taken by a runner, so nothing in the repository was checked.
-    The list is empty when a job failed or timed out: that run reports as usual.
+    The list is empty when any other job did not pass: one that failed or timed out, or
+    one that started and was then cancelled. That run reports as usual.
     """
-    if failed_jobs(jobs):
+    if not all(_is_lost(j) for j in jobs if j.get("conclusion") not in _FINE):
         return []
-    return sorted(
-        {
-            j["name"]
-            for j in jobs
-            if j.get("conclusion") == "cancelled" and not j.get("steps")
-        }
-    )
+    return sorted({j["name"] for j in jobs if _is_lost(j)})
 
 
 def previous_jobs(issue: dict) -> list[str] | None:
@@ -212,8 +231,9 @@ def _previous_run_lost(workflow: str, run_id: str) -> bool:
 
     Its newest attempt counts, so a green rerun clears it. A cancelled or skipped run is
     passed over, as the alert passes over such runs: a superseded run's queued jobs
-    also end cancelled with no steps. True when the runs or the previous run's jobs
-    cannot be read: a report that might be noise is better than a gap nobody sees.
+    also end cancelled with no steps. A lost job counts whatever the previous run's
+    other jobs did. True when the runs or the previous run's jobs cannot be read: a
+    report that might be noise is better than a gap nobody sees.
     """
     try:
         runs = json.loads(
@@ -246,7 +266,7 @@ def _previous_run_lost(workflow: str, run_id: str) -> bool:
         data = json.loads(_gh("run", "view", previous, "--json", "jobs"))
     except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError):
         return True
-    return bool(lost_jobs(data.get("jobs") or []))
+    return any(_is_lost(j) for j in data.get("jobs") or [])
 
 
 def main() -> int:

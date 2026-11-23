@@ -7,6 +7,7 @@ scenarios (path traversal, symlink escape, zip bomb, entry-count bomb).
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import gzip
 import io
@@ -35,6 +36,7 @@ from archivey import (
     DecoderLimits,
     ExtractionLimits,
     ExtractionPolicy,
+    ExtractionResult,
     ExtractionStatus,
     OnError,
     OverwritePolicy,
@@ -6919,6 +6921,7 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
     with the same collision key both marked current, which last-entry-wins prevents.
     """
     from archivey.internal.extraction import _Claim, _RunState
+    from archivey.internal.placements import Placements
 
     dest = tmp_path / "out"
     dest.mkdir()
@@ -6928,7 +6931,7 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
     coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
     written_paths = {written}
     # The claim the earlier FILE member left behind, keyed casefold(NFC(...)).
-    collision_map = {"readme": _Claim(written, 0, written)}
+    collision_map = {"readme": _Claim(written, 0, written, "readme")}
     anti = ArchiveMember(type=MemberType.ANTI, name="README")
 
     coordinator._state = _RunState(
@@ -6940,7 +6943,7 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
         reader=cast("BaseArchiveReader", SimpleNamespace()),
         links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
-        collision_map=collision_map,
+        placements=Placements(by_key=collision_map),
     )
     result = coordinator._apply_anti_item(anti, written)
 
@@ -6953,6 +6956,7 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
 def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
     """A no-op anti (nothing written this run at that path) releases nothing."""
     from archivey.internal.extraction import _Claim, _RunState
+    from archivey.internal.placements import Placements
 
     dest = tmp_path / "out"
     dest.mkdir()
@@ -6961,7 +6965,7 @@ def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
 
     coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
     other = dest / "other.txt"
-    collision_map = {"other.txt": _Claim(other, 0, other)}
+    collision_map = {"other.txt": _Claim(other, 0, other, "other.txt")}
     anti = ArchiveMember(type=MemberType.ANTI, name="README")
 
     coordinator._state = _RunState(
@@ -6973,12 +6977,12 @@ def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
         reader=cast("BaseArchiveReader", SimpleNamespace()),
         links=LinkWatch(dest.resolve(), None),
         written_paths=set(),
-        collision_map=collision_map,
+        placements=Placements(by_key=collision_map),
     )
     coordinator._apply_anti_item(anti, pre_existing)
 
     assert pre_existing.read_bytes() == b"not ours"  # never ours to delete
-    assert collision_map == {"other.txt": _Claim(other, 0, other)}
+    assert collision_map == {"other.txt": _Claim(other, 0, other, "other.txt")}
 
 
 def test_anti_item_finds_a_case_variant_through_the_collision_map(
@@ -6991,6 +6995,7 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
     the file it names survived.
     """
     from archivey.internal.extraction import _Claim, _RunState
+    from archivey.internal.placements import Placements
 
     dest = tmp_path / "out"
     dest.mkdir()
@@ -6999,7 +7004,7 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
 
     coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
     written_paths = {written}
-    collision_map = {"readme": _Claim(written, 0, written)}
+    collision_map = {"readme": _Claim(written, 0, written, "readme")}
     anti = ArchiveMember(type=MemberType.ANTI, name="readme")
 
     coordinator._state = _RunState(
@@ -7011,7 +7016,7 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
         reader=cast("BaseArchiveReader", SimpleNamespace()),
         links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
-        collision_map=collision_map,
+        placements=Placements(by_key=collision_map),
     )
     result = coordinator._apply_anti_item(anti, dest / "readme")
 
@@ -7030,6 +7035,7 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
 def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
     """TRUSTED keys on the exact name, so ``readme`` leaves ``README`` alone."""
     from archivey.internal.extraction import _Claim, _RunState
+    from archivey.internal.placements import Placements
 
     dest = tmp_path / "out"
     dest.mkdir()
@@ -7038,7 +7044,7 @@ def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
 
     coordinator = ExtractionCoordinator(policy=ExtractionPolicy.TRUSTED)
     written_paths = {written}
-    collision_map = {"README": _Claim(written, 0, written)}
+    collision_map = {"README": _Claim(written, 0, written, "README")}
     anti = ArchiveMember(type=MemberType.ANTI, name="readme")
 
     coordinator._state = _RunState(
@@ -7050,13 +7056,52 @@ def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
         reader=cast("BaseArchiveReader", SimpleNamespace()),
         links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
-        collision_map=collision_map,
+        placements=Placements(by_key=collision_map),
     )
     coordinator._apply_anti_item(anti, dest / "readme")
 
     assert written.read_bytes() == b"A"
     assert written_paths == {written}
-    assert collision_map == {"README": _Claim(written, 0, written)}
+    assert collision_map == {"README": _Claim(written, 0, written, "README")}
+
+
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="only on Windows do the filesystem and Path equality both fold case",
+)
+def test_anti_item_under_trusted_on_windows_releases_the_claim(tmp_path: Path) -> None:
+    """On Windows ``readme`` is the ``README`` this run wrote, under TRUSTED too: the
+    anti-item deletes it, and its claim, made under the exact key ``README``, goes
+    with it."""
+    from archivey.internal.extraction import _RunState
+    from archivey.internal.placements import Placements
+
+    dest = tmp_path / "out"
+    dest.mkdir()
+    written = dest / "README"
+    written.write_bytes(b"A")
+
+    coordinator = ExtractionCoordinator(policy=ExtractionPolicy.TRUSTED)
+    written_paths = {written}
+    # Claimed the way a run claims, so the claim is found by its file too.
+    placements = Placements()
+    placements.claim(written, "README", written, 0)
+    anti = ArchiveMember(type=MemberType.ANTI, name="readme")
+
+    coordinator._state = _RunState(
+        dest=dest,
+        dest_root=dest.resolve(),
+        tracker=BombTracker(None, None),
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
+        written_paths=written_paths,
+        placements=placements,
+    )
+    coordinator._apply_anti_item(anti, dest / "readme")
+
+    assert not written.exists()
+    assert written_paths == set()
+    assert not placements
 
 
 def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
@@ -7066,6 +7111,7 @@ def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
     file ``X`` (claimed under key ``x``). An anti-item ``x`` names the directory.
     """
     from archivey.internal.extraction import _Claim, _RunState
+    from archivey.internal.placements import Placements
 
     dest = tmp_path / "out"
     dest.mkdir()
@@ -7078,7 +7124,7 @@ def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
 
     coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
     written_paths = {directory, file_}
-    collision_map = {"x": _Claim(file_, 1, file_)}
+    collision_map = {"x": _Claim(file_, 1, file_, "x")}
     anti = ArchiveMember(type=MemberType.ANTI, name="x")
 
     coordinator._state = _RunState(
@@ -7090,14 +7136,14 @@ def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
         reader=cast("BaseArchiveReader", SimpleNamespace()),
         links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
-        collision_map=collision_map,
+        placements=Placements(by_key=collision_map),
     )
     result = coordinator._apply_anti_item(anti, directory)
 
     assert result.path == directory
     assert not directory.exists()
     assert file_.read_bytes() == b"F"
-    assert collision_map == {"x": _Claim(file_, 1, file_)}
+    assert collision_map == {"x": _Claim(file_, 1, file_, "x")}
 
 
 @pytest.mark.parametrize(
@@ -7822,3 +7868,91 @@ def test_a_run_link_made_where_a_parent_was_looked_up_before_is_refused(
     statuses = {r.member.name: r.status for r in report.results}
     assert statuses["p/x"] is ExtractionStatus.BLOCKED
     assert not (dest / "e" / "x").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks and hard links of one file")
+@pytest.mark.parametrize("overwrite", [OverwritePolicy.REPLACE, OverwritePolicy.ERROR])
+# ``e/A`` has the name ``s/A`` has, so only the key tells them apart.
+@pytest.mark.parametrize("link", ["b", "e/A"])
+def test_a_hard_link_does_not_take_the_claim_of_its_target(
+    tmp_path: Path, overwrite: OverwritePolicy, link: str
+) -> None:
+    # The link is a hard link of ``d/A``, so two claims share one inode. ``s/A``
+    # reaches ``d/A`` through the caller's symlink: it collides with ``d/A``, whose
+    # claim is under its own key, and not with the link, whatever the identity
+    # index would answer for the file.
+    dest = tmp_path / "out"
+    (dest / "d").mkdir(parents=True)
+    (dest / "e").mkdir()
+    (dest / "s").symlink_to("d")
+    archive = _tar_bytes(
+        [("file", "d/A", b"one"), ("hard", link, "d/A"), ("file", "s/A", b"two")]
+    )
+    if overwrite is OverwritePolicy.ERROR:
+        with pytest.raises(ExtractionError) as info:
+            open_and_extract(
+                io.BytesIO(archive),
+                dest,
+                policy=ExtractionPolicy.STANDARD,
+                overwrite=overwrite,
+            )
+        assert os.fspath(dest / "d" / "A") in str(info.value)
+        return
+    report = open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.STANDARD,
+        overwrite=overwrite,
+    )
+    assert [r.status for r in report.results] == [
+        ExtractionStatus.OVERWRITTEN,
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    assert report.results[2].path == dest / "d" / "A"
+    assert (dest / "d" / "A").read_bytes() == b"two"
+    assert (dest / link).read_bytes() == b"one"
+
+
+@pytest.mark.parametrize(
+    "policy", [ExtractionPolicy.STANDARD, ExtractionPolicy.TRUSTED]
+)
+@pytest.mark.parametrize("mkdir_fails", [False, True])
+def test_a_directory_that_replaces_a_file_retires_the_file_s_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    policy: ExtractionPolicy,
+    mkdir_fails: bool,
+) -> None:
+    # The file's claim goes once the file is gone: when the directory landed over
+    # it, and when its removal succeeded and the directory then could not be made.
+    coordinators: list[ExtractionCoordinator] = []
+    run = ExtractionCoordinator.run
+
+    def spy(
+        self: ExtractionCoordinator, reader: BaseArchiveReader, dest: str | Path
+    ) -> list[ExtractionResult]:
+        coordinators.append(self)
+        return run(self, reader, dest)
+
+    monkeypatch.setattr(ExtractionCoordinator, "run", spy)
+    dest = tmp_path / "out"
+    if mkdir_fails:
+        real_mkdir = extraction_module.os.mkdir
+
+        def mkdir(path: object, *args: object, **kwargs: object) -> None:
+            if os.fspath(cast("str", path)).endswith("x"):
+                raise OSError(errno.EACCES, "denied")
+            real_mkdir(cast("str", path), *args, **kwargs)
+
+        monkeypatch.setattr(extraction_module.os, "mkdir", mkdir)
+    archive = _tar_bytes([("file", "x", b"one"), ("dir", "x", None)])
+    with contextlib.suppress(ExtractionError, OSError):
+        open_and_extract(
+            io.BytesIO(archive),
+            dest,
+            policy=policy,
+            overwrite=OverwritePolicy.REPLACE,
+        )
+    assert not (dest / "x").is_file()
+    assert not coordinators[0]._state.placements
