@@ -38,6 +38,14 @@ on:
     paths:
       - packages/archivey-codecs/**
       - .github/workflows/codecs-publish.yml
+      # The Python twins and the decoders they wrap: the parity tests compare them
+      # with the kernels, so a change to either side runs them.
+      - src/archivey/internal/kernels/**
+      - src/archivey/internal/streams/codecs/arm64_filter.py
+      - src/archivey/internal/streams/codecs/riscv_filter.py
+      - src/archivey/internal/streams/codecs/lzo_decoder.py
+      - src/archivey/internal/streams/codecs/lzx_decoder.py
+      - src/archivey/internal/streams/codecs/unix_compress_decoder.py
   workflow_dispatch:
     inputs:
       target:
