@@ -761,6 +761,27 @@ def test_overlapping_apm_entries_use_the_run_tables() -> None:
         assert "partition_map" in _structures(reader)
 
 
+def test_overlapping_gpt_entries_use_the_run_tables() -> None:
+    """The GPT twin of the test above: the second entry starts at the first's
+    sector (the CRCs are computed after the patch)."""
+    hfs = d.write_hfsplus([d.Node("a.txt", data=b"a")])
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+
+    def same_start(entries: bytearray) -> None:
+        (first,) = struct.unpack_from("<Q", entries, 32)
+        struct.pack_into("<Q", entries, 128 + 32, first)
+
+    disk = d.write_gpt(
+        [d.Partition(volume, name="one"), d.Partition(bytes(len(volume)), name="two")],
+        patch_entries=same_start,
+    )
+    image = d.write_udif(disk.segments, tables=disk.tables).image
+    with _open(image) as reader:
+        assert [m.name for m in reader.members() if m.is_file] == ["a.txt"]
+        assert reader.info.extra["dmg.partition_scheme"] == "none"
+        assert "partition_map" in _structures(reader)
+
+
 def test_a_damaged_primary_gpt_falls_back_to_the_backup() -> None:
     def break_crc(header: bytearray) -> None:
         header[16] ^= 0xFF
