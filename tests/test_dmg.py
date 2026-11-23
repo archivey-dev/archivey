@@ -283,6 +283,97 @@ def test_any_password_entry_of_an_encrypted_image_unlocks_it() -> None:
         _open(image, password="third")
 
 
+def _kdf_999(blob: bytearray) -> None:
+    struct.pack_into(">I", blob, 0, 999)
+
+
+def _no_iterations(blob: bytearray) -> None:
+    struct.pack_into(">I", blob, 8, 0)
+
+
+_KDF_999 = d.EncryptedEntry(patch_blob=_kdf_999)
+_NO_ITERATIONS = d.EncryptedEntry(patch_blob=_no_iterations)
+
+
+@_NEEDS_CRYPTO
+@pytest.mark.parametrize(
+    "unusable", [_KDF_999, _NO_ITERATIONS], ids=["kdf", "iterations"]
+)
+def test_a_password_entry_archivey_cannot_use_is_skipped_and_reported(
+    unusable: d.EncryptedEntry,
+) -> None:
+    # The first entry is unsupported or damaged; the second unlocks the image.
+    image = _encrypted(entries=[unusable, d.EncryptedEntry()])
+    with _open(image, password="secret") as reader:
+        assert "key_entry" in _structures(reader)
+        assert reader.read("hello.txt") == _expected()["hello.txt"]
+
+
+@_NEEDS_CRYPTO
+def test_the_first_refusal_is_raised_when_no_password_entry_is_usable() -> None:
+    with pytest.raises(UnsupportedFeatureError, match="algorithm 999"):
+        _open(_encrypted(entries=[_KDF_999, _NO_ITERATIONS]), password="secret")
+    with pytest.raises(CorruptionError, match="0 PBKDF2 iterations"):
+        _open(_encrypted(entries=[_NO_ITERATIONS, _KDF_999]), password="secret")
+
+
+@_NEEDS_CRYPTO
+def test_an_oversized_key_entry_refuses_the_image_beside_a_usable_one() -> None:
+    image = _encrypted(
+        entries=[d.EncryptedEntry(), d.EncryptedEntry()],
+        patch_header=_header_patch(88, ">Q", 5000),  # the first entry's size
+    )
+    with pytest.raises(ResourceLimitError, match="5000 bytes"):
+        _open(image, password="secret")
+
+
+@_NEEDS_CRYPTO
+def test_bytes_after_the_encrypted_data_are_reported() -> None:
+    image = _encrypted()
+    with _open(image + bytes(100) + b"\xffJUNK", password="secret") as reader:
+        (trailing,) = [
+            x
+            for x in reader.diagnostics.retained
+            if x.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+        ]
+        # Counted from the end of the last encrypted block, the image's end here.
+        assert trailing.context.observed_bytes == 100
+        assert "hello.txt" in [m.name for m in reader.members()]
+    with _open(image + bytes(4096), password="secret") as reader:
+        reader.members()
+        assert DiagnosticCode.ARCHIVE_TRAILING_DATA not in _codes(reader)
+
+
+@_NEEDS_CRYPTO
+def test_an_encrypted_image_names_decrypted_image_offsets() -> None:
+    """Its errors name offsets into the decrypted image, not into the file, where
+    those bytes are ciphertext at another offset."""
+    hfs = d.write_hfsplus([d.Node("a.txt", data=bytes(range(256)) * 400)])
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+    disk = d.write_gpt([d.Partition(volume)])
+    udif = d.write_udif(disk.segments, tables=disk.tables, codec=d.ZLIB, run_sectors=64)
+    plain = bytearray(udif.image)
+    block, _ = hfs.forks["a.txt"][0]
+    sector = disk.starts[0] + block * hfs.block_size // d.SECTOR
+    run = next(r for r in udif.runs if r.sector <= sector < r.sector + r.sectors)
+    plain[run.stored_at + 10 : run.stored_at + 14] = bytes(4)
+    with (
+        pytest.raises(
+            CorruptionError,
+            match=f"stored at decrypted image offset {run.stored_at}\\)",
+        ),
+        _open(_encrypted(bytes(plain)), password="secret") as reader,
+    ):
+        reader.read("a.txt")
+    with (
+        pytest.raises(
+            CorruptionError, match=f"stored at file offset {run.stored_at}\\)"
+        ),
+        _open(bytes(plain)) as reader,
+    ):
+        reader.read("a.txt")
+
+
 @_NEEDS_CRYPTO
 def test_an_image_locked_only_by_a_certificate_is_refused_by_name() -> None:
     image = _encrypted(entries=[d.EncryptedEntry(kind=2)])
