@@ -37,6 +37,7 @@ from archivey.exceptions import (
     exception_detail,
 )
 from archivey.formats import ReaderContext, ReaderSource
+from archivey.internal.listing_limits import str_retained_bytes
 from archivey.internal.streams.codecs.lzfse_decoder import (
     lzfse_decompress,
     lzvn_decompress,
@@ -857,7 +858,7 @@ def folder_path(
             continue
         name = folders[each][1]
         base = f"{base}/{name}" if base else name
-        charge(len(base) + 32, "the HFS+ folder paths")
+        charge(str_retained_bytes(base) + 32, "the HFS+ folder paths")
         cache[each] = base
     return cache[cnid]
 
