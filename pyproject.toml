@@ -202,6 +202,14 @@ dev = [
     # compared with; it runs only in a subprocess there, because importing it re-enables
     # the GIL on free-threaded builds. archivey does not import it.
     "lzfse>=0.4.2",
+    # Two more readers the DMG reader is compared with (tests/test_dmg_oracles.py), each
+    # run in a subprocess; archivey does not import them. dpp-py is Rust, libyal's three
+    # bindings are C. The markers keep to the platforms with wheels (no PyPy for libyal,
+    # no 3.15 wheels for libmodi and libfshfs); the tests skip elsewhere.
+    "dpp-py>=0.4.1; platform_python_implementation == 'CPython' and python_version < '3.15'",
+    "libmodi-python>=20260902; platform_python_implementation == 'CPython' and python_version < '3.15'",
+    "libfshfs-python>=20260922; platform_python_implementation == 'CPython' and python_version < '3.15'",
+    "libfsapfs-python>=20261030; platform_python_implementation == 'CPython' and python_version < '3.15'",
     # ncompress is a test-only LZW *compressor* used to generate .Z fixtures for the
     # native unix-compress decoder (core; decode-only).
     "ncompress>=1.0.0",
