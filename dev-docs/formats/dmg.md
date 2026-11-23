@@ -427,6 +427,7 @@ after a merge that touches the DMG code; the table is its job summary.
 | Every encrypted `hdiutil` fixture lists and reads as macOS mounts it with the password `archivey`, and asks for it without (`test_an_encrypted_hdiutil_image_asks_for_its_password`) |
 | Encrypted test-writer images with each key size, key wrap and block size read as the plain image (`test_an_encrypted_builder_image_reads_as_the_plain_one`); a damaged header is refused before any password (`test_a_damaged_encrypted_header_is_refused_before_any_password`) |
 | 7-Zip extracts the same bytes, with the listed differences (`test_7zip_*`) |
+| dpp-py and libyal read the same bytes, with their gaps pinned so a fixed gap fails the test (`tests/test_dmg_oracles.py`) |
 | Damage fails the member it touches, and a damaged catalog node delivers the members before it |
 | `verify_all()` raises every file of an `hdiutil` image to `CHECKSUM`, decoding each table once (`test_verify_all_raises_every_file_of_an_hdiutil_image_to_checksum`) |
 | A changed byte no member reads fails the files of its partition, and a table over two partitions fails both (`test_a_change_no_member_reads_is_caught_by_verify_all`, `test_one_table_over_two_partitions_is_checked_whole`) |

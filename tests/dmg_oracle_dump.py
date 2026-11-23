@@ -18,6 +18,7 @@ import json
 import struct
 import sys
 import unicodedata
+from typing import Any
 
 
 def _name(path: str) -> str:
@@ -63,15 +64,17 @@ def _dpp(image: str) -> dict[str, list[str]]:
 class _Window:
     """A file object over part of a pymodi handle: one partition of the disk."""
 
-    def __init__(self, handle: object, start: int, size: int) -> None:
+    def __init__(
+        self, handle: Any, start: int, size: int
+    ) -> None:  # pymodi has no stubs
         self._handle, self._start, self._size, self._pos = handle, start, size, 0
 
     def read(self, n: int = -1) -> bytes:
         if n is None or n < 0:
             n = self._size - self._pos
         n = max(0, min(n, self._size - self._pos))
-        self._handle.seek(self._start + self._pos)  # type: ignore[attr-defined]
-        data = self._handle.read(n)  # type: ignore[attr-defined]
+        self._handle.seek(self._start + self._pos)
+        data = self._handle.read(n)
         self._pos += len(data)
         return data
 

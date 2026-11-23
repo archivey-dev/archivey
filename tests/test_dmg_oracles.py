@@ -2,11 +2,13 @@
 
 7-Zip is the main oracle (``test_dmg.py``, ``test_dmg_apfs.py``); these two add a second
 and third opinion on the same images, the ``hdiutil`` fixtures and the builder images.
-Each runs in a subprocess (``tests/dmg_oracle_dump.py``). Every file and symlink that
-both readers list must match, and every entry the other reader lists must be one
-archivey lists too, except the gaps below, which are the other reader's (checked by hand
-against the macOS listing in ``fixtures/external/dmg_hdiutil/`` and the builder's own
-tree):
+Each runs in a subprocess (``tests/dmg_oracle_dump.py``). Every file, symlink and
+directory archivey lists must be listed the same way by the other reader, and the other
+reader may list nothing archivey does not, except the gaps below, which are the other
+reader's (checked by hand against the macOS listing in
+``fixtures/external/dmg_hdiutil/`` and the builder's own tree). Each gap is pinned: when
+a reader stops getting it wrong, the test fails and asks for the pin to go, so the
+comparison grows with the reader.
 
 - Both list the HFS+ private folders that a mount hides, and list a FIFO as an empty
   file.
@@ -15,8 +17,8 @@ tree):
   APFS plain-key (case-sensitive) volumes no entries, and reads the builder's sparse
   APFS file wrongly.
 - libyal has no xz runs, fails on some bzip2 runs (``invalid run length`` / ``invalid
-  origin pointer``) and on symlinks in the bzip2 HFS+ fixture, and refuses the builder's
-  sparse APFS file and decmpfs type 12.
+  origin pointer``), reads no file or symlink of the bzip2 HFS+ fixture (only its
+  directories), and refuses the builder's sparse APFS file and decmpfs type 12.
 """
 
 from __future__ import annotations
@@ -73,23 +75,26 @@ _WRONG = {
     ("dpp", "hfs-U"): {"hello.txt", "sub dir/hardlink.txt"},
     ("dpp", "hfs-builder"): _HFS_BUILDER_LINKS | {"comp/t12.txt", "comp/big12.bin"},
     ("dpp", "apfs-builder"): {"sparse.bin", "comp/t12.txt"},
-    ("libyal", "hfs-UDBZ.dmg"): {"*"},
     ("libyal", "apfs-builder"): {"sparse.bin", "comp/t12.txt"},
 }
+# Images where the other reader lists the directories but reads no file or symlink.
+_NO_MEMBER_DATA = {("libyal", "hfs-UDBZ.dmg")}
+# Images where the other reader lists nothing and reports no error: (reader, prefix).
+_LISTS_NOTHING = {("dpp", "apfs-builder-plain")}
 
-
-def _hfs_builder(layout: str, codec: int) -> bytes:
-    from tests.test_dmg import _image
-
-    return _image(layout=layout, codec=codec)
-
-
-def _apfs_builder(layout: str) -> bytes:
-    from tests.test_dmg_apfs import _container
-
-    return a.apfs_dmg(_container(hashed=True).container, layout=layout)
-
-
+_HDIUTIL = (
+    "hfs-UDZO.dmg",
+    "hfs-UDBZ.dmg",
+    "hfs-ULFO.dmg",
+    "hfs-ULMO.dmg",
+    "hfs-UDRO.dmg",
+    "hfs-UDCO.dmg",
+    "apfs-UDZO.dmg",
+    "apfs-UDBZ.dmg",
+    "apfs-ULFO.dmg",
+    "apfs-ULMO.dmg",
+    "apfs-UDRO.dmg",
+)
 _CODECS = {
     "raw": d.RAW,
     "zlib": d.ZLIB,
@@ -98,39 +103,33 @@ _CODECS = {
     "adc": d.ADC,
     "lzfse": d.LZFSE,
 }
-_IMAGES: dict[str, object] = {
-    **{
-        name: name
-        for name in (
-            "hfs-UDZO.dmg",
-            "hfs-UDBZ.dmg",
-            "hfs-ULFO.dmg",
-            "hfs-ULMO.dmg",
-            "hfs-UDRO.dmg",
-            "hfs-UDCO.dmg",
-            "apfs-UDZO.dmg",
-            "apfs-UDBZ.dmg",
-            "apfs-ULFO.dmg",
-            "apfs-ULMO.dmg",
-            "apfs-UDRO.dmg",
-        )
-    },
-    **{
-        f"hfs-builder-{layout}-{codec}": (layout, codec)
-        for layout in ("gpt", "apm", "none")
-        for codec in _CODECS
-    },
-    **{f"apfs-builder-{layout}": layout for layout in ("gpt", "apm", "none")},
+_LAYOUTS = ("gpt", "apm", "none")
+# Builder images: id -> (layout, codec name) for HFS+, id -> (layout, hashed keys) for
+# APFS.
+_HFS_BUILDER = {
+    f"hfs-builder-{layout}-{codec}": (layout, codec)
+    for layout in _LAYOUTS
+    for codec in _CODECS
 }
+_APFS_BUILDER = {
+    f"apfs-builder-{kind}-{layout}": (layout, kind == "hashed")
+    for layout in _LAYOUTS
+    for kind in ("hashed", "plain")
+}
+_IMAGES = sorted({*_HDIUTIL, *_HFS_BUILDER, *_APFS_BUILDER})
 
 
 def _image_bytes(image_id: str) -> bytes:
-    spec = _IMAGES[image_id]
-    if image_id.startswith("hfs-builder"):
-        layout, codec = spec  # type: ignore[misc]
-        return _hfs_builder(layout, _CODECS[codec])
-    if image_id.startswith("apfs-builder"):
-        return _apfs_builder(spec)  # type: ignore[arg-type]
+    if image_id in _HFS_BUILDER:
+        from tests.test_dmg import _image
+
+        layout, codec = _HFS_BUILDER[image_id]
+        return _image(layout=layout, codec=_CODECS[codec])
+    if image_id in _APFS_BUILDER:
+        from tests.test_dmg_apfs import _container
+
+        layout, hashed = _APFS_BUILDER[image_id]
+        return a.apfs_dmg(_container(hashed=hashed).container, layout=layout)
     return (_FIXTURES / image_id).read_bytes()
 
 
@@ -177,7 +176,7 @@ def _hidden(name: str) -> bool:
     return name.startswith(_HIDDEN)
 
 
-@pytest.mark.parametrize("image_id", sorted(_IMAGES))
+@pytest.mark.parametrize("image_id", _IMAGES)
 @pytest.mark.parametrize(
     "reader", [pytest.param(r, marks=m) for r, m in _ORACLES.items()]
 )
@@ -188,21 +187,34 @@ def test_other_readers_agree_with_archivey(
     theirs = _theirs(tmp_path, reader, image)
     refused = _REFUSED.get((reader, image_id))
     if refused is not None:
-        # Pinned so that a reader that learns the codec makes this test start comparing.
         assert not theirs["ok"], f"{reader} now reads {image_id}: drop it from _REFUSED"
         assert refused in theirs["error"]
         pytest.skip(f"{reader} cannot read {image_id}: {theirs['error'][:120]}")
     assert theirs["ok"], theirs["error"]
+    ours = _ours(image)
+    got = {n: v for n, v in theirs["entries"].items() if not _hidden(n)}
+    if any(r == reader and image_id.startswith(p) for r, p in _LISTS_NOTHING):
+        assert not got, f"{reader} now lists {image_id}: drop it from _LISTS_NOTHING"
+        pytest.skip(f"{reader} lists nothing in {image_id}")
+    if (reader, image_id) in _NO_MEMBER_DATA:
+        for name, entry in ours.items():
+            if entry[0] == "dir":
+                assert got.get(name) == entry, (name, got.get(name))
+            elif entry != ["other"]:
+                assert got.get(name, [""])[0] == "error", (
+                    f"{reader} now reads {name} in {image_id}: drop it from"
+                    " _NO_MEMBER_DATA"
+                )
+        pytest.skip(f"{reader} reads no file or symlink of {image_id}")
     wrong: set[str] = set()
     for (who, prefix), names in _WRONG.items():
         if who == reader and image_id.startswith(prefix):
             wrong |= names
-    if "*" in wrong:
-        pytest.skip(f"{reader} cannot read the members of {image_id}")
-    ours = _ours(image)
-    got = {n: v for n, v in theirs["entries"].items() if not _hidden(n)}
-    if reader == "dpp" and image_id.startswith("apfs-builder") and not got:
-        pytest.fail("dpp lists nothing in a hashed-key APFS volume")
+    for name in wrong:
+        assert name in ours, f"{name} is not in {image_id}: drop it from _WRONG"
+        assert got.get(name) != ours[name], (
+            f"{reader} now reads {name} in {image_id}: drop it from _WRONG"
+        )
     for name, entry in ours.items():
         if name in wrong or entry == ["other"]:
             continue
