@@ -35,6 +35,7 @@ import zlib
 from collections.abc import Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING, NamedTuple
 
+from archivey.config import ProcessIsolation
 from archivey.diagnostics import DiagnosticCode, UnexpectedNameDuplicateContext
 from archivey.exceptions import (
     ArchiveyError,
@@ -53,6 +54,7 @@ from archivey.formats import (
     ReaderContext,
     ReaderSource,
 )
+from archivey.internal import native
 from archivey.internal.config import check_decoder_memory
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.listing_limits import metadata_limit_error
@@ -778,11 +780,21 @@ class _FolderStream:
         self._history = b""
         # Set when a decode raised, so the stream is not parked for the next member.
         self.failed = False
-        self._lzx: LzxDecoder | None = None
+        self._lzx: LzxDecoder | native.NativeLzx | None = None
         # LZX: the next block whose bytes the decoder pulls through ``_lzx_more``.
         self._lzx_input = self._next
         if folder.method == _LZX:
-            self._lzx = LzxDecoder(folder.window_bits, self._lzx_more)
+            config = reader._context.config
+            make = native.lzx(
+                config.formats._libraries_off,
+                isolated=config.process_isolation is ProcessIsolation.NATIVE_DECODERS,
+            )
+            if make is None:
+                self._lzx = LzxDecoder(folder.window_bits, self._lzx_more)
+            else:
+                # The kernel sets the last frame's length from the folder's size.
+                size = table.output[-1] if table.complete else None
+                self._lzx = make(folder.window_bits, self._lzx_more, size)
 
     def _payload(self, number: int) -> bytes:
         block = self._table.blocks[number]
