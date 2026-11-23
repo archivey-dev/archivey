@@ -5,9 +5,10 @@ Each class here wraps one object of the package (or its stand-in in a decoder ch
 package's errors as archivey's with the same message (``CorruptDataError`` as
 ``CorruptionError``, ``TruncatedDataError`` as ``TruncatedError``,
 ``UnsupportedDataError`` as ``UnsupportedFeatureError``), and a Rust panic as
-``CorruptionError`` with the panic as its cause; after a panic the object refuses every
-later call (:class:`~archivey.internal.kernels._select.Latch`). So an object here and
-its Python twin in :mod:`archivey.internal.kernels.python` raise the same errors.
+``CorruptionError`` with the panic as its cause. After a panic the object refuses every
+later method call, and its counters still read
+(:class:`~archivey.internal.kernels._select.Latch`). So an object here and its Python
+twin in :mod:`archivey.internal.kernels.python` raise the same errors.
 """
 
 from __future__ import annotations
@@ -154,6 +155,11 @@ def lzo1x_decompress(module: Kernels) -> Callable[..., bytes]:
         out_size: int | None = None,
         max_size: int | None = None,
     ) -> bytes:
+        # Checked here, as the twin does: the child's proxy passes only one of them on.
+        if (out_size is None) == (max_size is None):
+            raise TypeError(
+                "lzo1x.decompress() takes exactly one of out_size= and max_size="
+            )
         with codec_errors(module, "LZO1X"):
             if out_size is not None:
                 return kernel(block, out_size=out_size)

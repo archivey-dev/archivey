@@ -163,8 +163,10 @@ def codec_errors(module: Kernels, kernel: str) -> Generator[None]:
 
 class Latch:
     """The panic a kernel object raised, so that the object refuses every later
-    call: after a panic its state may be half updated, so nothing more is asked of
-    it. Each wrapper of a stateful kernel object holds one."""
+    method call: after a panic its state may be half updated, so it decodes nothing
+    more. Its counters (``total_in``, ``eof`` and the like) still read, so a caller
+    can report where it stopped. Each wrapper of a stateful kernel object holds
+    one."""
 
     __slots__ = ("_failure", "_kernel")
 

@@ -596,6 +596,21 @@ def test_a_panic_in_an_lzo_read_is_corruption(monkeypatch: pytest.MonkeyPatch) -
     assert _FakeLzo1x.calls == []
 
 
+@pytest.mark.parametrize("codecs", [True, False], ids=["rust", "python"])
+@pytest.mark.parametrize("sizes", [{}, {"out_size": 3, "max_size": 3}])
+def test_lzo_takes_exactly_one_size(
+    monkeypatch: pytest.MonkeyPatch, codecs: bool, sizes: dict[str, int]
+) -> None:
+    """Both sides refuse a call with both sizes or neither, before decoding."""
+    _fake(monkeypatch, lzo1x=1)
+    excluded = frozenset() if codecs else EXCLUDED
+    lzo = kernels.lzo1x(excluded, isolated=False)
+    assert (lzo.library is not None) is codecs
+    with pytest.raises(TypeError, match="exactly one of out_size= and max_size="):
+        lzo.decompress(_LZO_BLOCK, **sizes)
+    assert _FakeLzo1x.calls == []
+
+
 def test_a_zipcrypto_state_refuses_every_call_after_a_panic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

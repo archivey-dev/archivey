@@ -221,7 +221,7 @@ f.seek(stream_start + point[1])         # feed input from total_in; output resum
   `internal/kernels/rust.py` catches it around every kernel call and raises archivey's
   `CorruptionError` with the panic as `__cause__`, so the caller sees a typed error as
   with the Python twin. The decoder object is then unusable (its state may be half
-  updated): every later call raises the same error. Fuzzing and parity treat any panic
+  updated): every later method call raises the same error. Its counters still read. Fuzzing and parity treat any panic
   as a bug to fix.
 - Memory: every allocation is bounded by a constructor argument or by `max_length` /
   `out_size`; input data alone cannot make a kernel allocate much.
@@ -279,7 +279,11 @@ the two. `src/archivey/internal/kernels/` holds it:
   panics, with the same API.
 - `kernels/__init__.py`: the switch. `kernels.lzx(excluded, isolated=...)` (and one
   function per kernel) returns a namespace with that module's names, the package's or
-  the twin's, and `library` for the record of the backends a read used.
+  the twin's, and `library`: archivey-codecs when the package decodes, for a call site
+  that records its backend (LZO does). `kernels.filters` has `arm64_library` and
+  `riscv_library` instead, one for each kernel. Under `isolated`, `kernels.bcj2` always
+  gives the twin until the decoder child can carry BCJ2's four inputs (task 2.7), so
+  under `NATIVE_DECODERS` the package's BCJ2 stays out of the process (D5).
   `kernels/_select.py` holds the revision table and error mapping, and
   `kernels/child.py` the stand-in module whose objects live in a decoder child.
 
@@ -327,7 +331,9 @@ the twins and the package.
   the pipe twice; at 8x to 38x the Python speed the kernels still win on anything but
   tiny members. A panic in the child reaches the caller as `CorruptionError`, as
   in-process. The streaming kernels push input as the child protocol already expects;
-  BCJ2's four input streams need the protocol to carry four inputs (task 2.7). If no
+  BCJ2's four input streams need the protocol to carry four inputs (task 2.7); until
+  then BCJ2 runs as the Python twin in the caller's process under `NATIVE_DECODERS`
+  (D4a). If no
   child can start, archivey uses the Python twin in the caller's process, as if
   `ARCHIVEY_CODECS` were excluded: a Python decoder is not native, so the promise holds,
   and the read gives the same bytes as without the package. LZO then goes to
