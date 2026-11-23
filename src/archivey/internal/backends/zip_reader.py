@@ -109,7 +109,6 @@ from archivey.exceptions import (
     exception_detail,
     raw_message_of,
 )
-from archivey.internal import kernels
 from archivey.internal.backends.zip_aes import (
     ZIP_WRONG_PASSWORD_MSG,
     ExtraField,
@@ -565,12 +564,8 @@ def _is_candidate_integrity_failure(
     payload is in the file (``payload_complete()``, asked only then: it costs a seek);
     otherwise the file really is short.
     The local header is not encrypted, so a damaged one is never the key's doing: it
-    raises before decryption starts. Nor is a panic in archivey-codecs' ZipCrypto
-    kernel: every byte string is valid input to the cipher, so the panic is a kernel
-    bug, and it stays a ``CorruptionError`` that names the kernel.
+    raises before decryption starts.
     """
-    if kernels.caused_by_panic(exc):
-        return False
     # TruncatedError is a CorruptionError subclass, so it must be tested first.
     if isinstance(exc, TruncatedError):
         return payload_complete()
@@ -4190,13 +4185,10 @@ class ZipReader(BaseArchiveReader):
             raw = self._open_raw_payload(loc, member)
             try:
                 header = self._read_zipcrypto_header(raw, loc, member.name)
-                # The key state may be archivey-codecs', which can fail too.
-                keys, check = keys_after_header(
-                    password, header, self._stream_config.excluded_libraries
-                )
             except BaseException:
                 raw.close()
                 raise
+            keys, check = keys_after_header(password, header)
             if check != check_byte:
                 raw.close()
                 raise wrong_password_error(ZIP_WRONG_PASSWORD_MSG)
@@ -4448,7 +4440,6 @@ class ZipReader(BaseArchiveReader):
             # for a wrong key's garbage.
             body = stage(password)
             probe: ArchiveStreamImpl | None = None
-            decoded: BinaryIO | None = None
             ended_early: TruncatedError | None = None
             try:
                 try:
@@ -4461,20 +4452,17 @@ class ZipReader(BaseArchiveReader):
                     if not cipher.keyed_settings:
                         raise
                     raise failures.limit_failed(exc) from exc
-                # A trial decode counts and draws like the caller's stream: the
-                # measurement counter, the nest's and the listing's decoded caps.
-                decoded = self._track_decompressed(probe)
-                verdict = run_password_confirm_plan(decoded, walk)
+                verdict = run_password_confirm_plan(probe, walk)
                 if verdict is not PasswordConfirmVerdict.REJECTED and walk_to_hmac:
                     # The read that finds the end is the one that checks the HMAC.
-                    if decoded.read(1):
+                    if probe.read(1):
                         verdict = PasswordConfirmVerdict.REJECTED
                 elif verdict is PasswordConfirmVerdict.REJECTED and cipher.is_aes:
                     # The plan rejects a short read without saying so. For WinZip AES
                     # that is the data ending before its declared size, the damage the
                     # one-password path reports as TruncatedError; say so here too.
                     got = probe.tell()
-                    if got < size and not decoded.read(1):
+                    if got < size and not probe.read(1):
                         ended_early = TruncatedError(
                             f"Decompressed content ended after {got} of {size} "
                             f"expected bytes."
@@ -4486,8 +4474,6 @@ class ZipReader(BaseArchiveReader):
                     raise
                 raise candidate_failed(exc) from exc
             finally:
-                if decoded is not None:
-                    decoded.close()
                 if probe is not None:
                     probe.close()
             if verdict is PasswordConfirmVerdict.REJECTED:
@@ -4571,15 +4557,12 @@ class ZipReader(BaseArchiveReader):
         # The same validated view every member open reads through: the local
         # header's name, data offset and overlap are checked before any pass runs.
         # One view serves the header read and every CRC pass; each pass rewinds it.
-        excluded = self._stream_config.excluded_libraries
         raw = self._open_raw_payload(loc, member)
         try:
             header = self._read_zipcrypto_header(raw, loc, member.name)
 
             def weak_ok(password: bytes) -> bool:
-                return password_matches_check_byte(
-                    password, header, check_byte, excluded
-                )
+                return password_matches_check_byte(password, header, check_byte)
 
             def disambiguate(survivors: list[bytes]) -> bytes | None:
                 nonlocal ambiguous_failure
@@ -4589,9 +4572,7 @@ class ZipReader(BaseArchiveReader):
                 # every survivor's plaintext CRC-32 in constant memory.
                 try:
                     raw.seek(ZIPCRYPTO_HEADER_LEN)  # every pass starts at the body
-                    crcs = parallel_plaintext_crc32(
-                        survivors, header, raw, excluded=excluded
-                    )
+                    crcs = parallel_plaintext_crc32(survivors, header, raw)
                     covered = raw.tell() - ZIPCRYPTO_HEADER_LEN
                 except _ZIP_MEMBER_READ_ERRORS as exc:
                     self._reraise_member_error(exc, member.name)

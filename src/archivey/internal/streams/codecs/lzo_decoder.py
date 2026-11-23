@@ -1,23 +1,20 @@
 """LZO1X, and the ``.lzo`` file format ``lzop`` writes around it.
 
 LZO1X has no stream framing of its own: a block is decoded whole, to a size the
-container stores (a SquashFS block, an lzop block). Three decoders can decode a block,
-tried in this order: ``archivey-codecs`` (a Rust port of archivey's Python decoder)
-when it is installed and allowed; ``compress-utils`` (its LZO1X decoder is derived
-from lzokay) when it is installed and built with LZO1X, which is a build option
-(``is_available``); and archivey's decoder in Python (:func:`lzo1x_decompress_python`).
-The Python one follows ``lzo1x_decompress_safe`` in the Linux kernel
-(``lib/lzo/lzo1x_decompress_safe.c``), without the LZO-RLE extension, which neither
-lzop nor SquashFS writes.
+container stores (a SquashFS block, an lzop block). ``compress-utils`` (its LZO1X
+decoder is derived from lzokay) decodes a block when it is installed and built with
+LZO1X, which is a build option (``is_available``); archivey also
+carries the decoder in Python (:func:`lzo1x_decompress_python`). It
+follows ``lzo1x_decompress_safe`` in the Linux kernel (``lib/lzo/lzo1x_decompress_safe.c``),
+without the LZO-RLE extension, which neither lzop nor SquashFS writes.
 
 Every read is checked: a run of literals or a match that would pass the end of the
 input, write past the limit or copy from before the start of the output raises
 :class:`LzoError`, and so do input left after the end marker and an end marker of a
 length other than 3, which no writer produces. liblzo2, and so ``lzop``, accepts any
-length there; the Linux kernel and all three decoders archivey uses refuse it.
-compress-utils and the Python decoder agree on every block measured
-(``dev-docs/investigations/lzo-compress-utils-vs-python-lzo.md``); archivey-codecs
-gives the Python decoder's bytes and messages (``tests/test_kernels.py``).
+length there; the kernel and compress-utils refuse it, and the two decoders archivey
+uses agree on every block measured
+(``dev-docs/investigations/lzo-compress-utils-vs-python-lzo.md``).
 
 The lzop format (``lzop`` 1.04, ``header.c`` and ``lzop.c``): a 9-byte magic, a header
 with the method, flags, mode, mtime and stored name, closed by a checksum, then blocks.
@@ -40,7 +37,6 @@ from archivey.exceptions import (
     ResourceUnavailableError,
     UnsupportedFeatureError,
 )
-from archivey.internal import kernels
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.decoder_child import DecoderChildImportError
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
@@ -144,47 +140,15 @@ def _compress_utils(
     return decompress
 
 
-def _archivey_codecs(
-    excluded: frozenset[OptionalLibrary],
-    natives: Natives,
-    usage: ResourceUsageRecorder | None,
-) -> Callable[[bytes, int], bytes] | None:
-    """archivey-codecs' LZO1X kernel when :func:`archivey.internal.kernels.lzo1x`
-    picks it, with :func:`lzo1x_decompress_python`'s contract: at most ``limit``
-    bytes, and :class:`LzoError` with the same message on damage. Under
-    ``NATIVE_DECODERS`` each block decodes in a decoder child."""
-    kernel = kernels.lzo1x(excluded, isolated=natives.isolated)
-    if kernel.library is None:
-        return None
-    decode = kernel.decompress
-    if usage is not None:
-        usage.note_backend("library", kernel.library.value, "lzo")
-
-    def decompress(data: bytes, limit: int) -> bytes:
-        # ``max_size``: a SquashFS block gives only the most it may decode to.
-        try:
-            return decode(data, max_size=limit)
-        except CorruptionError as exc:
-            if kernels.caused_by_panic(exc):
-                raise
-            raise LzoError(str(exc)) from None
-
-    return decompress
-
-
 def lzo1x_decompressor(
     excluded: frozenset[OptionalLibrary] = frozenset(),
     natives: Natives = IN_PROCESS,
     usage: ResourceUsageRecorder | None = None,
 ) -> Callable[[bytes, int], bytes]:
-    """The LZO1X block decoder to use, in this order (design question 11):
-    archivey-codecs when installed and allowed; compress-utils when present, allowed
-    and built with LZO1X; else :func:`lzo1x_decompress_python`, which is Python and so
-    runs in this process whatever ``natives`` says. ``usage`` records the package that
-    decodes."""
-    kernel = _archivey_codecs(excluded, natives, usage)
-    if kernel is not None:
-        return kernel
+    """The LZO1X block decoder to use: compress-utils when present, allowed and built
+    with LZO1X, else :func:`lzo1x_decompress_python`, which is Python and so runs in
+    this process whatever ``natives`` says. ``usage`` records ``compress_utils`` when
+    it decodes."""
     package = _compress_utils(excluded, natives, usage)
     if package is None:
         return lzo1x_decompress_python

@@ -201,9 +201,9 @@ class _FilterStage:
 
     ``lzma_filter`` is the liblzma filter dict with its options (BCJ
     ``start_offset``, Delta ``dist``). :class:`FilterStream` picks the decoder by
-    filter id: ``BranchFilterDecoder`` decodes ARM64 and RISC-V (archivey-codecs or
-    Python), and ``FilterDecoder`` runs every other filter through liblzma over its own
-    LZMA2 framing.
+    filter id: ``PythonBranchFilterDecoder`` decodes ARM64 and RISC-V in Python, and
+    ``FilterDecoder`` runs every other filter through liblzma over its own LZMA2
+    framing.
     """
 
     lzma_filter: dict
@@ -997,7 +997,6 @@ def _execute_stage(
         seekable=seekable,
         owns_inner=owns_input,
         natives=stream_config.natives,
-        excluded=stream_config.excluded_libraries,
     )
 
 
@@ -1081,8 +1080,6 @@ def open_folder_pipeline(
                 jump,
                 rc,
                 unpack_size=chain.source.unpack_size,
-                excluded=config.excluded_libraries,
-                isolated=config.natives.isolated,
                 # A bare pack-stream branch is a borrowed view (``rc``, usually);
                 # every other branch is wrapped in a private slice.
                 owns_inputs=[b.unpack_size is not None for b in chain.source.branches],

@@ -184,10 +184,6 @@ rapidgzip = LazyOptional(
     OptionalLibrary.RAPIDGZIP,
     present=False if unused_reason(OptionalLibrary.RAPIDGZIP) else None,
 )
-# archivey-codecs: Rust versions of archivey's own Python decoders, used through
-# ``archivey.internal.kernels``. Its module declares ``gil_used = false``; lazy so that
-# a program that never needs one of its kernels does not load it.
-archivey_codecs = LazyOptional(OptionalLibrary.ARCHIVEY_CODECS)
 # Snappy (``.sz``): the raw-block decoders and the CRC-32C packages. All optional, as
 # the Python decoder and CRC need nothing; lazy, as none has been measured to keep the
 # GIL disabled on a free-threaded build.

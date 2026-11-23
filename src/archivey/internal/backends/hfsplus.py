@@ -35,10 +35,9 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.formats import ReaderContext, ReaderSource
-from archivey.internal import native
 from archivey.internal.streams.codecs.lzfse_decoder import (
-    Decode,
-    decoder_for,
+    lzfse_decompress,
+    lzvn_decompress,
 )
 from archivey.types import CompressionAlgorithm, StreamFormat
 
@@ -977,12 +976,6 @@ def decmpfs_reader(
         refusal = context.config.formats._codec_refusal(method)
         if refusal is not None:
             raise UnsupportedFeatureError(f"{refusal}.")
-    # The file's LZFSE or LZVN decoder: archivey-codecs' kernel when the call allows it.
-    apple = (
-        decoder_for("lzvn" if kind in _LZVN_KINDS else "lzfse", context.config)
-        if method is not None
-        else None
-    )
     chunks = -(-size // DECMPFS_CHUNK)
 
     def expected(index: int) -> int:
@@ -996,7 +989,7 @@ def decmpfs_reader(
             )
 
         def inline_block(index: int) -> bytes:
-            return _decode_chunk(context, kind, header.inline, size, cnid, apple)
+            return _decode_chunk(context, kind, header.inline, size, cnid)
 
         return inline_block
     if not fork_size:
@@ -1043,9 +1036,7 @@ def decmpfs_reader(
                 f"chunk {index} of the compressed file {cnid} ({length} bytes at "
                 f"{start}) is outside its resource fork"
             )
-        return _decode_chunk(
-            context, kind, read(start, length), expected(index), cnid, apple
-        )
+        return _decode_chunk(context, kind, read(start, length), expected(index), cnid)
 
     return fork_block
 
@@ -1056,11 +1047,8 @@ def _decode_chunk(
     data: bytes,
     want: int,
     cnid: int,
-    apple: Decode | None,
 ) -> bytes:
-    """One decmpfs chunk, which must decode to exactly ``want`` bytes. ``apple`` is
-    the file's LZFSE or raw LZVN decoder (:func:`decoder_for`), ``None`` for the other
-    types."""
+    """One decmpfs chunk, which must decode to exactly ``want`` bytes."""
     try:
         if kind == 1:
             out = data
@@ -1098,16 +1086,11 @@ def _decode_chunk(
         # The LZVN and LZFSE decoders refuse any output past ``want`` themselves, and
         # their message names ``want``.
         elif kind in _LZVN_KINDS:
-            assert apple is not None
-            out = data[1:] if data[:1] == b"\x06" else apple(data, want)
+            out = data[1:] if data[:1] == b"\x06" else lzvn_decompress(data, want)
         else:
-            assert apple is not None
-            out = data[1:] if data[:1] == b"\xff" else apple(data, want)
+            out = data[1:] if data[:1] == b"\xff" else lzfse_decompress(data, want)
     except (CorruptionError, TruncatedError) as exc:
-        # A kernel panic stays the cause: it is a bug, not damage (native.py).
-        raise CorruptionError(
-            f"the compressed data of file {cnid}: {exc}"
-        ) from native.panic_of(exc)
+        raise CorruptionError(f"the compressed data of file {cnid}: {exc}") from None
     if len(out) != want:
         raise CorruptionError(
             f"a compressed chunk of file {cnid} (type {kind}) decodes to "
