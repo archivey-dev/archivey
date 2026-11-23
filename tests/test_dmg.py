@@ -684,6 +684,56 @@ def test_volume_names_follow_the_mount_points() -> None:
     ]
 
 
+def _volume_names_by_probing(labels: list[str]) -> list[str]:
+    """The naming rule spelled out: probe `` 1``, `` 2``, ... against every name
+    taken so far, compared but for case."""
+    taken: list[str] = []
+    for label in labels:
+        base = label.replace("/", ":")
+        if base in ("", ".", ".."):
+            base = "Untitled"
+        name, n = base, 0
+        while name.casefold() in {t.casefold() for t in taken}:
+            n += 1
+            name = f"{base} {n}"
+        taken.append(name)
+    return taken
+
+
+def test_volume_names_match_the_probing_rule() -> None:
+    import random
+
+    rng = random.Random(1786)
+    pieces = [
+        "a",
+        "A",
+        "a 1",
+        "A 2",
+        "ß",
+        "SS",
+        "ss",
+        "",
+        ".",
+        "Untitled",
+        "UNTITLED 1",
+    ]
+    for _ in range(2000):
+        labels = rng.choices(pieces, k=rng.randint(1, 12))
+        assert volume_names(labels) == _volume_names_by_probing(labels), labels
+
+
+@pytest.mark.timeout(30)
+def test_volume_names_that_differ_only_in_case_are_named_in_linear_time() -> None:
+    """Each suffix probe rebuilt the casefolded set of the names taken, so labels
+    that differ only in case took cubic time (800 of them took seconds)."""
+    labels = ["a", "A"] * 10_000
+    start = time.perf_counter()
+    names = volume_names(labels)
+    assert time.perf_counter() - start < 5
+    assert names[:4] == ["a", "A 1", "a 2", "A 3"]
+    assert len({n.casefold() for n in names}) == len(labels)
+
+
 def test_a_damaged_apfs_container_beside_hfs_fails_after_the_hfs_members() -> None:
     names = []
     with (
@@ -738,6 +788,48 @@ def test_a_partition_type_that_disagrees_is_reported_and_read() -> None:
     with _open(image) as reader:
         assert reader.read("a.txt") == b"a"
         assert "partition_name" in _structures(reader)
+
+
+def test_overlapping_apm_entries_use_the_run_tables() -> None:
+    """Two map entries over the same sectors: the map is refused, as a GPT's would be,
+    so the volume is listed once."""
+    hfs = d.write_hfsplus([d.Node("a.txt", data=b"a")])
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+
+    def same_start(index: int, entry: bytearray) -> None:
+        if index == 2:  # the second partition's entry starts at the first's sector
+            struct.pack_into(">I", entry, 8, 64)
+
+    disk = d.write_apm(
+        [d.Partition(volume, name="one"), d.Partition(bytes(len(volume)), name="two")],
+        patch_map=same_start,
+    )
+    image = d.write_udif(disk.segments, tables=disk.tables).image
+    with _open(image) as reader:
+        assert [m.name for m in reader.members() if m.is_file] == ["a.txt"]
+        assert reader.info.extra["dmg.partition_scheme"] == "none"
+        assert "partition_map" in _structures(reader)
+
+
+def test_overlapping_gpt_entries_use_the_run_tables() -> None:
+    """The GPT twin of the test above: the second entry starts at the first's
+    sector (the CRCs are computed after the patch)."""
+    hfs = d.write_hfsplus([d.Node("a.txt", data=b"a")])
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+
+    def same_start(entries: bytearray) -> None:
+        (first,) = struct.unpack_from("<Q", entries, 32)
+        struct.pack_into("<Q", entries, 128 + 32, first)
+
+    disk = d.write_gpt(
+        [d.Partition(volume, name="one"), d.Partition(bytes(len(volume)), name="two")],
+        patch_entries=same_start,
+    )
+    image = d.write_udif(disk.segments, tables=disk.tables).image
+    with _open(image) as reader:
+        assert [m.name for m in reader.members() if m.is_file] == ["a.txt"]
+        assert reader.info.extra["dmg.partition_scheme"] == "none"
+        assert "partition_map" in _structures(reader)
 
 
 def test_a_damaged_primary_gpt_falls_back_to_the_backup() -> None:
