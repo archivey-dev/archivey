@@ -125,7 +125,7 @@ level or variant the same decoder reads.
 Every compressed block goes through `ReaderContext.decompress`, so archivey's decoder
 limits apply, or, for LZ4, through `lz4.block` capped at the block's size. LZO blocks
 are raw LZO1X (`CompressionAlgorithm.LZO`), decoded by the codec a `.lzo` file uses:
-`archivey-codecs` when it is installed (not yet under `NATIVE_DECODERS`), then
+`archivey-codecs` when it is installed (in the decoder child under `NATIVE_DECODERS`), then
 `compress-utils` when it is installed, in a child process under `NATIVE_DECODERS`, and
 otherwise archivey's port of the kernel's `lzo1x_decompress_safe`. `archivey-codecs`
 takes the exact decoded size, so a block shorter than the most it may decode to is
