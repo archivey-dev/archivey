@@ -87,7 +87,8 @@ class Decompressor:
 
     def set_output_size(self, output_size: int) -> None:
         """Give the declared output size once it is known, before the last frame
-        ends."""
+        ends. After a decode error, only a size that ends the output where the failed
+        frame starts drops the error; any other size raises it again."""
         from archivey.internal.streams.codecs.lzx_decoder import (
             FRAME_SIZE,
         )
@@ -109,9 +110,12 @@ class Decompressor:
         if progress is not None:
             size, done = progress
             frame = min(output_size - decoded, FRAME_SIZE)
-            if frame == done and self._failed is not None:
-                # The output ends where the frame got to: the error was met in input
-                # after the stream.
+            if self._failed is not None:
+                if frame != 0 or done != 0:
+                    # Inside the frame the error stays, as in the package.
+                    raise self._failed
+                # The output ends where the failed frame starts, and it decoded
+                # nothing: the error was met in input after the stream.
                 self._failed = None
             if frame != size and not d.resize_frame(frame):
                 raise ValueError(

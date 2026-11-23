@@ -425,21 +425,6 @@ def test_lzx_state_of_a_frame_ended_by_a_late_output_size() -> None:
     assert d.total_in == r.total_in == len(first)
 
 
-def test_lzx_output_size_given_late_drops_an_error_after_the_stream() -> None:
-    """The block after the stream's last one is damaged: a late output size that
-    ends the stream before it drops the error, and gives that block back."""
-    r_regs = (1).to_bytes(4, "little") * 3
-    first = bytes.fromhex("0030a000") + r_regs + b"0123456789"
-    bad = bytes.fromhex("00e000000000")  # block type 7, after the first block
-    d = lzx.Decompressor(15)
-    with pytest.raises(archivey_codecs.CorruptDataError, match="block type 7"):
-        d.decompress(first + bad)
-    d.set_output_size(10)
-    assert d.decompress(b"") == b"0123456789"
-    assert d.eof
-    assert d.unused_data == bad
-
-
 def test_lzx_stream_cut_inside_a_block_on_a_frame_boundary() -> None:
     """Without an output size, input that ends where a frame ends but inside a
     block is a cut stream, not a clean end."""

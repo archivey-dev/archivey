@@ -1081,6 +1081,29 @@ def test_lzx_output_size_given_late_gives_back_what_follows_the_stream(
         assert restored.total_in == len(stream), tail
 
 
+@BOTH
+def test_lzx_late_output_size_inside_a_failed_frame_raises_the_error(
+    codecs: object,
+) -> None:
+    """After a decode error, a late output size that ends the output inside the
+    failed frame does not drop the error: it raises it again, on both sides, wherever
+    in the frame the error was met (a block header after the stream's last block, or
+    a match in a block after it)."""
+    lzx = codecs.lzx
+    r_regs = (1).to_bytes(4, "little") * 3
+    first = bytes.fromhex("0030a000") + r_regs + b"0123456789"
+    bad = bytes.fromhex("00e000000000")  # block type 7, after the first block
+    d = lzx.Decompressor(15)
+    with pytest.raises((archivey_codecs.CorruptDataError, CorruptionError)):
+        d.decompress(first + bad)
+    for size in (10, 0):
+        with pytest.raises(
+            (archivey_codecs.CorruptDataError, CorruptionError), match="block type 7"
+        ):
+            d.set_output_size(size)
+    assert d.output_size is None
+
+
 def test_lzw_state_restores_with_clear_padding_still_to_come() -> None:
     """The package only. A CLEAR's segment ends after its group padding: saved when
     the CLEAR is decoded but its padding has not all arrived, the state's last CLEAR

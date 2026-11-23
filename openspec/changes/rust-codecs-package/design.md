@@ -114,8 +114,10 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
   must know it whatever `max_length` the caller asks for. The caller gives the folder's
   declared output size with `output_size=` or, when the CAB reader learns it later,
   with `set_output_size(n)` before the last frame ends. A late size that ends the output
-  where a frame or a block header started gives back what the decoder read from there,
-  and drops an error met in it. It cannot give that input back once the decoder has
+  where a frame or a block header started gives back what the decoder read from there.
+  After a decode error, only a size that ends the output where the failed frame
+  started, with nothing of it decoded, drops the error; any other size raises it
+  again, on both sides. It cannot give that input back once the decoder has
   dropped it from its buffer, or when the decoder was restored from a state saved after
   it read it: the input then stays consumed and the error stays. The kernel decodes one
   whole frame into an internal buffer of at most 32 KiB and returns it in `max_length`
