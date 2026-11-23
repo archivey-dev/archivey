@@ -280,15 +280,21 @@ class _ArrivedView(ReadOnlyIOStream):
         return self._source.read_arrived(n)
 
 
-class PipeView(io.RawIOBase):
-    """A forward-only raw view of a stream, for ``open_archive(pipe=True)``:
-    ``seekable()`` is ``False``, ``seek`` raises, and reads start where ``inner`` is.
+class PipeView(ReadOnlyIOStream):
+    """A forward-only view of a stream, for ``open_archive(pipe=True)``:
+    ``seekable()`` is ``False``, ``seek`` and ``tell`` raise (``RawIOBase``'s
+    defaults, which :class:`ReadOnlyIOStream` keeps), and reads start where ``inner``
+    is.
 
     It gives no ``size`` or ``fileno()``, as a pipe of the same bytes would not, so
     nothing that measures it seeks ``inner`` or decodes ahead. It keeps ``name``, the
     one hint a pipe can carry, so that detection sees the same name whether the
-    caller's object could seek or not. Closing it closes ``inner`` only when ``owns``
-    is set: a caller's stream stays the caller's.
+    caller's object could seek or not. Reads go through the shared adapters
+    (``read_blocking``, ``try_readinto``), as :class:`DelegatingStream`'s do.
+
+    Not a :class:`DelegatingStream`: that class owns its inner and forwards seeking,
+    and this one borrows a caller's stream (``owns=False``) and refuses to seek.
+    Closing it closes ``inner`` only when ``owns`` is set.
     """
 
     # Class defaults, so that ``close()``, which ``IOBase``'s finalizer calls, runs on
@@ -303,27 +309,30 @@ class PipeView(io.RawIOBase):
         self._name = name
 
     @property
-    def name(self) -> str | None:
-        """The name ``inner`` carried, for detection's hints; never opened as a path."""
+    @override
+    def name(self) -> str:  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]  # base is Never; this returns the name the inner carried
+        """The name ``inner`` carried, for detection's hints; never opened as a path.
+
+        Raises :exc:`AttributeError` when there is none, as the
+        :class:`ReadOnlyIOStream` contract asks.
+        """
+        if self._name is None:
+            raise AttributeError("name")
         return self._name
 
-    @override
-    def readable(self) -> bool:
-        return True
-
-    @override
-    def seekable(self) -> bool:
-        return False
-
-    @override
-    def readinto(self, b: WriteableBuffer, /) -> int:
+    def _open_inner(self) -> BinaryIO:
         inner = self._inner
         if inner is None or self.closed:
             raise ValueError("read from a closed pipe view")
-        # The shared adapters every other source path uses: a stream whose
-        # ``readinto`` is missing or refused (``RawIOBase``'s abstract default, an
-        # ``UnsupportedOperation``) reads through ``read()``, and a non-blocking
-        # stream with nothing ready raises ``BlockingIOError``.
+        return inner
+
+    @override
+    def read(self, n: int = -1, /) -> bytes:
+        return read_blocking(self._open_inner(), n)
+
+    @override
+    def readinto(self, b: WriteableBuffer, /) -> int:
+        inner = self._open_inner()
         n = try_readinto(inner, b)
         if n is not None:
             return n
