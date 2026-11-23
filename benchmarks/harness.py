@@ -21,12 +21,12 @@ Modes:
 - ``full``: also report wall-time ratios vs stdlib peers, and the per-member cost and
   throughput fitted by ``benchmarks/cost_model.py``. Absolute ratios are noisy
   on shared runners, so full mode is **not** a PR gate. The change-guarded nightly
-  (``benchmark-wall.yml``) hard-fails on (1) the ~13× sanity ceiling and (2) a case
-  slower than on the commit the last measuring run timed, both commits run
-  alternately on the same runner and compared by ``benchmarks/compare_refs.py
-  --fail-on-slower``. Quiet days re-publish the last artifact (preserving
-  ``measured_at`` and ``source_sha``); a full re-measure is forced at least every
-  ~30 days. VISION absolute bands stay informational prints.
+  (``benchmark-wall.yml``) hard-fails on (1) the ~13× sanity ceiling, when the time
+  past it is at least 1 ms, and (2) a case slower than on the commit the last
+  measuring run timed, both commits run alternately on the same runner and compared
+  by ``benchmarks/compare_refs.py --fail-on-slower``. Quiet days re-publish the last
+  artifact (preserving ``measured_at`` and ``source_sha``); a full re-measure is
+  forced at least every ~30 days. VISION absolute bands stay informational prints.
   ``--wall-drift-baseline`` compares this run's ratios with an earlier JSON from the
   same host (the release checklist's comparison); ratios from two different runners
   do not compare well, which is why the nightly no longer uses it.
@@ -124,6 +124,13 @@ SEEK_BASELINE_SLACK = 8
 # informational (shared-runner noise); the nightly instead gates on the last measured
 # commit, run again on the same runner (benchmark-wall.yml).
 WALL_RATIO_BUDGET = 13.0
+# A case fails the ceiling only when the time past it costs at least this much:
+# (wall_ratio - WALL_RATIO_BUDGET) x the peer's time. Sub-millisecond listing peers move
+# the ratio with the runner alone: zip_open_list read 13.95x on nightly run 45033617239
+# (2.3 ms vs 0.165 ms) and 9.61x on its rerun of the same commit, while the same-runner
+# comparison saw no change. A gross slowdown of such a case still fails: on that peer,
+# past about 19x.
+WALL_RATIO_BUDGET_MIN_EXTRA_S = 0.001
 # Open-and-list cases time each call on its own, alternating archivey and the peer
 # call by call, for at least LISTING_TIME_BUDGET_S and LISTING_MIN_PAIRS pairs, and
 # record a low percentile (LISTING_QUANTILE) of each side (see
@@ -1536,14 +1543,24 @@ def _wall_checks(
     *,
     enforce_vision: bool = False,
 ) -> list[str]:
-    """Sanity ceiling (+ optional informational VISION-band messages as failures)."""
+    """Sanity ceiling (+ optional informational VISION-band messages as failures).
+
+    A case past ``WALL_RATIO_BUDGET`` fails when the time past the ceiling,
+    ``(wall_ratio - WALL_RATIO_BUDGET) × stdlib_wall_s``, is at least
+    ``WALL_RATIO_BUDGET_MIN_EXTRA_S``; a ``CaseResult`` without ``stdlib_wall_s`` is
+    judged on the ratio alone.
+    """
     failures: list[str] = []
     for r in results:
         # A skipped row measured nothing. Its wall_ratio happens to be None today, but
         # the contract in CaseResult.skipped is on the flag, not on that coincidence.
         if r.skipped or r.wall_ratio is None:
             continue
-        if r.wall_ratio > WALL_RATIO_BUDGET:
+        if r.wall_ratio > WALL_RATIO_BUDGET and (
+            r.stdlib_wall_s is None
+            or (r.wall_ratio - WALL_RATIO_BUDGET) * r.stdlib_wall_s
+            >= WALL_RATIO_BUDGET_MIN_EXTRA_S
+        ):
             failures.append(
                 f"{r.case}: wall_ratio={r.wall_ratio:.2f} > sanity budget {WALL_RATIO_BUDGET}"
             )
@@ -1825,7 +1842,10 @@ def format_text_report(payload: dict[str, Any]) -> str:
                 f"- VISION target ≤{WALL_RATIO_VISION}× stdlib on common paths "
                 f"(~{WALL_RATIO_VISION_SAFETY}× safety band is informational on nightly)."
             ),
-            f"- Sanity ceiling {WALL_RATIO_BUDGET:.0f}× fails the job.",
+            (
+                f"- Sanity ceiling {WALL_RATIO_BUDGET:.0f}× fails the job when the time "
+                f"past it is at least {WALL_RATIO_BUDGET_MIN_EXTRA_S * 1e3:.0f} ms."
+            ),
             (
                 "- Nightly also fails when a case is slower than on the commit the "
                 "last measuring run timed, pass or fail, both run on the same runner "

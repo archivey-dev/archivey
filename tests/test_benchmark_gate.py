@@ -853,3 +853,38 @@ def test_listing_times_run_the_minimum_pairs_past_the_budget(
 
     harness._interleaved_listing_times(ay, std, budget_s=0.5, min_pairs=15)
     assert calls["ay"] == 1 + 15
+
+
+def test_wall_ceiling_ignores_an_excess_under_a_millisecond() -> None:
+    """Past the 13× ceiling, a case fails only when the time past it is at least 1 ms.
+
+    zip_open_list read 13.95× on nightly run 45033617239 (0.165 ms zipfile peer) and
+    9.61× on the rerun of the same commit: 0.16 ms past the ceiling is runner noise.
+    """
+    from benchmarks.harness import WALL_RATIO_BUDGET, _wall_checks
+
+    def _case(name: str, ratio: float, stdlib_s: float | None) -> CaseResult:
+        return CaseResult(
+            case=name,
+            format="zip",
+            operation="open_list",
+            wall_s=ratio * (stdlib_s or 0.001),
+            bytes_decompressed=0,
+            source_seek_count=0,
+            stdlib_wall_s=stdlib_s,
+            wall_ratio=ratio,
+        )
+
+    results = [
+        _case("noisy_listing", 13.95, 0.000_165),
+        _case("gross_listing", 25.0, 0.000_165),
+        _case("slow_read", 13.5, 0.010),
+        _case("no_peer_time", WALL_RATIO_BUDGET + 0.1, None),
+        _case("under", 12.9, 0.010),
+    ]
+    failures = _wall_checks(results)
+    assert [f.split(":")[0] for f in failures] == [
+        "gross_listing",
+        "slow_read",
+        "no_peer_time",
+    ]
