@@ -871,6 +871,23 @@ def test_a_finished_z_decoder_is_not_fed_again(twin: bool) -> None:
         assert stream.read() == b""
 
 
+@pytest.mark.parametrize("twin", [False, True], ids=["kernel", "twin"])
+def test_a_zero_byte_bcj2_read_reads_no_input(twin: bool) -> None:
+    """``read(0)`` decodes nothing and reads no input; a later read still runs the
+    end check. With an error held, ``read(0)`` raises it."""
+    if not twin and not deps.archivey_codecs.available():
+        pytest.skip("needs archivey-codecs")
+    make = kernels.bcj2(EXCLUDED if twin else frozenset(), isolated=False).Decompressor
+    main = io.BytesIO(b"x")
+    d = make(main, io.BytesIO(), io.BytesIO(), io.BytesIO(), out_size=0)
+    assert d.read(0) == b""
+    assert main.tell() == 0
+    with pytest.raises(CorruptionError, match="BCJ2 main stream has bytes past"):
+        d.read()
+    with pytest.raises(CorruptionError, match="BCJ2 main stream has bytes past"):
+        d.read(0)
+
+
 def _z_with_a_bad_last_code() -> tuple[bytes, bytes]:
     """A widening 9-bit ``.Z`` stream whose last code is bad, and its clean data. The
     table fills near the end, so the bad code is met by the final pass, after it has

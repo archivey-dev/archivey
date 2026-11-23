@@ -1585,8 +1585,16 @@ impl Bcj2Decompressor {
     }
 
     /// Up to `max_length` bytes of output (all of it when negative); `b""` at the end.
+    /// `read(0)` decodes nothing and reads no input: it raises an error the decoder
+    /// holds, else returns `b""`.
     #[pyo3(signature = (max_length = -1))]
     fn read<'py>(&mut self, py: Python<'py>, max_length: i64) -> PyResult<Bound<'py, PyBytes>> {
+        if max_length == 0 {
+            if let Some(err) = self.raise_failure(py) {
+                return Err(err);
+            }
+            return Ok(PyBytes::new(py, b""));
+        }
         let want = if max_length < 0 {
             usize::MAX
         } else {

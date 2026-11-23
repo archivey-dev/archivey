@@ -257,7 +257,12 @@ class Decompressor:
 
     def read(self, max_length: int = -1) -> bytes:
         """Up to ``max_length`` bytes of output (all of it when negative); ``b""`` at
-        the end."""
+        the end. ``read(0)`` decodes nothing and reads no input: it raises an error
+        the decoder holds, else returns ``b""``."""
+        if max_length == 0:
+            if self._failure is not None:
+                raise self._failure
+            return b""
         want = -1 if max_length < 0 else max_length
         result = bytearray()
         while True:

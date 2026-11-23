@@ -7,6 +7,7 @@ here: it writes the fixtures, and each member must read back equal to its input.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import random
 import shutil
@@ -437,8 +438,8 @@ def test_the_read_that_ends_the_output_raises_a_left_over_byte(
 ) -> None:
     """The end check runs with the read that returns the last byte, and that read
     raises its error: a reader that asks for exactly the output size sees it. The
-    bytes it decoded are kept: the next read returns them, and a read past them
-    raises the error again."""
+    bytes it decoded are kept: the next read returns them. Past them the output has
+    ended, and no read needs more of it, so the error does not raise again."""
     from tests.bcj2_util import bcj2_encode
 
     streams = list(bcj2_encode(random.Random(1), 5000))
@@ -450,8 +451,36 @@ def test_the_read_that_ends_the_output_raises_a_left_over_byte(
         stream.read(5000)
     assert stream.tell() == 0
     assert stream.read(5000) == expected
-    with raises_corruption_not_truncation(match=match):
+    assert stream.read(1) == b""
+
+
+@pytest.mark.parametrize(
+    ("cut", "error"),
+    [("extra", CorruptionError), ("short", TruncatedError)],
+)
+def test_a_short_read_raises_an_error_its_blocks_found(
+    cut: str, error: type[Exception]
+) -> None:
+    """The decoder decodes a whole block at a time. An error found in the blocks a
+    read decodes raises from that read, even a ``read(1)``, at position 0; the bytes
+    decoded before it come from the next reads."""
+    from tests.bcj2_util import bcj2_encode
+
+    streams = list(bcj2_encode(random.Random(1), 5000))
+    expected = _bcj2(*map(io.BytesIO, streams), unpack_size=5000).read()
+    if cut == "extra":
+        streams[0] += b"\x00"
+    else:
+        streams[3] = streams[3][:5]  # the range coder's start bytes only
+    stream = _bcj2(*map(io.BytesIO, streams), unpack_size=5000)
+    with pytest.raises(error):
         stream.read(1)
+    assert stream.tell() == 0
+    got = b""
+    with contextlib.suppress(error):
+        while chunk := stream.read(7):
+            got += chunk
+    assert got and expected.startswith(got)
 
 
 def test_a_cut_read_keeps_the_bytes_decoded_before_it() -> None:

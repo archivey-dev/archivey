@@ -97,24 +97,36 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         out, self._held = self._held[:n], self._held[n:]
         if len(out) == n:
             return out
-        # Full count: ``n`` bytes unless the output ends. The decoder returns the
-        # bytes before an error first and raises it on the next call, so an error
+        # Full count: ``n`` bytes unless the output ends. The decoder decodes a
+        # block at a time, returns the bytes before an error first and raises it on
+        # the next call. An error found while decoding the blocks this read needed
         # raises from this read; the bytes before it are kept for the next reads,
         # which raise it again once they need more output.
+        decoded = self._d.decoded
         try:
-            while len(out) < n and not self._d.eof:
+            while len(out) < n and self._d.total_out < self._size:
                 more = self._d.read(n - len(out))
                 if not more:
                     break
                 out += more
-            if not self._d.eof and self._d.total_out == self._size:
-                # The decoder runs its end check with the read that returns the
-                # last byte and raises its error from the next call: make that call
-                # here, so the read that ends the output raises it.
-                self._d.read(1)
+            if self._d.decoded != decoded:
+                if self._d.decoded == self._size and self._d.total_out < self._size:
+                    # The last block is decoded: take the rest of it, so the end
+                    # check, which runs with the read that returns the last byte,
+                    # runs here.
+                    out += self._d.read(self._size - self._d.total_out)
+                # An error the decoder met in the blocks this read decoded raises
+                # here.
+                self._d.read(0)
         except Exception:
+            # Keep every byte decoded before the error, those the decoder still
+            # holds too: they are returned before the error raises again.
+            ahead = self._d.decoded - self._d.total_out
+            if ahead > 0:
+                out += self._d.read(ahead)
             self._held = out
             raise
+        out, self._held = out[:n], out[n:]
         return out
 
     @override
