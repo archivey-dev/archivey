@@ -75,6 +75,27 @@ def check(flag: bool) -> None:
     assert_type(archivey.open_archive("a.zip", streaming=False), ArchiveReader)
     assert_type(archivey.open_archive("a.zip", streaming=True), ForwardArchiveReader)
     assert_type(archivey.open_archive("a.zip", streaming=flag), ForwardArchiveReader)
+    assert_type(archivey.open_archive("a.zip", pipe=False), ArchiveReader)
+    assert_type(
+        archivey.open_archive("a.zip", streaming=False, pipe=False), ArchiveReader
+    )
+    assert_type(archivey.open_archive("a.zip", pipe=True), ForwardArchiveReader)
+    assert_type(archivey.open_archive("a.zip", pipe=flag), ForwardArchiveReader)
+    assert_type(
+        archivey.open_archive("a.zip", streaming=False, pipe=True),
+        ForwardArchiveReader,
+    )
+    assert_type(
+        archivey.open_archive("a.zip", salvage=True), ArchiveReader
+    )
+    assert_type(
+        archivey.open_archive("a.zip", streaming=True, salvage=False),
+        ForwardArchiveReader,
+    )
+    assert_type(
+        archivey.open_archive("a.zip", pipe=True, salvage=False),
+        ForwardArchiveReader,
+    )
     with archivey.open_archive("a.zip") as full:
         assert_type(full, ArchiveReader)
         full.members()

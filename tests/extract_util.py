@@ -33,6 +33,7 @@ from archivey import (
     PasswordInput,
     open_archive,
 )
+from tests.streams_util import open_mode
 
 
 def open_and_extract(
@@ -49,7 +50,7 @@ def open_and_extract(
     with open_archive(
         source,
         format=format,
-        streaming=streaming,
+        **open_mode(source, streaming=streaming),
         password=password,
         encoding=encoding,
         config=config,

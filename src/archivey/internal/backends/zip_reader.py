@@ -5175,8 +5175,8 @@ class ZipReadBackend(ReadBackend):
         # ReadBackend signature.
         reader_cls = ZipReader
         if not source.seekable():
-            # Only streaming=True gets here with such a source (open_archive refuses
-            # random access on one). Imported here: that module builds on this one.
+            # Only pipe=True gets here with such a source (open_archive refuses
+            # one in every other mode). Imported here: that module builds on this one.
             from archivey.internal.backends.zip_forward_reader import (
                 ZipForwardReader,
             )

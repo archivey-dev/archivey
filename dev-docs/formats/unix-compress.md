@@ -83,7 +83,7 @@ is empty ([`single-file.md`](single-file.md) §2.2).
 know; a maximum code width above 16 is `UnsupportedFeatureError` (gzip and ncompress:
 "compressed with 17 bits, can only handle 16 bits"), and one below 9 is `CorruptionError`.
 Then codes are decoded
-forward, with no need to seek, so a pipe reads too (in streaming mode, per
+forward, with no need to seek, so a pipe can be read too (with `pipe=True`, per
 [`single-file.md`](single-file.md) §2.2).
 
 When the source is seekable, each CLEAR code becomes a seek point, and a backward seek

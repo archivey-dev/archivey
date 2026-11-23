@@ -332,15 +332,15 @@ the twins and the package.
   `[recommended]`.
 - Isolation: under `ProcessIsolation.KNOWN_CRASHES` (the default) and `NONE` the kernels
   run in the caller's process. Under `NATIVE_DECODERS`, which promises that no native
-  decoder runs in the caller's process, the decoding kernels (LZX, LZW, LZO, BCJ2,
-  ARM64, RISC-V, later LZFSE) run in archivey's decoder child, like zlib, lzma and
-  compress-utils today (question 13). CRC-16/ARC and ZipCrypto run in the caller's
-  process under every setting, as checksums and AES decryption do now. Each decoder in
-  the child costs about 0.6 to 1 ms (the `NATIVE_DECODERS` docstring in
-  `src/archivey/config.py`, measured with
-  `scripts/investigations/bench_process_isolation.py`), plus copying the bytes across
-  the pipe twice; at 8x to 38x the Python speed the kernels still win on anything but
-  tiny members. A panic in the child reaches the caller as `CorruptionError`, as
+  decoder runs in the caller's process, the decoding kernels (LZX, LZW, LZO, ARM64,
+  RISC-V, LZFSE, LZVN) run in archivey's decoder child, like zlib, lzma and
+  compress-utils today (question 13); BCJ2 uses its Python twin until the child carries
+  its four inputs. CRC-16/ARC and ZipCrypto run in the caller's process under every
+  setting, as checksums and AES decryption do now. Each decoder in the child costs about
+  0.6 to 1 ms (the `NATIVE_DECODERS` docstring in `src/archivey/config.py`, measured
+  with `scripts/investigations/bench_process_isolation.py`), plus copying the bytes
+  across the pipe twice; at 8x to 38x the Python speed the kernels still win on anything
+  but tiny members. A panic in the child reaches the caller as `CorruptionError`, as
   in-process. The streaming kernels push input as the child protocol already expects;
   BCJ2's four input streams need the protocol to carry four inputs (task 2.7); until
   then BCJ2 runs as the Python twin in the caller's process under `NATIVE_DECODERS`

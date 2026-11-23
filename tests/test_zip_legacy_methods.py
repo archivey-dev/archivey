@@ -147,7 +147,7 @@ def test_members_decode_from_a_file(legacy_zip: tuple[Path, dict]) -> None:
 def test_members_decode_from_a_pipe(legacy_zip: tuple[Path, dict]) -> None:
     path, expected = legacy_zip
     seen = {}
-    with open_archive(NonSeekableBytesIO(path.read_bytes()), streaming=True) as reader:
+    with open_archive(NonSeekableBytesIO(path.read_bytes()), pipe=True) as reader:
         for member, stream in reader.stream_members():
             assert stream is not None
             seen[member.name] = stream.read()
@@ -362,7 +362,7 @@ def test_a_pipe_member_with_a_data_descriptor_is_refused(
     gives the size and the member reads."""
     data = build_zip([entry], descriptor=True)
     with (
-        open_archive(NonSeekableBytesIO(data), streaming=True) as reader,
+        open_archive(NonSeekableBytesIO(data), pipe=True) as reader,
         pytest.raises(UnsupportedFeatureError, match=message),
     ):
         for _, stream in reader.stream_members():
@@ -416,7 +416,7 @@ def test_a_huge_declared_size_allocates_nothing(
             with pytest.raises(ResourceLimitError, match="ratio"):
                 reader.extract_all(tmp_path / "out")
         with (
-            open_archive(NonSeekableBytesIO(data), streaming=True) as reader,
+            open_archive(NonSeekableBytesIO(data), pipe=True) as reader,
             pytest.raises(TruncatedError),
         ):
             for _, stream in reader.stream_members():

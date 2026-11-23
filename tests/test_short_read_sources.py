@@ -42,6 +42,7 @@ from tests.streams_util import (
     NonSeekableBytesIO,
     ShortReadBytesIO,
     ShortReadNonSeekable,
+    open_mode,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -92,7 +93,7 @@ def _probe(
     with open_archive(
         source,
         password=passwords or None,
-        streaming=streaming,
+        **open_mode(source, streaming=streaming),
         format=format,
         config=_ALWAYS_PROBE,
     ) as reader:

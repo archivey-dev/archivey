@@ -1,12 +1,13 @@
 """archivey-codecs' decoding kernels in a decoder child, for ``NATIVE_DECODERS``.
 
 ``ProcessIsolation.NATIVE_DECODERS`` promises that no native decoder runs in this
-process, so under it the decoding kernels (ARM64, RISC-V, LZW, LZO1X, LZX) run in
-archivey's decoder child, as zlib and lzma do (openspec change ``rust-codecs-package``,
-question 13). :func:`open_kernels` gives a stand-in for the ``archivey_codecs`` module
-whose kernel objects each live in a child of their own (``decoder_worker._Codecs``):
-the wrappers in :mod:`archivey.internal.kernels.rust` use it as they use the module, so
-the bytes and errors are the same as in-process. The package is never imported here.
+process, so under it the decoding kernels (ARM64, RISC-V, LZW, LZO1X, LZX, LZFSE, LZVN)
+run in archivey's decoder child, as zlib and lzma do (openspec change
+``rust-codecs-package``, question 13). :func:`open_kernels` gives a stand-in for the
+``archivey_codecs`` module whose kernel objects each live in a child of their own
+(``decoder_worker._Codecs``): the wrappers in :mod:`archivey.internal.kernels.rust` use
+it as they use the module, so the bytes and errors are the same as in-process. The
+package is never imported here.
 
 A panic in the child comes back as :class:`ChildPanic`, which
 :func:`archivey.internal.kernels.is_panic` counts as a panic, so it reaches the caller
@@ -18,6 +19,7 @@ gives the same bytes as without the package.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, SupportsIndex, cast
@@ -236,7 +238,13 @@ class ChildCodecs:
         )
         self.lzw = SimpleNamespace(Decompressor=self._lzw)
         self.lzx = SimpleNamespace(Decompressor=_ChildLzx(self))
-        self.lzo1x = SimpleNamespace(decompress=self._lzo1x)
+        self.lzo1x = SimpleNamespace(
+            decompress=functools.partial(self.one_shot, "lzo1x")
+        )
+        self.lzfse = SimpleNamespace(
+            decompress=functools.partial(self.one_shot, "lzfse")
+        )
+        self.lzvn = SimpleNamespace(decompress=functools.partial(self.one_shot, "lzvn"))
 
     def build(self, name: str, *args: object, **kwargs: object) -> DecoderChild:
         """A child holding the kernel object ``name`` built from the arguments."""
@@ -269,13 +277,16 @@ class ChildCodecs:
         )
         return ChildLzwDecompressor(child)
 
-    def _lzo1x(
+    def one_shot(
         self,
+        kernel: str,
         block: bytes,
         *,
         out_size: SupportsIndex | None = None,
         max_size: SupportsIndex | None = None,
     ) -> bytes:
+        """``kernel.decompress(block, ...)`` (``lzo1x``, ``lzfse`` or ``lzvn``) in a
+        child of its own."""
         # In the package's order: the sizes, then that exactly one is given, then
         # the block.
         if out_size is not None:
@@ -284,12 +295,12 @@ class ChildCodecs:
             max_size = u64(max_size, "max_size")
         if (out_size is None) == (max_size is None):
             raise TypeError(
-                "lzo1x.decompress() takes exactly one of out_size= and max_size="
+                f"{kernel}.decompress() takes exactly one of out_size= and max_size="
             )
         block = raw_bytes(block)
         child = _start()
         try:
-            return child.call("lzo1x", block, (out_size, max_size))
+            return child.call(kernel, block, (out_size, max_size))
         finally:
             child.close()
 

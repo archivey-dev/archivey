@@ -103,7 +103,7 @@ def test_a_damaged_tar_xz_reads_every_whole_member_either_way(
     def source() -> Any:
         return NonSeekableBytesIO(damaged) if pipe else io.BytesIO(damaged)
 
-    kwargs = {"streaming": True} if pipe else {}
+    kwargs = {"pipe": True} if pipe else {}
     on = _members(source(), ArchiveyConfig(), **kwargs)
     whole = [e for e in on if isinstance(e, tuple) and isinstance(e[1], bytes)]
     assert len(whole) >= 5, "the damage must come after several whole members"
@@ -253,7 +253,7 @@ _SOURCES = ["file", "streaming", "pipe"]
 
 def _open(data: bytes, how: str, config: ArchiveyConfig) -> Any:
     if how == "pipe":
-        return open_archive(NonSeekableBytesIO(data), config=config, streaming=True)
+        return open_archive(NonSeekableBytesIO(data), config=config, pipe=True)
     return open_archive(io.BytesIO(data), config=config, streaming=how == "streaming")
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import stat
 import sys
@@ -192,23 +193,27 @@ def open_for_cli(
 ) -> Generator[ForwardArchiveReader, None, None]:
     """Open an archive, optionally wrapping the call in measurement for ``--track-io``.
 
-    A path that can be read only once (see :func:`is_read_once`) opens in streaming
-    mode: the user cannot choose the mode, so the CLI chooses the one that can work.
-    Each verb then reads the archive in one forward pass. A verb that reads ``-`` from
-    stdin passes the stream as ``stdin``, which opens in streaming mode as well; for
-    every other verb ``-`` is refused. ``format`` skips detection, as
-    ``open_archive(format=)`` does. ``progress`` shows how far the archive's file is
-    read (``ArchiveyConfig.on_source_read``); it is closed when the block ends.
+    A path that can be read only once (see :func:`is_read_once`) opens in pipe mode
+    (``pipe=True``): the user cannot choose the mode, so the CLI chooses the one that
+    can work. Each verb then reads the archive in one forward pass. A verb that reads
+    ``-`` from stdin passes the stream as ``stdin``, which opens in pipe mode as well
+    when it cannot seek; for every other verb ``-`` is refused. ``format`` skips
+    detection, as ``open_archive(format=)`` does. ``progress`` shows how far the
+    archive's file is read (``ArchiveyConfig.on_source_read``); it is closed when the
+    block ends.
     """
     source: Any
     if archive == "-" and stdin is not None:
-        source, streaming = stdin, True
+        # A redirect from a file (``archivey cat - < backup.7z``) can seek, and opens
+        # as the file it is, in streaming mode; only a real pipe opens in pipe mode.
+        source, pipe, streaming = stdin, not _stdin_can_seek(stdin), True
     else:
         reject_stdin_token(str(archive))
         # A URL resolves to an fsspec OpenFile, which is never read-once: the library
         # reads it with range requests.
         source = resolve_archive(str(archive))
-        streaming = not is_remote(str(archive)) and is_read_once(archive)
+        pipe = not is_remote(str(archive)) and is_read_once(archive)
+        streaming = pipe
     err = err if err is not None else sys.stderr
     config = with_source_progress(config, progress)
     try:
@@ -218,6 +223,7 @@ def open_for_cli(
                 _open(
                     source,
                     password=password,
+                    pipe=pipe,
                     streaming=streaming,
                     config=config,
                     format=format,
@@ -231,6 +237,7 @@ def open_for_cli(
             with _open(
                 source,
                 password=password,
+                pipe=pipe,
                 streaming=streaming,
                 config=config,
                 format=format,
@@ -256,6 +263,7 @@ def _open(
     archive: Any,
     *,
     password: PasswordInput,
+    pipe: bool,
     streaming: bool,
     config: ArchiveyConfig | None,
     format: ArchiveFormat | None,
@@ -265,15 +273,35 @@ def _open(
             archive,
             format=format,
             password=password,
+            pipe=pipe,
             streaming=streaming,
             config=config,
         )
     except StreamNotSeekableError as exc:
         shown = archive if isinstance(archive, (str, Path)) else "stdin"
-        message = read_once_refusal(shown, exc, streaming=streaming)
+        message = read_once_refusal(shown, exc, pipe=pipe)
         if message is None:
             raise
         raise CliError(message) from exc
+
+
+def _stdin_can_seek(stdin: BinaryIO) -> bool:
+    """Whether ``stdin`` is a file that can seek, such as a redirect from a file.
+
+    Asks the descriptor's file type first, by the rule :func:`is_read_once` applies to a
+    path, because a Windows pipe answers ``seekable()`` with ``True``.
+    """
+    try:
+        mode = os.fstat(stdin.fileno()).st_mode
+    except (OSError, AttributeError, ValueError, io.UnsupportedOperation):
+        pass
+    else:
+        if stat.S_ISFIFO(mode) or stat.S_ISCHR(mode) or stat.S_ISSOCK(mode):
+            return False
+    try:
+        return bool(stdin.seekable())
+    except (OSError, AttributeError, ValueError):
+        return False
 
 
 def is_read_once(archive: str | Path) -> bool:
@@ -293,13 +321,13 @@ def is_read_once(archive: str | Path) -> bool:
 
 
 def read_once_refusal(
-    archive: str | Path, exc: BaseException, *, streaming: bool
+    archive: str | Path, exc: BaseException, *, pipe: bool
 ) -> str | None:
     """The CLI message for a read-once path whose format needs to seek, or ``None``.
 
-    ``None`` unless the open was in streaming mode and raised
+    ``None`` unless the open was in pipe mode and raised
     ``StreamNotSeekableError``: any other failure keeps its own message. The library's
-    message suggests ``streaming=True`` or a ``BytesIO``, which a CLI user cannot pass;
+    message suggests a file or a ``BytesIO``, which a CLI user cannot pass;
     this one names what the user can do. The one place that makes this decision:
     ``open_for_cli`` raises the message as a ``CliError``, and ``info`` prints it as its
     ``open:`` field.
@@ -307,7 +335,7 @@ def read_once_refusal(
     The path is ``/``-separated here, because the caller escapes the whole message and
     an escaped native Windows path would have every separator doubled.
     """
-    if not streaming or not isinstance(exc, StreamNotSeekableError):
+    if not pipe or not isinstance(exc, StreamNotSeekableError):
         return None
     fmt = exc.source_format
     subject = (

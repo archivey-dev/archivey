@@ -412,11 +412,11 @@ def test_required_source_predicts_whether_a_pipe_works(
     pipe_is_enough = required <= StreamCapability.FORWARD_ONLY
 
     if pipe_is_enough:
-        with open_archive(_NonSeekable(data), streaming=True) as reader:
+        with open_archive(_NonSeekable(data), pipe=True) as reader:
             assert reader.cost.stream_capability is StreamCapability.FORWARD_ONLY
     else:
         with pytest.raises(StreamNotSeekableError):
-            open_archive(_NonSeekable(data), streaming=True)
+            open_archive(_NonSeekable(data), pipe=True)
 
 
 def test_required_source_survives_a_missing_dependency(
@@ -451,7 +451,7 @@ def test_a_piped_iso_with_no_optional_package_is_refused_as_a_pipe(
     # Just enough of an ISO 9660 image for detection: the primary volume descriptor's
     # "CD001" at sector 16.
     image = bytes(0x8001) + b"CD001" + bytes(0x1000)
-    with pytest.raises(StreamNotSeekableError, match="either access mode") as ei:
+    with pytest.raises(StreamNotSeekableError, match="in any mode") as ei:
         open_archive(_NonSeekable(image), streaming=streaming)
     assert ei.value.source_format == ArchiveFormat.ISO
 
@@ -464,7 +464,7 @@ def test_the_read_once_refusal_does_not_depend_on_optional_packages(
     monkeypatch.setattr(
         "archivey.internal.registry._optional", lambda name: None, raising=True
     )
-    with pytest.raises(StreamNotSeekableError, match="either access mode"):
+    with pytest.raises(StreamNotSeekableError, match="in any mode"):
         open_archive(_NonSeekable(bytes(64)), format=fmt, streaming=True)
 
 

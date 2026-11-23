@@ -427,14 +427,14 @@ def bcj2(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> Bcj2:
 
 
 def lzfse(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> AppleLz:
-    """``lzfse`` (Apple's LZFSE, in DMG runs). Under ``isolated`` the twin decodes,
-    until the decoder child can run it."""
+    """``lzfse`` (Apple's LZFSE, in DMG runs). Under ``isolated`` each stream decodes
+    in a decoder child."""
     return _apple_lz("lzfse", excluded, isolated=isolated)
 
 
 def lzvn(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> AppleLz:
-    """``lzvn`` (raw LZVN, in HFS+ compressed files). Under ``isolated`` the twin
-    decodes, until the decoder child can run it."""
+    """``lzvn`` (raw LZVN, in HFS+ compressed files). Under ``isolated`` each chunk
+    decodes in a decoder child."""
     return _apple_lz("lzvn", excluded, isolated=isolated)
 
 
@@ -444,7 +444,7 @@ def _apple_lz(
     *,
     isolated: bool,
 ) -> AppleLz:
-    module = None if isolated else kernels(kernel, excluded)
+    module = decoding_kernels(kernel, excluded, isolated=isolated)
     if module is None:
         from archivey.internal.kernels.python import (
             lzfse as lzfse_twin,

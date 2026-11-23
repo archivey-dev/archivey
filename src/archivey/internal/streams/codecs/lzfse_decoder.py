@@ -169,9 +169,10 @@ def decoder(
     isolated: bool,
 ) -> Decode:
     """The LZFSE or the raw LZVN decoder to use: archivey-codecs' ``kernel`` when
-    :mod:`archivey.internal.kernels` allows it (installed, not in ``excluded``, not
-    ``isolated`` under ``NATIVE_DECODERS``), else :func:`lzfse_decompress` or
-    :func:`lzvn_decompress`. Both give the same bytes and the same errors."""
+    :mod:`archivey.internal.kernels` allows it (installed, not in ``excluded``; in a
+    decoder child when ``isolated``, for ``NATIVE_DECODERS``), else
+    :func:`lzfse_decompress` or :func:`lzvn_decompress`. Both give the same bytes and
+    the same errors."""
     # Imported here: the kernels' Python twins import this module.
     from archivey.internal import kernels
 

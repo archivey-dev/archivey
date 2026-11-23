@@ -14,10 +14,10 @@ A kernel is used when all of these hold:
   one may differ from this archivey's Python twin, so it is skipped, logged once at
   DEBUG);
 - under ``ProcessIsolation.NATIVE_DECODERS``, which promises that no native decoder
-  runs in this process, a decoding kernel (ARM64, RISC-V, LZW, LZO1X, LZX) runs in the
-  decoder child (:mod:`archivey.internal.kernels.child`), and the Python twin decodes
-  when no child can run it. BCJ2, LZFSE and LZVN are not run there yet, so their
-  Python twins decode them. CRC-16/ARC and ZipCrypto run in this process under every
+  runs in this process, a decoding kernel (ARM64, RISC-V, LZW, LZO1X, LZX, LZFSE,
+  LZVN) runs in the decoder child (:mod:`archivey.internal.kernels.child`), and the
+  Python twin decodes when no child can run it. BCJ2 is not run there yet, so its
+  Python twin decodes it. CRC-16/ARC and ZipCrypto run in this process under every
   setting, as checksums and AES do.
 
 A missed check in a kernel panics, and PyO3 raises ``pyo3_runtime.PanicException``, a
