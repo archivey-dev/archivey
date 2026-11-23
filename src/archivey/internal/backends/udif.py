@@ -50,9 +50,14 @@ from archivey.exceptions import (
     exception_detail,
 )
 from archivey.formats import ReaderContext, ReaderSource
+from archivey.internal import native
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.adc_decoder import adc_decompress
-from archivey.internal.streams.codecs.lzfse_decoder import lzfse_decompress
+from archivey.internal.streams.codecs.lzfse_decoder import (
+    Decode,
+    decoder_for,
+    lzfse_decompress,
+)
 from archivey.terminal import quoted
 
 if TYPE_CHECKING:
@@ -322,6 +327,8 @@ class UdifImage:
     def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         self._source = source
         self._context = context
+        # The LZFSE decoder, chosen at the first LZFSE run (:meth:`_decode_run`).
+        self._lzfse: Decode | None = None
         # Whether the source's offsets are a decrypted image's, which the run and
         # truncation messages name, not the file's.
         self._decrypted = isinstance(source, DecryptedImageSource)
@@ -746,15 +753,22 @@ class UdifImage:
                 self._charge_again(decoded)
         try:
             if in_house is not None:
-                data = in_house[1](raw, decoded + 1)
+                decode = in_house[1]
+                if kind == LZFSE:
+                    if self._lzfse is None:
+                        # archivey-codecs' kernel when the call allows it.
+                        self._lzfse = decoder_for("lzfse", self._context.config)
+                    decode = self._lzfse
+                data = decode(raw, decoded + 1)
             else:
                 data = self._through_archivey(raw, _THROUGH_ARCHIVEY[kind], decoded)
         except (CorruptionError, TruncatedError) as exc:
             # The run was read whole, so a stream that stops early is a wrong stored
-            # size or damage, not a cut file.
+            # size or damage, not a cut file. A kernel panic stays the cause: it is a
+            # bug, not damage (native.py).
             raise CorruptionError(
                 f"{self._where(index)}: {exception_detail(exc)}"
-            ) from None
+            ) from native.panic_of(exc)
         if len(data) != decoded:
             got = f"more than {decoded}" if len(data) > decoded else str(len(data))
             raise CorruptionError(
