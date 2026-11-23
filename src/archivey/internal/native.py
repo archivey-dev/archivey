@@ -17,9 +17,9 @@ A kernel is used when all of these hold:
 - under ``ProcessIsolation.NATIVE_DECODERS``, which promises that no native decoder
   runs in this process, a decoding kernel (ARM64, RISC-V, LZW, LZO1X, LZX) runs in the
   decoder child (:mod:`archivey.internal.native_child`), and the Python twin decodes
-  when no child can run it. BCJ2 is not run there yet, so the Python twin decodes it.
-  CRC-16/ARC and ZipCrypto run in this process under every setting, as checksums and
-  AES do.
+  when no child can run it. BCJ2, LZFSE and LZVN are not run there yet, so their
+  Python twins decode them. CRC-16/ARC and ZipCrypto run in this process under every
+  setting, as checksums and AES do.
 
 A missed check in a kernel panics, and PyO3 raises ``pyo3_runtime.PanicException``, a
 ``BaseException`` that passes ``except Exception``. :func:`panic_to_corruption` turns it
@@ -47,7 +47,9 @@ MIN_REVISIONS: dict[str, int] = {
     "arm64": 1,
     "bcj2": 1,
     "crc16_arc": 1,
+    "lzfse": 1,
     "lzo1x": 1,
+    "lzvn": 1,
     "lzw": 1,
     "lzx": 2,
     "riscv": 1,
@@ -120,17 +122,24 @@ def is_panic(exc: BaseException) -> bool:
     return kind.__name__ == "PanicException" and kind.__module__ == "pyo3_runtime"
 
 
-def caused_by_panic(exc: BaseException) -> bool:
-    """Whether a panic is in ``exc``'s ``__cause__`` chain: the error is a kernel bug,
-    never something the archive's data or a password could cause."""
+def panic_of(exc: BaseException) -> BaseException | None:
+    """The panic in ``exc``'s ``__cause__`` chain, or ``None``. A caller that raises a
+    new error in place of ``exc`` raises it ``from panic_of(exc)``, so a kernel bug
+    keeps its panic as the cause."""
     seen: set[int] = set()
     cause = exc.__cause__
     while cause is not None and id(cause) not in seen:
         if is_panic(cause):
-            return True
+            return cause
         seen.add(id(cause))
         cause = cause.__cause__
-    return False
+    return None
+
+
+def caused_by_panic(exc: BaseException) -> bool:
+    """Whether a panic is in ``exc``'s ``__cause__`` chain: the error is a kernel bug,
+    never something the archive's data or a password could cause."""
+    return panic_of(exc) is not None
 
 
 @contextlib.contextmanager
@@ -345,6 +354,36 @@ def branch_filter(
             return NativeBranch(decoder(start_offset), label)
 
     return new
+
+
+# ── LZFSE and LZVN ────────────────────────────────────────────────────────────────────
+
+_APPLE_LABELS = {"lzfse": "LZFSE", "lzvn": "LZVN"}
+
+
+def apple_lz(
+    kernel: str, excluded: frozenset[OptionalLibrary], *, isolated: bool
+) -> Callable[[bytes, int], bytes] | None:
+    """The kernel's one-shot decoder with its Python twin's contract (``(data,
+    max_length)``: at most ``max_length`` bytes, the twin's errors and messages), or
+    ``None`` to use the twin. ``kernel`` is ``"lzfse"`` or ``"lzvn"``.
+
+    ``isolated`` is ``ProcessIsolation.NATIVE_DECODERS``: until the decoder child can
+    run these kernels, the Python decoder keeps that setting's promise.
+    """
+    if isolated:
+        return None
+    module = kernels(kernel, excluded)
+    if module is None:
+        return None
+    decompress = getattr(module, kernel).decompress
+    label = _APPLE_LABELS[kernel]
+
+    def decode(data: bytes, max_length: int) -> bytes:
+        with codec_errors(module, label):
+            return decompress(data, max_size=max_length)
+
+    return decode
 
 
 # ── Unix compress (LZW) ───────────────────────────────────────────────────────────────

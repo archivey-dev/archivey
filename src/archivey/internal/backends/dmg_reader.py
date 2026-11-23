@@ -1246,7 +1246,7 @@ class _VolumeWalk:
             self._add_xattrs(member, inode.cnid, compressed=compressed)
             return MemberRecord(member, None)
         self._linked[link_id] = path
-        self._charge(len(path) + 32, "the HFS+ hard links")
+        self._charge(str_retained_bytes(path) + 32, "the HFS+ hard links")
         return MemberRecord(member, self._file_data(member, inode))
 
     def _refused(

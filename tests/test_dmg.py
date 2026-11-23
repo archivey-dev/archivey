@@ -1623,6 +1623,20 @@ def test_max_metadata_bytes_applies_to_folder_paths_in_a_hidden_folder() -> None
         reader.members()
 
 
+def test_non_ascii_folder_paths_are_weighed_like_listed_names() -> None:
+    """A built folder path is weighed by the listing's rule for a name: four bytes a
+    character once it is not ASCII. Counted by characters, these paths came to under
+    a third of that and passed this cap."""
+    path = ".HFS+ Private Directory Data\r/" + "/".join(["\u00e9" * 100] * 60)
+    image = _image([d.Node(path, kind="dir")], hfs_options={"node_size": 32768})
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=500_000))
+    with (
+        pytest.raises(ResourceLimitError, match="HFS\\+ folder paths"),
+        _open(image, config=config) as reader,
+    ):
+        reader.members()
+
+
 def test_a_property_list_over_its_cap_is_refused_before_it_is_read() -> None:
     def huge(koly: bytearray) -> None:
         struct.pack_into(">Q", koly, 224, 65 << 20)

@@ -38,6 +38,9 @@ on:
     paths:
       - packages/archivey-codecs/**
       - .github/workflows/codecs-publish.yml
+      # The Python twins the package's parity tests compare against.
+      - src/archivey/internal/streams/codecs/lzfse_decoder.py
+      - tests/test_lzfse_decoder.py
   workflow_dispatch:
     inputs:
       target:
