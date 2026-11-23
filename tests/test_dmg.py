@@ -2185,6 +2185,37 @@ def test_kept_tables_and_their_names_count_toward_max_metadata_bytes(
         assert [m.name for m in reader.members() if m.is_file] == ["a.txt"]
 
 
+def test_kept_tables_count_with_the_members_toward_max_metadata_bytes() -> None:
+    """The tables are kept for the reader's life, so they share the budget with the
+    listing: at the smallest limit the image lists under, one byte less opens (the
+    tables fit alone, as does the listing) but refuses the listing."""
+    image = _empty_tables(2000, lambda i: "")
+
+    def lists(limit: int) -> bool:
+        config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=limit))
+        with _open(image, config=config) as reader:
+            try:
+                return [m.name for m in reader.members() if m.is_file] == ["a.txt"]
+            except ResourceLimitError as error:
+                assert "max_metadata_bytes" in str(error)
+                return False
+
+    with _open(image) as reader:
+        reader.members()
+        tracker = reader._listing_tracker  # type: ignore[attr-defined]
+        kept, listed = tracker._kept_bytes, tracker.metadata_bytes - tracker._kept_bytes
+    # 2,000 tables of 256 bytes, and the runs of the image's own tables at 36 bytes.
+    assert kept >= 2000 * 256 > 100 * listed > 0
+    low, high = kept, 2 * kept
+    assert not lists(low) and lists(high)
+    while high - low > 1:
+        middle = (low + high) // 2
+        low, high = (low, middle) if lists(middle) else (middle, high)
+    assert high >= kept + listed  # the boundary counts both
+    assert not lists(high - 1)
+    assert lists(high)
+
+
 def test_an_adc_run_that_decodes_past_its_sectors_names_their_size() -> None:
     hfs = d.write_hfsplus([d.Node("a.txt", data=bytes(range(256)) * 64)])
     volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)

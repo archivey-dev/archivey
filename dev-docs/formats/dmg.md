@@ -147,9 +147,12 @@ open stay within 64 MiB (`udif.OPEN_BUDGET`), else `ResourceLimitError`.
    checked (signature, version, run count against the `Data` length, every run inside
    the table and the data fork, a compressed run's stored length at most twice its
    decoded size plus 64 KiB, a decoded size at most 16 MiB) before its runs are kept,
-   as packed arrays charged against `max_metadata_bytes`, together with each kept
-   table and its name (an empty table counts too). Overlapping tables are
-   `CorruptionError`.
+   as packed arrays. Before they are allocated, they are weighed against
+   `max_metadata_bytes`: 256 bytes per kept table (an empty table counts too) plus its
+   name, and 36 bytes per declared run (terminators, comments and empty runs included).
+   The weight is kept for the reader's life with what the listing holds, as APFS's
+   trees are (`ReaderContext._keep_metadata`); a context without that hook holds the
+   tables to the limit alone. Overlapping tables are `CorruptionError`.
 3. Partitions: a GPT whose header and entry array pass their CRCs and whose geometry is
    sound (primary, else the backup at the last sector), else an Apple partition map
    whose entries all agree, else the run tables' ranges, else the whole disk. Either

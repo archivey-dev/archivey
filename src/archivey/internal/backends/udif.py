@@ -555,14 +555,25 @@ class UdifImage:
                     data_offset,
                 )
             )
-        budget = self._context.config.listing_limits.max_metadata_bytes
+        # A weight, not a measured size: 36 bytes per declared run (terminators,
+        # comments and empty runs included), charged before the run arrays exist.
         kept += total_runs * _RUN_BYTES
-        if budget is not None and kept > budget:
-            raise ResourceLimitError(
-                f"Listing limit reached: max_metadata_bytes={budget} (the UDIF "
-                f"property list holds {len(parsed)} blkx tables and {total_runs} "
-                f"runs, {kept} bytes kept)"
-            )
+        what = (
+            f"the UDIF property list's {len(parsed)} blkx tables and {total_runs} "
+            "declared runs"
+        )
+        keep = self._context._keep_metadata
+        if keep is not None:
+            # With the listing and what other readers keep, for the reader's life, as
+            # ``DmgReader._keep`` charges APFS's trees.
+            keep(kept, what)
+        else:
+            budget = self._context.config.listing_limits.max_metadata_bytes
+            if budget is not None and kept > budget:
+                raise ResourceLimitError(
+                    f"Listing limit reached: max_metadata_bytes={budget} ({what} "
+                    f"weigh {kept} bytes)"
+                )
         # The master checksum in the koly block is a CRC-32 of these, in this order.
         self.plist_checksums = [table[3] for table in parsed]
         parsed.sort(key=lambda table: (table[1], table[2]))
