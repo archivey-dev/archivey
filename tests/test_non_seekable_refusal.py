@@ -13,6 +13,10 @@ read and no fixture archive is needed.
 
 from __future__ import annotations
 
+import io
+import zipfile
+from pathlib import Path
+
 import pytest
 
 from archivey import (
@@ -108,9 +112,48 @@ def test_forward_only_format_proposes_pipe(fmt: ArchiveFormat, streaming: bool) 
 
     message = str(excinfo.value)
     assert "pass pipe=True" in message
-    assert "open a new one" in message  # detection has read from this one
+    # format= skips detection, so the source is unread and may be retried as it is.
+    assert "Nothing has been read from this source yet" in message
+    assert "Detection" not in message
     assert "streaming=True" not in message
     assert excinfo.value.source_format is fmt
+
+
+@pytest.mark.parametrize("explicit", [False, True], ids=["detected", "format="])
+def test_the_retry_advice_follows_whether_detection_read(explicit: bool) -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("a.txt", b"hello")
+    source = NonSeekableBytesIO(buffer.getvalue())
+    with pytest.raises(StreamNotSeekableError) as excinfo:
+        open_archive(source, format=ArchiveFormat.ZIP if explicit else None)
+    message = str(excinfo.value)
+    if explicit:
+        assert source.tell() == 0
+        assert "Nothing has been read from this source yet" in message
+        assert "Detection" not in message
+    else:
+        assert source.tell() > 0
+        assert (
+            "Detection has already read from this source, so open a new one" in message
+        )
+
+
+@pytest.mark.parametrize("explicit", [False, True], ids=["detected", "format="])
+def test_the_seek_only_advice_follows_whether_detection_read(explicit: bool) -> None:
+    data = (
+        Path(__file__).parent / "fixtures" / "damaged_member" / "7z_copy_nonsolid.7z"
+    ).read_bytes()
+    source = NonSeekableBytesIO(data)
+    with pytest.raises(StreamNotSeekableError) as excinfo:
+        open_archive(source, format=ArchiveFormat.SEVEN_Z if explicit else None)
+    message = str(excinfo.value)
+    if explicit:
+        assert source.tell() == 0
+        assert "Detection" not in message
+        assert "Copy the archive to a file or a BytesIO" in message
+    else:
+        assert "Detection has already read from this source" in message
 
 
 _PEDANTIC = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.PEDANTIC)

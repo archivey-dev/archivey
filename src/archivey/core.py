@@ -1196,6 +1196,9 @@ def _backend_for_source(
     source_is_read_once = (
         not archive_source.is_directory and not archive_source.seekable()
     )
+    # Detection reads the start of the source; ``format=`` skips it, so the source is
+    # still where the caller left it and the refusals below can say so.
+    detection_read = decision.detected is not None
     # Capability first, mode second: for a format that cannot be read as a pipe the
     # requested mode is not what went wrong, so every mode gets the one message
     # naming the only fix. Proposing pipe=True here would send the caller into a
@@ -1241,8 +1244,12 @@ def _backend_for_source(
             message = (
                 f"Format {resolved_format.display_name} cannot be read from a source "
                 f"that cannot seek, in any mode ({refused_cls.NON_SEEKABLE_REASON}). "
-                "Detection has already read from this source, so copy the archive "
-                "from its start to a file or a BytesIO and open that."
+                + (
+                    "Detection has already read from this source, so copy the "
+                    "archive from its start to a file or a BytesIO and open that."
+                    if detection_read
+                    else "Copy the archive to a file or a BytesIO and open that."
+                )
             )
         raise StreamNotSeekableError(
             message,
@@ -1275,9 +1282,15 @@ def _backend_for_source(
             f"This {resolved_format.display_name} source cannot seek, so it can be "
             "read only as a pipe, which can differ from reading a file (for example, "
             "a ZIP's permissions and symlinks arrive only at its end, and damaged "
-            "data can lose more). Detection has already read from this source, so "
-            "open a new one: pass pipe=True to read it that way, or copy the archive "
-            "to a file or a BytesIO first.",
+            "data can lose more). "
+            + (
+                "Detection has already read from this source, so open a new one: "
+                "pass pipe=True to read it that way, or copy the archive to a file "
+                "or a BytesIO first."
+                if detection_read
+                else "Nothing has been read from this source yet: pass pipe=True to "
+                "read it that way, or copy the archive to a file or a BytesIO first."
+            ),
             source_format=resolved_format,
             archive_name=archive_name,
         )

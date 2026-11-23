@@ -284,18 +284,20 @@ def test_a_format_that_needs_seek_is_refused_under_pipe(make) -> None:
     ) as info:
         archivey.open_archive(io.BytesIO(data), pipe=True)
     assert "without pipe=True" in str(info.value)
-    # The same bytes from a source that cannot seek: one message for every mode,
-    # detected or named, and it proposes only a seekable copy.
-    messages = set()
+    # The same bytes from a source that cannot seek: one message for every mode, and
+    # it proposes only a seekable copy. Only whether detection read from the source
+    # (format= skips it) changes the advice.
     for fmt in (None, archivey.detect_format(io.BytesIO(data)).format):
+        messages = set()
         for kwargs in ({}, {"streaming": True}, {"pipe": True}):
             with pytest.raises(StreamNotSeekableError) as info:
                 archivey.open_archive(NonSeekableBytesIO(data), format=fmt, **kwargs)  # type: ignore[call-overload]  # kwargs vary
             messages.add(str(info.value))
-    assert len(messages) == 1
-    (message,) = messages
-    assert "pipe=True" not in message
-    assert "a file or a BytesIO" in message
+        assert len(messages) == 1
+        (message,) = messages
+        assert "pipe=True" not in message
+        assert "a file or a BytesIO" in message
+        assert ("Detection has already read" in message) is (fmt is None)
     # Without the flag, the seekable source reads as usual.
     with archivey.open_archive(io.BytesIO(data)) as reader:
         assert reader.members()

@@ -54,9 +54,11 @@ carry: `pipe=True` on one raises `ArchiveyUsageError`, and so does a volume set 
 of two or more parts, refused before any part is read, or a set found beside a path),
 whose parts one stream cannot join.
 
-A refusal at open comes after detection, which has read from the source by then, so a
-refusal of a source that cannot seek SHALL ask for a new source, or a copy from the
-archive's start, rather than a retry on the same object.
+A refusal at open comes after detection. When detection ran, it has read from the
+source by then, so a refusal of a source that cannot seek SHALL ask for a new source,
+or a copy from the archive's start, rather than a retry on the same object. When
+`format=` skipped detection, nothing has been read, and the refusal SHALL NOT claim
+that detection read from the source: the caller may retry the same object.
 
 Pipe mode reads **only where the backend reads front to back** (TAR, ZIP, the
 single-file compressors, and RAR with RARLAB `unrar` 7.00 or later, whose refusal
@@ -145,7 +147,7 @@ never handed past the boundary, so no wrapper a backend adds can reach it except
 | --- | --- |
 | `streaming=False` on indexed ZIP | Central directory loaded; random access available |
 | `streaming=True` on `.tar.gz` | No full-archive index scan; members as stream is read |
-| `streaming=False` or `streaming=True` on non-seekable source, backend reads front to back | `StreamNotSeekableError` at open (before member data) naming `pipe=True` and asking for a new source, since detection has read from this one; the same message in both modes — library does not buffer |
+| `streaming=False` or `streaming=True` on non-seekable source, backend reads front to back | `StreamNotSeekableError` at open (before member data) naming `pipe=True`; after detection it asks for a new source, since detection has read from this one, and with `format=` it says nothing has been read; the same message in both modes — library does not buffer |
 | `pipe=True` on non-seekable source, backend reads front to back | Opens; one forward pass, as `streaming=True` |
 | `pipe=True` on a seekable source (a path, a `BytesIO`, an `OpenFile`) | Read as a pipe carrying the same bytes: the same members, metadata and errors as the non-seekable case, `cost.stream_capability` is `FORWARD_ONLY`, and the ZIP backend walks local headers |
 | `pipe=True` on a directory | `ArchiveyUsageError` at open |
