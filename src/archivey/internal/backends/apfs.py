@@ -409,7 +409,7 @@ def _walk(
                     "of order"
                 )
         except (CorruptionError, TruncatedError) as exc:
-            damage.append(Damage(low, high, address, str(exc)))
+            damage.append(Damage(low, high, address, exc.raw_message))
             continue
         if node.leaf:
             yield _Leaf(node.records, low, high, address)
@@ -454,7 +454,7 @@ class _Omap:
         try:
             head = blocks.object(address, (_T_OMAP,), oid=None, max_xid=max_xid)
         except (CorruptionError, TruncatedError) as exc:
-            self.damage.append(Damage(None, None, address, str(exc)))
+            self.damage.append(Damage(None, None, address, exc.raw_message))
             return
         (tree,) = struct.unpack_from("<Q", head, 48)
         for leaf in _walk(
@@ -713,7 +713,7 @@ class ApfsContainer:
                 volume.load_omap()
                 volumes.append(volume)
             except (CorruptionError, TruncatedError) as exc:
-                lost.append(str(exc))
+                lost.append(exc.raw_message)
         return volumes, refused, lost
 
 
@@ -889,7 +889,7 @@ class ApfsVolume:
             try:
                 self._add(tree, records)
             except (CorruptionError, TruncatedError) as exc:
-                tree.damage.append(leaf.damage(str(exc)))
+                tree.damage.append(leaf.damage(exc.raw_message))
         return tree
 
     def _add(self, tree: FsTree, records: list[tuple[bytes, bytes]]) -> None:

@@ -926,6 +926,26 @@ def test_an_encrypted_mapping_in_a_plain_volume_does_not_stop_the_other_volumes(
     assert "Fine/b.txt" in seen
 
 
+def test_a_damage_reason_naming_the_volume_is_escaped_once() -> None:
+    """The filesystem tree kept ``str(exc)`` as the reason a node is damaged, and the
+    listing's error escaped that text a second time."""
+    name = "Br\x1boken"
+    container = a.write_apfs(
+        [d.Node("a.txt", data=b"a")],
+        name=name,
+        more_volumes=[("Fine", [d.Node("b.txt", data=b"b")])],
+        patch=_mark_first_volume_nodes_encrypted,
+    )
+    with (
+        _open(a.apfs_dmg(container.container)) as reader,
+        pytest.raises(CorruptionError, match="marks node") as caught,
+    ):
+        reader.members()
+    assert f"the object map of APFS volume {quoted(name)} marks node" in (
+        caught.value.raw_message
+    )
+
+
 def _encrypt_second_volume(container: bytearray, info: a.Apfs) -> None:
     at = info.volume_superblocks[1]
     struct.pack_into("<Q", container, at * info.block_size + 264, 0)
