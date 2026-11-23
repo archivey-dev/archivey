@@ -622,9 +622,11 @@ def test_an_entry_naming_a_missing_inode_is_corruption_after_the_others() -> Non
     assert sorted(seen) == ["a.txt", "sub/", "z.txt"]
 
 
-def test_a_name_with_a_slash_is_corruption_after_the_others() -> None:
-    nodes = [d.Node("a.txt", data=b"a"), d.Node("bad", data=b"b", raw_name=b"x/y")]
-    seen = _listed_until_error(_patched(lambda r: None, nodes), CorruptionError, "x/y")
+@pytest.mark.parametrize("raw", [b"x/y", b"x\0y"], ids=["slash", "nul"])
+def test_a_name_with_a_slash_or_nul_is_corruption_after_the_others(raw: bytes) -> None:
+    nodes = [d.Node("a.txt", data=b"a"), d.Node("bad", data=b"b", raw_name=raw)]
+    match = "a directory record names 'x"
+    seen = _listed_until_error(_patched(lambda r: None, nodes), CorruptionError, match)
     assert seen == ["a.txt"]
 
 
