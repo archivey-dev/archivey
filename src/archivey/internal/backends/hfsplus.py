@@ -240,7 +240,8 @@ class _ExtentLookup:
         """The extents of each overflow record from the one keyed (``cnid``,
         ``fork_type``, ``start_block``) on, in key order: one search down the index,
         then the leaf chain. Each record must carry the key that the extents before it
-        end at; a missing or out-of-order one raises ``CorruptionError``."""
+        end at. When the chain does not lead to it, it is searched for from the root;
+        when that finds none either, ``CorruptionError``."""
         if self._tree is None:
             header = self._volume.header
             if not header.extents.size:
@@ -249,10 +250,18 @@ class _ExtentLookup:
                     "extents overflow file"
                 )
             self._tree = _BTree(self._volume, _EXTENTS_FILE, header.extents, "extents")
+        tree = self._tree
         target = (cnid, fork_type, start_block)
-        records = self._tree.records_from(lambda key: _extent_key(key) <= target)
+        # Each search binds its own key: the predicate runs only during the descent.
+        records = tree.records_from(lambda key, at=target: _extent_key(key) <= at)
+        searched = True
         while True:
-            record = next(records, None)
+            try:
+                record = next(records, None)
+            except CorruptionError:
+                if searched:
+                    raise
+                record = None  # a broken leaf chain: searched for below
             if record is not None:
                 key, data = record
                 if _extent_key(key) == target and len(data) >= 64:
@@ -264,7 +273,16 @@ class _ExtentLookup:
                     ]
                     yield found
                     target = (cnid, fork_type, target[2] + sum(c for _, c in found))
+                    searched = False
                     continue
+            if not searched:
+                # The leaf chain did not lead to the next record: search for it from
+                # the root once, as a lookup by key would, before calling it missing.
+                records = tree.records_from(
+                    lambda key, at=target: _extent_key(key) <= at
+                )
+                searched = True
+                continue
             raise CorruptionError(
                 f"the extents overflow file has no extents for file {cnid} from block "
                 f"{target[2]}"
@@ -296,8 +314,9 @@ class HfsVolume:
     # Forks.
 
     def extents(self, cnid: int, fork_type: int, fork: Fork) -> list[tuple[int, int]]:
-        """Every extent of a fork, the overflow ones included, each checked to lie
-        inside the volume, and together covering the fork's size."""
+        """The extents that hold a fork's first ``fork.size`` bytes, the overflow ones
+        included, each checked to lie inside the volume. Extents allocated past the
+        size may be left out, unread and unchecked."""
         bs = self.header.block_size
         total = self.header.total_blocks
         extents = list(fork.extents)
@@ -475,9 +494,20 @@ class _BTree:
     def leaf_records(self, limit: int | None = None) -> Iterator[tuple[bytes, bytes]]:
         """Every leaf record, in key order, following the leaf chain. A node reached
         twice, or one that is not a leaf, raises ``CorruptionError``."""
-        seen: set[int] = set()
-        number = self.first_leaf
         yielded = 0
+        for _, records in self._chain(self.first_leaf, set()):
+            for record in records:
+                yield record
+                yielded += 1
+                if limit is not None and yielded >= limit:
+                    return
+
+    def _chain(
+        self, number: int, seen: set[int]
+    ) -> Iterator[tuple[int, list[tuple[bytes, bytes]]]]:
+        """Each leaf node's number and records along the leaf chain from ``number``.
+        A node in ``seen`` or reached twice, or one that is not a leaf, raises
+        ``CorruptionError``."""
         while number:
             if number in seen:
                 raise CorruptionError(
@@ -491,11 +521,7 @@ class _BTree:
                     f"the HFS+ {self._name} B-tree's leaf chain reaches node {number}, "
                     f"which is not a leaf (kind {kind}, height {height})"
                 )
-            for record in records:
-                yield record
-                yielded += 1
-                if limit is not None and yielded >= limit:
-                    return
+            yield number, records
             number = flink
 
     def records_from(
@@ -532,21 +558,7 @@ class _BTree:
         if chosen < 0:
             return
         yield from records[chosen:]
-        chain = {number}
-        while flink:
-            if flink in chain:
-                raise CorruptionError(
-                    f"the HFS+ {self._name} B-tree's leaf chain reaches node {flink} "
-                    "twice"
-                )
-            chain.add(flink)
-            number = flink
-            flink, kind, height, records = self.node(number)
-            if kind != _LEAF or height != 1:
-                raise CorruptionError(
-                    f"the HFS+ {self._name} B-tree's leaf chain reaches node {number}, "
-                    f"which is not a leaf (kind {kind}, height {height})"
-                )
+        for _, records in self._chain(flink, {number}):
             yield from records
 
 

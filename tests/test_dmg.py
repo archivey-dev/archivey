@@ -16,6 +16,7 @@ import sys
 import time
 import unicodedata
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
@@ -906,7 +907,8 @@ def test_overflow_extents_are_read_along_the_leaf_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A fork with many overflow records finds the first one down the index and walks
-    the leaf chain from there: each extents node is read once, not once per record."""
+    the leaf chain from there: each extents node is read once per fork reader, not
+    once per record."""
     data = bytes(range(256)) * 2 * 400  # 400 blocks of 512 bytes
     image = d.dmg_of(
         [d.Node("a.bin", data=data, fragment=400)],
@@ -920,8 +922,38 @@ def test_overflow_extents_are_read_along_the_leaf_chain(
                 stream.seek(at)
                 assert stream.read(700) == data[at : at + 700]
     # 49 overflow records of 8 extents, about 10 to a 512-byte node.
-    assert len(reads) <= 2 * len(set(reads))  # one walk per fork_reader
+    assert max(Counter(reads).values()) <= 2  # one walk per fork reader: read, open
     assert len(set(reads)) < 15
+
+
+@pytest.mark.parametrize("link", ["skip", "loop"])
+def test_a_broken_extents_leaf_chain_falls_back_to_a_search(
+    monkeypatch: pytest.MonkeyPatch, link: str
+) -> None:
+    """When the extents leaf chain does not lead to the next overflow record (it skips
+    a leaf, or loops), that record is searched for from the root, so the file reads
+    as before."""
+    from archivey.internal.backends import hfsplus
+
+    data = bytes(range(256)) * 2 * 400
+    image = d.dmg_of(
+        [d.Node("a.bin", data=data, fragment=400)],
+        hfs_options={"block_size": 512, "node_size": 512},
+    )
+    node = hfsplus._BTree.node
+    broken: list[int] = []
+
+    def relinked(self, number: int):  # type: ignore[no-untyped-def]
+        flink, kind, height, records = node(self, number)
+        if self._name == "extents" and kind == -1 and flink and not broken:
+            broken.append(number)
+            flink = flink + 1 if link == "skip" else number
+        return flink, kind, height, records
+
+    monkeypatch.setattr(hfsplus._BTree, "node", relinked)
+    with _open(image) as reader:
+        assert reader.read("a.bin") == data
+    assert broken
 
 
 def test_extents_past_the_fork_size_are_not_looked_up(
