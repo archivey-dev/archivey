@@ -7,6 +7,8 @@
 - :mod:`archivey_codecs.lzx`: LZX as Microsoft cabinets store it, a decompressor like
   :class:`lzma.LZMADecompressor`.
 - :mod:`archivey_codecs.lzo1x`: one-shot LZO1X blocks of a known output size.
+- :mod:`archivey_codecs.lzfse` and :mod:`archivey_codecs.lzvn`: Apple's LZFSE streams
+  and raw LZVN (DMG images, HFS+ compressed files), one-shot to a known output size.
 - :mod:`archivey_codecs.zipcrypto`: traditional PKWARE ZIP encryption.
 - :mod:`archivey_codecs.bcj2`: 7-Zip's four-stream BCJ2 x86 filter.
 - :mod:`archivey_codecs.filters`: the ARM64 and RISC-V branch-conversion filters.
@@ -17,7 +19,17 @@ each kernel's revision, raised whenever its output, errors or saved state change
 
 from types import MappingProxyType
 
-from archivey_codecs import _codecs, bcj2, filters, lzo1x, lzw, lzx, zipcrypto
+from archivey_codecs import (
+    _codecs,
+    bcj2,
+    filters,
+    lzfse,
+    lzo1x,
+    lzvn,
+    lzw,
+    lzx,
+    zipcrypto,
+)
 from archivey_codecs._codecs import (
     CodecError,
     CorruptDataError,
@@ -40,7 +52,9 @@ __all__ = [
     "bcj2",
     "crc16_arc",
     "filters",
+    "lzfse",
     "lzo1x",
+    "lzvn",
     "lzw",
     "lzx",
     "zipcrypto",

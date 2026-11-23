@@ -171,6 +171,36 @@ def lzo1x_decompress(module: Kernels) -> Lzo1xDecompress:
     return decompress
 
 
+# ── LZFSE and LZVN ────────────────────────────────────────────────────────────────────
+
+_APPLE_LABELS = {"lzfse": "LZFSE", "lzvn": "LZVN"}
+
+
+def apple_lz_decompress(module: Kernels, kernel: str) -> Lzo1xDecompress:
+    """The package's ``lzfse.decompress`` or ``lzvn.decompress`` (``kernel``), with
+    ``lzo1x.decompress``'s shape."""
+    decompress = getattr(module, kernel).decompress
+    label = _APPLE_LABELS[kernel]
+
+    def call(
+        data: bytes | bytearray | memoryview,
+        /,
+        *,
+        out_size: int | None = None,
+        max_size: int | None = None,
+    ) -> bytes:
+        if (out_size is None) == (max_size is None):
+            raise TypeError(
+                f"{kernel}.decompress() takes exactly one of out_size= and max_size="
+            )
+        with codec_errors(module, label):
+            if out_size is not None:
+                return decompress(data, out_size=out_size)
+            return decompress(data, max_size=max_size)
+
+    return call
+
+
 # ── Unix compress (LZW) ───────────────────────────────────────────────────────────────
 
 

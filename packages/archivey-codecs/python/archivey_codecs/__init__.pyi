@@ -6,7 +6,9 @@ from _typeshed import ReadableBuffer as Buffer
 from archivey_codecs import (
     bcj2 as bcj2,
     filters as filters,
+    lzfse as lzfse,
     lzo1x as lzo1x,
+    lzvn as lzvn,
     lzw as lzw,
     lzx as lzx,
     zipcrypto as zipcrypto,

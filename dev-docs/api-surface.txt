@@ -184,7 +184,7 @@ method archivey.ArchiveStream.verify(self, *, password_only: bool = False) -> Ve
 method archivey.ArchiveStream.writable(self) -> bool
 method archivey.ArchiveStream.write(self, b: object, /) -> int
 class archivey.ArchiveyConfig()
-init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode | AcceleratorModeStr = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode | AcceleratorModeStr = AcceleratorMode.AUTO, process_isolation: ProcessIsolation | ProcessIsolationStr = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_allow_glob_member_concatenation: bool = False, rar_decompressor: RarDecompressor | RarDecompressorStr = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None, recover_partial_data: PartialDataRecovery | PartialDataRecoveryStr = PartialDataRecovery.BEFORE_DAMAGE, on_source_read: OnSourceRead | None = None, source_read_step: int = 1048576) -> None
+init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode | AcceleratorModeStr = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode | AcceleratorModeStr = AcceleratorMode.AUTO, process_isolation: ProcessIsolation | ProcessIsolationStr = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_allow_glob_member_concatenation: bool = False, rar_decompressor: RarDecompressor | RarDecompressorStr = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None, recover_partial_data: PartialDataRecovery | PartialDataRecoveryStr = PartialDataRecovery.BEFORE_DAMAGE, on_source_read: OnSourceRead | None = None, source_read_step: int = 1048576, salvage_limits: SalvageLimits = SalvageLimits(...)) -> None
 field archivey.ArchiveyConfig.always_probe_content: bool = False
 field archivey.ArchiveyConfig.decoder_limits: DecoderLimits = DecoderLimits(...)
 field archivey.ArchiveyConfig.detection_budget: DetectionBudget = DetectionBudget(...)
@@ -202,6 +202,7 @@ field archivey.ArchiveyConfig.rar_allow_glob_member_concatenation: bool = False
 field archivey.ArchiveyConfig.rar_decompressor: RarDecompressor = RarDecompressor.AUTO
 field archivey.ArchiveyConfig.read_link_targets: bool = True
 field archivey.ArchiveyConfig.recover_partial_data: PartialDataRecovery = PartialDataRecovery.BEFORE_DAMAGE
+field archivey.ArchiveyConfig.salvage_limits: SalvageLimits = SalvageLimits(...)
 field archivey.ArchiveyConfig.source_read_step: int = 1048576
 field archivey.ArchiveyConfig.spool_limits: SpoolLimits = SpoolLimits(...)
 field archivey.ArchiveyConfig.unar_path: str | os.PathLike[str] | None = None
@@ -383,7 +384,10 @@ value archivey.DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED = 'member_name_du
 value archivey.DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE = 'source_change_undetectable'
 value archivey.DiagnosticCode.MEMBER_PATH_REFUSED = 'member_path_refused'
 value archivey.DiagnosticCode.MEMBER_READERS_DISAGREE = 'member_readers_disagree'
-alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | DetectionDecoderLimitContext | ScanRaceContext | ArchiveEofContext | ArchiveStructureContext | UnlistedDataContext | UnreadSessionContext | MemberTimestampContext | MemberHeaderDamageContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | PathRefusedContext | NameDuplicateContext | UnexpectedNameDuplicateContext | ReaderDisagreementContext
+value archivey.DiagnosticCode.MEMBER_FOUND_BY_SCAN = 'member_found_by_scan'
+value archivey.DiagnosticCode.ARCHIVE_REGION_SKIPPED = 'archive_region_skipped'
+value archivey.DiagnosticCode.SALVAGE_UNAVAILABLE = 'salvage_unavailable'
+alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | DetectionDecoderLimitContext | ScanRaceContext | ArchiveEofContext | ArchiveStructureContext | UnlistedDataContext | UnreadSessionContext | MemberTimestampContext | MemberHeaderDamageContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | PathRefusedContext | NameDuplicateContext | UnexpectedNameDuplicateContext | ReaderDisagreementContext | SalvageScanContext | RegionSkippedContext | SalvageUnavailableContext
 class archivey.DiagnosticPolicy()
 init archivey.DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None, raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None) -> None
 field archivey.DiagnosticPolicy.ignore: frozenset[DiagnosticCode]
@@ -639,6 +643,10 @@ class archivey.ResourceLimitError(ArchiveyError)
 init archivey.ResourceLimitError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.ResourceUnavailableError(ResourceLimitError)
 init archivey.ResourceUnavailableError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+class archivey.SalvageLimits()
+init archivey.SalvageLimits(max_search_bytes: int | None = None, max_reported_regions: int = 1000) -> None
+field archivey.SalvageLimits.max_reported_regions: int = 1000
+field archivey.SalvageLimits.max_search_bytes: int | None = None
 class archivey.SourceChangedError(ReadError)
 init archivey.SourceChangedError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.SourceProgress()
@@ -705,7 +713,7 @@ function archivey.detect_format(source: SourceItem, *, config: ArchiveyConfig | 
 function archivey.format_availability(fmt: ArchiveFormat | str, *, check_programs: bool = True, config: ArchiveyConfig | None = None) -> FormatAvailability
 function archivey.list_known_formats() -> list[ArchiveFormat]
 function archivey.list_supported_formats(*, config: ArchiveyConfig | None = None) -> list[ArchiveFormat]
-function archivey.open_archive(source: OpenSourceInput, *, format: ArchiveFormat | str | None = None, streaming: bool = False, seekable_members: bool = False, concurrent_operations: bool = False, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None, parent: ForwardArchiveReader | None = None) -> ForwardArchiveReader
+function archivey.open_archive(source: OpenSourceInput, *, format: ArchiveFormat | str | None = None, streaming: bool = False, seekable_members: bool = False, concurrent_operations: bool = False, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None, parent: ForwardArchiveReader | None = None, salvage: bool = False) -> ForwardArchiveReader
 function archivey.open_stream(source: SourceItem, *, format: StreamFormat | PluginStream | ArchiveFormat | str | None = None, seekable: bool = False, config: ArchiveyConfig | None = None) -> ArchiveStream
 function archivey.sanitize_names(member: ArchiveMember) -> ArchiveMember
 module archivey.detection_cost
@@ -868,6 +876,12 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'detection_decoder_limited'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'detection-decoder-limited'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_path_refused'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-path-refused'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_found_by_scan'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-found-by-scan'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_region_skipped'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-region-skipped'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'salvage_unavailable'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'salvage-unavailable'
 reexport archivey.diagnostics.DiagnosticContext = archivey.DiagnosticContext
 reexport archivey.diagnostics.DiagnosticPolicy = archivey.DiagnosticPolicy
 reexport archivey.diagnostics.DiagnosticSummary = archivey.DiagnosticSummary
@@ -1047,6 +1061,35 @@ field archivey.diagnostics.ReaderDisagreementContext.member_id: int | None = Non
 field archivey.diagnostics.ReaderDisagreementContext.member_name: str = ''
 field archivey.diagnostics.ReaderDisagreementContext.shape: Literal['file_named_as_directory', 'link_name_on_file', 'star_prefix', 'gnu_prefix_bytes', 'hardlink_to_symlink', 'nul_in_name', 'directory_attribute_without_slash', 'file_only_in_joliet', 'file_only_in_iso9660', 'file_only_in_udf'] = 'file_named_as_directory'
 method archivey.diagnostics.ReaderDisagreementContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.RegionSkippedContext(_JsonSafeContext)
+init archivey.diagnostics.RegionSkippedContext(kind: Literal['region_skipped'] = 'region_skipped', archive_name: str | None = None, format: str = '', layer: str = 'archive', offset: int = 0, length: int | None = None, reason: Literal['no_header', 'search_limit', 'report_limit'] = 'no_header') -> None
+field archivey.diagnostics.RegionSkippedContext.archive_name: str | None = None
+field archivey.diagnostics.RegionSkippedContext.format: str = ''
+field archivey.diagnostics.RegionSkippedContext.kind: Literal['region_skipped'] = 'region_skipped'
+field archivey.diagnostics.RegionSkippedContext.layer: str = 'archive'
+field archivey.diagnostics.RegionSkippedContext.length: int | None = None
+field archivey.diagnostics.RegionSkippedContext.offset: int = 0
+field archivey.diagnostics.RegionSkippedContext.reason: Literal['no_header', 'search_limit', 'report_limit'] = 'no_header'
+method archivey.diagnostics.RegionSkippedContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.SalvageScanContext(_JsonSafeContext)
+init archivey.diagnostics.SalvageScanContext(kind: Literal['salvage_scan'] = 'salvage_scan', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, format: str = '', method: Literal['header_search'] = 'header_search', offset: int = 0, confirmed: bool = False, unchecked: tuple[str, ...] = ('position',)) -> None
+field archivey.diagnostics.SalvageScanContext.archive_name: str | None = None
+field archivey.diagnostics.SalvageScanContext.confirmed: bool = False
+field archivey.diagnostics.SalvageScanContext.format: str = ''
+field archivey.diagnostics.SalvageScanContext.kind: Literal['salvage_scan'] = 'salvage_scan'
+field archivey.diagnostics.SalvageScanContext.member_id: int | None = None
+field archivey.diagnostics.SalvageScanContext.member_name: str = ''
+field archivey.diagnostics.SalvageScanContext.method: Literal['header_search'] = 'header_search'
+field archivey.diagnostics.SalvageScanContext.offset: int = 0
+field archivey.diagnostics.SalvageScanContext.unchecked: tuple[str, ...] = ('position',)
+method archivey.diagnostics.SalvageScanContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.SalvageUnavailableContext(_JsonSafeContext)
+init archivey.diagnostics.SalvageUnavailableContext(kind: Literal['salvage_unavailable'] = 'salvage_unavailable', archive_name: str | None = None, format: str = '', reason: Literal['no_salvage_search', 'forward_only_reader'] = 'no_salvage_search') -> None
+field archivey.diagnostics.SalvageUnavailableContext.archive_name: str | None = None
+field archivey.diagnostics.SalvageUnavailableContext.format: str = ''
+field archivey.diagnostics.SalvageUnavailableContext.kind: Literal['salvage_unavailable'] = 'salvage_unavailable'
+field archivey.diagnostics.SalvageUnavailableContext.reason: Literal['no_salvage_search', 'forward_only_reader'] = 'no_salvage_search'
+method archivey.diagnostics.SalvageUnavailableContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.ScanRaceContext(_JsonSafeContext)
 init archivey.diagnostics.ScanRaceContext(kind: Literal['scan_race'] = 'scan_race', archive_name: str | None = None, relative_path: str = '', entry_kind: Literal['directory', 'entry'] = 'entry') -> None
 field archivey.diagnostics.ScanRaceContext.archive_name: str | None = None
