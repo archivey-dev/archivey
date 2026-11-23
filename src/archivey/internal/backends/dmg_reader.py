@@ -116,6 +116,14 @@ class ApfsData(NamedTuple):
 Locator = FileData | ApfsData | None
 
 
+def _bad_name(name: str) -> bool:
+    """Whether a stored directory-entry name cannot be one component of a member
+    path: empty, ``.``, ``..``, or holding ``/`` or a NUL. Only damage or a crafted
+    image stores one. Both walks use it; an HFS+ name never holds ``/`` here, since
+    ``hfsplus`` shows a stored ``/`` as ``:``."""
+    return name in ("", ".", "..") or "/" in name or "\0" in name
+
+
 def volume_names(labels: list[str]) -> list[str]:
     """The top-level directory names for several volumes (D1): the label, ``Untitled``
     when it is empty, ``.`` or ``..``, and a name already taken (exactly, or but for
@@ -875,6 +883,11 @@ class _VolumeWalk:
         self._paths: dict[int, str | None] = {hfsplus.ROOT_FOLDER: ""}
         self._hidden: dict[int, bool] = {hfsplus.ROOT_FOLDER: False}
         self._looped: set[int] = set()
+        # (parent path, name) of each record whose name cannot be a path component,
+        # and the records left out because a folder above them has such a name.
+        self._bad_names: list[tuple[str, str]] = []
+        self._inside_bad = 0
+        self._bad_above: dict[int, bool] = {hfsplus.ROOT_FOLDER: False}
         orphans = 0
         try:
             for entry in hfsplus.catalog_entries(volume):
@@ -892,6 +905,25 @@ class _VolumeWalk:
             failure = CorruptionError(
                 f"the HFS+ folder {first}'s parent chain loops, so {orphans} "
                 "records of the catalog are not listed"
+            )
+        elif failure is None and self._bad_names:
+            where, bad = self._bad_names[0]
+            count = len(self._bad_names)
+            records = "1 record" if count == 1 else f"{count} records"
+            has, are = ("has", "is") if count == 1 else ("have", "are")
+            first = "the first is " if count > 1 else ""
+            below = ""
+            if self._inside_bad:
+                inside = self._inside_bad
+                more = "is 1 record" if inside == 1 else f"are {inside} records"
+                below = f", nor {more} inside such folders"
+            if orphans:
+                stray = "1 record is" if orphans == 1 else f"{orphans} records are"
+                below += f"; also, {stray} in folders the catalog does not hold"
+            failure = CorruptionError(
+                f"{records} of the HFS+ catalog {has} a name that cannot be a path "
+                f"component ({first}{quoted(bad)} in the folder "
+                f"{quoted(where or '/')}) and {are} not listed{below}"
             )
         elif failure is None and orphans:
             failure = CorruptionError(
@@ -916,6 +948,24 @@ class _VolumeWalk:
             self._hidden[each] = hidden
         return hidden
 
+    def _in_bad_folder(self, cnid: int) -> bool:
+        """Whether folder ``cnid``, or a folder above it, has a name that cannot be a
+        path component. Its parent chain reaches the root: ``folder_path`` checked
+        it."""
+        folders = self._catalog.folders
+        chain = []
+        at = cnid
+        while at not in self._bad_above:
+            if _bad_name(folders[at][1]):
+                self._bad_above[at] = True
+                break
+            chain.append(at)
+            at = folders[at][0]
+        bad = self._bad_above[at]
+        for each in chain:
+            self._bad_above[each] = bad
+        return bad
+
     def _member(self, entry: hfsplus.Entry) -> MemberRecord[Locator] | None | _Orphan:
         folder = hfsplus.is_folder(entry)
         if folder and entry.cnid == hfsplus.ROOT_FOLDER:
@@ -936,6 +986,14 @@ class _VolumeWalk:
             and entry.parent == hfsplus.ROOT_FOLDER
             and self._is_journal(entry)
         ):
+            return None
+        # After the hidden-folder checks: the name of the private-data folder
+        # (``hfsplus.PRIVATE_DATA``) holds NULs, so it would count as a bad name.
+        if self._in_bad_folder(entry.parent):
+            self._inside_bad += 1
+            return None
+        if _bad_name(entry.name):
+            self._bad_names.append((parent, entry.name))
             return None
         within = f"{parent}/{entry.name}" if parent else entry.name
         path = f"{self._top}/{within}" if self._top else within
@@ -1210,7 +1268,7 @@ class _ApfsWalk:
             below: list[tuple[int, str]] = []
             for child in sorted(tree.children.get(parent, ()), key=lambda c: c.name):
                 entry = self._context.decode_name(child.name)
-                if "/" in entry or entry in ("", ".", ".."):
+                if _bad_name(entry):
                     problems.append(f"a directory record names {quoted(entry)}")
                     continue
                 within = prefix + entry
@@ -1266,7 +1324,7 @@ class _ApfsWalk:
             also = f"; also, {problems[0]}" if problems else ""
             self.failure = CorruptionError(
                 f"{len(tree.damage)} nodes of the filesystem tree of the APFS volume "
-                f"{quoted(name)} cannot be used (block {first_bad.address}: "
+                f"{quoted(name)} cannot be used ({first_bad.place}: "
                 f"{first_bad.reason}){unlisted}{also}"
             )
         elif problems:
@@ -1395,6 +1453,11 @@ class _ApfsWalk:
                 _, sparse = apfs.stream_reader(
                     self._volume, tree, inode.stream, inode.size, what
                 )
+            except ResourceLimitError:
+                # Only the charge of a kept stream check raises it here (no byte is
+                # read): the archive is over max_metadata_bytes, not this member
+                # damaged.
+                raise
             except ArchiveyError as exc:
                 return ApfsData(self._index, oid, False, (type(exc), str(exc)))
             member.is_sparse = sparse
@@ -1411,6 +1474,10 @@ class _ApfsWalk:
                     f"{what} has the compressed flag and no com.apple.decmpfs attribute",
                 ),
             )
+        # The stream check's charge is the archive's, so it is outside the ``try``;
+        # what reading the bytes raises is this member's damage.
+        if attr.value is None:
+            apfs.stream_view(self._volume, tree, attr.stream)
         try:
             value = apfs.xattr_value(
                 self._volume,
@@ -1459,6 +1526,9 @@ class _ApfsWalk:
                 target_in_archive=True,
             )
             return
+        # As for the decmpfs attribute: the stream check's charge is the archive's.
+        if target.value is None:
+            apfs.stream_view(self._volume, self._tree, target.stream)
         try:
             raw = apfs.xattr_value(
                 self._volume,

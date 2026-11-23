@@ -101,6 +101,7 @@ from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, make_dirs, plain
 from archivey.internal.overrides import override
+from archivey.internal.placements import Claim as _Claim, Placements
 from archivey.internal.selection import CollectionSelector
 from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.win32_errors import (
@@ -628,23 +629,6 @@ class _Staging:
     reversed: bool = False
 
 
-@dataclass(frozen=True)
-class _Claim:
-    """A destination claimed by a member written this run, with the index of that
-    member's result. A later ``REPLACE`` onto the destination revises that result to
-    ``OVERWRITTEN``.
-
-    ``physical`` is where the claimed file was when it was claimed, with every parent
-    resolved. The key is taken from it, and a collision is routed to it. ``path`` can
-    run through a caller's symlink that a later member replaces, so it can stop naming
-    that file.
-    """
-
-    path: Path
-    result_index: int
-    physical: Path
-
-
 @dataclass
 class _RunState:
     """One ``run()``'s state: where it writes, what it has written, its tallies.
@@ -703,20 +687,13 @@ class _RunState:
     forgotten_source: dict[Path, int] = field(default_factory=dict)
     # The entries this run has written under ``dest``.
     written_paths: set[Path] = field(default_factory=set)
-    # O2 collision map: casefold(NFC(relpath)) key (exact under TRUSTED) -> the claim
-    # (written path + claiming member's result index). Tracks non-directory members
-    # written THIS run so a second member resolving to the same key is a deterministic
-    # collision on every OS (not a platform-dependent silent merge), and so a REPLACE
+    # O2 collision claims (``Placements``): which result owns each non-directory
+    # entry this run wrote, by casefold(NFC(relpath)) key (exact under TRUSTED) and by
+    # file identity. A second member resolving to the same key is a deterministic
+    # collision on every OS (not a platform-dependent silent merge), and a REPLACE
     # resolution can revise the earlier member's result. See _write_member /
     # dev-docs/decisions/0013.
-    collision_map: dict[str, _Claim] = field(default_factory=dict)
-    # The key each claimed path was claimed under (see ``_claim``).
-    claim_keys: dict[Path, str] = field(default_factory=dict)
-    # Claimed files by identity, (st_dev, st_ino) -> the path claimed, for a name the
-    # filesystem makes a second name of one (``_alias_claim``). Filled lazily: a path
-    # waits in ``unindexed_claims`` until the first lookup after it was claimed.
-    claim_ids: dict[tuple[int, int], Path] = field(default_factory=dict)
-    unindexed_claims: list[Path] = field(default_factory=list)
+    placements: Placements = field(default_factory=Placements)
     # RENAME: the last ``N`` tried per collision key of the requested name, so the
     # next member colliding on that key resumes after it instead of rescanning from
     # ``(1)``. Cleared whenever a claim is released (a freed name may be the first
@@ -863,9 +840,11 @@ class _MemberState:
     # Intra-member progress emit while copying a FILE (None when on_progress is unset
     # or the member has no streamed body).
     emit_progress: Callable[[], None] | None = None
-    # Under TRUSTED with KEEP_PARTIAL: the run's claim on the entry this member's
-    # destination already names, by any spelling (``_resolve_collision``).
-    trusted_prior: _Claim | None = None
+    # The run's claim on the entry this member's destination names now
+    # (``Placements.owner``, from ``_resolve_collision``): by any spelling where the
+    # answer is used, and under TRUSTED outside REPLACE and KEEP_PARTIAL the key's
+    # claim. A REPLACE landing retires the claim of the file it replaces.
+    owner: _Claim | None = None
     # The member's data as the pass staged it (``_stage_then_place``): a FILE written
     # from it lands by renaming or linking it (``_write_file_atomic``), and its bytes
     # were counted when it was staged.
@@ -1915,8 +1894,8 @@ class ExtractionCoordinator:
         state = self._state
         parked = self._current.parked
         for path, index in state.unremoved.pop(name, {}).items():
-            claim = state.collision_map.get(self._claimed_key(path))
-            if claim is not None and claim.path == path and claim.result_index == index:
+            claim = state.placements.at_path(path, self._claimed_key(path))
+            if claim is not None and claim.result_index == index:
                 parked[path] = index
                 self._release_claim(path)
         if earlier is not None:
@@ -1968,12 +1947,10 @@ class ExtractionCoordinator:
         # hardlink made to it before the later copy arrived.
         content_kept = False
         if _wrote_at_path(prior) and path is not None and path in state.written_paths:
-            claim = state.collision_map.get(self._claimed_key(path))
+            claim = state.placements.at_path(path, self._claimed_key(path))
             # Where the copy was written: ``path`` no longer leads there once a later
             # member replaced a caller's symlink on its way.
-            physical = (
-                claim.physical if claim is not None and claim.path == path else path
-            )
+            physical = claim.physical if claim is not None else path
             self._release_claim(path)
             content_kept = self._forget_source_path(path)
             if prior.member.type == MemberType.DIRECTORY:
@@ -2386,7 +2363,10 @@ class ExtractionCoordinator:
             # so that member's result must stop reporting it EXTRACTED. This member's
             # own result is recorded by the caller's handler.
             if self._current.removed_existing:
-                self._mark_overwritten(prior or self._trusted_kept_partial())
+                self._mark_overwritten(prior or self._replaced_kept_partial())
+                if self._retire_owner():
+                    # The name is free again for a later RENAME.
+                    self._state.rename_next.clear()
             raise
 
         return self._settle_placement(
@@ -2433,7 +2413,12 @@ class ExtractionCoordinator:
         # ``results`` instead of two members both reporting EXTRACTED at one path. A
         # partial file ``OnError.KEEP_PARTIAL`` kept landed as well.
         if _wrote_at_path(result):
-            self._mark_overwritten(prior or self._trusted_kept_partial())
+            self._mark_overwritten(prior or self._replaced_kept_partial())
+            # A directory that landed over a file: the file's claim goes with it.
+            # Any other member that lands retires it when it claims its own path
+            # (``_register_collision_key`` -> ``Placements.land``).
+            if transformed.type == MemberType.DIRECTORY:
+                self._retire_owner()
             if transformed.type == MemberType.DIRECTORY and result.path is not None:
                 self._state.written_dirs.setdefault(
                     self._collision_key(result.path), []
@@ -2630,23 +2615,24 @@ class ExtractionCoordinator:
             requested
         ):
             return requested, None, None
-        prior = self._state.collision_map.get(self._collision_key(requested))
-        if prior is None and self._policy is not ExtractionPolicy.TRUSTED:
-            # TRUSTED reports no collision event (``collided`` below), so an alias
-            # found there would change nothing; the guard saves its ``lstat``.
-            prior = self._alias_claim(requested)
-        if (
-            self._policy is ExtractionPolicy.TRUSTED
-            and self._on_error is OnError.KEEP_PARTIAL
-        ):
-            # TRUSTED reports no collision, but a kept partial file this member
-            # lands on must lose its path (``_trusted_kept_partial``). The identity
-            # match comes first: it names the claim of the file at this name now,
-            # under any name the filesystem gives it (a case variant on a
-            # case-insensitive one, an 8.3 short name), even when a later spelling
-            # replaced the file this spelling claimed. The claim by this spelling
-            # stands only when the file there is still its own.
-            self._current.trusted_prior = self._alias_claim(requested) or prior
+        # The owner of the entry there now: the claim under the key when the entry
+        # is its file, else the claim whose file it is, under any name the
+        # filesystem gives that file (a case variant on a case-insensitive
+        # filesystem, an 8.3 short name), else the claim under the key. Under TRUSTED
+        # it raises no collision (``collided`` below), but a REPLACE landing over it
+        # still retires its claim, and a partial file it kept loses its path; for
+        # anything else there the key's answer serves, and costs no ``lstat``.
+        placements = self._state.placements
+        by_file = bool(placements) and (
+            self._policy is not ExtractionPolicy.TRUSTED
+            or self._overwrite is OverwritePolicy.REPLACE
+            or self._on_error is OnError.KEEP_PARTIAL
+        )
+        occupied = self._occupied(requested) if by_file else None
+        prior = placements.owner(
+            requested, self._collision_key(requested), occupied=bool(occupied)
+        )
+        self._current.owner = prior
         collided = (
             prior.path
             if prior is not None and self._policy is not ExtractionPolicy.TRUSTED
@@ -2662,7 +2648,9 @@ class ExtractionCoordinator:
             self._check_collision_abort(original, collided, directory=prior is None)
         if self._overwrite is OverwritePolicy.RENAME:
             self._current.rename_base = requested
-            if prior is not None or self._occupied(requested):
+            if prior is not None or (
+                occupied if occupied is not None else self._occupied(requested)
+            ):
                 is_dir = transformed.type == MemberType.DIRECTORY
                 free = self._derive_free_name(requested, is_dir=is_dir)
                 return free, None, collided
@@ -3034,74 +3022,37 @@ class ExtractionCoordinator:
         a replacement, a third member colliding revises the second, not the first."""
         if transformed.type != MemberType.DIRECTORY and _wrote_at_path(result):
             assert result.path is not None
-            self._claim(result.path, result_index)
+            # A REPLACE landed over the owner's file, so its claim goes with it, under
+            # whatever key it was made (``Placements.land``). Every other policy
+            # writes only where no entry was, or under a fresh name.
+            replaced = (
+                self._current.owner
+                if self._overwrite is OverwritePolicy.REPLACE
+                else None
+            )
+            self._claim(result.path, result_index, replaced=replaced)
 
     def _rel_name(self, path: Path) -> str:
         """``path`` relative to the extraction root, as written, for messages."""
         return path.relative_to(self._state.dest).as_posix()
 
-    def _claim(self, path: Path, index: int) -> None:
-        """Claim ``path`` for result ``index``, keyed on where it physically is now.
+    def _claim(self, path: Path, index: int, *, replaced: _Claim | None = None) -> None:
+        """Claim ``path`` for result ``index``, keyed on where it physically is now,
+        over the file of ``replaced`` when one was there (``Placements.land``).
 
         The key is remembered per path, so releasing the claim later finds it even after
         a symlink in ``path`` was replaced and ``path`` resolves somewhere else."""
-        key = self._collision_key(path)
-        self._state.collision_map[key] = _Claim(path, index, self._physical_path(path))
-        self._state.claim_keys[path] = key
-        self._state.unindexed_claims.append(path)
-
-    def _alias_claim(self, path: Path) -> _Claim | None:
-        """The claim on the file at ``path`` when ``path`` is another name the
-        filesystem gives a file this run wrote under its own name; else ``None``.
-
-        An 8.3 short name (``LONGFI~1.TXT`` for ``longfilename.txt``) is such a name on
-        Windows, on a volume that makes them; so is a spelling that NTFS's upcase table
-        folds and ``casefold`` does not. The collision key does not see it, so without
-        this the member would meet the file as one already there: refused under
-        ``ERROR``, and under ``REPLACE`` written over the earlier member while that
-        member's result still says ``EXTRACTED``. Matched by identity
-        (``st_dev``, ``st_ino``) with the files this run claimed, so it goes through
-        the same collision handling as a case variant does. A filesystem that reports
-        inode 0 cannot be matched, and an entry there stays one already there.
-
-        Only a name that holds an entry and has no claim of its own gets here, so a
-        run into an empty destination costs nothing. Each claimed path is looked at
-        once, on the first lookup after it was claimed; a hit is checked against the
-        claimed path again, as that path may hold a newer file by now.
-        """
-        if not self._occupied(path):
-            return None
-        try:
-            st = os.lstat(long_path(path))
-        except OSError:
-            return None
-        if st.st_ino == 0:
-            return None
-        state = self._state
-        for claimed in state.unindexed_claims:
-            with contextlib.suppress(OSError):
-                cst = os.lstat(long_path(claimed))
-                state.claim_ids[cst.st_dev, cst.st_ino] = claimed
-        state.unindexed_claims.clear()
-        claimed = state.claim_ids.get((st.st_dev, st.st_ino))
-        # Compared as spelled: ``WindowsPath`` equality folds case, and a case
-        # variant of a claimed name is exactly what this looks for (under TRUSTED,
-        # whose key does not fold it).
-        if claimed is None or os.fspath(claimed) == os.fspath(path):
-            return None
-        claim = state.collision_map.get(self._claimed_key(claimed))
-        if claim is None or claim.path != claimed:
-            return None
-        try:
-            if not os.path.samestat(st, os.lstat(long_path(claimed))):
-                return None
-        except OSError:
-            return None
-        return claim
+        self._state.placements.land(
+            path,
+            self._collision_key(path),
+            self._physical_path(path),
+            index,
+            replaced=replaced,
+        )
 
     def _claimed_key(self, path: Path) -> str:
         """The key ``path`` was claimed under, or its current key if it was not."""
-        key = self._state.claim_keys.get(path)
+        key = self._state.placements.claimed_key(path)
         return key if key is not None else self._collision_key(path)
 
     def _record_run_symlink(self, path: Path) -> None:
@@ -3347,9 +3298,9 @@ class ExtractionCoordinator:
         while True:
             candidate = parent / numbered_name(requested.name, n, is_dir=is_dir)
             candidate_key = self._collision_key(candidate)
-            if candidate_key not in self._state.collision_map and not self._occupied(
-                candidate
-            ):
+            if self._state.placements.at_key(
+                candidate_key
+            ) is None and not self._occupied(candidate):
                 rename_next[counter_key] = n + 1
                 return candidate
             n += 1
@@ -3363,14 +3314,28 @@ class ExtractionCoordinator:
         collision map, so it matches the way every other collision does: under STRICT
         and STANDARD, an anti-item ``readme`` deletes the ``README`` this run wrote,
         which on a case-insensitive filesystem is the file it names. TRUSTED keys on the
-        exact name, so there it is exact. Directories are not in the map, so a directory
-        matches only by its exact path. Nothing is deleted that this run did not write.
+        exact name, so there the name decides as the platform compares paths: on Windows
+        ``readme`` is the ``README`` this run wrote, and its claim is found by the file
+        (``Placements.owner``). Directories are not in the map, so a directory matches
+        only by its exact path. Nothing is deleted that this run did not write.
         """
         written_paths = self._state.written_paths
-        if dest_path not in written_paths:
-            claim = self._state.collision_map.get(self._collision_key(dest_path))
-            if claim is not None and claim.path in written_paths:
-                dest_path = claim.path
+        placements = self._state.placements
+        key = self._collision_key(dest_path)
+        claim = placements.at_key(key)
+        if claim is None and dest_path in written_paths and self._occupied(dest_path):
+            # A name the key does not fold that still reaches a written file: under
+            # TRUSTED on Windows, ``readme`` is the ``README`` this run claimed.
+            claim = placements.owner(dest_path, key, occupied=True)
+        # The claim's own spelling is the one the run wrote and claimed: on Windows
+        # ``readme`` is in ``written_paths`` when ``README`` is (``WindowsPath``
+        # equality folds case), and the claim is released by its spelling.
+        if (
+            claim is not None
+            and claim.path in written_paths
+            and (dest_path not in written_paths or claim.path == dest_path)
+        ):
+            dest_path = claim.path
         if dest_path not in written_paths:
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
@@ -3402,16 +3367,12 @@ class ExtractionCoordinator:
     def _release_claim(self, path: Path) -> None:
         """Drop the collision claim on ``path`` once its content is gone.
 
-        ``written_paths`` and ``collision_map`` both track what this run put on disk, so
+        ``written_paths`` and the claims both track what this run put on disk, so
         an anti-item delete has to clear both or the map keeps advertising a claim for
         content that no longer exists — which a later same-key member would see as a
         collision, aborting under ``AbortOn.NAME_COLLISION`` against an empty destination
         or revising an already-deleted member to ``OVERWRITTEN``."""
-        key = self._claimed_key(path)
-        collision_map = self._state.collision_map
-        claim = collision_map.get(key)
-        if claim is not None and claim.path == path:
-            del collision_map[key]
+        if self._state.placements.release(path, self._claimed_key(path)):
             # A freed name can be the first free one for a later RENAME again.
             self._state.rename_next.clear()
 
@@ -4190,7 +4151,7 @@ class ExtractionCoordinator:
         prior = state.results[link.result_index].path
         if prior is not None:
             state.written_paths.discard(prior)
-            claim = state.collision_map.get(self._claimed_key(prior))
+            claim = state.placements.at_key(self._claimed_key(prior))
             if claim is not None and claim.result_index == link.result_index:
                 self._release_claim(prior)
 
@@ -4504,25 +4465,36 @@ class ExtractionCoordinator:
         unremoved.clear()
         return first
 
-    def _trusted_kept_partial(self) -> _Claim | None:
+    def _replaced_kept_partial(self) -> _Claim | None:
         """Under TRUSTED, the claim of a partial file ``OnError.KEEP_PARTIAL`` kept at
-        the entry this member's destination names, by any name, or ``None``.
+        the entry this member's destination names, or ``None``.
 
-        TRUSTED reports no collision, so ``_resolve_collision`` returns no prior claim
-        and an earlier member keeps its result when a later one lands on its name. A
-        kept partial file is different: its FAILED result must stop naming a path that
-        now holds the later member's content. The claim is the one
-        ``_resolve_collision`` found for the entry: by key (the parent resolved, so a
-        directory alias matches) or by file identity (a case variant on a
-        case-insensitive filesystem). Two names the filesystem keeps apart find
-        nothing, and both results stand."""
-        claim = self._current.trusted_prior
+        TRUSTED reports no collision, so ``_resolve_collision`` routes no prior claim
+        and an earlier member keeps its result when a later one lands on its file.
+        A kept partial file is different: its FAILED result must stop naming a path
+        that now holds the later member's content. The owner ``_resolve_collision``
+        found is the claim of the file there now (``Placements.owner``), so a name
+        the filesystem keeps apart finds nothing and both results stand."""
+        if self._policy is not ExtractionPolicy.TRUSTED:
+            return None
+        claim = self._current.owner
         if claim is None:
             return None
         earlier = self._state.results[claim.result_index]
         if earlier.status is not ExtractionStatus.FAILED or earlier.path is None:
             return None
         return claim
+
+    def _retire_owner(self) -> bool:
+        """Under REPLACE, retire the claim of the file this member's destination held
+        (``_MemberState.owner``) once that file is gone: a directory landed over it,
+        or the member removed it and then failed. Any other member that lands
+        retires it when it claims its own path (``_register_collision_key`` ->
+        ``Placements.land``). Whether a claim was retired."""
+        owner = self._current.owner
+        if owner is None or self._overwrite is not OverwritePolicy.REPLACE:
+            return False
+        return self._state.placements.retire(owner)
 
     def _mark_overwritten(self, prior: _Claim | None) -> None:
         """Revise a clobbered member's result to OVERWRITTEN: its content is gone.
@@ -4617,9 +4589,10 @@ class ExtractionCoordinator:
         written_paths = state.written_paths
         if path in written_paths:
             return True
-        if not state.collision_map or not path.is_relative_to(state.dest):
+        placements = state.placements
+        if not placements or not path.is_relative_to(state.dest):
             return False
-        claim = state.collision_map.get(self._collision_key(path))
+        claim = placements.at_key(self._collision_key(path))
         if (
             claim is not None
             and claim.path in written_paths
@@ -4627,9 +4600,11 @@ class ExtractionCoordinator:
         ):
             return True
         # Another name of the claimed file itself: a case variant on a case-insensitive
-        # filesystem, under any policy, matched by identity (``_alias_claim``). A case
+        # filesystem, under any policy, matched by identity (``Placements``). A case
         # variant that is another file, on a case-sensitive filesystem, is not one.
-        alias = self._alias_claim(path)
+        if not self._occupied(path):
+            return False
+        alias = placements.by_identity(path)
         return alias is not None and alias.path in written_paths
 
     def _occupied(self, path: Path) -> bool:
