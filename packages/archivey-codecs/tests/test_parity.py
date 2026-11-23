@@ -500,6 +500,54 @@ def test_lzx_waits_for_an_owed_pad_byte(codecs: object) -> None:
     assert cut.eof
 
 
+@BOTH
+def test_lzx_refuses_to_grow_a_stream_past_a_short_frame(codecs: object) -> None:
+    """Only the last frame is short: once a stream has ended with one, a larger
+    output size is refused, and the next frame never starts off a frame boundary."""
+    stream = _odd_stored_lzx()
+    d = codecs.lzx.Decompressor(15, output_size=5)
+    assert d.decompress(stream) == b"hello"
+    d.set_output_size(5)
+    with pytest.raises(ValueError, match="last frame ended short at 5 bytes"):
+        d.set_output_size(5 + 32768)
+
+
+@BOTH
+def test_lzx_input_queued_without_decoding_is_not_needed_again(codecs: object) -> None:
+    """``decompress(data, 0)`` queues ``data`` and decodes nothing: the decoder holds
+    unread input, so it does not ask for more."""
+    from cab_util import LzxEncoder
+
+    data = sample_data(random.Random(6), 70_000)
+    stream = b"".join(LzxEncoder(window_bits=15).encode(data))
+    d = codecs.lzx.Decompressor(15, output_size=len(data))
+    out = d.decompress(stream[:10])
+    assert d.needs_input
+    out += d.decompress(stream[10:], 0)
+    assert not d.needs_input
+    out += d.decompress(b"") + d.flush()
+    assert out == data
+
+
+def test_lzx_state_whose_input_count_is_below_what_it_holds() -> None:
+    """The package only: a state's input count covers the bytes its bit buffer
+    holds; a smaller one is refused, not wrapped below zero."""
+    from cab_util import LzxEncoder
+
+    data = sample_data(random.Random(6), 3000)
+    stream = b"".join(LzxEncoder(window_bits=15).encode(data))
+    lzx = archivey_codecs.lzx
+    d = lzx.Decompressor(15, output_size=len(data))
+    # Bytes after the stream let the bit reader fetch ahead, as a CAB folder's do.
+    assert d.decompress(stream + bytes(8)) == data
+    assert d.eof
+    state = d.getstate()
+    assert lzx.Decompressor.from_state(state).total_in == d.total_in
+    bad = state[:-9] + b"\0" + (0).to_bytes(8, "little")
+    with pytest.raises(archivey_codecs.CorruptDataError, match="do not agree"):
+        lzx.Decompressor.from_state(bad)
+
+
 def test_lzx_owed_pad_byte_in_a_later_call() -> None:
     """The package only: the counts and the input after the stream. An odd final
     uncompressed block owes a pad byte: fed in a later call, it still belongs to the

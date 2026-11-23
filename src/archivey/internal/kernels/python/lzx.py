@@ -100,6 +100,12 @@ class Decompressor:
                 "decoded"
             )
         progress = d.frame_in_progress()
+        # Only the last frame is short: a stream that ended with one has no more.
+        if output_size > decoded and decoded % FRAME_SIZE and progress is None:
+            raise ValueError(
+                f"an output size of {output_size}, past the end of a stream whose last "
+                f"frame ended short at {decoded} bytes"
+            )
         if progress is not None:
             size, done = progress
             frame = min(output_size - decoded, FRAME_SIZE)

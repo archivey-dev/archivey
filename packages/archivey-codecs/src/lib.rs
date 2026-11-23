@@ -1230,6 +1230,16 @@ impl LzxDecompressor {
                 "an output size of {output_size}, below the {decoded} bytes already decoded"
             )));
         }
+        // Only the last frame is short: a stream that ended with one has no more.
+        if output_size > decoded
+            && !decoded.is_multiple_of(lzx::FRAME_SIZE as u64)
+            && self.inner.frame_in_progress().is_none()
+        {
+            return Err(PyValueError::new_err(format!(
+                "an output size of {output_size}, past the end of a stream whose last \
+                 frame ended short at {decoded} bytes"
+            )));
+        }
         if let Some((size, done)) = self.inner.frame_in_progress() {
             let frame = (output_size - decoded).min(lzx::FRAME_SIZE as u64) as usize;
             if frame == 0 && self.inner.rewind_frame() {
@@ -1353,7 +1363,12 @@ impl LzxDecompressor {
             };
             size == next
         });
-        if (out.len() as u64) > decoded || output_size.is_some_and(|n| n < decoded) || !frame_agrees
+        // The input taken counts the bytes the bit buffer and the input buffer hold.
+        let held = (inner.lookahead().len() + inner.unread_input().len()) as u64;
+        if (out.len() as u64) > decoded
+            || output_size.is_some_and(|n| n < decoded)
+            || !frame_agrees
+            || total_in < held
         {
             return Err(CorruptDataError::new_err(
                 "the lzx state holds sizes that do not agree",
@@ -1390,7 +1405,9 @@ impl LzxDecompressor {
         self.failed.is_none()
             && !self.ended
             && self.drained()
-            && (!self.at_end() && self.starved || self.at_end() && self.pad_pending())
+            // Input queued by a call that decoded nothing is still to be read.
+            && (!self.at_end() && self.starved && self.queued() == 0
+                || self.at_end() && self.pad_pending())
     }
 
     /// After `eof`, the input that follows the stream.
