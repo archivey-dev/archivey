@@ -297,6 +297,38 @@ def test_bcj2_reads_a_view_from_its_streams_as_its_bytes(
     assert d.read() == want
 
 
+class _OtherBytes(bytes):
+    """A ``bytes`` whose ``__bytes__`` gives other bytes than its buffer."""
+
+    def __bytes__(self) -> bytes:
+        return b"other"
+
+
+@BOTH
+def test_a_bytes_subclass_is_read_as_its_buffer(codecs: object) -> None:
+    data = _OtherBytes(b"abc")
+    assert codecs.crc16_arc(data) == PYTHON.crc16_arc(b"abc")
+    assert codecs.zipcrypto.Decryptor(b"k").decrypt(data) == (
+        PYTHON.zipcrypto.Decryptor(b"k").decrypt(b"abc")
+    )
+
+
+@BOTH
+@pytest.mark.parametrize("value", [3, "abc", [0]])
+def test_bcj2_refuses_a_read_that_returns_no_buffer(
+    codecs: object, value: object
+) -> None:
+    main = types.SimpleNamespace(read=lambda n: value)
+    d = codecs.bcj2.Decompressor(
+        main, io.BytesIO(), io.BytesIO(), io.BytesIO(bytes(5)), out_size=4
+    )
+    name = type(value).__name__
+    with pytest.raises(
+        TypeError, match=f"a bytes-like object is required, not '{name}'"
+    ):
+        d.read()
+
+
 @BOTH
 def test_crc16_refuses_a_value_outside_16_bits(codecs: object) -> None:
     for data in (b"", b"x"):

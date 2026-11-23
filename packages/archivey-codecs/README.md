@@ -33,7 +33,11 @@ from archivey_codecs import lzw
 
 archivey_codecs.crc16_arc(b"123456789")  # 0xBB3D
 d = lzw.Decompressor()
-data = d.decompress(z_bytes) + d.flush()
+data = d.decompress(z_bytes)
+# flush() returns the output before a bad code, and the next call raises it:
+# call it until eof.
+while not d.eof:
+    data += d.flush()
 # A .Z stream has no end marker, so a cut can pass unseen. Some cuts leave
 # evidence, which flush() reports here instead of raising:
 if d.truncation is not None:
