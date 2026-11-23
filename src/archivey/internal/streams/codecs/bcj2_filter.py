@@ -118,6 +118,12 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
                 # An error the decoder met in the blocks this read decoded raises
                 # here.
                 self._d.read(0)
+            if self._d.total_out == self._size and not self._d.eof:
+                # All the output is returned, but the end check has not passed: the
+                # output is empty, so no read returned a last byte to run it with,
+                # or the check failed. A read past the end runs it, or raises its
+                # error again.
+                out += self._d.read(1)
         except BaseException:  # an interrupt too: the decoder keeps it as its failure
             # Keep every byte decoded before the error, those the decoder still
             # holds too: they are returned before the error raises again.

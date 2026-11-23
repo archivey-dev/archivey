@@ -438,8 +438,8 @@ def test_the_read_that_ends_the_output_raises_a_left_over_byte(
 ) -> None:
     """The end check runs with the read that returns the last byte, and that read
     raises its error: a reader that asks for exactly the output size sees it. The
-    bytes it decoded are kept: the next read returns them. Past them the output has
-    ended, and no read needs more of it, so the error does not raise again."""
+    bytes it decoded are kept: the next read returns them, and a read past them
+    raises the error again."""
     from tests.bcj2_util import bcj2_encode
 
     streams = list(bcj2_encode(random.Random(1), 5000))
@@ -451,7 +451,9 @@ def test_the_read_that_ends_the_output_raises_a_left_over_byte(
         stream.read(5000)
     assert stream.tell() == 0
     assert stream.read(5000) == expected
-    assert stream.read(1) == b""
+    with raises_corruption_not_truncation(match=match):
+        stream.read(1)
+    assert stream.read(0) == b""
 
 
 @pytest.mark.parametrize(
@@ -963,3 +965,26 @@ def test_wrong_password_on_an_encrypted_bcj2_folder_is_rejected(
         (member,) = reader.members()
         with pytest.raises(EncryptionError):
             reader.read(member)
+
+
+@pytest.mark.parametrize(("index", "label"), [(0, "main"), (1, "call"), (2, "jump")])
+def test_an_empty_output_checks_its_inputs_on_the_first_read(
+    index: int, label: str
+) -> None:
+    """An empty output has no read that returns a last byte, so the first read that
+    asks for one runs the end check. ``read(0)`` reads nothing."""
+    streams = [b"", b"", b"", b"\x00" * 5]
+    streams[index] = b"\x00"
+    stream = _bcj2(*map(io.BytesIO, streams), unpack_size=0)
+    assert stream.read(0) == b""
+    match = f"BCJ2 {label} stream has bytes past"
+    with raises_corruption_not_truncation(match=match):
+        stream.read(1)
+    with raises_corruption_not_truncation(match=match):
+        stream.read()
+
+
+def test_an_empty_output_with_empty_inputs_reads_as_empty() -> None:
+    stream = _bcj2(*map(io.BytesIO, [b"", b"", b"", b"\x00" * 5]), unpack_size=0)
+    assert stream.read(1) == b""
+    assert stream.read() == b""

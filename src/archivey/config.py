@@ -5,12 +5,13 @@ functions that open, detect or report on archives: :func:`~archivey.open_archive
 :func:`~archivey.open_stream`, :func:`~archivey.detect_format`,
 :func:`~archivey.format_availability` and :func:`~archivey.list_supported_formats`. Its
 fields are grouped into the limit classes here (:class:`ExtractionLimits`,
-:class:`ListingLimits`, :class:`DecoderLimits`, :class:`SpoolLimits`), the enums that
-pick an accelerator, an external program, or which decoders run in a child process
-(:class:`AcceleratorMode`, :class:`RarDecompressor`, :class:`ProcessIsolation`), and
-policies defined in their own modules (diagnostics, formats, detection budget). Every
-field is checked when the config is built, so a wrong value fails at the caller's line
-rather than deep inside a read. This module also holds the password types.
+:class:`ListingLimits`, :class:`DecoderLimits`, :class:`SpoolLimits`,
+:class:`SalvageLimits`), the enums that pick an accelerator, an external program, or
+which decoders run in a child process (:class:`AcceleratorMode`,
+:class:`RarDecompressor`, :class:`ProcessIsolation`), and policies defined in their own
+modules (diagnostics, formats, detection budget). Every field is checked when the config
+is built, so a wrong value fails at the caller's line rather than deep inside a read.
+This module also holds the password types.
 """
 
 from __future__ import annotations
@@ -438,20 +439,35 @@ class ListingLimits:
     """
 
     max_metadata_bytes: int | None = 64 * 2**20
-    """Most bytes of text a listing may retain across its members. 64 MiB.
+    """Weighted budget for the metadata a listing keeps across its members. 64 MiB.
+
+    This is a safety weight that keeps a hostile archive from filling memory with its
+    listing, not a memory cap: for a hard ceiling, set a memory limit on the process or
+    container. It weighs the text and bytes the archive controls. A record that an
+    archive can repeat without adding a member (a PAX keyword, a key of a dict nested in
+    ``extra``, a ZIP extra field, a sparse map entry) also weighs a fixed amount per
+    record, mostly the measured cost of the objects it keeps, rounded up. The weight
+    leaves out the object overhead of ordinary text fields and the fixed cost of each
+    member, about 1.5 KiB, whose total ``max_members`` bounds. So how the memory a
+    listing holds compares with this weight depends on the format, the member count and
+    the shape of the metadata: a ZIP of 1,000-byte names, for example, holds about
+    1.7 bytes per byte weighed, its member objects included.
 
     Counts member names (and raw names), comments, link targets, owner and group names
     and the string or bytes values in ``extra``, plus the keys of a dict nested in it
     (such as TAR's PAX keywords) with 96 bytes more for each such text key, plus the
     archive comment. Each distinct PAX keyword also counts 256 bytes once while its header
     is parsed. The top-level ``extra`` keys are fixed per format and do not
-    count. Non-ASCII text counts four bytes per character, so it is an upper bound
-    rather than an exact size. A TAR sparse member's map, which the listing keeps to
-    read the member, counts 24 bytes per entry, and each ZIP extra field kept in
-    ``extra["zip.extra_fields"]`` counts 72 bytes plus its data. A cabinet's block
-    tables, read as members of each folder are first opened and kept for the reader's
-    life, count 256 bytes per data block on a running total of their own, so opening a
-    member can raise too.
+    count. Non-ASCII text in these fields counts four bytes per character, so it is an
+    upper bound on the text's size rather than an exact size. A TAR sparse member's
+    map, which the listing keeps to read the member, counts 24 bytes per entry, and each
+    ZIP extra field kept in ``extra["zip.extra_fields"]`` counts 72 bytes plus its data.
+
+    Some formats also hold a total of their own to this amount, for structures the
+    listing does not weigh. ISO weighs the full UDF paths when the archive is opened, so
+    ``open_archive()`` can refuse a deep UDF tree. A cabinet's block tables, read as
+    members of each folder are first opened and kept for the reader's life, count 256
+    bytes per data block, so opening a member can raise too.
 
     A ZIP read from a stream that cannot seek also keeps the data of each member
     short enough to be a symlink until its directory says which members are links.
@@ -872,6 +888,44 @@ SpoolLimits.UNLIMITED = SpoolLimits(max_bytes=None)
 
 
 @dataclass(frozen=True)
+class SalvageLimits:
+    """Caps on the search a reader opened with ``open_archive(salvage=True)`` makes.
+
+    Where damage stops the member walk, a salvage reader searches forward for the next
+    header that passes its format's checks. These limits bound that search. Each walk of
+    the archive counts from zero, and an archive read inside another
+    (``ReaderContext.open_nested``) is a reader of its own. The limits that apply to
+    every read apply to a salvage reader unchanged: a found member is decoded and
+    extracted under :class:`DecoderLimits` and :class:`ExtractionLimits` like any other.
+    """
+
+    max_search_bytes: int | None = None
+    """Most bytes one walk's searches may examine, all layers together (the
+    archive's own bytes and a decoded stream inside it). ``None``, the default, does
+    not cap the search: it examines each byte at most once per layer in a walk.
+
+    When the cap is reached, the search stops there, records one
+    ``ARCHIVE_REGION_SKIPPED`` with ``reason="search_limit"`` and lists nothing after
+    it; the listing ends in the damage error, as it does without salvage.
+
+    Only the listing walk records. A reader that walks the archive again from its
+    start to reach a member's data searches the same way, up to the same cap counted
+    from zero, so it finds the same members and records nothing; each such walk can
+    cost the listing's search again.
+    """
+
+    max_reported_regions: int = 1_000
+    """Most ``ARCHIVE_REGION_SKIPPED`` records one reader makes for ranges it skipped.
+
+    This caps the records, not the search: past it, the search goes on, and one last
+    record with ``reason="report_limit"`` counts the ranges not reported.
+    """
+
+    def __post_init__(self) -> None:
+        check_limit_fields(self, cls="SalvageLimits")
+
+
+@dataclass(frozen=True)
 class ArchiveyConfig:
     """Library tuning knobs passed as ``config=`` to :func:`open_archive`,
     :func:`open_stream` and :func:`detect_format`.
@@ -1136,6 +1190,10 @@ class ArchiveyConfig:
     answer, a gap this step does not set.
     """
 
+    salvage_limits: SalvageLimits = SalvageLimits()
+    """Caps on the search a salvage reader makes past damage
+    (``open_archive(salvage=True)``). See :class:`SalvageLimits`."""
+
     if TYPE_CHECKING:
         # The constructor's input types, wider than the fields for the enum fields and
         # ``detection_budget``: ``__post_init__`` converts a string spelling (or a
@@ -1175,6 +1233,7 @@ class ArchiveyConfig:
             recover_partial_data: PartialDataRecovery | PartialDataRecoveryStr = ...,
             on_source_read: OnSourceRead | None = ...,
             source_read_step: int = ...,
+            salvage_limits: SalvageLimits = ...,
         ) -> None: ...
 
     def __post_init__(self) -> None:
@@ -1225,6 +1284,7 @@ def _check_policy_fields(config: ArchiveyConfig) -> None:
         ("listing_limits", ListingLimits),
         ("decoder_limits", DecoderLimits),
         ("spool_limits", SpoolLimits),
+        ("salvage_limits", SalvageLimits),
         ("diagnostic_policy", DiagnosticPolicy),
         ("formats", FormatPolicy),
     )

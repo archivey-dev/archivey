@@ -10,7 +10,7 @@ name: Benchmark wall-time
 # measures main alone).
 #
 # Hard fails (when the expensive run fires):
-#   1. ~13× wall-ratio sanity ceiling
+#   1. ~13× wall-ratio sanity ceiling, when the time past it is at least 1 ms
 #   2. a case slower than on the commit the last run measured, both measured in this
 #      job on this runner: the two commits alternate, three harness runs each, and
 #      benchmarks/compare_refs.py keeps each side's fastest run. A case fails when it
