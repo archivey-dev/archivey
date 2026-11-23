@@ -14,6 +14,7 @@ import struct
 import unicodedata
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -344,7 +345,7 @@ class _CountedRing(list):
 
     reads = 0
 
-    def __getitem__(self, index):  # type: ignore[no-untyped-def]
+    def __getitem__(self, index: Any) -> Any:
         _CountedRing.reads += 1
         return super().__getitem__(index)
 
@@ -361,7 +362,8 @@ def test_checking_every_checkpoint_candidate_is_linear_in_the_ring() -> None:
     first = apfs._Superblock(4096, 1 << 20, 0, ring, 10, 0, 0, 0, (), 7)
     container = apfs.ApfsContainer.__new__(apfs.ApfsContainer)
     container._first = first
-    container._blocks = apfs._Blocks(None, 4096, 1 << 20)  # type: ignore[arg-type]
+    # No block is read: _incomplete reads only the block size.
+    container._blocks = apfs._Blocks(None, 4096, 1 << 20)
     plain = list(seen)
     expected = [_old_span(plain, 0, index, 7) for index in range(maps, ring)]
     _CountedRing.reads = 0

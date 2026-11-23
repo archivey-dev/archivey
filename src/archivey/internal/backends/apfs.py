@@ -601,7 +601,9 @@ class _MapRuns:
     def span(self, start: int, count: int, xid: int) -> str | None:
         """What is wrong with the ``count`` blocks from ``start`` as one checkpoint's
         maps (good, of transaction ``xid``, only the last marked last), checked block
-        by block in ring order; ``None`` when nothing is."""
+        by block in ring order; ``None`` when nothing is. A checkpoint has at least
+        one map block and its superblock, so ``1 <= count < ring``."""
+        assert 0 < count < len(self._seen)
         maps = self._maps[start] if self._seen[start][1] == xid else 0
         unmarked = self._unmarked[start]
         # The first block that fails each test, if one of the ``count`` does.
