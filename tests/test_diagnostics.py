@@ -1139,6 +1139,11 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         DiagnosticCode.MEMBER_PATH_REFUSED,
         # The caller's decoder memory cap stopped a detection step, not the bytes.
         DiagnosticCode.DETECTION_DECODER_LIMITED,
+        # Recorded only under salvage=True, which lists past damage on purpose; the
+        # damage still raises at the end of the listing.
+        DiagnosticCode.MEMBER_FOUND_BY_SCAN,
+        DiagnosticCode.ARCHIVE_REGION_SKIPPED,
+        DiagnosticCode.SALVAGE_UNAVAILABLE,
     }
 
 

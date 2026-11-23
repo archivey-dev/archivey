@@ -30,16 +30,18 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
    touched: "salvage needs random access to a seekable file; save the stream to a file
    first". Random access already refuses a non-seekable source at open, so no second
    check is needed. `stream_members()`, `extract_all()` and `verify_all()` on a
-   random-access reader work as usual. A nested archive archivey opens itself (a deb's
-   `data.tar`, an RPM payload, a `.pkg` payload) inherits the flag;
-   `reader.open_archive` / `open_archive(parent=...)` takes it as given by the caller.
+   random-access reader work as usual. A nested archive archivey opens itself
+   (`ReaderContext.open_nested`: a deb's `data.tar`, a `.pkg` payload, a makeself
+   payload) inherits the flag; `open_archive(parent=...)` takes it as given by the
+   caller. An RPM's CPIO payload is not a nested reader: the RPM
+   reader parses it itself, under its own salvage state.
 
 2. **`SalvageLimits`.**
 
    ```python
    @dataclass(frozen=True)
    class SalvageLimits:
-       max_search_bytes: int | None = None   # bytes a search examines, per reader, all layers
+       max_search_bytes: int | None = None   # bytes a walk's searches examine, all layers
        max_reported_regions: int = 1_000     # ARCHIVE_REGION_SKIPPED records per reader
    ```
 
@@ -64,7 +66,7 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
                       format, method, offset, confirmed, unchecked)
    RegionSkippedContext(kind="region_skipped", archive_name, format, layer,
                         offset, length, reason)
-   SalvageUnavailableContext(kind="salvage_unavailable", archive_name, format)
+   SalvageUnavailableContext(kind="salvage_unavailable", archive_name, format, reason)
    ```
 
    - `method`: `"header_search"` in this step (later: `"second_copy"`,
@@ -90,7 +92,7 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
 
    ```text
    walk stops at damage D (default rules, follow-size included, already failed)
-     search from D: finder(window, start) -> offset of first candidate | None
+     search from D: finder(window, start, stop) -> first candidate in [start, stop) | None
        none in the layer      -> REGION_SKIPPED(D, end-D), walk ends
        candidate at C         -> REGION_SKIPPED(D, C-D) when C > D
                                  parse it as the walk parses any header
@@ -99,18 +101,21 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
                                  unconfirmed -> search resumes at C + step (inside its data)
    ```
 
-   - The driver reads through the backend's own seekable view in windows (1 MiB, with
-     an overlap of the format's longest header so a header across a window edge is
-     found once), counts every byte it examines against `max_search_bytes`, and never
-     examines a byte twice in one layer: the search position only moves forward.
+   - The driver reads the layer forward in windows (1 MiB, with an overlap of the
+     format's longest header so a header across a window edge is found once): through
+     the backend's seekable view, or through a nested reader's forward-only stream. It
+     counts every byte it examines against `max_search_bytes`, and never examines a
+     byte twice in one layer of a walk: the search position only moves forward.
    - A confirmed member resumes the **normal** walk after it, so the default rules
      (follow-size, the end marker, every check) apply again from there, and a later
      damage starts a new search.
    - The first damage error is kept and raised at the end of the pass, as today. A
      search that finds nothing changes nothing about it.
-   - The format supplies `find_header(window: bytes, start: int) -> int | None`, pure on
-     bytes: the first offset at or after `start` where a header passes the format's own
-     check. This is also the shape of the later plugin hook (design §7.7).
+   - The format supplies
+     `find_header(window: bytes, start: int, stop: int) -> int | None`, pure on bytes:
+     the first candidate offset at or after `start` and before `stop` where a header
+     passes the format's own check. It examines no offset at or after `stop`. This is
+     also the shape of the later plugin hook (design §7.7).
 
 5. **Add-only, by construction.** The search starts only where the default walk stopped,
    so every default member comes first, unchanged, with the same diagnostics. The test
@@ -187,6 +192,38 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
 12. **Security note.** `docs/security.md`: salvage is a parser differential by design;
     never use `salvage=True` to decide what an archive holds or whether it is safe.
     Extraction safety is unchanged.
+
+## Notes from the switch PR
+
+Choices the decisions above left open, made while building PR 1:
+
+- **The backend flag** is `ReadBackend.SUPPORTS_SALVAGE`, upper case like the other
+  backend flags (`SUPPORTS_PASSWORD`), not `supports_salvage`.
+- **How the flag reaches a reader.** The opener wraps the backend's `open_read` in
+  `requesting_salvage(...)`, and `BaseArchiveReader.__init__` takes the request, as
+  `parent=` is taken (`nesting.joining`). `open_archive` and `ReaderContext.open_nested`
+  are the two openers; no `open_read` signature changed. A reader reads
+  `self._salvage_mode` (`SalvageState`): `.enabled`, `.limits`.
+- **Nested readers** are built forward-only (`streaming=True` over the member's
+  stream). One search reads forward, so it can run there. Going back after it, into
+  the data of an unconfirmed member, is the format's call: TAR holds up to 4 MiB of
+  it, and CPIO and ar on a forward-only reader record `SALVAGE_UNAVAILABLE` with
+  `reason="forward_only_reader"` (a format with no search at all records
+  `reason="no_salvage_search"`).
+- **Walks.** The reader's `SalvageState` holds the listing walk's budget, records and
+  layer positions. A listing walk started over calls `restart()`. Another walk from
+  the start (to reach a member's data, possibly beside the listing walk) searches with
+  a `QuietSalvageState` of its own: the same cap, from zero, recording nothing, so it
+  finds the same members and leaves the reader's state as it is.
+- **One `SALVAGE_UNAVAILABLE` per reader**: a `.deb` opened with `salvage=True` records
+  it for the package and for each inner tar while TAR has no search.
+- **The budget** counts `step` bytes per candidate position examined (fewer at a
+  layer's end). With `max_search_bytes=0` nothing is read or examined.
+- **The `search_limit` record** has the `offset` where the stopped search started.
+  **The `report_limit` record** has the `offset` of the first range not reported and
+  `length=None`; its message gives the count, since the context has no count field. A
+  format calls `SalvageState.finish()` at the end of its walk to record it, and
+  `SalvageState.restart()` when its listing walk starts over.
 
 ## Verification
 

@@ -11,6 +11,7 @@ import random
 
 import pytest
 
+from archivey import OptionalLibrary
 from archivey.internal.backends import zipcrypto
 from tests.zipcrypto import _encrypt, _Keys
 
@@ -42,7 +43,11 @@ def test_decrypt_across_calls_matches_encrypt(split_sizes: list[int]) -> None:
     payload = rng.randbytes(sum(split_sizes))
     ciphertext = _encrypt(b"pw", 0x42, payload)
 
-    keys, check = zipcrypto.keys_after_header(b"pw", ciphertext)
+    # The Python cipher, whose key words are compared below.
+    keys, check = zipcrypto.keys_after_header(
+        b"pw", ciphertext, frozenset({OptionalLibrary.ARCHIVEY_CODECS})
+    )
+    assert isinstance(keys, zipcrypto.ZipCryptoKeys)
     assert check == 0x42
     body = ciphertext[zipcrypto.ZIPCRYPTO_HEADER_LEN :]
     pieces, pos = [], 0

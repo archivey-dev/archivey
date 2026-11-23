@@ -45,7 +45,9 @@ wrapping the image, not mounted here.
 
 from __future__ import annotations
 
+import functools
 import io
+import itertools
 import re
 import stat
 import struct
@@ -271,9 +273,9 @@ class _ParseBudget:
 # How many files only another tree holds are reported per tree
 # (``IsoReader._report_files_in_other_trees``).
 _OTHER_TREE_REPORTS = 16
-# What ``IsoReader._report_unlisted`` decodes a reported file's name from: a directory
-# entry, or a UDF name already decoded.
-_NameSource = TypeVar("_NameSource")
+# What ``IsoReader._report_unlisted`` renders a reported file's path from: a directory
+# entry, or a UDF path already decoded.
+_PathSource = TypeVar("_PathSource")
 
 
 # The key the UDF tree is counted under in ``_ParseBudget``, beside the ISO 9660 trees'
@@ -470,9 +472,12 @@ def _sorted_children(directory: IsoEntry) -> list[IsoEntry]:
     ECMA-119 9.3 has a writer record a directory's entries sorted by identifier, and
     every writer seen does. Sorting here lists an image that does not in the same
     order. The sort is stable, so entries that share an identifier keep their on-disc
-    order, which decides which of them is current.
+    order, which decides which of them is current. A directory already in order comes
+    back as its own ``children`` list, not a copy; callers do not change it.
     """
     children = directory.children or []
+    if all(a.ident <= b.ident for a, b in itertools.pairwise(children)):
+        return children
     return sorted(children, key=_ident_of)
 
 
@@ -725,9 +730,20 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         # directory, built the first time a link target is followed through it, so
         # following many targets through one wide directory stays linear.
         self._rock_ridge_children: dict[int, dict[bytes, IsoEntry]] = {}
+        # Each directory's entries in identifier order (``_sorted_children``), by
+        # ``id()`` of the directory. Name and link target decoding can ask for one
+        # directory's entries many times: a link target such as ``x\xff/../x\xff/..``
+        # searches ``x\xff`` once per component (``_joliet_directory``), and so do
+        # many ``CL`` placeholders pointing at one directory. Without this, each
+        # search would sort the whole directory again.
+        self._sorted: dict[int, list[IsoEntry]] = {}
         # The primary tree's first directory at each extent, for Rock Ridge ``CL``
-        # relocation; built on the first ``CL`` entry met (``_relocated``).
+        # relocation; built on the first ``CL`` entry met (``_relocation_index``).
         self._entry_at_extent: dict[int, IsoEntry] | None = None
+        # The directories, by ``id()``, whose ``..`` carries ``PL`` but that no ``CL``
+        # the listing reaches points at, so they list where they are stored; built on
+        # the first ``PL`` entry met (``_unrelinked``).
+        self._orphans: set[int] | None = None
         # The reader's own view of the source, for the trailing-data scan; closed by
         # ``_release_archive_handles``.
         self._iso_fp = source.view(0)
@@ -1196,16 +1212,20 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         ISO 9660 caps depth at eight, so a Rock Ridge writer parks each deeper
         directory under a root-level ``rr_moved`` directory (its ``..`` carries a
         ``PL`` entry) and leaves a ``CL`` placeholder, a file record, where it belongs.
-        With ``use_rr`` a parked directory is skipped where it is stored, and a
-        placeholder gives way to the directory it points at (:meth:`_relocated`) for
-        its contents and attributes, and keeps its own name, as Linux's ``readdir``
-        names it from the placeholder's ``NM``. A placeholder that points at nothing
-        is listed as the file record it is.
+        With ``use_rr`` a parked directory is skipped where it is stored
+        (:meth:`_is_parked`), and a placeholder gives way to the directory it points
+        at (:meth:`_relocated`) for its contents and attributes, and keeps its own
+        name, as Linux's ``readdir`` names it from the placeholder's ``NM``. A
+        placeholder that points at nothing is listed as the file record it is.
         """
-        for child in _sorted_children(directory):
+        key = id(directory)
+        ordered = self._sorted.get(key)
+        if ordered is None:
+            ordered = self._sorted[key] = _sorted_children(directory)
+        for child in ordered:
             named = child
             if use_rr and child.rr is not None:
-                if child.is_dir and child.parent_linked:
+                if self._is_parked(child):
                     continue
                 if child.rr.child_link is not None:
                     child = self._relocated(child, child.rr.child_link)
@@ -1223,6 +1243,74 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         into ``rr_moved``, so a name match would list the first ``x`` in both places
         and lose the second one's files.
         """
+        return self._relocation_index().get(extent, placeholder)
+
+    def _is_parked(self, entry: IsoEntry) -> bool:
+        """Whether a directory is a relocated one, listed where a ``CL`` points at it
+        rather than where it is stored: its ``..`` carries a ``PL`` entry, and a ``CL``
+        entry that the listing reaches points at its extent (:meth:`_unrelinked`).
+
+        A ``PL`` that no reachable ``CL`` points back at relinks nothing, so that
+        directory is listed where it is stored rather than lost with its files.
+        Linux hides an entry by its own ``RE`` entry instead, which this reader does
+        not use.
+        """
+        if not (entry.is_dir and entry.parent_linked and entry.rr is not None):
+            return False
+        return id(entry) not in self._unrelinked()
+
+    def _unrelinked(self) -> set[int]:
+        """The ``PL`` directories, by ``id()``, that no ``CL`` the listing reaches
+        points at.
+
+        The primary tree is walked as :meth:`_children` lists it: a ``CL`` is followed
+        to its directory and a ``PL`` directory is not entered where it is stored. A
+        ``CL`` counts only once the walk reaches it, so one that the listing reaches
+        only through the directory it would relink does not hide that directory. Each
+        ``PL`` directory whose extent no reached ``CL`` points at, in the order the walk
+        met them, is then listed where it is stored and walked in turn, since the ``CL``
+        entries under it may relink others. Each extent is walked once.
+        """
+        if self._orphans is None:
+            assert self._volume is not None
+            index = self._relocation_index()
+            orphans: set[int] = set()
+            reached: set[int] = set()
+            walked: set[int] = set()
+            parked: list[IsoEntry] = []
+
+            def walk(start: IsoEntry) -> None:
+                queue = [start]
+                for directory in queue:
+                    if directory.extent in walked:
+                        continue
+                    walked.add(directory.extent)
+                    for child in directory.children or ():
+                        rr = child.rr
+                        if rr is not None and child.is_dir and child.parent_linked:
+                            parked.append(child)
+                        elif rr is not None and rr.child_link is not None:
+                            reached.add(rr.child_link)
+                            target = index.get(rr.child_link)
+                            if target is not None:
+                                queue.append(target)
+                        elif child.is_dir and child.children is not None:
+                            queue.append(child)
+
+            walk(self._volume.primary.root)
+            position = 0
+            while position < len(parked):
+                directory = parked[position]
+                position += 1
+                if directory.extent not in reached:
+                    orphans.add(id(directory))
+                    walk(directory)
+            self._orphans = orphans
+        return self._orphans
+
+    def _relocation_index(self) -> dict[int, IsoEntry]:
+        """The primary tree's first directory at each extent, breadth first, leaving
+        out placeholders and symlinks, as Linux follows a ``CL``; built once."""
         if self._entry_at_extent is None:
             assert self._volume is not None
             index: dict[int, IsoEntry] = {}
@@ -1237,20 +1325,20 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
                         if child.children is not None:
                             queue.append(child)
             self._entry_at_extent = index
-        return self._entry_at_extent.get(extent, placeholder)
+        return self._entry_at_extent
 
     def _is_rr_moved(self, entry: IsoEntry) -> bool:
         """Whether a root-level directory is Rock Ridge's ``rr_moved`` relocation parent.
 
         That directory is the relocation's scaffolding, not part of the tree anyone
         archived. It is known by its contents rather than its name: every child is a
-        relocated directory (its ``..`` carries a ``PL`` entry), the same test
-        :meth:`_children` uses to hide those children from their parking place.
+        relocated directory (:meth:`_is_parked`), the same test :meth:`_children` uses
+        to hide those children from their parking place.
         """
         children = entry.children
         if not children:
             return False
-        return all(child.is_dir and child.parent_linked for child in children)
+        return all(self._is_parked(child) for child in children)
 
     def _tree_root(self) -> IsoEntry:
         volume = self._volume
@@ -1381,7 +1469,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
                 "Joliet",
                 "file_only_in_joliet",
                 self._entry_tree_files(JOLIET_TREE),
-                self._joliet_text,
+                functools.partial(self._entry_tree_path, name_of=self._joliet_text),
                 listed_extents,
             )
         if self._namespace == "joliet" or (
@@ -1391,7 +1479,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
                 "ISO 9660",
                 "file_only_in_iso9660",
                 self._entry_tree_files(PRIMARY_TREE),
-                self._plain_text,
+                functools.partial(self._entry_tree_path, name_of=self._plain_text),
                 listed_extents,
             )
         if self._udf is not None and self._namespace != "udf":
@@ -1399,7 +1487,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
                 "UDF",
                 "file_only_in_udf",
                 self._udf_tree_files(self._udf),
-                lambda name: name,
+                lambda path: path,
                 listed_extents,
             )
 
@@ -1409,17 +1497,18 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         shape: Literal[
             "file_only_in_joliet", "file_only_in_iso9660", "file_only_in_udf"
         ],
-        files: Iterator[tuple[int | None, str, _NameSource]],
-        name_of: Callable[[_NameSource], str],
+        files: Iterator[tuple[int | None, _PathSource]],
+        path_of: Callable[[_PathSource], str],
         listed_extents: set[int],
     ) -> None:
-        """Report the files of ``files``, ``(extent, directory path, name source)``,
-        whose extent no listed file has. A name is decoded only for a file reported."""
+        """Report the files of ``files``, ``(extent, path source)``, whose extent no
+        listed file has. A path is rendered only for a file reported, so a deep tree
+        costs no path per directory."""
         reported = 0
-        for extent, dirpath, name_source in files:
+        for extent, path_source in files:
             if extent is not None and extent in listed_extents:
                 continue
-            path = dirpath + name_of(name_source)
+            path = path_of(path_source)
             reported += 1
             cap = (
                 f" No more than {_OTHER_TREE_REPORTS} such files are reported per tree."
@@ -1444,28 +1533,37 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
             if reported == _OTHER_TREE_REPORTS:
                 return
 
-    def _entry_tree_files(
-        self, tree: int
-    ) -> Iterator[tuple[int | None, str, IsoEntry]]:
-        """``(image offset, directory path, entry)`` of every non-empty file in the
-        Joliet or plain ISO 9660 tree."""
+    def _entry_tree_files(self, tree: int) -> Iterator[tuple[int | None, IsoEntry]]:
+        """``(image offset, entry)`` of every non-empty file in the Joliet or plain
+        ISO 9660 tree."""
         volume = self._volume
         assert volume is not None
         if tree == JOLIET_TREE:
             assert volume.joliet is not None
-            root, name_of = volume.joliet.root, self._joliet_text
+            root = volume.joliet.root
         else:
-            root, name_of = volume.primary.root, self._plain_text
+            root = volume.primary.root
         block_size = volume.block_size
-        stack: list[tuple[str, IsoEntry]] = [("", root)]
+        stack = [root]
         while stack:
-            dirpath, directory = stack.pop()
+            directory = stack.pop()
             for child in _sorted_children(directory):
                 if child.is_dir:
                     if child.children is not None:
-                        stack.append((f"{dirpath}{name_of(child)}/", child))
+                        stack.append(child)
                 elif child.data_length:
-                    yield child.extent * block_size, dirpath, child
+                    yield child.extent * block_size, child
+
+    @staticmethod
+    def _entry_tree_path(entry: IsoEntry, name_of: Callable[[IsoEntry], str]) -> str:
+        """An entry's path in its tree, from its parent links: the ``name_of`` of each
+        directory above it, root left out, then its own, joined with ``/``."""
+        parts = [name_of(entry)]
+        parent = entry.parent
+        while parent is not None and parent.parent is not None:
+            parts.append(name_of(parent))
+            parent = parent.parent
+        return "/".join(reversed(parts))
 
     @staticmethod
     def _plain_text(entry: IsoEntry) -> str:
@@ -1474,16 +1572,15 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         return name if entry.is_dir else _strip_version(name, listed=True)[0]
 
     @staticmethod
-    def _udf_tree_files(udf: UdfVolume) -> Iterator[tuple[int | None, str, str]]:
-        """``(image offset, directory path, name)`` of every non-empty file in the UDF
-        tree. The offset is ``None`` for data held inside the File Entry, which no
-        ISO 9660 record can point at."""
+    def _udf_tree_files(udf: UdfVolume) -> Iterator[tuple[int | None, str]]:
+        """``(image offset, path)`` of every non-empty file in the UDF tree. The offset
+        is ``None`` for data held inside the File Entry, which no ISO 9660 record can
+        point at."""
         for name in udf.walk():
             entry = name.entry
             if entry.is_directory or entry.is_symlink or not entry.info_length:
                 continue
-            dirpath, _, base = name.path.rpartition("/")
-            yield entry.first_extent, f"{dirpath}/" if dirpath else "", base
+            yield entry.first_extent, name.path
 
     def _make_udf_member(self, name: UdfName, index: int) -> ArchiveMember:
         """The member for one name of the UDF tree.

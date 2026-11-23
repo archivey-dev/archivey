@@ -42,7 +42,8 @@ added from outside would be: a ``*Handler`` declares the format and opens a
   ``-lh7-``, ``-lhx-``, ``-lk7-``, ``-lzs-``, ``-lz5-``)
 - :mod:`.arj_reader` — ARJ (methods 0 to 4)
 - :mod:`.dmg_reader` — Apple disk images (``.dmg``): UDIF (:mod:`.udif`), the
-  partition map (:mod:`.disk_partitions`) and HFS+ volumes (:mod:`.hfsplus`)
+  partition map (:mod:`.disk_partitions`), HFS+ volumes (:mod:`.hfsplus`) and APFS
+  containers (:mod:`.apfs`)
 
 Format-specific helpers that are not readers live here too, next to the parser they share
 logic with: the scan-hit validators :mod:`.zip_detect`, :mod:`.sevenzip_detect` and

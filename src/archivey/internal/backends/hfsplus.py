@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import io
 import struct
+from bisect import bisect_right
 from collections.abc import Callable, Iterator
 from typing import NamedTuple
 
@@ -33,6 +34,7 @@ from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
+    exception_detail,
 )
 from archivey.formats import ReaderContext, ReaderSource
 from archivey.internal.streams.codecs.lzfse_decoder import (
@@ -82,7 +84,14 @@ SYMLINK_MAX = 1024
 XATTR_VALUE_MAX = 1024
 # decmpfs headers and inline data are kept for the read; a value is at most one chunk
 # and the header, so this bounds what one attribute can keep.
-_DECMPFS_KEEP = DECMPFS_CHUNK + 64
+DECMPFS_KEEP = DECMPFS_CHUNK + 64
+# What one kept extent costs in memory: a (start, count) tuple of two ints, and its
+# slots in the list and in the final tuple.
+_EXTENT_CHARGE = 96
+# The memory one kept folder thread holds besides its name: a dict slot, its int key,
+# a (parent, name) tuple, the parent int and the bytes object (about 207 bytes measured
+# with tracemalloc on CPython 3.12 for an empty name).
+_THREAD_CHARGE = 208
 # The block a fork read gathers at a time through the extents.
 READ_PIECE = 1 << 20
 
@@ -90,7 +99,7 @@ _S_IFMT = 0o170000
 _S_IFREG = 0o100000
 _S_IFDIR = 0o040000
 _S_IFLNK = 0o120000
-_SPECIAL = {
+SPECIAL_FILES = {
     0o010000: "fifo",
     0o020000: "char_device",
     0o060000: "block_device",
@@ -226,11 +235,14 @@ class _ExtentLookup:
         self._volume = volume
         self._tree: _BTree | None = None
 
-    def find(
+    def records(
         self, cnid: int, fork_type: int, start_block: int
-    ) -> list[tuple[int, int]]:
-        """The extents of the overflow record keyed (``cnid``, ``fork_type``,
-        ``start_block``), or ``CorruptionError`` when there is none."""
+    ) -> Iterator[list[tuple[int, int]]]:
+        """The extents of each overflow record from the one keyed (``cnid``,
+        ``fork_type``, ``start_block``) on, in key order: one search down the index,
+        then the leaf chain. Each record must carry the key that the extents before it
+        end at. When the chain does not lead to it, it is searched for from the root;
+        when that finds none either, ``CorruptionError``."""
         if self._tree is None:
             header = self._volume.header
             if not header.extents.size:
@@ -239,21 +251,43 @@ class _ExtentLookup:
                     "extents overflow file"
                 )
             self._tree = _BTree(self._volume, _EXTENTS_FILE, header.extents, "extents")
-        target = (cnid, fork_type, start_block)
-        record = self._tree.search(lambda key: _extent_key(key) <= target)
-        if record is not None:
-            key, data = record
-            if _extent_key(key) == target and len(data) >= 64:
-                extents = struct.unpack_from(">16I", data)
-                return [
-                    (extents[i], extents[i + 1])
-                    for i in range(0, 16, 2)
-                    if extents[i + 1]
-                ]
-        raise CorruptionError(
-            f"the extents overflow file has no extents for file {cnid} from block "
-            f"{start_block}"
-        )
+        tree = self._tree
+        wanted = (cnid, fork_type, start_block)
+        # Each search binds its own key: the predicate runs only during the descent.
+        records = tree.records_from(lambda key, at=wanted: _extent_key(key) <= at)
+        searched = True
+        while True:
+            try:
+                record = next(records, None)
+            except CorruptionError:
+                if searched:
+                    raise
+                record = None  # a broken leaf chain: searched for below
+            if record is not None:
+                key, data = record
+                if _extent_key(key) == wanted and len(data) >= 64:
+                    extents = struct.unpack_from(">16I", data)
+                    found = [
+                        (extents[i], extents[i + 1])
+                        for i in range(0, 16, 2)
+                        if extents[i + 1]
+                    ]
+                    yield found
+                    wanted = (cnid, fork_type, wanted[2] + sum(c for _, c in found))
+                    searched = False
+                    continue
+            if not searched:
+                # The leaf chain did not lead to the next record: search for it from
+                # the root once, as a lookup by key would, before calling it missing.
+                records = tree.records_from(
+                    lambda key, at=wanted: _extent_key(key) <= at
+                )
+                searched = True
+                continue
+            raise CorruptionError(
+                f"the extents overflow file has no extents for file {cnid} from block "
+                f"{wanted[2]}"
+            )
 
 
 def _extent_key(key: bytes) -> tuple[int, int, int]:
@@ -281,14 +315,27 @@ class HfsVolume:
     # Forks.
 
     def extents(self, cnid: int, fork_type: int, fork: Fork) -> list[tuple[int, int]]:
-        """Every extent of a fork, the overflow ones included, each checked to lie
-        inside the volume, and together covering the fork's size."""
+        """The extents that hold a fork's first ``fork.size`` bytes, the overflow ones
+        included, each checked to lie inside the volume. Extents allocated past the
+        size may be left out, unread and unchecked."""
         bs = self.header.block_size
         total = self.header.total_blocks
         extents = list(fork.extents)
         have = sum(count for _, count in extents)
-        while have < fork.total_blocks:
-            more = self._overflow.find(cnid, fork_type, have)
+        if cnid == _EXTENTS_FILE and have < fork.total_blocks:
+            # TN1150: the extents overflow file has no overflow extents of its own.
+            # Looking them up would build its B-tree again, and recurse.
+            raise CorruptionError(
+                f"the extents overflow file's eight extents hold {have} blocks, less "
+                f"than its {fork.total_blocks}"
+            )
+        # Only the blocks that hold the fork's size are read; the extents past them
+        # (space allocated ahead) are not looked up.
+        overflow: Iterator[list[tuple[int, int]]] | None = None
+        while have < fork.total_blocks and have * bs < fork.size:
+            if overflow is None:
+                overflow = self._overflow.records(cnid, fork_type, have)
+            more = next(overflow)
             if not more:
                 break
             extents += more
@@ -317,7 +364,8 @@ class HfsVolume:
         ``n`` bytes, or ``TruncatedError`` past the fork's end."""
         extents = self.extents(cnid, fork_type, fork)
         bs = self.header.block_size
-        # Each extent's first byte in the fork, for a bisect-free walk.
+        # Each extent's first byte in the fork: a read bisects them for its first
+        # extent.
         starts: list[int] = []
         pos = 0
         for _, count in extents:
@@ -334,12 +382,14 @@ class HfsVolume:
             parts: list[bytes] = []
             want = n
             at = offset
-            for (start, count), first in zip(extents, starts):
+            for i in range(max(bisect_right(starts, offset) - 1, 0), len(extents)):
+                if want <= 0:
+                    break
+                start, count = extents[i]
+                first = starts[i]
                 length = count * bs
                 if at >= first + length:
                     continue
-                if want <= 0:
-                    break
                 within = at - first
                 take = min(want, length - within)
                 parts.append(source.read_exact(start * bs + within, take))
@@ -379,8 +429,8 @@ class _BTree:
         _, _, kind, _, _, _ = _NODE.unpack_from(head)
         if kind != _HEADER:
             raise CorruptionError(f"the HFS+ {name} B-tree has no header node")
-        (depth, root, _, first_leaf, _, node_size, _, total_nodes, _, _, _, _,
-         compare, _) = _BTREE_HEADER.unpack_from(head, _NODE.size)  # fmt: skip
+        (depth, root, leaf_count, first_leaf, last_leaf, node_size, _, total_nodes,
+         _, _, _, _, compare, _) = _BTREE_HEADER.unpack_from(head, _NODE.size)  # fmt: skip
         if not 512 <= node_size <= 32768 or node_size & (node_size - 1):
             raise CorruptionError(f"the HFS+ {name} B-tree's node size {node_size}")
         if total_nodes * node_size > fork.size:
@@ -391,6 +441,8 @@ class _BTree:
         self.depth = depth
         self.root = root
         self.first_leaf = first_leaf
+        self.last_leaf = last_leaf
+        self.leaf_count = leaf_count
         self.node_size = node_size
         self.total_nodes = total_nodes
         self.compare = compare
@@ -444,10 +496,37 @@ class _BTree:
 
     def leaf_records(self, limit: int | None = None) -> Iterator[tuple[bytes, bytes]]:
         """Every leaf record, in key order, following the leaf chain. A node reached
-        twice, or one that is not a leaf, raises ``CorruptionError``."""
-        seen: set[int] = set()
-        number = self.first_leaf
+        twice, or one that is not a leaf, raises ``CorruptionError``. So does a whole
+        walk that ends elsewhere than the header's ``lastLeafNode``, or that yields
+        another number of records than its ``leafRecords``: a leaf chain cut short
+        would otherwise drop the records past the cut. That error comes after the
+        records the walk found."""
+        last = 0
         yielded = 0
+        for number, records in self._chain(self.first_leaf, set()):
+            for record in records:
+                yield record
+                yielded += 1
+                if limit is not None and yielded >= limit:
+                    return
+            last = number
+        if last != self.last_leaf:
+            raise CorruptionError(
+                f"the HFS+ {self._name} B-tree's leaf chain ends at node {last}, not at "
+                f"its last leaf node {self.last_leaf}"
+            )
+        if yielded != self.leaf_count:
+            raise CorruptionError(
+                f"the HFS+ {self._name} B-tree's leaf chain holds {yielded} records, "
+                f"not the {self.leaf_count} its header declares"
+            )
+
+    def _chain(
+        self, number: int, seen: set[int]
+    ) -> Iterator[tuple[int, list[tuple[bytes, bytes]]]]:
+        """Each leaf node's number and records along the leaf chain from ``number``.
+        A node in ``seen`` or reached twice, or one that is not a leaf, raises
+        ``CorruptionError``."""
         while number:
             if number in seen:
                 raise CorruptionError(
@@ -461,41 +540,45 @@ class _BTree:
                     f"the HFS+ {self._name} B-tree's leaf chain reaches node {number}, "
                     f"which is not a leaf (kind {kind}, height {height})"
                 )
-            for record in records:
-                yield record
-                yielded += 1
-                if limit is not None and yielded >= limit:
-                    return
+            yield number, records
             number = flink
 
-    def search(
+    def records_from(
         self, at_or_before: Callable[[bytes], bool]
-    ) -> tuple[bytes, bytes] | None:
-        """The last leaf record whose key ``at_or_before`` accepts (keys accepted form
-        a prefix of the key order), found down the index from the root."""
+    ) -> Iterator[tuple[bytes, bytes]]:
+        """The leaf records in key order from the last one whose key ``at_or_before``
+        accepts (keys accepted form a prefix of the key order), nothing when there is
+        none: one search down the index from the root, then the leaf chain. A node
+        reached twice, or one that is not a leaf, raises ``CorruptionError``."""
         number = self.root
         seen: set[int] = set()
-        while number:
+        while True:
+            if not number:
+                return
             if number in seen or len(seen) > 64:
                 raise CorruptionError(f"the HFS+ {self._name} B-tree's index loops")
             seen.add(number)
-            _, kind, _, records = self.node(number)
-            chosen = None
-            for key, data in records:
+            flink, kind, _, records = self.node(number)
+            chosen = -1
+            for i, (key, _) in enumerate(records):
                 if not at_or_before(key):
                     break
-                chosen = (key, data)
+                chosen = i
             if kind == _LEAF:
-                return chosen
+                break
             if kind != _INDEX:
                 raise CorruptionError(
                     f"the HFS+ {self._name} B-tree's index reaches node {number} of "
                     f"kind {kind}"
                 )
-            if chosen is None or len(chosen[1]) < 4:
-                return None
-            (number,) = struct.unpack_from(">I", chosen[1])
-        return None
+            if chosen < 0 or len(records[chosen][1]) < 4:
+                return
+            (number,) = struct.unpack_from(">I", records[chosen][1])
+        if chosen < 0:
+            return
+        yield from records[chosen:]
+        for _, records in self._chain(flink, {number}):
+            yield from records
 
 
 # ── Catalog records ──────────────────────────────────────────────────────────────────
@@ -590,8 +673,8 @@ def file_kind(info: FileInfo) -> tuple[str, str | None]:
     if info.mode:
         if kind == _S_IFLNK:
             return SYMLINK, None
-        if kind in _SPECIAL:
-            return SPECIAL, _SPECIAL[kind]
+        if kind in SPECIAL_FILES:
+            return SPECIAL, SPECIAL_FILES[kind]
         if kind in (_S_IFREG, 0):
             return REGULAR, None
         if kind == _S_IFDIR:
@@ -617,6 +700,10 @@ class Catalog(NamedTuple):
     folders: dict[int, tuple[int, str]]  # folder id: (parent id, name)
     inodes: dict[int, Entry]  # link id: the iNode file in the private folder
     hidden: frozenset[int]  # folder ids whose contents are not listed
+    # The folders whose thread record is missing, unreadable, or names another parent
+    # or name, by folder id. Paths come from the folder records; a thread only
+    # cross-checks them.
+    bad_threads: tuple[int, ...] = ()
 
 
 def read_catalog(
@@ -631,10 +718,24 @@ def read_catalog(
     hidden: set[int] = set()
     inode_records: list[Entry] = []
     failure: ArchiveyError | None = None
+    threads: dict[int, tuple[int, bytes] | None] = {}
     try:
         for key, data in volume.catalog().leaf_records():
+            if data[:2] == b"\x00\x03":
+                # A folder thread: keyed by the folder's id with an empty name, it
+                # holds the folder's parent id and name (TN1150 "Catalog File").
+                cnid, _ = _catalog_key(key)
+                if cnid in threads:
+                    continue
+                thread = _thread_record(data)
+                charge(
+                    _THREAD_CHARGE + (len(thread[1]) if thread else 0),
+                    "the HFS+ folder threads",
+                )
+                threads[cnid] = thread
+                continue
             if data[:2] != b"\x00\x01" and data[:2] != b"\x00\x02":
-                continue  # thread records
+                continue  # file threads; pass 2 refuses an unknown type
             parent, raw = _catalog_key(key)
             if data[:2] == b"\x00\x01":
                 if len(data) < _FOLDER_RECORD:
@@ -653,6 +754,9 @@ def read_catalog(
                 charge(len(data) + len(raw), "the HFS+ hard-link inodes")
     except ArchiveyError as exc:
         failure = exc
+    # A private folder found after its inodes' records (it sorts by its parent, the
+    # root, which comes first, so only a damaged catalog does this): its inodes are
+    # read again in the second pass's order, so a link may find none.
     inodes: dict[int, Entry] = {}
     for entry in inode_records:
         if entry.name.startswith("iNode"):
@@ -660,10 +764,30 @@ def read_catalog(
                 inodes[int(entry.name[5:])] = entry
             except ValueError:
                 pass
-    # A private folder found after its inodes' records (it sorts by its parent, the
-    # root, which comes first, so only a damaged catalog does this): its inodes are
-    # read again in the second pass's order, so a link may find none.
-    return Catalog(folders, inodes, frozenset(hidden)), failure
+    bad_threads: tuple[int, ...] = ()
+    # A pass stopped by a damaged node has not read the later threads, so every later
+    # folder would look like it had none: the cross-check runs on a whole pass only.
+    if failure is None:
+        bad_threads = tuple(
+            cnid
+            for cnid, (parent, name) in folders.items()
+            if (thread := threads.get(cnid)) is None
+            or thread[0] != parent
+            or _decode_name(thread[1]) != name
+        )
+    return Catalog(folders, inodes, frozenset(hidden), bad_threads), failure
+
+
+def _thread_record(data: bytes) -> tuple[int, bytes] | None:
+    """A thread record's (parent id, name as stored UTF-16BE), or ``None`` when it is
+    too short for its name: it then disagrees, as a missing one does, and the listing,
+    which does not need it, goes on."""
+    if len(data) < 10:
+        return None
+    parent, length = struct.unpack_from(">IH", data, 4)
+    if length > 255 or 10 + 2 * length > len(data):
+        return None
+    return parent, data[10 : 10 + 2 * length]
 
 
 def _file_entry(parent: int, raw_name: bytes, data: bytes) -> Entry:
@@ -696,12 +820,16 @@ def folder_path(
     cache: dict[int, str | None],
     cnid: int,
     looped: set[int],
+    charge: Callable[[int, str], None],
 ) -> str | None:
     """The path of folder ``cnid`` below the root (``""`` for the root), or ``None``
     when its chain does not reach the root: a folder the first pass did not find, or a
     chain that comes back to a folder. For a loop, the folder's cnid goes in ``looped``,
     so the walk lists the other members and raises at its end. ``seen`` ends a loop and
-    the cache keeps the whole walk linear in the number of folders."""
+    the cache keeps the whole walk linear in the number of folders. Each path the cache
+    keeps is charged to ``max_metadata_bytes``: the paths of a chain grow with the
+    square of its depth, and the folders inside a hidden folder never become members,
+    so no member name is charged for them."""
     if cnid in cache:
         return cache[cnid]
     chain: list[int] = []
@@ -729,6 +857,7 @@ def folder_path(
             continue
         name = folders[each][1]
         base = f"{base}/{name}" if base else name
+        charge(len(base) + 32, "the HFS+ folder paths")
         cache[each] = base
     return cache[cnid]
 
@@ -756,6 +885,10 @@ def read_attributes(
     fork = volume.header.attributes_file
     if not fork.size:
         return found, bad, None
+    # The extents of a fork attribute with extent records (0x30), and their block
+    # count, gathered in a list so that N records take linear time.
+    grown: dict[tuple[int, str], tuple[list[tuple[int, int]], int]] = {}
+    failure: ArchiveyError | None = None
     try:
         tree = _BTree(volume, _ATTRIBUTES_FILE, fork, "attributes")
         for key, data in tree.leaf_records():
@@ -779,12 +912,13 @@ def read_attributes(
                 if 16 + size > len(data):
                     bad.add(cnid)
                     continue
-                keep = _DECMPFS_KEEP if name == DECMPFS else XATTR_VALUE_MAX
+                keep = DECMPFS_KEEP if name == DECMPFS else XATTR_VALUE_MAX
                 value = data[16 : 16 + size] if size <= keep else None
                 charge(
                     2 * length + (len(value) if value else 0) + 32, "HFS+ attributes"
                 )
                 attrs[name] = Attribute(value, size, None)
+                grown.pop((cnid, name), None)
             elif record_type == 0x20:
                 if len(data) < 8 + _FORK.size:
                     bad.add(cnid)
@@ -792,6 +926,7 @@ def read_attributes(
                 attr_fork = parse_fork(data, 8)
                 charge(2 * length + 128, "HFS+ attributes")
                 attrs[name] = Attribute(None, attr_fork.size, attr_fork)
+                grown.pop((cnid, name), None)
             elif record_type == 0x30:
                 # More extents of an attribute's fork: kept with it, in key order.
                 existing = attrs.get(name)
@@ -799,17 +934,35 @@ def read_attributes(
                     bad.add(cnid)
                     continue
                 more = struct.unpack_from(">16I", data, 8)
-                extents = existing.fork.extents + tuple(
-                    (more[i], more[i + 1]) for i in range(0, 16, 2) if more[i + 1]
-                )
-                attrs[name] = existing._replace(
-                    fork=existing.fork._replace(extents=extents)
-                )
+                added = [(more[i], more[i + 1]) for i in range(0, 16, 2) if more[i + 1]]
+                charge(_EXTENT_CHARGE * len(added), "HFS+ attributes")
+                kept = grown.get((cnid, name))
+                if kept is None:
+                    extents = list(existing.fork.extents)
+                    blocks = sum(count for _, count in extents)
+                else:
+                    extents, blocks = kept
+                extents += added
+                blocks += sum(count for _, count in added)
+                if blocks > existing.fork.total_blocks:
+                    # More blocks than the fork has: the attribute is damaged and
+                    # dropped, so its later extent records find nothing to grow.
+                    bad.add(cnid)
+                    del attrs[name]
+                    grown.pop((cnid, name), None)
+                    continue
+                grown[(cnid, name)] = (extents, blocks)
             else:
                 bad.add(cnid)
     except ArchiveyError as exc:
-        return found, bad, exc
-    return found, bad, None
+        failure = exc
+    for (cnid, name), (extents, _) in grown.items():
+        attribute = found[cnid][name]
+        if attribute.fork is not None:
+            found[cnid][name] = attribute._replace(
+                fork=attribute.fork._replace(extents=tuple(extents))
+            )
+    return found, bad, failure
 
 
 def attribute_value(volume: HfsVolume, cnid: int, attribute: Attribute) -> bytes:
@@ -819,7 +972,7 @@ def attribute_value(volume: HfsVolume, cnid: int, attribute: Attribute) -> bytes
     fork = attribute.fork
     if fork is None:
         raise CorruptionError(f"the attribute of file {cnid} was not kept")
-    if fork.size > _DECMPFS_KEEP:
+    if fork.size > DECMPFS_KEEP:
         raise CorruptionError(
             f"an attribute of file {cnid} is {fork.size} bytes, more than archivey "
             "reads"
@@ -866,14 +1019,16 @@ _LZFSE_KINDS = (11, 12)
 
 
 def decmpfs_reader(
-    volume: HfsVolume,
     context: ReaderContext,
     cnid: int,
     header: Decmpfs,
-    rsrc: Fork,
+    fork_size: int,
+    open_fork: Callable[[], Callable[[int, int], bytes]],
 ) -> Callable[[int], bytes]:
     """``read_block(i)`` for a ``block_stream`` of 64 KiB chunks over the decoded
-    file. Every length is checked before it is used."""
+    file. ``open_fork()`` gives ``read(offset, n)`` over the ``fork_size`` bytes of the
+    resource fork (an HFS+ fork, or APFS's ``com.apple.ResourceFork`` attribute), and is
+    called only for a type stored there. Every length is checked before it is used."""
     kind, size = header.kind, header.size
     if kind not in _INLINE and kind not in _IN_RESOURCE_FORK:
         raise UnsupportedFeatureError(
@@ -906,12 +1061,11 @@ def decmpfs_reader(
             return _decode_chunk(context, kind, header.inline, size, cnid)
 
         return inline_block
-    if not rsrc.size:
+    if not fork_size:
         raise CorruptionError(
             f"file {cnid} is compressed in its resource fork, which is empty"
         )
-    read = volume.fork_reader(cnid, RESOURCE_FORK, rsrc)
-    fork_size = rsrc.size
+    read = open_fork()
     if kind == 4:
         if fork_size < 260:
             raise CorruptionError(f"the resource fork of file {cnid} is too short")
@@ -965,8 +1119,18 @@ def _decode_chunk(
 ) -> bytes:
     """One decmpfs chunk, which must decode to exactly ``want`` bytes."""
     try:
-        if kind in (1, 10):
+        if kind == 1:
             out = data
+        elif kind == 10:
+            # Each chunk is its raw block behind a 0xCC byte. The macOS kernel reads
+            # that layout and refuses a chunk without the byte (EINVAL), as the macOS
+            # check against hdiutil found (tasks.md §M).
+            if data[:1] != b"\xcc":
+                raise CorruptionError(
+                    f"a type 10 chunk of the compressed file {cnid} does not start "
+                    "with the 0xCC byte macOS requires"
+                )
+            out = data[1:]
         elif kind == 9:
             # 7-Zip (``HfsHandler.cpp``) reads type 9 only after a 0xCC byte and
             # refuses it without; no macOS sample shows what Apple writes or accepts
@@ -988,12 +1152,16 @@ def _decode_chunk(
                         more := stream.read(want + 1 - len(out))
                     ):
                         out += more
+        # The LZVN and LZFSE decoders refuse any output past ``want`` themselves, and
+        # their message names ``want``.
         elif kind in _LZVN_KINDS:
-            out = data[1:] if data[:1] == b"\x06" else lzvn_decompress(data, want + 1)
+            out = data[1:] if data[:1] == b"\x06" else lzvn_decompress(data, want)
         else:
-            out = data[1:] if data[:1] == b"\xff" else lzfse_decompress(data, want + 1)
+            out = data[1:] if data[:1] == b"\xff" else lzfse_decompress(data, want)
     except (CorruptionError, TruncatedError) as exc:
-        raise CorruptionError(f"the compressed data of file {cnid}: {exc}") from None
+        raise CorruptionError(
+            f"the compressed data of file {cnid}: {exception_detail(exc)}"
+        ) from None
     if len(out) != want:
         raise CorruptionError(
             f"a compressed chunk of file {cnid} (type {kind}) decodes to "

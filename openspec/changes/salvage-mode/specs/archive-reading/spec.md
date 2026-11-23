@@ -20,8 +20,11 @@ in archive order, between the default's members where their bytes are. The pass 
 still end in the error that ends the default pass; an archive the default reads without
 error SHALL read the same with `salvage=True` in this step.
 
-A nested reader archivey opens itself SHALL inherit the flag. A format without salvage
-support SHALL read as the default and record `SALVAGE_UNAVAILABLE` once at open.
+A nested reader archivey opens itself SHALL inherit the flag; a format whose search
+cannot run on such a forward-only reader SHALL record `SALVAGE_UNAVAILABLE` there, with
+`reason="forward_only_reader"`, and read as the default. A format without salvage
+support SHALL read as the default and record `SALVAGE_UNAVAILABLE` once at open, with
+`reason="no_salvage_search"`.
 
 #### Scenario: the switch
 
@@ -37,13 +40,16 @@ support SHALL read as the default and record `SALVAGE_UNAVAILABLE` once at open.
 `ArchiveyConfig.salvage_limits` SHALL be a frozen `SalvageLimits` with
 `max_search_bytes: int | None = None` and `max_reported_regions: int = 1000`. Every byte
 a salvage search examines SHALL count against `max_search_bytes`, for all layers of one
-reader, and a search SHALL examine each byte of a layer at most once. When the budget
+walk, and a walk's searches SHALL examine each byte of a layer at most once. A walk
+started again from the start to reach member data SHALL count from zero against the
+same cap and record nothing. When the budget
 runs out, the search SHALL stop, record `ARCHIVE_REGION_SKIPPED` with `length=None` and
 `reason="search_limit"`, list nothing further, and the pass SHALL end in the damage
 error, whose message names the limit. `max_reported_regions` SHALL cap the
 `ARCHIVE_REGION_SKIPPED` records, not the walk: past it, one last record with
-`reason="report_limit"` SHALL count the rest. Decoding and extraction limits SHALL apply
-to salvaged members unchanged.
+`reason="report_limit"` SHALL count the rest. The `search_limit` and `report_limit`
+records SHALL NOT count against `max_reported_regions`. Decoding and extraction limits
+SHALL apply to salvaged members unchanged.
 
 #### Scenario: search limits
 
