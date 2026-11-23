@@ -37,7 +37,7 @@ from archivey.exceptions import (
     exception_detail,
 )
 from archivey.formats import ReaderContext, ReaderSource
-from archivey.internal import native
+from archivey.internal import kernels
 from archivey.internal.listing_limits import str_retained_bytes
 from archivey.internal.streams.codecs.lzfse_decoder import (
     Decode,
@@ -1174,10 +1174,10 @@ def _decode_chunk(
             assert apple is not None
             out = data[1:] if data[:1] == b"\xff" else apple(data, want)
     except (CorruptionError, TruncatedError) as exc:
-        # A kernel panic stays the cause: it is a bug, not damage (native.py).
+        # A kernel panic stays the cause: it is a bug, not damage (kernels/_select.py).
         raise CorruptionError(
             f"the compressed data of file {cnid}: {exception_detail(exc)}"
-        ) from native.panic_of(exc)
+        ) from kernels.panic_of(exc)
     if len(out) != want:
         raise CorruptionError(
             f"a compressed chunk of file {cnid} (type {kind}) decodes to "

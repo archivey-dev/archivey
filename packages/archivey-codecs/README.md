@@ -9,16 +9,24 @@ below). Without it, archivey uses its Python decoders.
 This is a pre-release. Every kernel has its final, standard-library-shaped API
 (`hashlib`-style hashes, `lzma.LZMADecompressor`-style decoders).
 
-| Name | Used for | Python decoder it mirrors |
+| Name | Used for | archivey's Python twin |
 | --- | --- | --- |
-| `crc16_arc`, `Crc16Arc` | LHA data and header checks | `lha_reader.crc16` |
-| `lzo1x.decompress` | `.lzo` files, LZO SquashFS images | `lzo_decoder.lzo1x_decompress_python` |
-| `lzw.Decompressor` | Unix `compress` (`.Z`, `.tar.Z`) | `unix_compress_decoder.LzwState` |
-| `zipcrypto.Decryptor` | ZIP members with traditional encryption | `zipcrypto.ZipCryptoKeys` |
-| `filters.Arm64Decoder`, `filters.RiscvDecoder` | 7z ARM64 and RISC-V branch filters | `arm64_filter`, `riscv_filter` |
-| `lzx.Decompressor` | LZX folders in Microsoft cabinets | `lzx_decoder.LzxDecoder` |
-| `bcj2.Decompressor` | 7z BCJ2 (four-stream x86 filter) | `bcj2_filter.Bcj2DecoderStream` |
-| `lzfse.decompress`, `lzvn.decompress` | LZFSE runs in DMG images, LZFSE and LZVN compressed files on HFS+ | `lzfse_decoder.lzfse_decompress`, `lzvn_decompress` |
+| `crc16_arc`, `Crc16Arc` | LHA data and header checks | `kernels.python.crc16_arc` |
+| `lzo1x.decompress` | `.lzo` files, LZO SquashFS images | `kernels.python.lzo1x` |
+| `lzw.Decompressor` | Unix `compress` (`.Z`, `.tar.Z`) | `kernels.python.lzw` |
+| `zipcrypto.Decryptor` | ZIP members with traditional encryption | `kernels.python.zipcrypto` |
+| `filters.Arm64Decoder`, `filters.RiscvDecoder` | 7z ARM64 and RISC-V branch filters | `kernels.python.filters` |
+| `lzx.Decompressor` | LZX folders in Microsoft cabinets | `kernels.python.lzx` |
+| `bcj2.Decompressor` | 7z BCJ2 (four-stream x86 filter) | `kernels.python.bcj2` |
+| `lzfse.decompress`, `lzvn.decompress` | LZFSE runs in DMG images, LZFSE and LZVN compressed files on HFS+ | `kernels.python.lzfse`, `kernels.python.lzvn` |
+
+Each twin (in `archivey.internal.kernels.python`) has the subset of the package's API
+that archivey's call sites use, with the same names, arguments and behaviour. It
+leaves out `Crc16Arc` (the twin has the `crc16_arc` function only), the state methods
+(`getstate`, `from_state`, `copy` other than ZipCrypto's), and LZX's `unused_data`,
+`total_in`, `reset()` and `window_bits`. The stubs in `python/archivey_codecs/` give
+the package's whole API. archivey's call sites cannot tell which one runs, except
+LZO's, which tries compress-utils between the two.
 
 ```python
 import archivey_codecs
@@ -26,7 +34,15 @@ from archivey_codecs import lzw
 
 archivey_codecs.crc16_arc(b"123456789")  # 0xBB3D
 d = lzw.Decompressor()
-data = d.decompress(z_bytes) + d.flush()
+data = d.decompress(z_bytes)
+# flush() returns the output before a bad code, and the next call raises it:
+# call it until eof.
+while not d.eof:
+    data += d.flush()
+# A .Z stream has no end marker, so a cut can pass unseen. Some cuts leave
+# evidence, which flush() reports here instead of raising:
+if d.truncation is not None:
+    raise ValueError(f"the .Z stream was cut short: {d.truncation}")
 ```
 
 Errors are `CorruptDataError`, `TruncatedDataError` and `UnsupportedDataError`, all

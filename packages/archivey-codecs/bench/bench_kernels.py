@@ -1,5 +1,6 @@
 # ruff: noqa: B023 - every lambda here runs at once, inside its loop iteration
-"""Kernel-level timings: each Rust kernel against the Python decoder it replaces.
+"""Kernel-level timings: each Rust kernel against its Python twin, run by the same
+code through the kernels' one API.
 
 Prints one row per kernel: input size, Python MB/s, Rust MB/s, speed-up.
 """
@@ -9,18 +10,24 @@ from __future__ import annotations
 import random
 import sys
 import time
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tests"))
 
-import archivey_codecs as n
+import archivey_codecs
 
-from archivey.internal.backends.zipcrypto import ZipCryptoKeys
-from archivey.internal.streams.codecs.arm64_filter import arm64_decode
-from archivey.internal.streams.codecs.lzfse_decoder import lzfse_decompress
-from archivey.internal.streams.codecs.lzo_decoder import lzo1x_decompress_python
-from archivey.internal.streams.codecs.lzx_decoder import LzxDecoder
-from archivey.internal.streams.codecs.riscv_filter import riscv_decode
+from archivey.internal.kernels.python import filters, lzfse, lzo1x, lzx, zipcrypto
+
+PYTHON = types.SimpleNamespace(
+    filters=filters, lzfse=lzfse, lzo1x=lzo1x, lzx=lzx, zipcrypto=zipcrypto
+)
+RUST = archivey_codecs
+
+
+def both(fn, py_repeat=1):
+    """``fn`` timed with each side: (Python, Rust)."""
+    return best(lambda: fn(PYTHON), py_repeat), best(lambda: fn(RUST))
 
 
 def best(fn, repeat=3):
@@ -70,9 +77,11 @@ def main() -> None:
         lzo.compress(text[i : i + 131072], 1, False)
         for i in range(0, len(text), 131072)
     ]
-    py = best(lambda: [lzo1x_decompress_python(b, 131072) for b in blocks], 1)
-    rs = best(
-        lambda: [n.lzo1x.decompress(b, out_size=k) for b, k in zip(blocks, sizes)]
+    py, rs = both(
+        lambda c: [
+            c.lzo1x.decompress(b, out_size=k)
+            for b, k in zip(blocks, sizes, strict=True)
+        ]
     )
     c = best(lambda: [lzo.decompress(b, False, 131072) for b in blocks])
     row(
@@ -85,7 +94,7 @@ def main() -> None:
 
     # LZFSE, as DMG runs hold it: 1 MiB chunks (bvx2 blocks), and 4 KiB chunks, which
     # the encoder writes as LZVN (bvxn blocks).
-    import lzfse
+    import lzfse as lzfse_package
 
     for label, chunk in (
         ("LZFSE (1 MiB runs)", 1 << 20),
@@ -93,19 +102,19 @@ def main() -> None:
     ):
         data = text[: 8 << 20]
         pieces = [data[i : i + chunk] for i in range(0, len(data), chunk)]
-        streams = [lzfse.compress(p) for p in pieces]
+        streams = [lzfse_package.compress(p) for p in pieces]
         sizes = [len(p) for p in pieces]
-        py = best(lambda: [lzfse_decompress(z, k) for z, k in zip(streams, sizes)], 1)
-        rs = best(
-            lambda: [n.lzfse.decompress(z, out_size=k) for z, k in zip(streams, sizes)]
+        py, rs = both(
+            lambda c: [
+                c.lzfse.decompress(z, out_size=k) for z, k in zip(streams, sizes)
+            ]
         )
-        c = best(lambda: [lzfse.decompress(z) for z in streams])
+        c = best(lambda: [lzfse_package.decompress(z) for z in streams])
         row(label, len(data), py, rs, f"(lzfse package {len(data) / 1e6 / c:.0f} MB/s)")
 
     # ZipCrypto.
     data = text[: 8 << 20]
-    py = best(lambda: ZipCryptoKeys(b"secret").decrypt(data), 1)
-    rs = best(lambda: n.zipcrypto.Decryptor(b"secret").decrypt(data))
+    py, rs = both(lambda c: c.zipcrypto.Decryptor(b"secret").decrypt(data))
     row("ZipCrypto decrypt", len(data), py, rs)
 
     # Branch filters on an executable and on text (few candidates).
@@ -121,40 +130,31 @@ def main() -> None:
         for _ in range(4 << 20)
     )
     for label, buf in (("x86 binary", exe), ("dense candidates", hot), ("text", text)):
-        py = best(lambda: arm64_decode(buf, 0), 2)
-        rs = best(lambda: filtered(n.filters.Arm64Decoder(), buf))
+        py, rs = both(lambda c: filtered(c.filters.Arm64Decoder(0), buf), 2)
         row(f"ARM64 filter, {label}", len(buf), py, rs)
     hot = bytes(
         rng.choice(b"\xef\x17\x97") if rng.random() < 0.25 else rng.randrange(256)
         for _ in range(4 << 20)
     )
     for label, buf in (("x86 binary", exe), ("dense candidates", hot), ("text", text)):
-        py = best(lambda: riscv_decode(buf, 0), 2)
-        rs = best(lambda: filtered(n.filters.RiscvDecoder(), buf))
+        py, rs = both(lambda c: filtered(c.filters.RiscvDecoder(0), buf), 2)
         row(f"RISC-V filter, {label}", len(buf), py, rs)
 
     # LZX: a stream from the test suite's encoder (Python, so kept small).
-    from cab_util import FRAME, LzxEncoder
+    from cab_util import LzxEncoder
 
     for label, layout, sample in (
         ("LZX verbatim, text", ("verbatim",), text[: 3 << 20]),
         ("LZX aligned, x86 binary", ("aligned",), exe[: 3 << 20]),
     ):
         frames = LzxEncoder(window_bits=21, blocks=layout).encode(sample)
-        sizes = [min(FRAME, len(sample) - i) for i in range(0, len(sample), FRAME)]
 
-        def run_py():
-            it = iter(frames)
-            d = LzxDecoder(21, lambda: next(it, None))
-            assert b"".join(d.decode_frame(s) for s in sizes) == sample
-
-        def run_rs():
-            d = n.lzx.Decompressor(21, output_size=len(sample))
+        def run(c):
+            d = c.lzx.Decompressor(21, output_size=len(sample))
             out = b"".join(d.decompress(f) for f in frames) + d.flush()
             assert out == sample
 
-        py = best(run_py, 1)
-        rs = best(run_rs)
+        py, rs = both(run)
         row(label, len(sample), py, rs)
 
 
