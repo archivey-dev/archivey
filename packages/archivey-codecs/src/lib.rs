@@ -1219,12 +1219,12 @@ impl LzxDecompressor {
     ///
     /// Without an output size the decoder may already have read input after the
     /// stream as the start of a next frame or block. A size that ends the output there gives
-    /// that input back as unused. After a decode error, only a size that ends the
-    /// output where the failed frame starts drops the error (it was met in input
-    /// after the stream); any other size raises the error again. It cannot give the
-    /// input back when the decoder has already dropped it from its buffer, or when the
-    /// decoder was restored from a state saved after it read that input: the input
-    /// then stays consumed and the error stays.
+    /// that input back as unused. It cannot give the input back when the decoder has
+    /// already dropped it from its buffer, or when the decoder was restored from a
+    /// state saved after it read that input: the input then stays consumed. After a
+    /// decode error, a size that ends the output where the failed frame starts, with
+    /// nothing of it decoded, drops the error (it was met in input after the stream),
+    /// whether or not the input comes back; any other size raises the error again.
     fn set_output_size(&mut self, output_size: u64) -> PyResult<()> {
         let decoded = self.inner.decoded();
         if output_size < decoded {
@@ -1248,9 +1248,14 @@ impl LzxDecompressor {
                 // The frame that read past the end is undone, and so is an error it
                 // met: it was in input after the stream.
                 self.failed = None;
+            } else if frame == 0 && done == 0 && self.failed.is_some() {
+                // The same, where the frame's start is no longer in the buffer: the
+                // input it read stays consumed, and the error still goes.
+                self.failed = None;
+                self.inner.resize_frame(0);
             } else if let Some(err) = &self.failed {
-                // Inside the frame, where the error stopped decoding is not a place
-                // the Python decoder can go back to: the error stays.
+                // The output ends inside the failed frame: the error stays, as the
+                // Python decoder, which cannot go back inside a frame, keeps it.
                 return Err(lzx_error_again(err));
             } else if frame > 0 && frame == done && self.inner.rewind_block(frame) {
                 // The output ends where a block header started: what was read from

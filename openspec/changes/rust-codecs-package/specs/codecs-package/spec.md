@@ -122,7 +122,7 @@ a seek point is the block's offset.
 | --- | --- |
 | Save at any call boundary before a decode error, resume from `total_in` | Output equals the straight decode from `total_out`, byte for byte, errors included |
 | LZW, LZX or BCJ2 `getstate()` after a decode error | `ValueError`; every later decoding call raises the same error while the decoder holds it |
-| LZX without an output size, saved after it read input past the stream, then a late `set_output_size()` | The original gives that input back and drops an error met in it, unless it has already dropped that input from its buffer; the restored decoder keeps it consumed and keeps the error |
+| LZX without an output size, saved after it read input past the stream, then a late `set_output_size()` | The original gives that input back, unless it has already dropped that input from its buffer; the restored decoder keeps it consumed. Both drop an error met in that input when the size ends the output where the failed frame starts, and raise it again for any other size |
 | BCJ2 saved mid-stream, restored with four new streams each at its own `total_in` | Output equals the straight decode from `total_out` |
 | BCJ2 restored twice from one state, with independent streams, reads interleaved past their buffers | Both produce the straight decode; neither affects the other |
 | `bcj2.Decompressor.copy` | Does not exist |

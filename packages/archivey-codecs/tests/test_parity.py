@@ -1104,6 +1104,52 @@ def test_lzx_late_output_size_inside_a_failed_frame_raises_the_error(
     assert d.output_size is None
 
 
+@BOTH
+def test_lzx_late_output_size_after_a_padding_error_raises_it(codecs: object) -> None:
+    """Sweep S73-K1, case 1. A 100-byte stream with no output size: ``flush()``
+    reads a block header from the zero padding and fails. A late output size of 100
+    ends the output inside that frame, so the error stays on both sides."""
+    stream = bytes.fromhex("00304006") + (1).to_bytes(4, "little") * 3 + bytes(100)
+    d = codecs.lzx.Decompressor(15)
+    with pytest.raises((archivey_codecs.CorruptDataError, CorruptionError)):
+        d.decompress(stream) + d.flush()
+    with pytest.raises(
+        (archivey_codecs.CorruptDataError, CorruptionError), match="block type 0"
+    ):
+        d.set_output_size(100)
+        d.flush()
+
+
+@BOTH
+def test_lzx_late_output_size_at_a_trimmed_failed_frame_drops_the_error(
+    codecs: object,
+) -> None:
+    """A full frame, then more than 4 KiB of empty blocks and a damaged header in
+    the next frame: the package has dropped that frame's start from its buffer. A
+    late output size that ends the output where the failed frame starts still drops
+    the error on both sides."""
+    r_regs = (1).to_bytes(4, "little") * 3
+    data = bytes(range(256)) * 128
+    stream = (
+        bytes.fromhex("08300000")
+        + r_regs
+        + data
+        + (bytes.fromhex("00600000") + r_regs) * 300
+        + bytes.fromhex("00e000000000")
+    )
+    d = codecs.lzx.Decompressor(15)
+    out = b""
+    try:
+        out += d.decompress(stream)
+        out += d.decompress(b"")
+    except (archivey_codecs.CorruptDataError, CorruptionError):
+        pass
+    d.set_output_size(len(data))
+    out += d.decompress(b"") if not d.eof else b""
+    assert out == data
+    assert d.eof
+
+
 def test_lzw_state_restores_with_clear_padding_still_to_come() -> None:
     """The package only. A CLEAR's segment ends after its group padding: saved when
     the CLEAR is decoded but its padding has not all arrived, the state's last CLEAR
