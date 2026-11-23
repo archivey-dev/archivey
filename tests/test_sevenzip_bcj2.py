@@ -446,6 +446,29 @@ def test_the_read_that_ends_the_output_raises_a_left_over_byte(
         stream.read(5000)
 
 
+def test_a_cut_read_keeps_the_bytes_decoded_before_it() -> None:
+    """A read that meets an error raises it and keeps the bytes decoded before it:
+    the next reads return them, then raise the error again."""
+    rc_start = b"\x00" * 5
+    stream = _bcj2(
+        io.BytesIO(b"a" * 100),
+        io.BytesIO(),
+        io.BytesIO(),
+        io.BytesIO(rc_start),
+        unpack_size=10_000,
+    )
+    with pytest.raises(TruncatedError, match="BCJ2 main stream ended early"):
+        stream.read(10_000)
+    assert stream.tell() == 0
+    assert stream.read(60) == b"a" * 60
+    assert stream.tell() == 60
+    with pytest.raises(TruncatedError, match="BCJ2 main stream ended early"):
+        stream.read(100)
+    assert stream.read(40) == b"a" * 40
+    with pytest.raises(TruncatedError, match="BCJ2 main stream ended early"):
+        stream.read(1)
+
+
 class _ReadCounter(io.BytesIO):
     def __init__(self, data: bytes) -> None:
         super().__init__(data)

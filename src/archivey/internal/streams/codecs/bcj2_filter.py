@@ -83,6 +83,8 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         )
         # A position at or past the end that seek() reached without decoding to it.
         self._past_end: int | None = None
+        # Output a read decoded before it raised, returned by the next reads.
+        self._held = b""
 
     @override
     def read(self, n: int = -1, /) -> bytes:
@@ -92,20 +94,27 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
             return self.readall()
         if self._past_end is not None:
             return b""
-        out = b""
+        out, self._held = self._held[:n], self._held[n:]
+        if len(out) == n:
+            return out
         # Full count: ``n`` bytes unless the output ends. The decoder returns the
         # bytes before an error first and raises it on the next call, so an error
-        # raises from this read, not the next one.
-        while len(out) < n and not self._d.eof:
-            more = self._d.read(n - len(out))
-            if not more:
-                break
-            out += more
-        if not self._d.eof and self._d.total_out == self._size:
-            # The decoder runs its end check with the read that returns the last
-            # byte and raises its error from the next call: make that call here, so
-            # the read that ends the output raises it, as for any other error.
-            self._d.read(1)
+        # raises from this read; the bytes before it are kept for the next reads,
+        # which raise it again once they need more output.
+        try:
+            while len(out) < n and not self._d.eof:
+                more = self._d.read(n - len(out))
+                if not more:
+                    break
+                out += more
+            if not self._d.eof and self._d.total_out == self._size:
+                # The decoder runs its end check with the read that returns the
+                # last byte and raises its error from the next call: make that call
+                # here, so the read that ends the output raises it.
+                self._d.read(1)
+        except Exception:
+            self._held = out
+            raise
         return out
 
     @override
@@ -118,7 +127,7 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
             raise ValueError("I/O operation on closed file.")
         if self._past_end is not None:
             return self._past_end
-        return self._d.total_out
+        return self._d.total_out - len(self._held)
 
     @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
@@ -142,7 +151,7 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
             self._start_decoding()
         # Decode and discard up to ``target``, a block at a time at most.
         while (skip := target - self.tell()) > 0:
-            if not self._d.read(min(skip, _BLOCK)):
+            if not self.read(min(skip, _BLOCK)):
                 break
         return target
 
