@@ -23,7 +23,7 @@ Each twin (in `archivey.internal.kernels.python`) has the subset of the package'
 that archivey's call sites use, with the same names, arguments and behaviour. It
 leaves out `Crc16Arc` (the twin has the `crc16_arc` function only), the state methods
 (`getstate`, `from_state`, `copy` other than ZipCrypto's), and LZX's `unused_data`,
-`total_in`, `reset()` and `window_bits`. The stubs in `python/archivey_codecs/` give
+`total_in` and `window_bits`. The stubs in `python/archivey_codecs/` give
 the package's whole API. archivey's call sites cannot tell which one runs, except
 LZO's, which tries compress-utils between the two.
 
