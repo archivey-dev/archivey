@@ -214,22 +214,31 @@ built-ins keep their path, where a probe's wrong-password `EncryptionError` mean
 ### D3. How several passwords are decided
 
 The loop is the one the built-in readers run (`_PasswordCandidates.attempt` with
-`settled`/`settle`):
+`settled`/`settle`); `plugin_passwords.resolve_request` only adapts the plugin's
+`(data, verdict)` callbacks to it and builds the errors (maintainer decision, 11-21:
+one loop, not two). The steps below hold for built-in units and plugin requests alike:
 
 1. Each static candidate in order goes through `check`. The first `CONFIRMED` wins at
    once, so no expensive derivation runs for the candidates after it. `REJECTED` is
    dropped. `INCONCLUSIVE` is set aside and the next candidate is tried.
-2. When the candidates run out with **one** set aside, it wins; `full_check` does not
-   run for it (every other candidate was `REJECTED`).
+2. When the candidates run out with **one** set aside, it wins without `full_check` when
+   no provider can be asked or there is no `full_check`: every other candidate was
+   `REJECTED`, and the read's own check reports a wrong one. While a provider can be
+   asked and there is a `full_check`, it runs (maintainer decision, 11-21): the survivor
+   may be a known-good password from another unit. `CONFIRMED` or `INCONCLUSIVE` wins,
+   and `REJECTED` leads to step 4.
 3. With **several** set aside, `full_check` runs on each in order. The first `CONFIRMED`
    wins; `REJECTED` is dropped. If none confirms (or there is no `full_check`), the
    first still `INCONCLUSIVE` wins.
 4. With none left, the provider is asked, one answer at a time. An answer `check` calls
-   `INCONCLUSIVE` goes through `full_check` when the plugin gives one; `REJECTED` from
+   `INCONCLUSIVE` goes through `full_check` when there is one; `REJECTED` from
    either asks the provider again. The first `CONFIRMED` answer wins, and an
    `INCONCLUSIVE` one wins only when there is no `full_check` (or it also came back
    `INCONCLUSIVE`), since a person at a prompt answers one at a time and there is
-   nothing to compare it with.
+   nothing to compare it with. Before the merge into one loop the built-in readers
+   accepted an `INCONCLUSIVE` provider answer without its full check; they now run it
+   too, which costs one more decode of that unit only when a provider answered and the
+   bounded check could not confirm the answer.
 
 A password that wins as `INCONCLUSIVE` is not promoted to be tried first for later units
 (unless it was the only password given), and a checksum failure of that member's data
@@ -345,11 +354,15 @@ what is held. Two rules decide it:
    the walk's own state for a yielded request) around each callback, and leaves it after
    each one. Two overlapping requests on one shared handle are therefore serialized
    like any two member opens.
-2. **Only the provider runs with no archivey lock held**, as the reader-concurrency
-   contract states ("at most one provider call per reader, with no Archivey lock
-   held"). Before each provider call archivey leaves every guard and physical lock it
-   took for the request, including outer ones on the same stack, and takes them again
-   after the answer, before the next callback.
+2. **The provider runs outside the plugin's guards.** Before each provider call
+   archivey leaves the handle guard it took for the request, and takes it again after
+   the answer, before the next callback, putting back the adapter state the step had
+   set (another thread's step may set and clear it meanwhile). The walk lock a listing
+   or a paused walk holds, and an outer frame's lock on the same stack, stay held: they
+   are the ownership record below. A wait on one of them is refused, not blocked, when
+   it comes from the provider's thread or a context copied from it
+   (`ProviderAwareRLock`, and the same check before the materialization wait and in
+   `close()`), and any other thread waits its turn, as it would for the walk.
 
 Logical ownership is kept apart from the physical locks:
 
@@ -360,11 +373,12 @@ Logical ownership is kept apart from the physical locks:
 - **A yielded request** (`walk`, `iter_members`): the generator is paused at its
   `yield`. archivey records the walk as paused on the provider (its listing ownership
   and materialization ownership stay with the paused walk, so no other thread may
-  advance it) and releases the listing lock and the handle guard.
+  advance it) and releases the handle guard. The walk lock stays held, and records
+  that ownership.
 - **A request reached below an outer archivey frame** that holds a lock, such as
   listing finalization, which holds the listing lock while it reads link targets
-  (`_finalize_and_publish`): that frame's lock is released for the provider call and
-  replaced by the same ownership record, so its state stays reserved for it.
+  (`_finalize_and_publish`): that frame's lock stays held for the provider call, and
+  is its ownership record, so its state stays reserved for it.
 
 Every same-reader entry that would wait on a request's owner checks the provider context
 first: listing and iteration (`members()`, `iter_members()`, the materialization wait),
@@ -407,7 +421,17 @@ Requests met there are resolved too, under these rules:
   therefore keeps both. A repeat tries the saved password first and still runs `check`
   (and `full_check` when the first resolution needed it). So a late makeself rewalk
   does not ask the provider again for payload 1, although its `INCONCLUSIVE` winner is
-  not promoted for other units (D3).
+  not promoted for other units (D3). On a fresh open (not a replacement of a stream
+  already unlocked) an unconfirmed saved winner is not taken at once: it is the first
+  survivor, and the other passwords are probed as usual, so a password another unit
+  has confirmed since can win. That winner becomes the reader's saved winner, but a
+  stream already open keeps its own: each member handle, and each walk, records the
+  winners its data was unlocked with, and its replacement opens try those first. A
+  respawn that took the reader's latest winner instead would hand the caller bytes
+  decrypted with another password at the same offsets, and the checksum state the
+  verifier carries over would mix the two. For the same reason a replacement open
+  goes on with an idle data walk only when that walk unlocked the requests it passed
+  with the handle's winners; otherwise it walks again from the start.
 - **The provider only at a first open.** A first open of a member may ask the provider:
   the caller's `open()`, a data walk it starts, and the first open of a lazy pass handle
   from `stream_members()` or extraction, which calls `open_member` on the handle's
@@ -418,11 +442,13 @@ Requests met there are resolved too, under these rules:
   stream's `read`) never asks: there the saved winners and the static candidates are
   tried, and if none unlocks a request in the chain the read raises the D2 exhaustion
   error for it.
-- **The verdict follows the replacement.** A respawn keeps the whole new `MemberData`,
-  not only its stream: the replacement stream's verification proof takes the new
-  `unlocked` verdict (and its `digests` and `checked`), so a replacement unlocked as
-  `INCONCLUSIVE` after a `CONFIRMED` original is checked as `INCONCLUSIVE` from then on,
-  and the reverse.
+- **The verdict follows the replacement.** The replacement stream's watch takes the new
+  `unlocked` verdict, from a respawn's `MemberData` or a data walk's span, so a
+  replacement unlocked as `INCONCLUSIVE` after a `CONFIRMED` original is checked as
+  `INCONCLUSIVE` from then on, and the reverse. Its checks (`digests`, `checked`,
+  `bounded`; a span's `checked` and `digests`) must match the first open's, because the
+  verifier over the caller's stream was built from those: a replacement that changes
+  them is refused as a plugin bug.
 
 
 Remaining limit: a provider that waits for a separate thread (not a copied context) that
@@ -466,3 +492,10 @@ same as a provider that waits for any lock its own caller holds, and the docs sa
     extraction handle) may ask the provider, like `open()`; replacement opens never do?
     RULED yes (davi 11-21, card).
     (`PasswordRequest` is already the provider's argument type.)
+12. D8: the walk lock and an outer frame's lock stay held while the provider runs, with
+    provider-context waits refused, rather than released with ownership records only?
+    RULED keep them held (davi 11-21, card). The `reader-concurrency` delta amends "no
+    Archivey lock held" to match.
+13. D3: one password loop for built-in units and plugin requests, as the archive-reading
+    spec requires, instead of a second loop kept in step by tests? RULED one loop (davi
+    11-21, card).

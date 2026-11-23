@@ -48,7 +48,7 @@ Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
 
 | Boundary | What crosses it | What holds there |
 | --- | --- | --- |
-| Source bytes to parsers | Archive structure | Pure-Python parsers for ZIP, 7z, RAR, TAR, SquashFS, XAR, CAB, LHA, ARJ, ar, deb, CPIO, RPM and makeself headers, the ISO 9660, Joliet, Rock Ridge and UDF trees, and DMG's UDIF run tables, partition maps and HFS+ B-trees; every read a header field sizes goes through a bounded source ([resource use](#resource-use-is-bounded)) |
+| Source bytes to parsers | Archive structure | Pure-Python parsers for ZIP, 7z, RAR, TAR, SquashFS, XAR, CAB, LHA, ARJ, ar, deb, CPIO, RPM and makeself headers, the ISO 9660, Joliet, Rock Ridge and UDF trees, and DMG's UDIF run tables, partition maps, HFS+ B-trees and APFS checkpoints, object maps and B-trees; every read a header field sizes goes through a bounded source ([resource use](#resource-use-is-bounded)) |
 | Parsers to decoders | Compressed streams, declared decoder parameters; on POSIX, a read-only descriptor of the archive file for a rapidgzip child that reads a member's byte range itself (the child's copy outlives the parent's handle, so the parent checks before each call that its own source is still open) | `DecoderLimits` checked before allocation; crash-prone native decoders in a child process ([errors](#errors-are-typed-and-honest)) |
 | archivey to external programs | Archive path, member selection, password | RARLAB `unrar` / `rar`, or `unar` under `"auto"`; fixed argv; a member name only inside an include-mask switch, or an entry index ([external programs](#external-programs-get-a-fixed-command-line)) |
 | archivey to the destination | Names, link targets, modes, data | `check_universal` and the extraction coordinator ([extraction](#extraction-stays-in-the-destination), [names](#names-are-safe-on-the-target-filesystem)) |
@@ -454,29 +454,35 @@ data its pass keeps for link targets beside it.
   A DMG image bounds its run tables at open, before any run is kept (36 bytes a run
   against `max_metadata_bytes`, the property list at 64 MiB), and the first listing
   charges each HFS+ folder name, hard-link inode record and kept extended attribute as
-  it keeps them; the open itself reads and decodes at most 64 MiB past the property list
-  (`udif.OPEN_BUDGET`). Zero-fill runs make a large disk from a tiny file, so member
-  reads count in the archive-wide ratio like ISO's, and the in-house ADC, LZFSE and LZVN
-  decoders are bounded by the run's sectors. Each run a listing decodes, a cache miss
-  included, counts toward `max_decoded_bytes` (`ReaderContext._listing_draw`, from
+  it keeps them, and the reader counts what APFS keeps for the archive's life (object
+  maps, filesystem trees) against the same cap, with the APFS checkpoint scan bounded at
+  64 MiB read, decoded or served from zero-fill runs (`apfs.SCAN_BUDGET`); the open
+  itself reads and decodes at most 64 MiB past the property list (`udif.OPEN_BUDGET`).
+  Zero-fill runs make a large disk from a tiny file, so member reads count in the
+  archive-wide ratio like ISO's, and the in-house ADC, LZFSE and LZVN decoders are
+  bounded by the run's sectors. Each run a listing decodes, a cache miss included,
+  counts toward `max_decoded_bytes` (`ReaderContext._listing_draw`, from
   `UdifImage._decode_run`), so a catalog spread over more runs than the cache holds
-  cannot decode without bound ([formats/dmg.md](formats/dmg.md) §4).
-  The TAR walker keeps nothing behind the member list, so nothing else is
-  held. The caps bound memory, not work: a forward-only TAR walk reads through
-  every member it skips, and a TAR walk in either mode reads the declared span of a
-  link header whose first block is zero, each for the bytes present rather than the
-  size a header declares (a member declaring more than the archive holds raises
-  `TruncatedError` at the first short read), and that ZIP walk reads through the
-  data of every member whose local header leaves its size to a data descriptor, up
-  to one read of the file. The pipe pass also reads the entries its directory
-  places in the bytes it kept after the walk stopped (a gap between members, a second archive appended). Every byte each
-  attempt consumes there, a member read or a local header that fails to parse, is
-  counted against the bytes held, and past that the next entry is `CorruptionError`
-  before it is read (entries a writer laid out never overlap), so the attempts
-  consume the kept bytes at most twice, not once per entry. What the pass keeps of
-  an attempt whose local header does not parse is the parse error, without its
-  traceback, about 1 KB per entry, released when the pass completes and held by
-  the reader when it raises (the residual below).
+  cannot decode without bound ([formats/dmg.md](formats/dmg.md) §4). `verify_all()`'s
+  partition CRC-32 pass decodes runs no member read reaches (free space, metadata); its
+  compressed and raw runs (which may share stored bytes) are held to the archive-wide
+  ratio on their own total, and its zero-fill runs cost O(log n) without their bytes
+  ([formats/dmg.md](formats/dmg.md) §2.4). The TAR walker keeps nothing behind the
+  member list, so nothing else is held. The caps bound memory, not work: a forward-only
+  TAR walk reads through every member it skips, and a TAR walk in either mode reads the
+  declared span of a link header whose first block is zero, each for the bytes present
+  rather than the size a header declares (a member declaring more than the archive holds
+  raises `TruncatedError` at the first short read), and that ZIP walk reads through the
+  data of every member whose local header leaves its size to a data descriptor, up to
+  one read of the file. The pipe pass also reads the entries its directory places in the
+  bytes it kept after the walk stopped (a gap between members, a second archive
+  appended). Every byte each attempt consumes there, a member read or a local header
+  that fails to parse, is counted against the bytes held, and past that the next entry
+  is `CorruptionError` before it is read (entries a writer laid out never overlap), so
+  the attempts consume the kept bytes at most twice, not once per entry. What the pass
+  keeps of an attempt whose local header does not parse is the parse error, without its
+  traceback, about 1 KB per entry, released when the pass completes and held by the
+  reader when it raises (the residual below).
 - 7z checks `max_members` while parsing, at `open_archive`
   (`internal/backends/sevenzip_parser.py`, the `max_members` checks on folders, unpack
   streams, their sum and `num_files`). Member-scaled counts are also checked against the

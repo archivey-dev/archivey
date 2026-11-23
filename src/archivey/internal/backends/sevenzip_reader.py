@@ -2078,6 +2078,9 @@ class SevenZipReader(BaseArchiveReader):
             stream_config=without_accelerators(self._stream_config),
             collector=self._diagnostics_collector,
         )
+        # A trial decode counts and draws like the caller's stream: the measurement
+        # counter, the nest's and the listing's decoded caps.
+        stream = self._track_decompressed(stream)
         try:
             verdict = run_password_confirm_plan(
                 stream, plan, input_exhausted=input_ran_out
