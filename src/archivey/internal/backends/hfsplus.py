@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import io
 import struct
+from bisect import bisect_right
 from collections.abc import Callable, Iterator
 from typing import NamedTuple
 
@@ -233,11 +234,13 @@ class _ExtentLookup:
         self._volume = volume
         self._tree: _BTree | None = None
 
-    def find(
+    def records(
         self, cnid: int, fork_type: int, start_block: int
-    ) -> list[tuple[int, int]]:
-        """The extents of the overflow record keyed (``cnid``, ``fork_type``,
-        ``start_block``), or ``CorruptionError`` when there is none."""
+    ) -> Iterator[list[tuple[int, int]]]:
+        """The extents of each overflow record from the one keyed (``cnid``,
+        ``fork_type``, ``start_block``) on, in key order: one search down the index,
+        then the leaf chain. Each record must carry the key that the extents before it
+        end at; a missing or out-of-order one raises ``CorruptionError``."""
         if self._tree is None:
             header = self._volume.header
             if not header.extents.size:
@@ -247,20 +250,25 @@ class _ExtentLookup:
                 )
             self._tree = _BTree(self._volume, _EXTENTS_FILE, header.extents, "extents")
         target = (cnid, fork_type, start_block)
-        record = self._tree.search(lambda key: _extent_key(key) <= target)
-        if record is not None:
-            key, data = record
-            if _extent_key(key) == target and len(data) >= 64:
-                extents = struct.unpack_from(">16I", data)
-                return [
-                    (extents[i], extents[i + 1])
-                    for i in range(0, 16, 2)
-                    if extents[i + 1]
-                ]
-        raise CorruptionError(
-            f"the extents overflow file has no extents for file {cnid} from block "
-            f"{start_block}"
-        )
+        records = self._tree.records_from(lambda key: _extent_key(key) <= target)
+        while True:
+            record = next(records, None)
+            if record is not None:
+                key, data = record
+                if _extent_key(key) == target and len(data) >= 64:
+                    extents = struct.unpack_from(">16I", data)
+                    found = [
+                        (extents[i], extents[i + 1])
+                        for i in range(0, 16, 2)
+                        if extents[i + 1]
+                    ]
+                    yield found
+                    target = (cnid, fork_type, target[2] + sum(c for _, c in found))
+                    continue
+            raise CorruptionError(
+                f"the extents overflow file has no extents for file {cnid} from block "
+                f"{target[2]}"
+            )
 
 
 def _extent_key(key: bytes) -> tuple[int, int, int]:
@@ -301,8 +309,13 @@ class HfsVolume:
                 f"the extents overflow file's eight extents hold {have} blocks, less "
                 f"than its {fork.total_blocks}"
             )
-        while have < fork.total_blocks:
-            more = self._overflow.find(cnid, fork_type, have)
+        # Only the blocks that hold the fork's size are read; the extents past them
+        # (space allocated ahead) are not looked up.
+        overflow: Iterator[list[tuple[int, int]]] | None = None
+        while have < fork.total_blocks and have * bs < fork.size:
+            if overflow is None:
+                overflow = self._overflow.records(cnid, fork_type, have)
+            more = next(overflow)
             if not more:
                 break
             extents += more
@@ -331,7 +344,8 @@ class HfsVolume:
         ``n`` bytes, or ``TruncatedError`` past the fork's end."""
         extents = self.extents(cnid, fork_type, fork)
         bs = self.header.block_size
-        # Each extent's first byte in the fork, for a bisect-free walk.
+        # Each extent's first byte in the fork: a read bisects them for its first
+        # extent.
         starts: list[int] = []
         pos = 0
         for _, count in extents:
@@ -348,12 +362,14 @@ class HfsVolume:
             parts: list[bytes] = []
             want = n
             at = offset
-            for (start, count), first in zip(extents, starts):
+            for i in range(max(bisect_right(starts, offset) - 1, 0), len(extents)):
+                if want <= 0:
+                    break
+                start, count = extents[i]
+                first = starts[i]
                 length = count * bs
                 if at >= first + length:
                     continue
-                if want <= 0:
-                    break
                 within = at - first
                 take = min(want, length - within)
                 parts.append(source.read_exact(start * bs + within, take))
@@ -482,34 +498,56 @@ class _BTree:
                     return
             number = flink
 
-    def search(
+    def records_from(
         self, at_or_before: Callable[[bytes], bool]
-    ) -> tuple[bytes, bytes] | None:
-        """The last leaf record whose key ``at_or_before`` accepts (keys accepted form
-        a prefix of the key order), found down the index from the root."""
+    ) -> Iterator[tuple[bytes, bytes]]:
+        """The leaf records in key order from the last one whose key ``at_or_before``
+        accepts (keys accepted form a prefix of the key order), nothing when there is
+        none: one search down the index from the root, then the leaf chain. A node
+        reached twice, or one that is not a leaf, raises ``CorruptionError``."""
         number = self.root
         seen: set[int] = set()
-        while number:
+        while True:
+            if not number:
+                return
             if number in seen or len(seen) > 64:
                 raise CorruptionError(f"the HFS+ {self._name} B-tree's index loops")
             seen.add(number)
-            _, kind, _, records = self.node(number)
-            chosen = None
-            for key, data in records:
+            flink, kind, _, records = self.node(number)
+            chosen = -1
+            for i, (key, _) in enumerate(records):
                 if not at_or_before(key):
                     break
-                chosen = (key, data)
+                chosen = i
             if kind == _LEAF:
-                return chosen
+                break
             if kind != _INDEX:
                 raise CorruptionError(
                     f"the HFS+ {self._name} B-tree's index reaches node {number} of "
                     f"kind {kind}"
                 )
-            if chosen is None or len(chosen[1]) < 4:
-                return None
-            (number,) = struct.unpack_from(">I", chosen[1])
-        return None
+            if chosen < 0 or len(records[chosen][1]) < 4:
+                return
+            (number,) = struct.unpack_from(">I", records[chosen][1])
+        if chosen < 0:
+            return
+        yield from records[chosen:]
+        chain = {number}
+        while flink:
+            if flink in chain:
+                raise CorruptionError(
+                    f"the HFS+ {self._name} B-tree's leaf chain reaches node {flink} "
+                    "twice"
+                )
+            chain.add(flink)
+            number = flink
+            flink, kind, height, records = self.node(number)
+            if kind != _LEAF or height != 1:
+                raise CorruptionError(
+                    f"the HFS+ {self._name} B-tree's leaf chain reaches node {number}, "
+                    f"which is not a leaf (kind {kind}, height {height})"
+                )
+            yield from records
 
 
 # ── Catalog records ──────────────────────────────────────────────────────────────────

@@ -886,6 +886,66 @@ def test_an_extents_file_short_of_its_blocks_is_corruption() -> None:
         reader.read("a.bin")
 
 
+def _count_extents_nodes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The node numbers the extents overflow B-tree reads, in order."""
+    from archivey.internal.backends import hfsplus
+
+    reads: list[int] = []
+    node = hfsplus._BTree.node
+
+    def counted(self, number: int):  # type: ignore[no-untyped-def]
+        if self._name == "extents":
+            reads.append(number)
+        return node(self, number)
+
+    monkeypatch.setattr(hfsplus._BTree, "node", counted)
+    return reads
+
+
+def test_overflow_extents_are_read_along_the_leaf_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fork with many overflow records finds the first one down the index and walks
+    the leaf chain from there: each extents node is read once, not once per record."""
+    data = bytes(range(256)) * 2 * 400  # 400 blocks of 512 bytes
+    image = d.dmg_of(
+        [d.Node("a.bin", data=data, fragment=400)],
+        hfs_options={"block_size": 512, "node_size": 512},
+    )
+    reads = _count_extents_nodes(monkeypatch)
+    with _open(image, seekable_members=True) as reader:
+        assert reader.read("a.bin") == data
+        with reader.open("a.bin") as stream:
+            for at in (0, 511, 512, 100_000, len(data) - 1):
+                stream.seek(at)
+                assert stream.read(700) == data[at : at + 700]
+    # 49 overflow records of 8 extents, about 10 to a 512-byte node.
+    assert len(reads) <= 2 * len(set(reads))  # one walk per fork_reader
+    assert len(set(reads)) < 15
+
+
+def test_extents_past_the_fork_size_are_not_looked_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Blocks allocated past a fork's size are never read, so their overflow records
+    are not looked up: a 0-byte fork listing many extents costs no extents read."""
+
+    def zero_size(body: bytearray) -> None:
+        struct.pack_into(">Q", body, 88, 0)  # the data fork's logicalSize
+
+    image = d.dmg_of(
+        [d.Node("a.bin", data=bytes(512 * 200), fragment=200)],
+        hfs_options={
+            "block_size": 512,
+            "patch_catalog": _patch_file("a.bin", zero_size),
+        },
+    )
+    reads = _count_extents_nodes(monkeypatch)
+    with _open(image) as reader:
+        assert reader.read("a.bin") == b""
+    assert reads == []
+
+
 def _attribute_extent_records(
     monkeypatch: pytest.MonkeyPatch,
     count: int,
