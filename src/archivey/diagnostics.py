@@ -610,13 +610,15 @@ class ArchiveEofContext(_JsonSafeContext):
       block, ``"iso"`` for the furthest of an ISO image's volume space, the partitions
       its MBR or GPT lists and the GPT backup header, ``"zip"`` for the end of a ZIP's
       end-of-central-directory record and its declared comment, ``"cpio"`` for the
-      CPIO trailer, ``"lha"`` for an LHA archive's end byte and ``"arj"`` for an ARJ
+      CPIO trailer, ``"lha"`` for an LHA archive's end byte, ``"arj"`` for an ARJ
       archive's end header (where the scan covers 64 KiB and also allows the DOS
-      end-of-file byte 0x1A); a format plugin names
-      its own format. ``observed_bytes`` is
-      that byte's offset past the end. RAR emits one per volume, and its offset counts from that
-      volume's end block, unlike member offsets, which count across the whole set; the
-      message names the volume.
+      end-of-file byte 0x1A) and ``"dmg"`` for the end of an encrypted DMG image's last
+      encrypted block; a format plugin names its own format. ``observed_bytes`` is that
+      byte's offset past the end. RAR emits one per volume, and its offset counts from
+      that volume's end block, unlike member offsets, which count across the whole set;
+      the message names the volume. An unencrypted DMG image reports each range of the
+      file that no structure its ``koly`` block declares covers, wherever it is, so
+      there ``observed_bytes`` is that byte's offset in the image, not past an end.
     - ``"directory_padding"`` (``ARCHIVE_TRAILING_DATA``) — an ISO directory block's
       padding, which starts at a zero length byte and fills the rest of the logical
       block, holds a non-zero byte. Every record before it is listed; a record whose
@@ -713,6 +715,10 @@ class ArchiveStructureContext(_JsonSafeContext):
     - ``"link_count"``: an APFS file's sibling-link records (one per hard-link name)
       disagree with its inode's link count; the directory records decide what is
       listed. ``offset`` is the inode id.
+    - ``"key_entry"``: a password key entry of an encrypted DMG image that archivey
+      cannot use (another key derivation, cipher or mode, or a field out of range),
+      skipped because another password entry is usable. A password for it is
+      rejected as wrong. ``offset`` is the entry's file offset.
     - ``"folder_thread"``: HFS+ folders whose thread record is missing, unreadable, or
       names another parent or name than the folder record. Reported once per volume; the folder
       records decide the paths, and ``offset`` is the first such folder's catalog id.

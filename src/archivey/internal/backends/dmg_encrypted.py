@@ -25,7 +25,11 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import BinaryIO, NamedTuple
 
-from archivey.diagnostics import ArchiveEofContext, DiagnosticCode
+from archivey.diagnostics import (
+    ArchiveEofContext,
+    ArchiveStructureContext,
+    DiagnosticCode,
+)
 from archivey.exceptions import (
     CorruptionError,
     ResourceLimitError,
@@ -33,7 +37,12 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.formats import PasswordConfirmVerdict, ReaderContext, ReaderSource
-from archivey.internal.backends.udif import DecryptedImageSource, DiskView, parse_koly
+from archivey.internal.backends.udif import (
+    DecryptedImageSource,
+    DiskView,
+    first_nonzero,
+    parse_koly,
+)
 from archivey.internal.overrides import override
 from archivey.internal.streams.crypto import (
     AesParams,
@@ -95,6 +104,8 @@ class EncryptedHeader(NamedTuple):
     entries: tuple[_PasswordEntry, ...]
     data_end: int  # where the last encrypted block ends in the file
     file_size: int
+    # The password entries skipped as unusable: each blob's file offset, and why.
+    skipped: tuple[tuple[int, str], ...]
 
 
 @dataclass(frozen=True)
@@ -185,7 +196,7 @@ def read_header(source: ReaderSource) -> EncryptedHeader:
     entries: list[_PasswordEntry] = []
     # Why each password entry archivey cannot use was skipped: raised only when no
     # other password entry is usable.
-    refusals: list[CorruptionError | UnsupportedFeatureError] = []
+    refusals: list[tuple[int, CorruptionError | UnsupportedFeatureError]] = []
     for index in range(count):
         kind, offset, length = _ENTRY.unpack_from(table, index * _ENTRY.size)
         if length > _MAX_ENTRY_SIZE:
@@ -204,16 +215,23 @@ def read_header(source: ReaderSource) -> EncryptedHeader:
         try:
             entries.append(_password_entry(source, offset, length))
         except (CorruptionError, UnsupportedFeatureError) as exc:
-            refusals.append(exc)
+            refusals.append((offset, exc))
     if not entries and refusals:
-        raise refusals[0]
+        raise refusals[0][1]
     if not entries:
         raise UnsupportedFeatureError(
             "the encrypted DMG image is locked with a certificate or keychain key, "
             "not a password, which archivey does not read"
         )
     return EncryptedHeader(
-        key_bits // 8, block_size, data_size, data_offset, tuple(entries), end, size
+        key_bits // 8,
+        block_size,
+        data_size,
+        data_offset,
+        tuple(entries),
+        end,
+        size,
+        tuple((at, exc.raw_message) for at, exc in refusals),
     )
 
 
@@ -329,21 +347,36 @@ class Unlocker:
         self._head = source.read_exact(
             header.data_offset, head_blocks * header.block_size
         )
+        self._report_skipped()
         self._report_tail()
+
+    def _report_skipped(self) -> None:
+        """Report each password entry skipped as unusable: a password that belongs
+        to it is rejected as wrong."""
+        origin = self._source._origin
+        for at, why in self._header.skipped:
+            self._context.report(
+                DiagnosticCode.ARCHIVE_STRUCTURE_INCONSISTENT,
+                (
+                    f"The encrypted DMG image's password key entry at file offset "
+                    f"{origin + at} is skipped: {why}. A password for that entry "
+                    "is rejected as wrong."
+                ),
+                ArchiveStructureContext(
+                    format="dmg", structure="key_entry", offset=origin + at
+                ),
+            )
 
     def _report_tail(self) -> None:
         """Report non-zero bytes after the encrypted data as ``ARCHIVE_TRAILING_DATA``,
-        as ``UdifImage`` reports bytes no structure covers: the first MiB is looked
-        at, and zero bytes are silent."""
+        as ``UdifImage`` reports bytes no structure covers (``udif.first_nonzero``)."""
         start, end = self._header.data_end, self._header.file_size
         if end <= start:
             return
-        data = self._source.read_exact(start, min(end - start, 1 << 20))
-        stripped = data.lstrip(b"\0")
-        if not stripped:
+        found = first_nonzero(self._source.read_exact, start, end)
+        if found is None:
             return
         origin = self._source._origin
-        found = start + len(data) - len(stripped)
         self._context.report(
             DiagnosticCode.ARCHIVE_TRAILING_DATA,
             (
@@ -355,7 +388,7 @@ class Unlocker:
                 format="dmg",
                 expected_marker="zeros_to_eof",
                 expected_bytes=0,
-                observed_bytes=found,
+                observed_bytes=found - start,
                 observed_kind="nonzero",
             ),
         )

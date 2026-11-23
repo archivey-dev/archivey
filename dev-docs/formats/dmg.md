@@ -66,8 +66,9 @@ receipt is still one 512-byte tail read.
 property list, `koly` block) and puts the `encrcdsa` header in front, so the handler's
 `open` returns a `NeedsPassword` for "the disk image" and its `then` opens `DmgReader`
 on `EncryptedDmgSource`, the decrypted image. Everything below then runs unchanged on
-that source, and its offsets in errors are the decrypted image's, named "decrypted
-image offset" (its origin is 0, whatever the file's). The image and every
+that source, and its offsets in errors are the decrypted image's (its origin is 0,
+whatever the file's): a run's or a truncated read's message says "decrypted image
+offset" where an unencrypted image's says "file offset". The image and every
 member are `is_encrypted`.
 
 The header, big-endian, as the four `hdiutil` fixtures (macOS 26) hold it:
@@ -124,10 +125,12 @@ table and the encrypted data), 0 PBKDF2 iterations, a salt over 32 bytes, an IV 
 cipher's block, or a wrapped key that is not a whole number of blocks inside its entry
 is `CorruptionError`; a file shorter than the encrypted data is `TruncatedError`. A
 password entry that fails these checks is skipped when another password entry passes
-them; with none left, the first entry's refusal is raised. Non-zero bytes after the
-encrypted data are `ARCHIVE_TRAILING_DATA` (the first MiB is looked at, as for an
-unencrypted image). All of this runs before a password is asked for. Only the blocks
-that hold the last and the first 512 bytes are decrypted to check a password.
+them, and reported (`ARCHIVE_STRUCTURE_INCONSISTENT`, `structure="key_entry"`): a
+password for it is rejected as wrong. With none left, the first entry's refusal is
+raised. Non-zero bytes after the encrypted data are `ARCHIVE_TRAILING_DATA` (the first
+MiB is looked at, as for an unencrypted image; `observed_bytes` counts from the end of
+the last encrypted block). All of this runs before a password is asked for. Only the
+blocks that hold the last and the first 512 bytes are decrypted to check a password.
 
 ### 2.2 Open and list
 
