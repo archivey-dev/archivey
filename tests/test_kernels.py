@@ -891,8 +891,7 @@ def test_a_zero_byte_bcj2_read_reads_no_input(twin: bool) -> None:
 
 def _params(fn: Callable[..., object]) -> list[tuple[str, object, object]]:
     return [
-        (p.name, p.kind, p.default)
-        for p in inspect.signature(fn).parameters.values()
+        (p.name, p.kind, p.default) for p in inspect.signature(fn).parameters.values()
     ]
 
 
