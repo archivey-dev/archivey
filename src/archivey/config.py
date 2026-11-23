@@ -440,6 +440,12 @@ class ListingLimits:
     max_metadata_bytes: int | None = 64 * 2**20
     """Most bytes of text a listing may retain across its members. 64 MiB.
 
+    This is an estimate that keeps a hostile archive from filling memory with its
+    listing, not a cap on memory. It counts the text and bytes the archive controls,
+    plus a fixed weight for each kind of small entry an archive can repeat without
+    adding members. It does not count the memory Python adds around each object, so
+    the reader uses more than this (``max_members`` bounds the cost per member).
+
     Counts member names (and raw names), comments, link targets, owner and group names
     and the string or bytes values in ``extra``, plus the keys of a dict nested in it
     (such as TAR's PAX keywords) with 96 bytes more for each such text key, plus the
