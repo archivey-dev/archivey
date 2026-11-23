@@ -616,9 +616,10 @@ class ArchiveEofContext(_JsonSafeContext):
       encrypted block; a format plugin names its own format. ``observed_bytes`` is that
       byte's offset past the end. RAR emits one per volume, and its offset counts from
       that volume's end block, unlike member offsets, which count across the whole set;
-      the message names the volume. An unencrypted DMG image reports each range of the
-      file that no structure its ``koly`` block declares covers, wherever it is, so
-      there ``observed_bytes`` is that byte's offset in the image, not past an end.
+      the message names the volume. The UDIF layer of a DMG image (an unencrypted
+      image's file, or an encrypted image's decrypted data) reports each range that no
+      structure its ``koly`` block declares covers, wherever it is, so there
+      ``observed_bytes`` is that byte's offset in that image, not past an end.
     - ``"directory_padding"`` (``ARCHIVE_TRAILING_DATA``) — an ISO directory block's
       padding, which starts at a zero length byte and fills the rest of the logical
       block, holds a non-zero byte. Every record before it is listed; a record whose

@@ -358,9 +358,10 @@ class Unlocker:
             self._context.report(
                 DiagnosticCode.ARCHIVE_STRUCTURE_INCONSISTENT,
                 (
-                    f"The encrypted DMG image's password key entry at file offset "
-                    f"{origin + at} is skipped: {why}. A password for that entry "
-                    "is rejected as wrong."
+                    # ``why`` names the entry, as the refusal does when no entry is
+                    # usable; the context carries its file offset.
+                    f"One of the encrypted DMG image's password key entries is "
+                    f"skipped: {why}. A password for that entry is rejected as wrong."
                 ),
                 ArchiveStructureContext(
                     format="dmg", structure="key_entry", offset=origin + at
