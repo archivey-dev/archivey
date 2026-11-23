@@ -168,9 +168,10 @@ as `CorruptionError` with the panic as its cause, never as `PanicException`, and
 decoder object SHALL refuse every later method call. `OptionalLibrary.ARCHIVEY_CODECS` in
 `FormatPolicy.exclude_libraries` SHALL turn every kernel off for that call. Under
 `ProcessIsolation.KNOWN_CRASHES` and `NONE` the kernels SHALL run in the caller's
-process. Under `NATIVE_DECODERS` the decoding kernels (LZX, LZW, LZO, BCJ2, ARM64,
-RISC-V and LZFSE) SHALL run in archivey's decoder child process, as other native
-decoders do; CRC-16/ARC and ZipCrypto SHALL run in the caller's process under every
+process. Under `NATIVE_DECODERS` the decoding kernels (LZX, LZW, LZO, ARM64, RISC-V,
+LZFSE and LZVN) SHALL run in archivey's decoder child process, as other native decoders
+do, and BCJ2, whose four inputs the child does not carry yet, SHALL use its Python
+decoder in the caller's process; CRC-16/ARC and ZipCrypto SHALL run in the caller's process under every
 setting, as checksums and AES decryption do. A kernel panic in the child SHALL reach the
 caller as `CorruptionError`. When no child process can start under `NATIVE_DECODERS`,
 archivey SHALL choose a decoder as if `ARCHIVEY_CODECS` were excluded: the Python
@@ -188,6 +189,8 @@ installed, as today.
 | `exclude_libraries={OptionalLibrary.ARCHIVEY_CODECS}` | Python decoders for that call only |
 | `ProcessIsolation.NATIVE_DECODERS`, an `.lzo` file | Rust LZO in the decoder child; never in the caller's process |
 | `ProcessIsolation.NATIVE_DECODERS`, a CAB with LZX | Rust LZX in the decoder child; same bytes and errors as in-process |
+| `ProcessIsolation.NATIVE_DECODERS`, an ULFO disk image | Rust LZFSE and LZVN in the decoder child; same bytes as the Python decoders |
+| `ProcessIsolation.NATIVE_DECODERS`, a 7z with BCJ2 | Python BCJ2 in the caller's process |
 | `ProcessIsolation.NATIVE_DECODERS`, a kernel panics in the child | `CorruptionError` in the caller |
 | `ProcessIsolation.NATIVE_DECODERS`, no child can start, a CAB with LZX | Python LZX in the caller's process; same bytes as without the package |
 | `ProcessIsolation.NATIVE_DECODERS`, no child can start, an `.lzo` file, compress-utils installed | `ResourceUnavailableError`, as without the package |
