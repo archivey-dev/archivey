@@ -1617,7 +1617,8 @@ class DecompressorStream(ReadOnlyIOStream):
         """Replace the decoder with a new one that resumes at ``point``.
 
         The buffer, the kept errors and the end state go with the old decoder: the
-        stream stands at ``point`` with nothing decoded yet.
+        stream stands at ``point`` with nothing decoded yet. A kept stop from
+        ``on_source_read`` stays: it holds for the whole file.
         """
         self._inner.seek(point.compressed_offset)
         self._compressed_read = point.compressed_offset
@@ -1637,8 +1638,9 @@ class DecompressorStream(ReadOnlyIOStream):
         self._decoder.clear_pending_error()
         # A stop from ``on_source_read`` survives the restart: it holds for the whole
         # file, and the restarted decoder may be fed from a buffer below this stream
-        # without a source read that would raise it again. Any other kept error is
-        # this decode's, and a seek clears it.
+        # without a source read that would raise it again. Any other kept error (the
+        # decoder's, or the caller's source failing) clears on a seek, and the
+        # restarted decoder tries again.
         if self._spent is not None and not self._spent.source_callback:
             self._spent = None
         self._surplus = None
@@ -1730,8 +1732,9 @@ class DecompressorStream(ReadOnlyIOStream):
         """One decoder call's output, at most ``max_length`` bytes when bounded, and
         never more than ``_call_output``."""
         if self._spent is not None:
-            # Only after a re-decode handed back the bytes before an error
-            # (_redecode_to_error): the decoder is not fed again until a seek.
+            # An error kept in ``_spent``: a decoder error (after a re-decode handed
+            # back the bytes before it, _redecode_to_error) until a seek; a failed
+            # feed read until a seek; a stop from ``on_source_read`` for good.
             self._raise_spent()
         bounded = max_length >= 0
         if bounded:
@@ -2482,7 +2485,8 @@ class DecompressorStream(ReadOnlyIOStream):
         """Move to ``new_pos`` if that decodes nothing; return whether it moved.
 
         A stream whose decoder raised (``_spent``) never moves here: only a restart
-        from a seek point gets it going again, and that waits for the next read.
+        from a seek point gets it going again, and that waits for the next read. A
+        restart does not clear a kept stop from ``on_source_read``.
         """
         if self._spent is not None:
             return False

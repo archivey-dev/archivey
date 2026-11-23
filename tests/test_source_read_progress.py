@@ -585,12 +585,10 @@ def _check_stop_holds(
     which the callback raised must raise the stop, and so must every read after it.
     Returns how many runs stopped inside a read."""
     recorder = _Recorder()
-    try:
-        with open_reads(recorder) as read:
-            for size in sizes:
-                read(size)
-    except Exception:  # noqa: BLE001 - a damaged file ends in its own error
-        pass
+    # A damaged file ends in its own error.
+    with contextlib.suppress(Exception), open_reads(recorder) as read:
+        for size in sizes:
+            read(size)
     stopped = 0
     for n in range(1, len(recorder.calls) + 1):
         raised = False
