@@ -14,6 +14,7 @@ import struct
 import unicodedata
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -300,6 +301,84 @@ def test_an_incomplete_newer_checkpoint_is_reported_and_the_older_one_read() -> 
     assert structures == ["apfs_checkpoint"]
 
 
+def _old_span(seen: list, start: int, count: int, xid: int) -> str | None:
+    """The check of a checkpoint's maps as one loop over the ring per candidate."""
+    for step in range(count):
+        kind, found, good, flags = seen[(start + step) % len(seen)]
+        if not good or kind != apfs._T_CHECKPOINT_MAP or found != xid:
+            return f"checkpoint-map block {step + 1} is missing or damaged"
+        if bool(flags & apfs._CHECKPOINT_MAP_LAST) != (step == count - 1):
+            return "its checkpoint-map blocks are not marked in order"
+    return None
+
+
+def test_checkpoint_map_runs_find_what_a_loop_over_the_ring_finds() -> None:
+    import random
+
+    rng = random.Random(5)
+    kinds = (apfs._T_CHECKPOINT_MAP, apfs._T_CHECKPOINT_MAP, apfs._T_NX, 0)
+    for _ in range(3000):
+        ring = rng.randrange(2, 9)
+        seen = [
+            (
+                rng.choice(kinds),
+                rng.choice((6, 7, 7)),
+                rng.random() < 0.9,
+                apfs._CHECKPOINT_MAP_LAST if rng.random() < 0.3 else 0,
+            )
+            for _ in range(ring)
+        ]
+        runs = apfs._MapRuns(seen)
+        for start in range(ring):
+            for count in range(1, ring):
+                for xid in (6, 7):
+                    expected = _old_span(seen, start, count, xid)
+                    assert runs.span(start, count, xid) == expected, (
+                        seen,
+                        start,
+                        count,
+                    )
+
+
+class _CountedRing(list):
+    """The ring's ``seen`` list, counting how often an entry is read."""
+
+    reads = 0
+
+    def __getitem__(self, index: Any) -> Any:
+        _CountedRing.reads += 1
+        return super().__getitem__(index)
+
+
+def test_checking_every_checkpoint_candidate_is_linear_in_the_ring() -> None:
+    # Half the ring good checkpoint-map blocks of one transaction, half superblocks
+    # of it whose spans start at the maps: each candidate fails only at its end.
+    ring = 2048
+    maps = ring // 2
+    seen = _CountedRing(
+        [(apfs._T_CHECKPOINT_MAP, 7, True, 0)] * maps
+        + [(apfs._T_NX, 7, True, 0)] * maps
+    )
+    first = apfs._Superblock(4096, 1 << 20, 0, ring, 10, 0, 0, 0, (), 7)
+    container = apfs.ApfsContainer.__new__(apfs.ApfsContainer)
+    container._first = first
+    # No block is read: _incomplete reads only the block size.
+    container._blocks = apfs._Blocks(None, 4096, 1 << 20)
+    plain = list(seen)
+    expected = [_old_span(plain, 0, index, 7) for index in range(maps, ring)]
+    _CountedRing.reads = 0
+    runs = apfs._MapRuns(seen)
+    problems = []
+    for index in range(maps, ring):
+        found = first._replace(desc_index=0, desc_length=index + 1)
+        problems.append(container._incomplete(found, index, runs))
+    assert problems == expected
+    assert all(problems)
+    # A loop over each candidate's span reads about 1,000 x 1,000 entries; one pass
+    # over the ring and one read per candidate, a few times the ring.
+    assert _CountedRing.reads <= 6 * ring
+
+
 def _source(data: bytes) -> ReaderSource:
     def view(start: int, length: int | None) -> io.BytesIO:
         end = len(data) if length is None else start + length
@@ -481,6 +560,20 @@ def test_damaged_ranges_count_against_max_metadata_bytes_as_they_are_found() -> 
         pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
     ):
         reader.members()
+
+
+def test_a_node_id_the_object_map_lacks_is_named_as_a_node_not_a_block() -> None:
+    nodes = [d.Node(f"f{i:03d}.txt", data=b"x") for i in range(20)]
+    written = a.write_apfs(nodes, leaf_records=4, patch=_children_missing)
+    with (
+        _open(a.apfs_dmg(written.container)) as reader,
+        pytest.raises(CorruptionError) as raised,
+    ):
+        reader.members()
+    message = str(raised.value)
+    # 0xFFFF_FFF0 is a virtual id; no block of the container has that number.
+    assert "cannot be used (node 4294967280: " in message
+    assert "block 4294967280" not in message
 
 
 def test_a_damaged_leaf_error_also_names_the_first_other_problem() -> None:

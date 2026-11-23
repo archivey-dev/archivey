@@ -1311,7 +1311,7 @@ class _ApfsWalk:
             also = f"; also, {problems[0]}" if problems else ""
             self.failure = CorruptionError(
                 f"{len(tree.damage)} nodes of the filesystem tree of the APFS volume "
-                f"{quoted(name)} cannot be used (block {first_bad.address}: "
+                f"{quoted(name)} cannot be used ({first_bad.place}: "
                 f"{first_bad.reason}){unlisted}{also}"
             )
         elif problems:
