@@ -23,6 +23,7 @@ from archivey import (
     ArchiveyConfig,
     CorruptionError,
     DiagnosticCode,
+    LinkTargetNotFoundError,
     ListingLimits,
     MemberType,
     ResourceLimitError,
@@ -676,23 +677,29 @@ def test_a_stream_check_over_max_metadata_bytes_ends_the_listing(
 
 
 @pytest.mark.parametrize(
-    ("nodes", "patch", "name"),
+    ("nodes", "patch", "name", "error"),
     [
         (
             [d.Node("link", kind="symlink", target="f"), d.Node("f", data=b"f")],
             _attribute_as_stream("link", apfs.SYMLINK_XATTR),
             "link",
+            LinkTargetNotFoundError,
         ),
         (
             [d.Node("c", data=b"c" * 100, compression=3)],
             _attribute_as_stream("c", apfs.DECMPFS_XATTR),
             "c",
+            CorruptionError,
         ),
     ],
     ids=["symlink target", "decmpfs attribute"],
 )
 def test_a_limit_met_reading_an_attribute_stream_is_that_members_damage(
-    monkeypatch: pytest.MonkeyPatch, nodes: list, patch: Callable, name: str
+    monkeypatch: pytest.MonkeyPatch,
+    nodes: list,
+    patch: Callable,
+    name: str,
+    error: type[Exception],
 ) -> None:
     # A limit of one run of the image (an inflated compressed run) met while the
     # attribute's bytes are read: the member is damaged, the listing goes on.
@@ -711,8 +718,16 @@ def test_a_limit_met_reading_an_attribute_stream_is_that_members_damage(
     monkeypatch.setattr(apfs, "stream_reader", reader)
     written = a.write_apfs(nodes, patch_records=patch)
     with _open(a.apfs_dmg(written.container)) as reader_:
-        listed = {m.name for m in reader_.members()}
-    assert name in listed
+        member = {m.name: m for m in reader_.members()}[name]
+        # Damaged as on main: no target, or no size, and the read says why.
+        if member.type is MemberType.SYMLINK:
+            assert member.link_target is None
+        else:
+            assert member.size == 0
+        with pytest.raises(error) as raised:
+            reader_.read(member)
+        if member.type is not MemberType.SYMLINK:
+            assert "a compressed run stores more" in str(raised.value)
 
 
 def test_a_stream_check_is_kept_and_charged_only_when_it_is_costly() -> None:
