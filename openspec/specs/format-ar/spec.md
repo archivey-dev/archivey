@@ -61,7 +61,7 @@ when the walk ends.
 | `#1/65537` in a member of 70 000 bytes | `CorruptionError` naming the header offset |
 | `#1/99` in a member of 5 bytes | `CorruptionError` |
 | `//` table larger than `max_metadata_bytes` | `ResourceLimitError` |
-| `//` table exactly `max_metadata_bytes`, then a member named from it | `ResourceLimitError` while the member is listed |
+| A `//` table and a member named from it, each within `max_metadata_bytes` but not together | `ResourceLimitError` while the member is listed |
 
 ### Requirement: Refuse thin archives by name
 
