@@ -25,7 +25,7 @@ import threading
 import weakref
 import zlib
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from archivey.exceptions import (
     ArchiveyUsageError,
@@ -633,6 +633,14 @@ class DecoderChild:
 
     def has(self, name: str) -> bool:
         return name in self._state
+
+    def reported(self, name: str) -> object:
+        """The kernel attribute ``name`` that archivey-codecs' host reported with the
+        last reply (``decoder_worker._Codecs.report``)."""
+        report = self._state.get("report")
+        if not isinstance(report, dict) or name not in report:
+            raise AttributeError(name)
+        return cast("dict[str, object]", report)[name]
 
     @property
     def result(self) -> object:
