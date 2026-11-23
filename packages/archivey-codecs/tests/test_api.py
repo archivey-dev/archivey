@@ -826,6 +826,19 @@ def test_mutable_inputs_are_copied() -> None:
     assert crc16_arc(words) == want
 
 
+def test_bcj2_decoded_runs_ahead_of_total_out() -> None:
+    """A read decodes to the end of a ``main`` chunk: ``decoded`` counts those
+    bytes, returned or not, and reaches ``out_size`` before ``total_out`` does."""
+    d = _bcj2()
+    assert d.decoded == 0
+    d.read(1)
+    assert d.total_out == 1
+    assert d.decoded == 64 * 1024
+    while not d.eof:
+        d.read(100_000)
+    assert d.decoded == d.total_out == len(_BCJ2_MAIN)
+
+
 def test_lzx_frame_of_empty_blocks_holds_little_input() -> None:
     """A frame's input is not bounded by its output: blocks of length 0 give none.
     The decoder drops the input it read at each block header, so feeding 64 MiB of

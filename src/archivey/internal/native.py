@@ -14,7 +14,7 @@ A kernel is used when all of these hold:
 - its ``KERNELS`` revision for that kernel is at least :data:`MIN_REVISIONS`' (an older
   one may differ from this archivey's Python twin, so it is skipped, logged once at
   DEBUG);
-- for a decoding kernel (ARM64, RISC-V, LZW, LZO1X, LZX), the call's ``process_isolation``
+- for a decoding kernel (ARM64, RISC-V, LZW, LZO1X, LZX, BCJ2), the call's ``process_isolation``
   is not ``NATIVE_DECODERS``: until the decoder child runs these kernels, the Python
   twin keeps that setting's promise that no native decoder runs in this process.
 
@@ -28,7 +28,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Callable, Generator
 from types import ModuleType
-from typing import Protocol
+from typing import BinaryIO, Protocol
 
 from archivey.exceptions import (
     CorruptionError,
@@ -41,6 +41,7 @@ from archivey.types import OptionalLibrary
 
 MIN_REVISIONS: dict[str, int] = {
     "arm64": 1,
+    "bcj2": 1,
     "crc16_arc": 1,
     "lzo1x": 1,
     "lzw": 1,
@@ -525,5 +526,88 @@ def lzx(
         window_bits: int, more: Callable[[], bytes | None], output_size: int | None
     ) -> NativeLzx:
         return NativeLzx(module, window_bits, more, output_size)
+
+    return new
+
+
+# ── BCJ2 ──────────────────────────────────────────────────────────────────────────────
+
+
+class NativeBcj2:
+    """archivey-codecs' BCJ2 decoder over four input streams, for
+    ``Bcj2DecoderStream``.
+
+    The kernel returns the bytes decoded before an error and raises the error from
+    its next call. The Python decoder decodes whole ``main`` blocks and raises an
+    error from the read that decodes its block, keeping the bytes decoded before it
+    for later reads. :meth:`read` therefore returns every byte decoded so far
+    together with the error found on the way, for the caller to keep and raise.
+    """
+
+    __slots__ = ("_d", "_latch", "_module", "_size")
+
+    def __init__(
+        self,
+        module: ModuleType,
+        streams: tuple[BinaryIO, BinaryIO, BinaryIO, BinaryIO],
+        out_size: int,
+    ) -> None:
+        self._module = module
+        self._latch = Latch("BCJ2")
+        self._size = out_size
+        with codec_errors(module, "BCJ2"):
+            self._d = module.bcj2.Decompressor(*streams, out_size=out_size)
+
+    def read(self, n: int) -> tuple[bytes, Exception | None]:
+        """At least ``n`` bytes unless the output ends or an error stops it, and the
+        error a block decoded on the way found, if any.
+
+        Past ``n`` come the rest of the bytes decoded: when the blocks decoded reach
+        the end of the output (the Python decoder runs the end check as soon as it
+        has decoded the last byte, the kernel only once it returns it), and when an
+        error waits. An error waits when the read came back short, or returned the
+        last byte without passing the end check, or decoded a block (its inputs
+        moved) and ``getstate()`` refuses: it refuses only while an error waits, and
+        otherwise copies at most one block's output, once a block."""
+        with self._latch.guard(), codec_errors(self._module, "BCJ2"):
+            d = self._d
+            before = d.total_in
+            out = d.read(n)
+            if not d.eof and d.decoded == self._size and d.total_out < self._size:
+                out += d.read(-1)
+            if d.eof:
+                return out, None
+            waits = len(out) < n or d.total_out == self._size
+            if not waits and d.total_in != before:
+                try:
+                    d.getstate()
+                except ValueError:
+                    waits = True
+            if not waits:
+                return out, None
+        try:
+            with self._latch.guard(), codec_errors(self._module, "BCJ2"):
+                out += d.read(-1)  # the bytes before the error, if any are left
+                d.read(1)  # raises the error that waits
+        except Exception as exc:  # noqa: BLE001 - a stream's own error too
+            return out, exc
+        raise AssertionError("the BCJ2 kernel had no error waiting")
+
+
+def bcj2(
+    excluded: frozenset[OptionalLibrary], *, isolated: bool
+) -> Callable[[tuple[BinaryIO, BinaryIO, BinaryIO, BinaryIO], int], NativeBcj2] | None:
+    """A constructor of :class:`NativeBcj2` taking ``(streams, out_size)``, or
+    ``None`` to use the Python decoder. ``isolated`` as for :func:`branch_filter`."""
+    if isolated:
+        return None
+    module = kernels("bcj2", excluded)
+    if module is None:
+        return None
+
+    def new(
+        streams: tuple[BinaryIO, BinaryIO, BinaryIO, BinaryIO], out_size: int
+    ) -> NativeBcj2:
+        return NativeBcj2(module, streams, out_size)
 
     return new

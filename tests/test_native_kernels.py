@@ -12,6 +12,7 @@ import random
 import struct
 import types
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 
@@ -36,6 +37,10 @@ from archivey.internal import native
 from archivey.internal.backends import lha_reader, zipcrypto
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
+from archivey.internal.streams.codecs.bcj2_filter import (
+    _BLOCK as _BCJ2_BLOCK,
+    Bcj2DecoderStream,
+)
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, ISOLATED
 from archivey.internal.streams.codecs.lzma_filter_decoder import (
     PythonBranch,
@@ -51,6 +56,7 @@ from archivey.internal.streams.codecs.unix_compress_decoder import (
     LzwState,
     UnixCompressDecoder,
 )
+from tests.bcj2_util import bcj2_encode
 from tests.cab_util import CabFile, CabFolder, LzxEncoder, write_cab
 from tests.conftest import requires
 from tests.lha_util import Member, archive
@@ -1100,3 +1106,218 @@ def test_cab_lzx_unchecked_damage_before_a_failed_block_reads_the_same(
                 python = _cab_results(bytes(bad), OFF, order)
                 differ += kernel != python
     assert differ == 0
+
+
+# ── BCJ2 ──────────────────────────────────────────────────────────────────────────────
+
+
+def _bcj2_calls(
+    streams: tuple[bytes, ...], size: int, excluded: frozenset, reads: list[int]
+) -> list:
+    """Each read of ``reads`` (then a seek back and one read): its bytes, or the
+    error it raised. Reads go on after an error, as a caller may."""
+    stream = Bcj2DecoderStream(
+        *(io.BytesIO(s) for s in streams),
+        unpack_size=size,
+        excluded=excluded,
+        isolated=False,
+    )
+    results: list = []
+
+    def call(step: Callable[[], object]) -> None:
+        try:
+            results.append(step())
+        except ArchiveyError as exc:
+            results.append((type(exc).__name__, str(exc)))
+
+    for n in reads:
+        call(lambda n=n: stream.read(n))
+    call(lambda: stream.seek(0))
+    call(lambda: stream.read(reads[0]))
+    return results
+
+
+def _bcj2_cases(rng: random.Random) -> list[tuple[tuple[bytes, ...], int]]:
+    """Valid BCJ2 streams, and the same cut short, with bytes added, or with a
+    range-coder byte changed; and a declared size off from the streams'."""
+    cases = []
+    for case in range(60):
+        size = rng.choice((0, 1, 5, 1000, 70_000, 200_000))
+        streams = list(bcj2_encode(rng, size))
+        out_size = size
+        which, how = rng.randrange(4), case % 5
+        s = streams[which]
+        if how == 1 and s:
+            streams[which] = s[: rng.randrange(len(s))]
+        elif how == 2:
+            streams[which] = s + rng.randbytes(rng.randint(1, 5))
+        elif how == 3 and len(streams[3]) > 5:
+            rc = bytearray(streams[3])
+            rc[rng.randrange(5, len(rc))] ^= 1 << rng.randrange(8)
+            streams[3] = bytes(rc)
+        elif how == 4:
+            out_size = rng.choice((size + 1000, max(0, size - 50)))
+        cases.append((tuple(streams), out_size))
+    return cases
+
+
+@needs_codecs
+def test_bcj2_uses_the_kernel_and_reads_the_same() -> None:
+    """Every read gives the same bytes or raises the same error with the kernel as
+    with the Python decoder, at the same read: the kernel hands back the bytes
+    before an error first, and the wrapper raises the error from that read."""
+    assert native.bcj2(frozenset(), isolated=False) is not None
+    rng = random.Random(31)
+    for streams, size in _bcj2_cases(rng):
+        reads = [rng.choice((1, 100, 4096, 65536, 300_000)) for _ in range(8)]
+        kernel = _bcj2_calls(streams, size, frozenset(), reads)
+        python = _bcj2_calls(streams, size, EXCLUDED, reads)
+        assert kernel == python
+
+
+def test_bcj2_kernel_is_not_used_when_switched_off_or_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake(monkeypatch, bcj2=1)
+    assert native.bcj2(frozenset(), isolated=False) is not None
+    assert native.bcj2(EXCLUDED, isolated=False) is None
+    assert native.bcj2(frozenset(), isolated=True) is None
+    _fake(monkeypatch, bcj2=0)
+    assert native.bcj2(frozenset(), isolated=False) is None
+
+
+class _FakeBcj2:
+    """Stands in for ``archivey_codecs.bcj2.Decompressor``: panics on a read."""
+
+    built: ClassVar[int] = 0
+    calls: ClassVar[int] = 0
+    eof = False
+    decoded = total_out = 0
+    total_in = (0, 0, 0, 0)
+
+    def __init__(self, *streams: object, out_size: int) -> None:
+        type(self).built += 1
+
+    def read(self, max_length: int = -1) -> bytes:
+        type(self).calls += 1
+        raise PanicException("index out of bounds")
+
+
+def test_a_panic_in_a_bcj2_read_is_corruption_and_refuses_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _fake(monkeypatch, bcj2=1)
+    module.bcj2 = types.SimpleNamespace(Decompressor=_FakeBcj2)
+    monkeypatch.setattr(_FakeBcj2, "calls", 0)
+    streams = bcj2_encode(random.Random(1), 1000)
+    stream = Bcj2DecoderStream(
+        *(io.BytesIO(s) for s in streams),
+        unpack_size=1000,
+        excluded=frozenset(),
+        isolated=False,
+    )
+    with pytest.raises(CorruptionError, match="BCJ2 decoder failed") as info:
+        stream.read(10)
+    assert isinstance(info.value.__cause__, PanicException)
+    with pytest.raises(CorruptionError) as again:
+        stream.read(10)
+    assert again.value is info.value
+    assert _FakeBcj2.calls == 1
+    python = Bcj2DecoderStream(
+        *(io.BytesIO(s) for s in streams),
+        unpack_size=1000,
+        excluded=frozenset(),
+        isolated=True,
+    )
+    assert len(python.read(1000)) == 1000
+
+
+class _FailingInput(io.BytesIO):
+    """An input stream whose reads raise ``OSError`` from ``at`` on."""
+
+    def __init__(self, data: bytes, at: int) -> None:
+        super().__init__(data)
+        self._at = at
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        if self.tell() >= self._at:
+            raise OSError("input went away")
+        left = self._at - self.tell()
+        return super().read(left if n is None or n < 0 else min(n, left))
+
+
+def _bcj2_failing_calls(
+    streams: tuple[bytes, ...], which: int, excluded: frozenset
+) -> list:
+    """Reads of a stream whose input ``which`` fails halfway: each read's size, or
+    the error it raised and whether it is the first error raised again."""
+    inputs = [io.BytesIO(s) for s in streams]
+    inputs[which] = _FailingInput(streams[which], len(streams[which]) // 2)
+    stream = Bcj2DecoderStream(
+        *inputs, unpack_size=200_000, excluded=excluded, isolated=False
+    )
+    results: list = []
+    first: Exception | None = None
+    for _ in range(10):
+        try:
+            results.append(len(stream.read(30_000)))
+        except OSError as exc:
+            first = first or exc
+            results.append((type(exc).__name__, str(exc), exc is first))
+    return results
+
+
+@pytest.mark.parametrize("which", range(4))
+def test_bcj2_input_error_raises_the_same_and_again_after(which: int) -> None:
+    """An input's ``OSError`` stops decoding as a decode error does: the reads after
+    it raise the same error object, with the kernel and with the Python decoder."""
+    streams = bcj2_encode(random.Random(5), 200_000)
+    python = _bcj2_failing_calls(streams, which, EXCLUDED)
+    errors = [r for r in python if isinstance(r, tuple)]
+    assert len(errors) > 1
+    assert all(again for *_, again in errors)
+    if native.bcj2(frozenset(), isolated=False) is not None:
+        assert _bcj2_failing_calls(streams, which, frozenset()) == python
+
+
+class _CountingBcj2:
+    """Stands in for ``archivey_codecs.bcj2.Decompressor``: returns zeros and
+    records the largest read."""
+
+    largest: ClassVar[int] = 0
+    eof = False
+    total_in = (0, 0, 0, 0)
+
+    def __init__(self, *streams: object, out_size: int) -> None:
+        self._size = out_size
+        self.decoded = self.total_out = 0
+
+    def read(self, max_length: int = -1) -> bytes:
+        n = self._size - self.total_out
+        if max_length >= 0:
+            n = min(n, max_length)
+            type(self).largest = max(type(self).largest, max_length)
+        self.total_out += n
+        self.decoded = self.total_out
+        self.eof = self.total_out == self._size
+        return bytes(n)
+
+
+def test_bcj2_kernel_seek_forward_decodes_one_block_at_a_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A long forward seek on the kernel path holds one block of output at a time,
+    as the Python path does, not the whole gap."""
+    module = _fake(monkeypatch, bcj2=1)
+    module.bcj2 = types.SimpleNamespace(Decompressor=_CountingBcj2)
+    monkeypatch.setattr(_CountingBcj2, "largest", 0)
+    size = 50 * _BCJ2_BLOCK
+    stream = Bcj2DecoderStream(
+        *(io.BytesIO() for _ in range(4)),
+        unpack_size=size,
+        excluded=frozenset(),
+        isolated=False,
+    )
+    assert stream.seek(size - 10) == size - 10
+    assert stream.read(100) == bytes(10)
+    assert 0 < _CountingBcj2.largest <= _BCJ2_BLOCK
