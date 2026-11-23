@@ -171,12 +171,12 @@ decoder object SHALL refuse every later method call. `OptionalLibrary.ARCHIVEY_C
 process. Under `NATIVE_DECODERS` the decoding kernels (LZX, LZW, LZO, ARM64, RISC-V,
 LZFSE and LZVN) SHALL run in archivey's decoder child process, as other native decoders
 do, and BCJ2, whose four inputs the child does not carry yet, SHALL use its Python
-decoder in the caller's process; CRC-16/ARC and ZipCrypto SHALL run in the caller's process under every
-setting, as checksums and AES decryption do. A kernel panic in the child SHALL reach the
-caller as `CorruptionError`. When no child process can start under `NATIVE_DECODERS`,
-archivey SHALL choose a decoder as if `ARCHIVEY_CODECS` were excluded: the Python
-decoder in the caller's process, except for LZO, which goes to compress-utils when it is
-installed, as today.
+decoder in the caller's process; CRC-16/ARC and ZipCrypto SHALL run in the caller's
+process under every setting, as checksums and AES decryption do. A kernel panic in the
+child SHALL reach the caller as `CorruptionError`. When no child process can start under
+`NATIVE_DECODERS`, archivey SHALL choose a decoder as if `ARCHIVEY_CODECS` were excluded:
+the Python decoder in the caller's process, except for LZO, which goes to compress-utils
+when it is installed, as today.
 
 #### Scenario: accelerator selection
 
