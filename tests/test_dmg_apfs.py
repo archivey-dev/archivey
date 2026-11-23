@@ -31,6 +31,7 @@ from archivey import (
 )
 from archivey.formats import ReaderSource
 from archivey.internal.backends import apfs
+from archivey.terminal import quoted
 from tests import apfs_build as a, dmg_build as d
 from tests.conftest import requires
 
@@ -742,6 +743,30 @@ def test_overlapping_extents_fail_that_file_only() -> None:
         assert reader.read("z.txt") == b"z"
         with pytest.raises(CorruptionError, match="overlapping"):
             reader.read("a.txt")
+
+
+def test_a_refusal_found_at_listing_keeps_its_message_on_read() -> None:
+    """The listing kept ``str(exc)`` and rebuilt the error from it at read, so the
+    name's escape was escaped a second time (two backslashes before ``x1b``)."""
+    name = "e\x1bx.txt"
+
+    def overlap(records: list) -> None:
+        rec = _record(records, name, apfs.EXTENT)
+        key = bytearray(rec.key)
+        struct.pack_into("<Q", key, 8, 4096)
+        records.append(
+            a._Record(rec.oid, apfs.EXTENT, (4096,), bytes(key), rec.value, name)
+        )
+
+    nodes = [d.Node(name, data=b"a" * 5000), d.Node("z.txt", data=b"z")]
+    with (
+        _open(_patched(overlap, nodes)) as reader,
+        pytest.raises(CorruptionError) as caught,
+    ):
+        reader.read(name)
+    assert caught.value.raw_message == (
+        f"the APFS file {quoted(name)} has overlapping extents at byte 4096"
+    )
 
 
 def test_a_compressed_file_without_its_attribute_raises_on_read() -> None:
