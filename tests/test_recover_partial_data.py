@@ -253,7 +253,7 @@ _SOURCES = ["file", "streaming", "pipe"]
 
 def _open(data: bytes, how: str, config: ArchiveyConfig) -> Any:
     if how == "pipe":
-        return open_archive(NonSeekableBytesIO(data), config=config, streaming=True)
+        return open_archive(NonSeekableBytesIO(data), config=config, pipe=True)
     return open_archive(io.BytesIO(data), config=config, streaming=how == "streaming")
 
 

@@ -154,9 +154,7 @@ def test_a_size_hint_is_reported_but_does_not_set_the_report_step(
         seen = _Recorder()
         config = ArchiveyConfig(on_source_read=seen)
         with (
-            open_archive(
-                _HintedPipe(data, size), config=config, streaming=True
-            ) as reader,
+            open_archive(_HintedPipe(data, size), config=config, pipe=True) as reader,
             reader.stream_members() as members,
         ):
             for _, stream in members:
