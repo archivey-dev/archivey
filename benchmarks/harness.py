@@ -164,7 +164,8 @@ WALL_RATIO_DRIFT_MIN_ABS = 0.15
 # a 0.2 ms peer) between the 2026-09-06 run and nightly run 34122511826 on 2026-09-07,
 # with no change to RAR listing cost that large. That one night froze the nightly
 # baseline for a month (back when the nightly used this gate). Gross slowdowns of
-# tiny cases still fail on the 13× ceiling.
+# tiny cases still fail on the sanity ceiling, once the time past 13× reaches
+# WALL_RATIO_BUDGET_MIN_EXTRA_S (about 19× on a 0.165 ms peer).
 WALL_RATIO_DRIFT_MIN_EXTRA_S = 0.001
 # Q1 listing bands (informational in full-mode reports; not PR-gated):
 # ZIP (stdlib) and TAR (native walker) → 2–3×/member vs zipfile/tarfile; native
@@ -1556,14 +1557,23 @@ def _wall_checks(
         # the contract in CaseResult.skipped is on the flag, not on that coincidence.
         if r.skipped or r.wall_ratio is None:
             continue
-        if r.wall_ratio > WALL_RATIO_BUDGET and (
-            r.stdlib_wall_s is None
-            or (r.wall_ratio - WALL_RATIO_BUDGET) * r.stdlib_wall_s
-            >= WALL_RATIO_BUDGET_MIN_EXTRA_S
-        ):
-            failures.append(
-                f"{r.case}: wall_ratio={r.wall_ratio:.2f} > sanity budget {WALL_RATIO_BUDGET}"
+        if r.wall_ratio > WALL_RATIO_BUDGET:
+            past_s = (
+                None
+                if r.stdlib_wall_s is None
+                else (r.wall_ratio - WALL_RATIO_BUDGET) * r.stdlib_wall_s
             )
+            if past_s is None or past_s >= WALL_RATIO_BUDGET_MIN_EXTRA_S:
+                past = (
+                    ""
+                    if past_s is None
+                    else f" ({past_s * 1e3:.1f} ms past it, floor "
+                    f"{WALL_RATIO_BUDGET_MIN_EXTRA_S * 1e3:.0f} ms)"
+                )
+                failures.append(
+                    f"{r.case}: wall_ratio={r.wall_ratio:.2f} > sanity budget "
+                    f"{WALL_RATIO_BUDGET}{past}"
+                )
         if not enforce_vision:
             continue
         if r.operation == "open_list":

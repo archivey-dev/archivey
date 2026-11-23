@@ -888,3 +888,7 @@ def test_wall_ceiling_ignores_an_excess_under_a_millisecond() -> None:
         "slow_read",
         "no_peer_time",
     ]
+    # The line says how far past the ceiling the case went, so a 13.5x row that fails
+    # beside a passing 14x row explains itself.
+    assert "(5.0 ms past it, floor 1 ms)" in failures[1]
+    assert failures[2].endswith("sanity budget 13.0")
