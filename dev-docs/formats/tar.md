@@ -13,7 +13,7 @@ keep the status; this page states the behaviour and links the row.
 | --- | --- |
 | Read | Yes, with archivey's own header parser and walker (`internal/backends/tar_parser.py`), in random access and with `streaming=True`. It reads the source for a plain tar and archivey's own decompressor for a compressed one |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
-| Source | Seekable for random access. Any source, a pipe included, with `streaming=True` |
+| Source | Seekable for random access. Any source, a pipe included, with `pipe=True` |
 | Listing cost | `REQUIRES_SCANNING` for a plain tar, `REQUIRES_DECOMPRESSION` for a compressed one |
 | Access cost | `DIRECT` for a plain tar. `SOLID` for a compressed one, with `is_solid=True` and `solid_block_count=1` |
 | Stream capability | `SEEKABLE` or `FORWARD_ONLY`, taken from the source |
@@ -50,8 +50,8 @@ the first header to the end, and each header's `size` field is the only way to f
 next one. Everything about cost follows. Nobody knows how many members there are until the
 walk ends, so `member_count` is `None` and `members_report_if_available()` returns `None`
 before a pass. A plain tar's member data sits at a fixed offset once the walk has found
-it, so random opens are `DIRECT`. The walk works forward-only, so `streaming=True` works
-on a pipe and hands out each member as its header goes past. A hardlink names an earlier
+it, so random opens are `DIRECT`. The walk works forward-only, so `pipe=True` works on a
+pipe and hands out each member as its header goes past. A hardlink names an earlier
 member, so unfiltered extraction resolves every hardlink in one pass. Appending
 (`tar -r`, `tar -u`) adds a later member with the same name rather than editing the old
 one, so duplicate names are ordinary and the last one is current.

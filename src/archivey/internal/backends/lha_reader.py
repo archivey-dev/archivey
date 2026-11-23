@@ -66,8 +66,9 @@ from archivey.formats import (
     ReaderContext,
     ReaderSource,
 )
-from archivey.internal import native
+from archivey.internal import kernels
 from archivey.internal.format_adapter import register_builtin_format
+from archivey.internal.kernels.python import crc16_arc as crc16
 from archivey.internal.overrides import override
 from archivey.internal.sfx import (
     VALIDATOR_PEEK_MAX,
@@ -100,7 +101,6 @@ from archivey.types import (
     CreateSystem,
     MagicSignature,
     MemberType,
-    OptionalLibrary,
 )
 
 if TYPE_CHECKING:
@@ -182,30 +182,7 @@ _CREATE_SYSTEMS = {
     _OS_LHARK: CreateSystem.FAT,
 }
 
-_CRC16_TABLE: list[int] = []
-for _i in range(256):
-    _c = _i
-    for _ in range(8):
-        _c = (_c >> 1) ^ 0xA001 if _c & 1 else _c >> 1
-    _CRC16_TABLE.append(_c)
-del _i, _c
-
-
-def crc16(data: bytes | bytearray | memoryview, crc: int = 0) -> int:
-    """CRC-16/ARC (polynomial 0x8005, reflected), as LHA checks data and headers."""
-    table = _CRC16_TABLE
-    for byte in data:
-        crc = (crc >> 8) ^ table[(crc ^ byte) & 0xFF]
-    return crc
-
-
-Crc16 = Callable[[bytes | bytearray | memoryview, int], int]
-
-
-def crc16_for(excluded: frozenset[OptionalLibrary]) -> Crc16:
-    """archivey-codecs' CRC-16 when it is installed and ``excluded`` leaves it on,
-    else :func:`crc16`. Both give the same value."""
-    return native.crc16_arc(excluded) or crc16
+Crc16 = kernels.Crc16
 
 
 class _Crc16:
@@ -603,7 +580,9 @@ class LhaReader(_Headers, IndexedReader[_Location]):
 
     def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         source = _payload(source)
-        super().__init__(source, crc=crc16_for(context.config.formats._libraries_off))
+        super().__init__(
+            source, crc=kernels.crc16_arc(context.config.formats._libraries_off)
+        )
         # The same source, for the member views the header protocol does not offer.
         self._payload = source
         self._context = context

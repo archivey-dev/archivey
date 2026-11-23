@@ -103,7 +103,7 @@ def test_unix_field_times(
         assert (member.modified, member.accessed) == times
         assert member.diagnostics == ()
     # A pipe pass reads the local header's copy, which is the same blob here.
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as archive:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as archive:
         ((streamed, _),) = list(archive.stream_members())
         assert (streamed.modified, streamed.accessed) == times
 
@@ -178,7 +178,7 @@ def test_unparsed_extra_fields(extra: bytes, unparsed: dict[int, bytes] | None) 
         if unparsed is not None:
             assert member.extra["zip.extra_fields"] == unparsed
     # A pipe pass gives the directory's fields once it reaches the directory.
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as archive:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as archive:
         ((streamed, _),) = list(archive.stream_members())
     assert streamed.extra.get("zip.extra_fields") == unparsed
 

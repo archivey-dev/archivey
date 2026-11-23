@@ -140,7 +140,7 @@ def test_members_decode_from_a_file(legacy_zip: tuple[Path, dict]) -> None:
 def test_members_decode_from_a_pipe(legacy_zip: tuple[Path, dict]) -> None:
     path, expected = legacy_zip
     seen = {}
-    with open_archive(NonSeekableBytesIO(path.read_bytes()), streaming=True) as reader:
+    with open_archive(NonSeekableBytesIO(path.read_bytes()), pipe=True) as reader:
         for member, stream in reader.stream_members():
             assert stream is not None
             seen[member.name] = stream.read()
@@ -281,7 +281,7 @@ def test_a_pipe_reduce_member_with_a_data_descriptor_is_refused() -> None:
     From a file, the central directory gives the size and the member reads."""
     data = build_zip([reduce_entry("x", _TEXT, factor=2)], descriptor=True)
     with (
-        open_archive(NonSeekableBytesIO(data), streaming=True) as reader,
+        open_archive(NonSeekableBytesIO(data), pipe=True) as reader,
         pytest.raises(UnsupportedFeatureError, match="Reduce"),
     ):
         for _, stream in reader.stream_members():
@@ -299,7 +299,7 @@ def test_a_pipe_dcl_member_with_a_data_descriptor_reads() -> None:
     ]
     data = build_zip(entries, descriptor=True)
     seen = {}
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
         for member, stream in reader.stream_members():
             assert stream is not None
             seen[member.name] = stream.read()

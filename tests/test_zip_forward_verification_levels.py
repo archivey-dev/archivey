@@ -62,7 +62,7 @@ def test_a_pass_read_reaches_checksum_and_keeps_it(
     method: int, descriptors: bool
 ) -> None:
     data = _zip(method, descriptors=descriptors)
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
         seen = []
         for member, stream in reader.stream_members():
             assert stream is not None
@@ -77,7 +77,7 @@ def test_a_member_the_pass_decodes_on_its_own_is_raised() -> None:
     # The pass decodes a short member it passes, to keep it in case the directory
     # makes it a link, and checks it against its descriptor's CRC.
     data = _zip(zipfile.ZIP_DEFLATED, descriptors=True)
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
         report = reader.members_report()
     assert report.error is None
     levels = _levels(list(report.members))
@@ -92,7 +92,7 @@ def test_a_descriptor_crc_that_does_not_match_raises_nothing() -> None:
     at = raw.rindex(b"PK\x07\x08") + 4
     (crc,) = struct.unpack_from("<I", raw, at)
     struct.pack_into("<I", raw, at, crc ^ 0xFFFFFFFF)
-    with open_archive(NonSeekableBytesIO(bytes(raw)), streaming=True) as reader:
+    with open_archive(NonSeekableBytesIO(bytes(raw)), pipe=True) as reader:
         report = reader.members_report()
     levels = _levels(list(report.members))
     assert levels["b"][0] < Verification.LENGTH
@@ -123,9 +123,7 @@ def _bit3(blob: bytes) -> bytes:
 
 def _pass_read(data: bytes, password: bytes) -> tuple[ArchiveMember, Exception | None]:
     """Read the one member through a pass over a pipe; the member and what raised."""
-    with open_archive(
-        NonSeekableBytesIO(data), streaming=True, password=password
-    ) as reader:
+    with open_archive(NonSeekableBytesIO(data), pipe=True, password=password) as reader:
         for member, stream in reader.stream_members():
             assert stream is not None
             try:

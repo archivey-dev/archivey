@@ -611,8 +611,10 @@ class DecoderChild:
         if data is None:
             out = self._request(CALL, len(header), header)
         else:
-            if not isinstance(data, bytes):
-                data = bytes(data)
+            if type(data) is not bytes:
+                # The buffer's own bytes, as the in-process kernels and their twins
+                # read them: never ``__bytes__``, which a subclass may override.
+                data = memoryview(data).tobytes()
             self._input = data
             out = self._request(CALL, len(header), header, data)
         self._note_unused()

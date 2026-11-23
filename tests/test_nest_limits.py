@@ -265,7 +265,7 @@ def test_a_nested_crossing_read_passes_the_cap_by_its_own_bytes() -> None:
     with (
         _open(buf.getvalue(), budget) as outer,
         outer.open("inner.zip") as member,
-        budget.open(member, streaming=True) as inner,
+        budget.open(member, pipe=True) as inner,
         pytest.raises(ResourceLimitError, match="max_nest_decoded_bytes=500000"),
     ):
         for _, stream in inner.stream_members():
@@ -288,12 +288,12 @@ def test_a_nest_three_levels_deep_decodes_at_most_twice_its_cap() -> None:
     with (
         _open(buf.getvalue(), budget) as top,
         top.open("middle.zip") as middle_stream,
-        budget.open(middle_stream, streaming=True) as middle_reader,
+        budget.open(middle_stream, pipe=True) as middle_reader,
         pytest.raises(ResourceLimitError, match="max_nest_decoded_bytes=500000"),
     ):
         for _, bottom_stream in middle_reader.stream_members():
             assert bottom_stream is not None
-            with budget.open(bottom_stream, streaming=True) as bottom:
+            with budget.open(bottom_stream, pipe=True) as bottom:
                 for _, stream in bottom.stream_members():
                     assert stream is not None
                     stream.read()
@@ -559,7 +559,7 @@ def test_a_streaming_zip_member_read_is_drawn_once() -> None:
 def _open_pipe(data: bytes, budget: _Nest) -> archivey.ArchiveReader:
     from tests.streams_util import NonSeekableBytesIO
 
-    return budget.open(NonSeekableBytesIO(data), streaming=True)
+    return budget.open(NonSeekableBytesIO(data), pipe=True)
 
 
 def test_a_cab_folder_draws_the_members_it_decodes_past() -> None:
@@ -641,7 +641,7 @@ def test_a_tar_gz_on_a_pipe_stops_one_byte_past_the_budget(pipe: bool) -> None:
     budget = _Nest(max_decoded_bytes=20_000)
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
     with (
-        budget.open(source, streaming=True) as reader,
+        budget.open(source, streaming=True, pipe=pipe) as reader,
         pytest.raises(ResourceLimitError, match="Nest limit reached"),
     ):
         for _member, stream in reader.stream_members():

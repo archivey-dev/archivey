@@ -51,6 +51,7 @@ from tests.streams_util import (
     ShortReadNonSeekable,
     make_lzip_member,
     make_unix_compress,
+    open_mode,
 )
 
 # Compressible text and random bytes, so both long matches and literal runs cross the
@@ -161,7 +162,9 @@ def _outcome(
     members: list[tuple[str, bytes | None]] = []
     error: tuple[str, str] | None = None
     try:
-        with open_archive(source, format=fmt, streaming=True, config=config) as reader:
+        with open_archive(
+            source, format=fmt, **open_mode(source, streaming=True), config=config
+        ) as reader:
             try:
                 for member, stream in reader.stream_members():
                     if stream is None:

@@ -168,15 +168,16 @@ block checksums, an uncompressed block up to 2 bytes short decodes with zeros fo
 missing bytes, as cabextract 1.11 does, and 3 bytes short is refused. It runs at about
 5-10 MB/s.
 
-When `archivey-codecs` is installed and allowed, its Rust port of this decoder runs
-instead (`native.NativeLzx`), with the same output and errors; under `NATIVE_DECODERS`
-it runs in the decoder child (`native_child`). The kernel takes input pushed to it and
-keeps its place when the input runs out inside a frame, so `NativeLzx` gives it the
-next block only when it has used all it was given, where the Python decoder pulls that
-block. A block whose checksum fails raises from the same frame in both.
-`tests/test_native_kernels.py` compares the two on clean, cut and damaged cabinets,
-including unchecked damage before a failed block, and `tests/test_cab.py` runs with
-each decoder.
+The reader decodes through `kernels.lzx(...).Decompressor`, the API of
+`archivey_codecs.lzx`: archivey-codecs' Rust port of this decoder when it is installed
+and allowed (in the decoder child under `NATIVE_DECODERS`), else the Python twin in
+`kernels/python/lzx.py`, which runs `LzxDecoder` in push mode. Both take input pushed to
+them and keep their place when it runs out inside a frame, so `_FolderStream._lzx_frame`
+gives the decoder the next block only when it has used all it was given, where the pull
+decoder would ask for it. A block whose checksum fails raises from the same frame with
+either. `tests/test_kernels.py` compares the two on clean, cut and damaged cabinets,
+including unchecked damage before a failed block, `tests/test_cab.py` runs with each,
+and the package's parity tests drive both through the same code.
 
 ## 3. Tests
 

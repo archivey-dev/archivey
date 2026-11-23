@@ -95,7 +95,7 @@ def test_zip_no_span_marker_magic(pipe: bool) -> None:
     info = detect_format(io.BytesIO(data))
     assert info == FormatInfo(ArchiveFormat.ZIP, DetectionConfidence.CERTAIN, "magic")
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
-    with open_archive(source, streaming=pipe) as archive:
+    with open_archive(source, pipe=pipe) as archive:
         assert [(m.name, s.read()) for m, s in archive.stream_members()] == [
             ("a.txt", b"hello")
         ]

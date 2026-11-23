@@ -30,7 +30,7 @@ import bisect
 import itertools
 import struct
 from array import array
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Container, Iterable, Iterator
 from contextlib import AbstractContextManager
 from typing import NamedTuple
 
@@ -109,8 +109,37 @@ MAX_DEPTH = 32
 READ_PIECE = 1 << 20
 # The format's NX_MAX_FILE_SYSTEMS: the superblock's volume array has this many slots.
 _MAX_VOLUMES = 100
-# A filesystem node's records cost about this much each beyond their bytes.
-_RECORD_COST = 64
+# What one record keeps beyond its bytes, by kind: (the first record of its object
+# id, each further one), rounded up from tracemalloc on CPython 3.11 (3.12 and 3.13
+# measured the same) over 1,000 to 350,000 records of the costliest shape: distinct
+# large ids and values, names and values of two bytes (one byte or none would be
+# CPython's cached objects), the fewest bytes the record parses from. The bytes are
+# charged as read; these weights are charged for what ``ApfsVolume._add`` keeps.
+# - inode: an ``Inode`` of ten ints and its dict slot, measured 366 to 396.
+# - directory record: a ``Child``, its name and its list slot, measured 116 to
+#   123; the first of a directory also a dict slot and a list, 258 to 288 in all.
+# - extended attribute: an ``Xattr``, its name and its value, measured 152 to
+#   183; the first of an object also a dict slot and a dict, 377 to 415 in all.
+#   That is for an ASCII name; a wider one is charged what its ``str`` keeps
+#   beyond its bytes on top (``_wider_than_read``).
+# - extent: the first of a stream adds a dict slot and an array, measured 134 to
+#   164; each further one 24 bytes of the array, fewer than its 40 bytes read.
+#   The first one with an encryption id adds a set entry, measured 18 to 76 more.
+# - sibling link: the first of an inode adds a dict slot and a count, measured 46
+#   to 76; a further one changes the count only.
+# Other kinds are read and not kept.
+_KEPT_WEIGHTS: dict[int, tuple[int, int]] = {
+    INODE: (400, 0),
+    DIR_REC: (288, 128),
+    XATTR: (416, 184),
+    EXTENT: (168, 0),
+    SIBLING_LINK: (80, 0),
+}
+_ENCRYPTED_STREAM_WEIGHT = 80
+# What one object map entry keeps (its record's bytes are not charged): the
+# (xid, flags, address) tuple of large ints and the dict slot, measured 201 to 232
+# on CPython 3.11, 3.12 and 3.13 over 1,000 to 350,000 entries.
+_OMAP_ENTRY_WEIGHT = 240
 # What one damaged range holds beyond its reason's text (the tuple, its bounds and
 # the index's entry for it), measured on CPython 3.11.
 _DAMAGE_COST = 200
@@ -486,7 +515,7 @@ class _Omap:
             damage=self.damage,
             seen=set(),
         ):
-            charge(len(leaf.records) * _RECORD_COST, what)
+            charge(len(leaf.records) * _OMAP_ENTRY_WEIGHT, what)
             # A leaf is all or nothing: a value that does not parse drops the leaf.
             found: list[tuple[int, int, int, int]] = []
             for key, value in leaf.records:
@@ -956,25 +985,30 @@ class ApfsVolume:
             seen=set(),
         ):
             records = leaf.records
-            charge(
-                sum(len(k) + len(v) for k, v in records) + _RECORD_COST * len(records),
-                what,
-            )
+            charge(sum(len(k) + len(v) for k, v in records), what)
             try:
-                self._add(tree, records)
+                self._add(tree, records, lambda n: charge(n, what))
             except (CorruptionError, TruncatedError) as exc:
                 tree.damage.append(leaf.damage(exc.raw_message))
         return tree
 
-    def _add(self, tree: FsTree, records: list[tuple[bytes, bytes]]) -> None:
+    def _add(
+        self,
+        tree: FsTree,
+        records: list[tuple[bytes, bytes]],
+        charge: Callable[[int], None],
+    ) -> None:
         """One leaf's records into ``tree``. A record that does not parse is damage
         in a node whose checksum passed: the leaf is all or nothing, so it is parsed
-        in full before anything is kept, and the error leaves ``tree`` as it was."""
+        in full before anything is kept, and the error leaves ``tree`` as it was.
+        What the records keep (``_KEPT_WEIGHTS``) is charged to ``charge`` before
+        they are kept."""
         inodes: list[tuple[int, Inode]] = []
         children: list[tuple[int, Child]] = []
         xattrs: list[tuple[int, str, Xattr]] = []
         extents: list[tuple[int, int, int, int, int]] = []
         siblings: list[int] = []
+        wide = 0  # what attribute names keep beyond their bytes, past the weight's
         for key, value in records:
             (word,) = struct.unpack_from("<Q", key)
             oid, kind = word & _OID_MASK, word >> 60
@@ -984,7 +1018,9 @@ class ApfsVolume:
                 children.append((oid, self._child(key, value)))
             elif kind == XATTR:
                 name, attr = _xattr(key, value)
-                xattrs.append((oid, self.container.context.decode_name(name), attr))
+                text = self.container.context.decode_name(name)
+                xattrs.append((oid, text, attr))
+                wide += _wider_than_read(text, len(name))
             elif kind == SIBLING_LINK:
                 siblings.append(oid)
             elif kind == EXTENT:
@@ -995,6 +1031,16 @@ class ApfsVolume:
                 extents.append(
                     (oid, logical, flags_length & ((1 << 56) - 1), block, crypto)
                 )
+        charge(
+            wide
+            + _kept_weight(INODE, (oid for oid, _ in inodes), tree.inodes)
+            + _kept_weight(DIR_REC, (oid for oid, _ in children), tree.children)
+            + _kept_weight(XATTR, (oid for oid, _, _ in xattrs), tree.xattrs)
+            + _kept_weight(EXTENT, (each[0] for each in extents), tree.extents)
+            + _kept_weight(SIBLING_LINK, siblings, tree.siblings)
+            + _ENCRYPTED_STREAM_WEIGHT
+            * len({e[0] for e in extents if e[4]} - tree.encrypted_streams)
+        )
         for oid, inode in inodes:
             tree.inodes[oid] = inode
         for oid, child in children:
@@ -1025,6 +1071,34 @@ class ApfsVolume:
             raise CorruptionError("an APFS directory record is too short")
         file_id, _, flags = _DREC.unpack_from(value)
         return Child(_name(key[at : at + length]), file_id, flags & 0xF)
+
+
+def _wider_than_read(text: str, read: int) -> int:
+    """What the decoded name ``text`` keeps beyond the ``read`` bytes it came from
+    and the two-byte ASCII name the attribute weights were measured with. CPython
+    keeps a ``str`` at 1, 2 or 4 bytes a character, set by its widest character,
+    and a name that is not ASCII has a header 24 bytes larger: one astral
+    character in a long ASCII name keeps it at 4 bytes a character."""
+    if text.isascii():
+        return 0
+    widest = max(map(ord, text))
+    width = 4 if widest > 0xFFFF else 2 if widest > 0xFF else 1
+    return max(0, 24 + width * len(text) - read)
+
+
+def _kept_weight(kind: int, oids: Iterable[int], held: Container[int]) -> int:
+    """What records of ``kind`` for ``oids`` keep: the first weight for an id
+    ``held`` lacks (once), the further weight for each other record."""
+    first, further = _KEPT_WEIGHTS[kind]
+    new: set[int] = set()
+    total = 0
+    for oid in oids:
+        if oid in held or oid in new:
+            total += further
+        else:
+            new.add(oid)
+            total += first
+    return total
 
 
 def _inode(value: bytes) -> Inode:

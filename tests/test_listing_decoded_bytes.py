@@ -259,7 +259,7 @@ def test_a_streaming_zip_counts_the_start_of_each_member_it_passes() -> None:
 
     def stream(cap: int | None) -> archivey.ArchiveReader:
         return archivey.open_archive(
-            NonSeekableBytesIO(data), config=_config(cap), streaming=True
+            NonSeekableBytesIO(data), config=_config(cap), pipe=True
         )
 
     with stream(None) as reader:
@@ -282,7 +282,7 @@ def test_a_streaming_zip_counts_the_start_of_each_member_it_passes() -> None:
             config=_config(
                 None, decoder_limits=DecoderLimits(max_nest_decoded_bytes=1000)
             ),
-            streaming=True,
+            pipe=True,
         ) as reader,
         pytest.raises(ResourceLimitError, match="max_nest_decoded_bytes"),
     ):

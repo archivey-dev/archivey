@@ -33,6 +33,7 @@ from archivey.internal.backends.zip_parser import (
     local_header_at,
 )
 from archivey.types import ArchiveFormat
+from tests.streams_util import open_mode
 
 _WRAP = 1 << 32
 _DOS_TIME, _DOS_DATE = 0x6000, 0x5A21
@@ -325,7 +326,7 @@ def test_a_header_with_another_name_fails_a_pipe_at_the_directory() -> None:
     # as it does for any entry without a local header.
     layout = _layout(_PAST_4_GIB, central_names={"b.txt": "x.txt"})
     source = _ForwardOnly(layout.segments, layout.size)
-    with open_archive(source, format=ArchiveFormat.ZIP, streaming=True) as reader:
+    with open_archive(source, format=ArchiveFormat.ZIP, pipe=True) as reader:
         with pytest.raises(CorruptionError, match="held no local header"):
             for _member, _stream in reader.stream_members():
                 pass
@@ -392,7 +393,7 @@ def test_a_pipe_corrects_the_same_offsets() -> None:
     # The pass streams past the 4 GiB member, so this test reads 4 GiB of zeros.
     layout = _layout(_PAST_4_GIB)
     source = _ForwardOnly(layout.segments, layout.size)
-    with open_archive(source, format=ArchiveFormat.ZIP, streaming=True) as reader:
+    with open_archive(source, format=ArchiveFormat.ZIP, pipe=True) as reader:
         names = [
             (member.name, None if stream is None else stream.read())
             for member, stream in reader.stream_members()
@@ -777,7 +778,7 @@ def test_a_pipe_reads_a_mac_stored_member_over_4_gib() -> None:
     huge = _HUGE_STORED
     layout = _mac_layout([("a.txt", b"ay"), ("huge.bin", huge), ("c.txt", b"sea")])
     source = _ForwardOnly(layout.segments, layout.size)
-    with open_archive(source, format=ArchiveFormat.ZIP, streaming=True) as reader:
+    with open_archive(source, format=ArchiveFormat.ZIP, pipe=True) as reader:
         got = [
             (member, None if member.name == "huge.bin" else stream.read())
             for member, stream in reader.stream_members()
@@ -798,7 +799,7 @@ def test_a_pipe_keeps_the_size_it_counted() -> None:
     data = bytes(100)
     layout = _mac_layout([("p.bin", _padded_mac_member(data))])
     source = _ForwardOnly(layout.segments, layout.size)
-    with open_archive(source, format=ArchiveFormat.ZIP, streaming=True) as reader:
+    with open_archive(source, format=ArchiveFormat.ZIP, pipe=True) as reader:
         ((member, read),) = [
             (member, stream.read()) for member, stream in reader.stream_members()
         ]
@@ -819,7 +820,9 @@ def test_a_finished_pass_settles_a_size_it_left_unknown(forward_only: bool) -> N
         if forward_only
         else _Sparse(layout.segments, layout.size)
     )
-    with open_archive(source, format=ArchiveFormat.ZIP, streaming=True) as reader:
+    with open_archive(
+        source, format=ArchiveFormat.ZIP, **open_mode(source, streaming=True)
+    ) as reader:
         members = [member for member, _ in reader.stream_members()]
         assert [m.size for m in members] == [100 if forward_only else None]
         assert members[0].member_state_final is True
@@ -830,7 +833,7 @@ def test_a_pass_counts_no_size_past_the_target_cap_it_left_unknown() -> None:
     # so the pass counts no size, and the member lists with ``None`` as from a file.
     layout = _mac_layout([("p.bin", _padded_mac_member(bytes(5000)))])
     source = _ForwardOnly(layout.segments, layout.size)
-    with open_archive(source, format=ArchiveFormat.ZIP, streaming=True) as reader:
+    with open_archive(source, format=ArchiveFormat.ZIP, pipe=True) as reader:
         members = [member for member, _ in reader.stream_members()]
         assert [m.size for m in members] == [None]
         assert members[0].member_state_final is True
@@ -890,7 +893,10 @@ def test_a_failed_pass_settles_a_size_it_left_unknown(forward_only: bool) -> Non
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=300))
     held = []
     with open_archive(
-        source, format=ArchiveFormat.ZIP, streaming=True, config=config
+        source,
+        format=ArchiveFormat.ZIP,
+        **open_mode(source, streaming=True),
+        config=config,
     ) as reader:
         with pytest.raises(ResourceLimitError):
             for member, _ in reader.stream_members():

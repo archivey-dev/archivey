@@ -18,7 +18,8 @@
 
 ## 2. archivey hook (maintainer merges: public names)
 
-- [ ] 2.1 `internal/native.py` with per-kernel minimum revisions and DEBUG fallback log
+- [ ] 2.1 `internal/kernels/_select.py` (was `internal/native.py`) with per-kernel
+  minimum revisions and DEBUG fallback log
 - [ ] 2.2 `OptionalLibrary.ARCHIVEY_CODECS` passed through the CAB, ZipCrypto, filter,
   LZW and LZO sites (no environment switch)
 - [ ] 2.3 `[codecs]` extra with platform markers, checked with pip and uv on PyPy and
@@ -37,6 +38,9 @@
   through the existing protocol, BCJ2 with four inputs; panic in the child -> caller's
   `CorruptionError`; no child can start -> the Python twin in-process; tests for each
   scenario row
+- [ ] 2.8 One kernel API (D4a): a Python twin per kernel with the package's API, one
+  switch per kernel in `internal/kernels`, call sites that never name the package, and
+  parity tests that drive both sides with the same code
 
 ## 3. CI and release
 
@@ -52,7 +56,7 @@
 
 - [ ] 4.1 Install page section and package README (written by Opus)
 - [ ] 4.2 First release `codecs-v0.1.0`; then `[recommended]` one archivey release later
-- [ ] 4.3 LZFSE/LZVN one-shot kernel (D1) once the DMG reader's Python decoder has
+- [x] 4.3 LZFSE/LZVN one-shot kernel (D1) once the DMG reader's Python decoder has
   merged, with parity on every DMG fixture and the DMG fuzz corpus; then a codecs
-  release
+  release (`tests/test_parity.py`; archivey's hook is DMG task H.1)
 - [ ] 4.4 Archive this change

@@ -27,6 +27,7 @@ from archivey.exceptions import (
 from archivey.internal.backends.rar_forward import KEEP_BYTES
 from archivey.internal.backends.rar_parser import RarArchive, parse_rar_archive
 from tests.conftest import requires, requires_binary
+from tests.streams_util import open_mode
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 _NAMES = [
@@ -100,7 +101,9 @@ def _read_pass(
     diagnostic codes, then the error that ended the pass."""
     seen: list[tuple[str, object, list[str]]] = []
     error: BaseException | None = None
-    with open_archive(source, streaming=streaming, config=config) as reader:  # type: ignore[arg-type]
+    with open_archive(
+        source, **open_mode(source, streaming=streaming), config=config
+    ) as reader:  # type: ignore[arg-type]
         try:
             for member, stream in reader.stream_members():
                 if stream is None:

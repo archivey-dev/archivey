@@ -44,7 +44,7 @@ from tests.sample_archives import (
     corpus_archive_path,
     skip_unless_runnable,
 )
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, open_mode
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -818,7 +818,7 @@ def _lists_member_then_zip64_truncation(
     names: list[str] = []
     with (
         pytest.raises(TruncatedError, match="ZIP64 end of central directory") as raised,
-        open_archive(source, streaming=streaming) as reader,
+        open_archive(source, **open_mode(source, streaming=streaming)) as reader,
     ):
         for member in reader:
             names.append(member.name)

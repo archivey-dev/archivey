@@ -225,7 +225,7 @@ def test_infozip_last_part_from_a_pipe_says_the_others_are_missing() -> None:
     stream = NonSeekableBytesIO(data)
     with (
         pytest.raises(TruncatedError, match="spanned ZIP set of 3 parts") as excinfo,
-        open_archive(stream, streaming=True) as archive,
+        open_archive(stream, pipe=True) as archive,
     ):
         for _member, _stream in archive.stream_members():
             pass

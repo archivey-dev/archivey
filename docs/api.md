@@ -27,10 +27,10 @@ See [Opening an archive](opening.md).
 
 See [Choosing how to read](reading.md), in particular [Reading once](reading.md#reading-once).
 
-`open_archive` returns an `ArchiveReader` unless you pass `streaming=True`. Then its return type is
-`ForwardArchiveReader`, which leaves out `members`, `get`, `read` and `open`, so a type checker
-flags calls to them. The object is still an `ArchiveReader` at run time, and those calls raise
-`ArchiveyUsageError`. `stream_members()` is the way to read members.
+`open_archive` returns an `ArchiveReader` unless you pass `streaming=True` or `pipe=True`. Then its
+return type is `ForwardArchiveReader`, which leaves out `members`, `get`, `read` and `open`, so a
+type checker flags calls to them. The object is still an `ArchiveReader` at run time, and those
+calls raise `ArchiveyUsageError`. `stream_members()` is the way to read members.
 
 ::: archivey.ForwardArchiveReader
 ::: archivey.ArchiveReader

@@ -74,7 +74,7 @@ def test_firefox_file_names_read_by_magic(
 
 def test_reads_from_a_pipe() -> None:
     source = NonSeekableBytesIO(_mozlz4(_DATA))
-    with open_archive(source, streaming=True) as archive:
+    with open_archive(source, pipe=True) as archive:
         got = [stream.read() for _member, stream in archive.stream_members()]
     assert got == [_DATA]
 
@@ -159,7 +159,7 @@ def test_a_block_larger_than_one_feed_reads(pipe: bool, tmp_path: Path) -> None:
     blob = _mozlz4(data)
     assert len(blob) > 3 * 65536
     if pipe:
-        with open_archive(NonSeekableBytesIO(blob), streaming=True) as archive:
+        with open_archive(NonSeekableBytesIO(blob), pipe=True) as archive:
             got = [stream.read() for _member, stream in archive.stream_members()]
         assert got == [data]
     else:

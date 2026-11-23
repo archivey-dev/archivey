@@ -95,7 +95,7 @@ def _extract(
     data: bytes, dest: Path, *, piped: bool, **options: object
 ) -> list[tuple[str, ExtractionStatus, str | None]]:
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
-    with archivey.open_archive(source, streaming=piped) as reader:
+    with archivey.open_archive(source, pipe=piped) as reader:
         report = reader.extract_all(dest, **{"on_blocked": "skip", **options})  # type: ignore[arg-type]
     return [
         (
@@ -326,7 +326,7 @@ def test_a_member_a_predicate_takes_only_in_the_end_is_an_extraction_error(
         return member.name.startswith("docs/")
 
     source = NonSeekableBytesIO(_dos_docs())
-    with archivey.open_archive(source, streaming=True) as reader:
+    with archivey.open_archive(source, pipe=True) as reader:
         report = reader.extract_all(
             tmp_path, members=docs_only, on_error="continue", on_blocked="skip"
         )
@@ -787,7 +787,7 @@ def test_a_unix_file_ending_in_a_backslash_with_data_fails_from_a_pipe(
         ("odd\\", ExtractionStatus.EXTRACTED)
     ]
     source = NonSeekableBytesIO(data)
-    with archivey.open_archive(source, streaming=True) as reader:
+    with archivey.open_archive(source, pipe=True) as reader:
         report = reader.extract_all(
             tmp_path / "pipe", policy=policy, on_error="continue", on_blocked="skip"
         )
@@ -838,7 +838,7 @@ def test_the_corpus_extracts_from_a_pipe_as_from_a_file(
 def _piped_report(
     data: bytes, dest: Path, **options: object
 ) -> archivey.ExtractionReport:
-    with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+    with archivey.open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
         return reader.extract_all(dest, **{"on_blocked": "skip", **options})  # type: ignore[arg-type]
 
 
@@ -1086,7 +1086,7 @@ def test_a_reversed_pair_under_skip_matches_the_seekable_results(
         dest.mkdir()
         (dest / "dup.txt").write_bytes(b"caller's")
         source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
-        with archivey.open_archive(source, streaming=piped) as reader:
+        with archivey.open_archive(source, pipe=piped) as reader:
             report = reader.extract_all(
                 dest,
                 overwrite=OverwritePolicy.SKIP,
@@ -1133,7 +1133,7 @@ def test_a_reversed_pair_refused_before_the_write_matches_the_seekable_results(
     for piped in (True, False):
         dest = tmp_path / ("pipe" if piped else "file")
         source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
-        with archivey.open_archive(source, streaming=piped) as reader:
+        with archivey.open_archive(source, pipe=piped) as reader:
             report = reader.extract_all(
                 dest, on_error=OnError.CONTINUE, **{"on_blocked": "skip", **options}
             )  # type: ignore[arg-type]
@@ -1156,7 +1156,7 @@ def _compare_with_file_read(
         if seed is not None:
             (dest / "b.txt").write_bytes(seed)
         source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
-        with archivey.open_archive(source, streaming=piped) as reader:
+        with archivey.open_archive(source, pipe=piped) as reader:
             report = reader.extract_all(
                 dest, on_error=OnError.CONTINUE, **{"on_blocked": "skip", **options}
             )  # type: ignore[arg-type]
@@ -1429,7 +1429,7 @@ def test_an_unmatched_entry_under_raise_places_nothing(tmp_path: Path) -> None:
     data = _zip([(_entry("a.txt"), b"one")])
     with (
         archivey.open_archive(
-            NonSeekableBytesIO(data), streaming=True, config=config
+            NonSeekableBytesIO(data), pipe=True, config=config
         ) as reader,
         pytest.raises(DiagnosticRaisedError),
     ):

@@ -55,6 +55,12 @@ multiple of 4, no literal overrun, the distance check on every triple, nothing a
 the Python decoder on every DMG fixture and the DMG fuzz corpus. ADC (DMG's other
 codec) follows the same shape if measurement shows it is slow.
 
+Built 2026-11-22 as `lzfse.decompress` and `lzvn.decompress` (raw LZVN, which HFS+
+compressed files store), one kernel each in `KERNELS`; the `lzfse` revision also covers
+the LZVN decoder inside `bvxn` blocks, so a change to LZVN raises both. Like LZO, each
+takes `out_size=` (exact) or `max_size=` (a bound): archivey's callers pass the most a
+run may decode to and check the length themselves, with their own message.
+
 Later, by value: LHA/ARJ static-Huffman and LHarc `-lh1-`; PPMd and Deflate64 as
 in-process decoders (new decoders, each needs the DR-20 damaged-input evaluation); the
 DOS-era ZIP methods and ARJ method 4.
@@ -104,7 +110,8 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
 | ARM64 filter | `"arm64"` | `filters.Arm64Decoder` | `(start_offset=0)`; `decode(data) -> bytes`, `flush()` |
 | RISC-V filter | `"riscv"` | `filters.RiscvDecoder` | `(start_offset=0)`; `decode(data) -> bytes`, `flush()` |
 | CRC-16/ARC | `"crc16_arc"` | `crc16_arc`, `Crc16Arc` | `(data, value=0) -> int`; `Crc16Arc(data=b"")` |
-| LZFSE/LZVN (later) | `"lzfse"` | `lzfse.decompress` | `(chunk, *, out_size)` |
+| LZFSE | `"lzfse"` | `lzfse.decompress` | `(data, *, out_size)` or `(data, *, max_size)` |
+| LZVN (raw, decmpfs) | `"lzvn"` | `lzvn.decompress` | `(data, *, out_size)` or `(data, *, max_size)` |
 
 - ZipCrypto is a cipher, so its object is a `Decryptor` with `decrypt()`, not a
   decompressor. It has `copy()`, `getstate()` and `from_state()` (the header and 12
@@ -217,11 +224,11 @@ f.seek(stream_start + point[1])         # feed input from total_in; output resum
   the same message.
 - Panics: a missed check in a kernel panics, and PyO3 raises
   `pyo3_runtime.PanicException`, a `BaseException` that gets past `except Exception`.
-  `internal/native.py` catches it around every kernel call and raises archivey's
+  `internal/kernels/rust.py` catches it around every kernel call and raises archivey's
   `CorruptionError` with the panic as `__cause__`, so the caller sees a typed error as
   with the Python twin. The decoder object is then unusable (its state may be half
-  updated): every later call raises the same error. Fuzzing and parity treat any panic
-  as a bug to fix.
+  updated): every later method call raises the same error. Its counters still read.
+  Fuzzing and parity treat any panic as a bug to fix.
 - Memory: every allocation is bounded by a constructor argument or by `max_length` /
   `out_size`; input data alone cannot make a kernel allocate much.
 - Threads: one thread at a time per object. A concurrent call into the same object
@@ -235,7 +242,7 @@ f.seek(stream_start + point[1])         # feed input from total_in; output resum
 
 `archivey_codecs.KERNELS` maps each kernel name to a revision, raised whenever the
 kernel's observable behaviour changes (output, error kind or message, seek points).
-archivey's `internal/native.py` holds the minimum revision it needs per kernel and uses
+archivey's `internal/kernels/_select.py` holds the minimum revision it needs per kernel and uses
 a kernel only at that revision or newer; otherwise it uses the Python decoder and logs
 once at DEBUG. The dependency range is `archivey-codecs>=0.1,<1` (question 7).
 
@@ -256,9 +263,46 @@ gets a new `KERNELS` key (for example `"lzx2"`) next to the old one, or waits fo
 Before 1.0, and within a major version after it, a release removes no kernel and lowers
 no revision.
 
+Revisions count from the first release. Until a version is on PyPI no build has a
+revision to keep, so changes before it, such as the LZW `from_state()` fix that accepts
+a CLEAR's pending group padding, stay at revision 1.
+
 The "change it twice" rule stays: a fix to a twinned Python decoder is made in Rust in
 the same PR, and the kernel's revision goes up. Users get the fixed Python version
 until the next codecs release turns the kernel back on.
+
+## D4a. archivey's side: one API, one switch
+
+The maintainer asked (2026-11-22) that call sites never mention the native package:
+each kernel has a Python version with the package's exact API and one switch between
+the two. `src/archivey/internal/kernels/` holds it:
+
+- `kernels/python/`: the Python twins, one module per package module
+  (`zipcrypto.Decryptor`, `filters.Arm64Decoder`, `lzo1x.decompress`,
+  `lzw.Decompressor`, `lzx.Decompressor`, `bcj2.Decompressor`, and `crc16_arc`). Each
+  has the subset of the package's API that archivey's call sites use, with the same
+  names, arguments, attributes and errors (archivey's, as the wrappers raise them).
+  They leave out `Crc16Arc`, the state methods (`getstate`, `from_state`, and `copy`
+  except ZipCrypto's), and LZX's `reset()`, `window_bits`, `unused_data` and
+  `total_in`: the Python decoder's bit buffer reads its input ahead of the output, and
+  no call site needs any of them. The package's stubs give its whole API.
+- `kernels/rust.py`: the package's objects wrapped to raise archivey's errors and latch
+  panics, with the same API.
+- `kernels/__init__.py`: the switch. `kernels.lzx(excluded, isolated=...)` (and one
+  function per kernel) returns a namespace with that module's names, the package's or
+  the twin's, and `library`: archivey-codecs when the package decodes, for a call site
+  that records its backend (LZO does). `kernels.filters` has `arm64_library` and
+  `riscv_library` instead, one for each kernel. Under `isolated`, `kernels.bcj2` always
+  gives the twin until the decoder child can carry BCJ2's four inputs (task 2.7), so
+  under `NATIVE_DECODERS` the package's BCJ2 stays out of the process (D5).
+  `kernels/_select.py` holds the revision table and error mapping, and
+  `kernels/child.py` the stand-in module whose objects live in a decoder child.
+
+Each call site builds through the switch and then uses one API. LZO is the exception:
+compress-utils sits between the package and Python (question 11), so its call site
+takes only the package from the switch and falls back to compress-utils, then to the
+Python decoder the twin wraps. The package's parity tests run the same driver code over
+the twins and the package.
 
 ## D5. How archivey installs and turns it off
 
@@ -280,7 +324,8 @@ until the next codecs release turns the kernel back on.
   knows the package; `[recommended]` gains it one archivey release later (question 9).
 - `OptionalLibrary.ARCHIVEY_CODECS` (question 8), passed through every call site (the
   prototype reached only LZO). It is the only switch: tests that need the Python path
-  pass `exclude_libraries`, or use a fixture that patches `internal/native.py`. No
+  pass `exclude_libraries`, or use a fixture that patches the switch in
+  `internal/kernels` (`tests/kernels_util.use_python_twin`). No
   environment variable turns the kernels off.
 - `[free-threaded]` includes the package (the module declares `gil_used = false`, and
   CI's GIL assertion over that extra covers it). `[all]` gets it through
@@ -297,7 +342,9 @@ until the next codecs release turns the kernel back on.
   the pipe twice; at 8x to 38x the Python speed the kernels still win on anything but
   tiny members. A panic in the child reaches the caller as `CorruptionError`, as
   in-process. The streaming kernels push input as the child protocol already expects;
-  BCJ2's four input streams need the protocol to carry four inputs (task 2.7). If no
+  BCJ2's four input streams need the protocol to carry four inputs (task 2.7); until
+  then BCJ2 runs as the Python twin in the caller's process under `NATIVE_DECODERS`
+  (D4a). If no
   child can start, archivey uses the Python twin in the caller's process, as if
   `ARCHIVEY_CODECS` were excluded: a Python decoder is not native, so the promise holds,
   and the read gives the same bytes as without the package. LZO then goes to
