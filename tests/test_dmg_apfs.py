@@ -34,6 +34,7 @@ from archivey import (
 )
 from archivey.formats import ReaderSource
 from archivey.internal.backends import apfs
+from archivey.terminal import escape_control_chars, quoted
 from tests import apfs_build as a, dmg_build as d
 from tests.conftest import requires
 
@@ -1137,6 +1138,56 @@ def test_overlapping_extents_fail_that_file_only() -> None:
             reader.read("a.txt")
 
 
+def test_a_refusal_found_at_listing_keeps_its_message_on_read() -> None:
+    """The listing kept ``str(exc)`` and rebuilt the error from it at read, so the
+    name's escape was escaped a second time (two backslashes before ``x1b``)."""
+    name = "e\x1bx.txt"
+
+    def overlap(records: list) -> None:
+        rec = _record(records, name, apfs.EXTENT)
+        key = bytearray(rec.key)
+        struct.pack_into("<Q", key, 8, 4096)
+        records.append(
+            a._Record(rec.oid, apfs.EXTENT, (4096,), bytes(key), rec.value, name)
+        )
+
+    nodes = [d.Node(name, data=b"a" * 5000), d.Node("z.txt", data=b"z")]
+    with (
+        _open(_patched(overlap, nodes)) as reader,
+        pytest.raises(CorruptionError) as caught,
+    ):
+        reader.read(name)
+    assert caught.value.raw_message == (
+        f"the APFS file {quoted(name)} has overlapping extents at byte 4096"
+    )
+
+
+def test_a_caught_error_in_a_new_message_keeps_one_escape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caught archivey error put into a new message is its raw text: ``{exc}`` gave
+    the escaped text, which the new message escaped again."""
+    name = "l\x1bk"
+
+    def unreadable(*args: object) -> bytes:
+        raise CorruptionError(f"the target of {quoted(name)} is damaged")
+
+    monkeypatch.setattr(apfs, "xattr_value", unreadable)
+    image = a.apfs_dmg(
+        a.write_apfs([d.Node(name, kind="symlink", target="t")]).container
+    )
+    with _open(image) as reader:
+        reader.members()
+        found = [
+            diag
+            for diag in reader.diagnostics.retained
+            if diag.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+    assert found
+    inner = escape_control_chars(f"the target of {quoted(name)} is damaged")
+    assert f"cannot be read: {inner}" in found[0].message
+
+
 def test_a_compressed_file_without_its_attribute_raises_on_read() -> None:
     nodes = [d.Node("c.txt", data=_TEXT, compression=8), d.Node("z.txt", data=b"z")]
 
@@ -1266,6 +1317,26 @@ def test_an_encrypted_mapping_in_a_plain_volume_does_not_stop_the_other_volumes(
         a.apfs_dmg(container.container), CorruptionError, "marks node"
     )
     assert "Fine/b.txt" in seen
+
+
+def test_a_damage_reason_naming_the_volume_is_escaped_once() -> None:
+    """The filesystem tree kept ``str(exc)`` as the reason a node is damaged, and the
+    listing's error escaped that text a second time."""
+    name = "Br\x1boken"
+    container = a.write_apfs(
+        [d.Node("a.txt", data=b"a")],
+        name=name,
+        more_volumes=[("Fine", [d.Node("b.txt", data=b"b")])],
+        patch=_mark_first_volume_nodes_encrypted,
+    )
+    with (
+        _open(a.apfs_dmg(container.container)) as reader,
+        pytest.raises(CorruptionError, match="marks node") as caught,
+    ):
+        reader.members()
+    assert f"the object map of APFS volume {quoted(name)} marks node" in (
+        caught.value.raw_message
+    )
 
 
 def _encrypt_second_volume(container: bytearray, info: a.Apfs) -> None:

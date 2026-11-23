@@ -47,6 +47,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
+    exception_detail,
 )
 from archivey.formats import ReaderContext, ReaderSource
 from archivey.internal.overrides import override
@@ -751,7 +752,9 @@ class UdifImage:
         except (CorruptionError, TruncatedError) as exc:
             # The run was read whole, so a stream that stops early is a wrong stored
             # size or damage, not a cut file.
-            raise CorruptionError(f"{self._where(index)}: {exc}") from None
+            raise CorruptionError(
+                f"{self._where(index)}: {exception_detail(exc)}"
+            ) from None
         if len(data) != decoded:
             got = f"more than {decoded}" if len(data) > decoded else str(len(data))
             raise CorruptionError(
