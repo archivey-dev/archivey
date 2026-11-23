@@ -127,7 +127,7 @@ def test_a_retired_claim_leaves_the_identity_index(tmp_path: Path) -> None:
     # With ``A``'s claim retired, ``b``'s is the file's only one.
     assert placements.retire(first)
     assert placements.owner(tmp_path / "c", "c", occupied=True) is link
-    assert sum(len(entries) for entries in placements._by_id.values()) == 1
+    assert sum(placements._count.values()) == 1
 
 
 def _win(path: str) -> Path:
@@ -186,3 +186,28 @@ def test_a_name_folds_unicode_normalization_too(tmp_path: Path) -> None:
     # On APFS the NFD spelling is the entry the NFC one names.
     _alias(tmp_path / nfc, tmp_path / nfd)
     assert placements.owner(tmp_path / nfd, nfd, occupied=True) is first
+
+
+@posix_inodes
+def test_hard_links_whose_names_fold_together_keep_their_own_claims(
+    tmp_path: Path,
+) -> None:
+    # Under TRUSTED on a case-sensitive filesystem, ``A`` and ``a`` are two
+    # entries; here they are hard links of one file.
+    _file(tmp_path / "A")
+    if os.path.lexists(tmp_path / "a"):
+        pytest.skip("needs a case-sensitive filesystem")
+    placements = Placements()
+    upper = placements.claim(tmp_path / "A", "A", tmp_path / "A", 0)
+    os.link(tmp_path / "A", tmp_path / "a")
+    lower = placements.claim(tmp_path / "a", "a", tmp_path / "a", 1)
+    os.link(tmp_path / "A", tmp_path / "c")
+    assert placements.owner(tmp_path / "A", "", occupied=True) is upper
+    assert placements.owner(tmp_path / "a", "", occupied=True) is lower
+    # Two live claims: a name of neither has no answer.
+    assert placements.owner(tmp_path / "c", "c", occupied=True) is None
+    os.unlink(tmp_path / "a")
+    assert placements.release(tmp_path / "a", "a")
+    # ``A``'s claim is still indexed, and now the file's only one.
+    assert placements.by_identity(tmp_path / "c") is upper
+    assert placements.owner(tmp_path / "c", "c", occupied=True) is upper

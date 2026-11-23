@@ -73,9 +73,16 @@ class Placements:
     # claim after a symlink in its path was replaced and the path resolves elsewhere.
     _key_of: dict[str, str] = field(default_factory=dict)
     # (st_dev, st_ino) -> entry (folded name, parent st_dev, parent st_ino) -> claim.
-    _by_id: dict[_FileId, dict[_EntryId, Claim]] = field(default_factory=dict)
+    # Names that fold to one entry id can still be distinct entries (``A`` beside
+    # ``a`` on a case-sensitive filesystem), so each entry id holds its claims by
+    # exact spelling.
+    _by_id: dict[_FileId, dict[_EntryId, dict[str, Claim]]] = field(
+        default_factory=dict
+    )
+    # How many claims each file has indexed, for the only-claim answer.
+    _count: dict[_FileId, int] = field(default_factory=dict)
     # Where each indexed claim sits in ``_by_id``, by ``id``, so retiring it is cheap.
-    _slot: dict[int, tuple[_FileId, _EntryId]] = field(default_factory=dict)
+    _slot: dict[int, tuple[_FileId, _EntryId, str]] = field(default_factory=dict)
     _unindexed: list[Claim] = field(default_factory=list)
 
     def __bool__(self) -> bool:
@@ -145,11 +152,16 @@ class Placements:
         slot = self._slot.pop(id(claim), None)
         if slot is None:
             return
-        entries = self._by_id.get(slot[0])
-        if entries is not None and entries.get(slot[1]) is claim:
-            del entries[slot[1]]
-            if not entries:
-                del self._by_id[slot[0]]
+        file_id, entry, spelling = slot
+        entries = self._by_id[file_id]
+        spellings = entries[entry]
+        del spellings[spelling]
+        if not spellings:
+            del entries[entry]
+        self._count[file_id] -= 1
+        if not entries:
+            del self._by_id[file_id]
+            del self._count[file_id]
 
     def release(self, path: Path, key: str) -> bool:
         """Drop the claim made for ``path``, under ``key`` (as for :meth:`at_path`),
@@ -198,31 +210,39 @@ class Placements:
         found = self._entry_owner(path, st)
         if found is not None:
             return found
-        for claim in reversed(self._by_id.get((st.st_dev, st.st_ino), {}).values()):
-            if self.is_live(claim) and _is_file_of(claim, st):
-                return claim
+        for spellings in self._by_id.get((st.st_dev, st.st_ino), {}).values():
+            for claim in spellings.values():
+                if self.is_live(claim) and _is_file_of(claim, st):
+                    return claim
         return None
 
     def _entry_owner(self, path: Path, st: os.stat_result) -> Claim | None:
         """The live claim on the directory entry at ``path``, which ``st`` describes:
         the claim of its file made in the same directory under a name that folds to
-        this one (case, Unicode normalization, a trailing dot or space), or else the
-        file's only claim. A file with several claims and no such name (an 8.3 short
-        name of one of its hard links) has no answer here: its file cannot tell which
-        entry the name reaches, and a wrong answer would send a write to another one."""
+        this one (case, Unicode normalization, a trailing dot or space), the one
+        spelled exactly so where several are, or else the file's only claim. A file
+        with several claims and no such name (an 8.3 short name of one of its hard
+        links) has no answer here: its file cannot tell which entry the name reaches,
+        and a wrong answer would send a write to another one."""
         if st.st_ino == 0:
             return None
         self._index_new_claims()
-        entries = self._by_id.get((st.st_dev, st.st_ino))
+        file_id = (st.st_dev, st.st_ino)
+        entries = self._by_id.get(file_id)
         if not entries:
             return None
         parent = _dir_id(path)
         if parent is not None:
-            claim = entries.get((_folded(path.name), *parent))
-            if claim is not None and self.is_live(claim) and _is_file_of(claim, st):
-                return claim
-        if len(entries) == 1:
-            (claim,) = entries.values()
+            spellings = entries.get((_folded(path.name), *parent))
+            if spellings:
+                claim = spellings.get(path.name)
+                if claim is None and len(spellings) == 1:
+                    (claim,) = spellings.values()
+                if claim is not None and self.is_live(claim) and _is_file_of(claim, st):
+                    return claim
+        if self._count[file_id] == 1:
+            (spellings,) = entries.values()
+            (claim,) = spellings.values()
             if self.is_live(claim) and _is_file_of(claim, st):
                 return claim
         return None
@@ -240,12 +260,14 @@ class Placements:
                 continue
             file_id = (cst.st_dev, cst.st_ino)
             entry = (_folded(claim.path.name), *parent)
-            entries = self._by_id.setdefault(file_id, {})
-            earlier = entries.pop(entry, None)
+            spellings = self._by_id.setdefault(file_id, {}).setdefault(entry, {})
+            earlier = spellings.get(claim.path.name)
             if earlier is not None:
-                self._slot.pop(id(earlier), None)
-            entries[entry] = claim
-            self._slot[id(claim)] = (file_id, entry)
+                self._unindex(earlier)
+                spellings = self._by_id.setdefault(file_id, {}).setdefault(entry, {})
+            spellings[claim.path.name] = claim
+            self._count[file_id] = self._count.get(file_id, 0) + 1
+            self._slot[id(claim)] = (file_id, entry, claim.path.name)
         self._unindexed.clear()
 
 
