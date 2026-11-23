@@ -871,6 +871,56 @@ def test_a_finished_z_decoder_is_not_fed_again(twin: bool) -> None:
         assert stream.read() == b""
 
 
+def _z_with_a_bad_last_code() -> tuple[bytes, bytes]:
+    """A widening 9-bit ``.Z`` stream whose last code is bad, and its clean data. The
+    table fills near the end, so the bad code is met by the final pass, after it has
+    decoded the bytes before it."""
+    from tests.test_codecs import _lzw_compress
+
+    data = random.Random(8).randbytes(280)
+    raw = bytearray(_lzw_compress(data, 9, block_mode=True, nine_bit_widens=True))
+    raw[-1] ^= 0x80
+    return bytes(raw), data
+
+
+@pytest.mark.parametrize("twin", [False, True], ids=["kernel", "twin"])
+def test_a_bad_code_met_by_the_final_pass_still_raises(
+    twin: bool, tmp_path: Path
+) -> None:
+    """The final pass hands back the bytes before a bad code, and the decoder stays
+    open until the error raises: on the next call, through the stream, and through
+    ``open_archive``."""
+    if not twin and not deps.archivey_codecs.available():
+        pytest.skip("needs archivey-codecs")
+    raw, data = _z_with_a_bad_last_code()
+    lzw = (
+        types.SimpleNamespace(Decompressor=lzw_twin.Decompressor)
+        if twin
+        else kernels.lzw(frozenset(), isolated=False)
+    )
+    d = lzw.Decompressor()
+    out = d.decompress(raw) + d.flush()
+    assert out and data.startswith(out)
+    assert not d.eof
+    with pytest.raises(CorruptionError, match="invalid code"):
+        d.flush()
+    config = OFF if twin else None
+    with open_stream(
+        io.BytesIO(raw), format=StreamFormat.UNIX_COMPRESS, config=config
+    ) as stream:
+        got = b""
+        with pytest.raises(CorruptionError, match="invalid code"):
+            while chunk := stream.read(100):
+                got += chunk
+        assert got == out
+    path = tmp_path / "data.bin.Z"
+    path.write_bytes(raw)
+    with open_archive(path, config=config) as archive:
+        member = archive.members()[0]
+        with pytest.raises(CorruptionError, match="invalid code"):
+            archive.read(member)
+
+
 def _z_points(make: Callable[..., object], raw: bytes) -> tuple[bytes, list]:
     decoder = UnixCompressDecoder(
         make,  # type: ignore[arg-type]

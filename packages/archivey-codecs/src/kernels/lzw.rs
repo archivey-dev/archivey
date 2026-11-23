@@ -356,8 +356,10 @@ impl LzwState {
         Ok(d)
     }
 
+    /// The final pass may hand back bytes and hold the error it met after them: the
+    /// stream is not finished until that error has raised.
     pub fn is_finished(&self) -> bool {
-        self.finished
+        self.finished && self.raise_after.is_none()
     }
 
     pub fn needs_input(&self) -> bool {

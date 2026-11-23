@@ -258,7 +258,9 @@ class LzwState:
         return out, units
 
     def is_finished(self) -> bool:
-        return self._finished
+        # The final pass may hand back bytes and hold the error it met after them:
+        # the stream is not finished until that error has raised.
+        return self._finished and self._raise_after is None
 
     @property
     def needs_input(self) -> bool:
@@ -752,6 +754,16 @@ class UnixCompressDecoder(BaseDecoder):
     def flush(self) -> DecodeOut:
         data = self._d.flush()
         points = self._points()
+        if not self._d.eof:
+            # The final pass met a bad code after these bytes, and the decoder raises
+            # it from its next call: keep it for after them.
+            try:
+                more = self._d.flush()
+            except Exception as exc:  # noqa: BLE001 - the decoder's error, raised later
+                self._pending_error = exc
+            else:
+                data += more
+                points += self._points()
         truncation = self._d.truncation
         if truncation is not None:
             self._pending_error = TruncatedError(
