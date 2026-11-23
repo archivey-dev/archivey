@@ -1476,10 +1476,11 @@ def test_dmg_uses_the_kernels_and_reads_the_same(name: str) -> None:
     assert _read_all(path) == _read_all(path, OFF)
 
 
-@needs_codecs
-def test_damaged_lzfse_runs_fail_the_same_way() -> None:
-    """Damage inside the image's LZFSE runs gives the same error with the kernel as
-    with the Python decoder."""
+def _damaged_lzfse_runs_fail_the_same_way(
+    config: ArchiveyConfig | None, seed: int, flips: int
+) -> None:
+    """Flip one bit inside one of ``hfs-ULFO.dmg``'s LZFSE runs, ``flips`` times: a
+    read with ``config`` gives the same bytes or error as the Python decoder."""
     from tests.test_lzfse_decoder import _LZFSE, _tables
 
     path = DMG_FIXTURES / "hfs-ULFO.dmg"
@@ -1490,17 +1491,17 @@ def test_damaged_lzfse_runs_fail_the_same_way() -> None:
         for kind, _sectors, off, length in table
         if kind == _LZFSE
     ]
-    rng = random.Random(5)
+    rng = random.Random(seed)
     differing = 0
-    for _ in range(30):
+    for _ in range(flips):
         bad = bytearray(raw)
         off, length = rng.choice(runs)
         at = off + rng.randrange(length)
         bad[at] ^= 1 << rng.randrange(8)
         results = []
-        for config in (None, OFF):
+        for each in (config, OFF):
             try:
-                with open_archive(io.BytesIO(bytes(bad)), config=config) as reader:
+                with open_archive(io.BytesIO(bytes(bad)), config=each) as reader:
                     got = {
                         m.name: reader.read(m) for m in reader.members() if m.is_file
                     }
@@ -1510,6 +1511,13 @@ def test_damaged_lzfse_runs_fail_the_same_way() -> None:
         assert results[0] == results[1], at
         differing += results[0][0] != "ok"
     assert differing
+
+
+@needs_codecs
+def test_damaged_lzfse_runs_fail_the_same_way() -> None:
+    """Damage inside the image's LZFSE runs gives the same error with the kernel as
+    with the Python decoder."""
+    _damaged_lzfse_runs_fail_the_same_way(None, seed=5, flips=30)
 
 
 # ── LZX (CAB) ─────────────────────────────────────────────────────────────────────────
@@ -2035,35 +2043,7 @@ def test_damaged_lzfse_runs_in_the_child_fail_the_same_way(
 ) -> None:
     """Damage inside an image's LZFSE runs gives the same error from the decoder
     child's kernel as from the Python decoder."""
-    from tests.test_lzfse_decoder import _LZFSE, _tables
-
-    path = DMG_FIXTURES / "hfs-ULFO.dmg"
-    raw = path.read_bytes()
-    runs = [
-        (off, length)
-        for _crc, table in _tables(path)
-        for kind, _sectors, off, length in table
-        if kind == _LZFSE
-    ]
-    rng = random.Random(6)
-    differing = 0
-    for _ in range(8):
-        bad = bytearray(raw)
-        off, length = rng.choice(runs)
-        bad[off + rng.randrange(length)] ^= 1 << rng.randrange(8)
-        results = []
-        for config in (ISOLATED_CONFIG, OFF):
-            try:
-                with open_archive(io.BytesIO(bytes(bad)), config=config) as reader:
-                    got = {
-                        m.name: reader.read(m) for m in reader.members() if m.is_file
-                    }
-                results.append(("ok", got))
-            except (CorruptionError, TruncatedError, UnsupportedFeatureError) as exc:
-                results.append((type(exc).__name__, str(exc)))
-        assert results[0] == results[1]
-        differing += results[0][0] != "ok"
-    assert differing
+    _damaged_lzfse_runs_fail_the_same_way(ISOLATED_CONFIG, seed=6, flips=8)
     assert "lzfse" in child_builds
 
 

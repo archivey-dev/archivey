@@ -1,8 +1,8 @@
 """archivey-codecs' decoding kernels in a decoder child, for ``NATIVE_DECODERS``.
 
 ``ProcessIsolation.NATIVE_DECODERS`` promises that no native decoder runs in this
-process, so under it the decoding kernels (ARM64, RISC-V, LZW, LZO1X, LZX) run in
-archivey's decoder child, as zlib and lzma do (openspec change ``rust-codecs-package``,
+process, so under it the decoding kernels (ARM64, RISC-V, LZW, LZO1X, LZX, LZFSE,
+LZVN) run in archivey's decoder child, as zlib and lzma do (openspec change ``rust-codecs-package``,
 question 13). :func:`open_kernels` gives a stand-in for the ``archivey_codecs`` module
 whose kernel objects each live in a child of their own (``decoder_worker._Codecs``):
 the wrappers in :mod:`archivey.internal.kernels.rust` use it as they use the module, so the
