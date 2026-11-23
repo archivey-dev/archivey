@@ -1444,6 +1444,9 @@ def _usage_line(report: ExtractionReport) -> str | None:
     leave theirs to their library), the key-derivation rounds' total, the spool peak and
     the last listing walk's totals. Each part appears only when it is not zero, and with
     no part there is no line; byte counts are exact, to compare with the limit fields.
+    The listing's bytes are what its tracker holds at the end: a format's own totals
+    held to ``max_metadata_bytes`` (ISO's UDF paths, CAB's block tables) and what a walk
+    held only while it ran are not in it, so the label names the listing.
     """
     usage = report._resource_usage
     if usage is None:
@@ -1460,7 +1463,7 @@ def _usage_line(report: ExtractionReport) -> str | None:
         members = usage.listed_members
         parts.append(
             f"listing {members} member{'s' if members != 1 else ''}, "
-            f"{usage.listing_metadata_bytes} metadata bytes"
+            f"{usage.listing_metadata_bytes} bytes of listing metadata"
         )
     if not parts:
         return None
