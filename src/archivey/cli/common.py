@@ -205,14 +205,15 @@ def open_for_cli(
     source: Any
     if archive == "-" and stdin is not None:
         # A redirect from a file (``archivey cat - < backup.7z``) can seek, and opens
-        # as the file it is; only a real pipe opens in pipe mode.
-        source, pipe = stdin, not _stdin_can_seek(stdin)
+        # as the file it is, in streaming mode; only a real pipe opens in pipe mode.
+        source, pipe, streaming = stdin, not _stdin_can_seek(stdin), True
     else:
         reject_stdin_token(str(archive))
         # A URL resolves to an fsspec OpenFile, which is never read-once: the library
         # reads it with range requests.
         source = resolve_archive(str(archive))
         pipe = not is_remote(str(archive)) and is_read_once(archive)
+        streaming = pipe
     err = err if err is not None else sys.stderr
     config = with_source_progress(config, progress)
     try:
@@ -223,6 +224,7 @@ def open_for_cli(
                     source,
                     password=password,
                     pipe=pipe,
+                    streaming=streaming,
                     config=config,
                     format=format,
                 ) as reader,
@@ -236,6 +238,7 @@ def open_for_cli(
                 source,
                 password=password,
                 pipe=pipe,
+                streaming=streaming,
                 config=config,
                 format=format,
             ) as reader:
@@ -261,6 +264,7 @@ def _open(
     *,
     password: PasswordInput,
     pipe: bool,
+    streaming: bool,
     config: ArchiveyConfig | None,
     format: ArchiveFormat | None,
 ) -> ForwardArchiveReader:
@@ -270,6 +274,7 @@ def _open(
             format=format,
             password=password,
             pipe=pipe,
+            streaming=streaming,
             config=config,
         )
     except StreamNotSeekableError as exc:

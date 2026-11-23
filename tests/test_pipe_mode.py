@@ -436,3 +436,93 @@ def test_pipe_keeps_remote_change_checks_and_request_progress() -> None:
         assert observe(pipe=True) == observe(streaming=True)
     finally:
         fs.rm("/pipe-mode", recursive=True)
+
+
+def test_pipe_reports_a_remote_object_that_changes_mid_pass() -> None:
+    fsspec = pytest.importorskip("fsspec")
+    from archivey.exceptions import SourceChangedError
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for i in range(20):
+            payload = os.urandom(50_000)
+            info = tarfile.TarInfo(f"m{i}")
+            info.size = len(payload)
+            tf.addfile(info, io.BytesIO(payload))
+    data = buf.getvalue()
+    fs = fsspec.filesystem("memory")
+
+    def read_while_truncating(**kwargs: bool) -> None:
+        fs.pipe("/pipe-change/a.tar.gz", data)
+        config = archivey.ArchiveyConfig(max_read_through=0)
+        source = fsspec.open("memory://pipe-change/a.tar.gz")
+        with archivey.open_archive(source, config=config, **kwargs) as reader:  # type: ignore[call-overload]  # kwargs vary
+            for n, (_member, stream) in enumerate(reader.stream_members()):
+                if n == 2:
+                    fs.pipe("/pipe-change/a.tar.gz", data[: len(data) // 2])
+                if stream is not None:
+                    stream.read()
+
+    try:
+        for kwargs in ({"streaming": True}, {"pipe": True}):
+            with pytest.raises(SourceChangedError):
+                read_while_truncating(**kwargs)
+    finally:
+        fs.rm("/pipe-change", recursive=True)
+
+
+@pytest.mark.parametrize(
+    "format",
+    [
+        None,
+        archivey.ArchiveFormat.DIRECTORY,
+        archivey.ArchiveFormat.SEVEN_Z,
+        archivey.ArchiveFormat.ZIP,
+        archivey.ArchiveFormat.ISO,
+    ],
+)
+def test_pipe_on_a_missing_path_raises_file_not_found(
+    format: archivey.ArchiveFormat | None, tmp_path: Path
+) -> None:
+    missing = tmp_path / "missing.zip"
+    with pytest.raises(FileNotFoundError):
+        archivey.open_archive(missing, format=format)
+    with pytest.raises(FileNotFoundError):
+        archivey.open_archive(missing, format=format, pipe=True)
+
+
+def test_cli_opens_seekable_stdin_in_streaming_mode_and_a_pipe_in_pipe_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from archivey.cli import common
+
+    calls: list[dict] = []
+    real = common.open_archive
+
+    def spy(source: object, **kwargs: object) -> archivey.ForwardArchiveReader:
+        calls.append({k: kwargs.get(k) for k in ("pipe", "streaming")})
+        return real(source, **kwargs)  # type: ignore[call-overload,no-any-return]  # kwargs vary
+
+    monkeypatch.setattr(common, "open_archive", spy)
+    path = tmp_path / "a.zip"
+    path.write_bytes(_zip_with_symlink())
+    with (
+        open(path, "rb") as redirect,
+        common.open_for_cli("-", stdin=redirect) as reader,
+    ):
+        list(reader.stream_members())
+    read_fd, write_fd = os.pipe()
+    with os.fdopen(write_fd, "wb") as w:
+        w.write(path.read_bytes())
+    with (
+        os.fdopen(read_fd, "rb") as pipe,
+        common.open_for_cli("-", stdin=pipe) as reader,
+    ):
+        list(reader.stream_members())
+    with common.open_for_cli(path) as reader:
+        list(reader.stream_members())
+    assert calls == [
+        {"pipe": False, "streaming": True},
+        {"pipe": True, "streaming": True},
+        {"pipe": False, "streaming": False},
+    ]

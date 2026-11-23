@@ -746,9 +746,19 @@ def _read_as_pipe(resolved: ResolvedSource) -> ResolvedSource:
     detection and the backend read it once, front to back, as a pipe carrying the same
     bytes and name, with no path, volume paths or size to go by. A directory has no
     bytes to carry, and a volume set found beside a path cannot be joined from one
-    stream, so both are refused. Closes the source when it raises.
+    stream, so both are refused. A path that does not exist raises as in the other
+    modes. Closes the source when it raises.
     """
     source = resolved.source
+    path = source.path
+    if path is not None:
+        # Checked before the path is hidden: a missing or unreadable path raises
+        # ``OSError`` as it does in the other modes, whatever ``format=`` names.
+        try:
+            os.stat(path)
+        except OSError:
+            source.close()
+            raise
     if source.is_directory:
         source.close()
         raise _UsageValueError(
