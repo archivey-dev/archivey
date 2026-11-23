@@ -1068,7 +1068,9 @@ def test_a_kept_record_is_charged_what_tracemalloc_measures_it_keeps(case: str) 
     not CPYTHON or bool(sysconfig.get_config_var("Py_GIL_DISABLED")),
     reason="the weights are measured on CPython with the GIL",
 )
-def test_an_object_map_entry_is_charged_what_tracemalloc_measures_it_keeps() -> None:
+def test_an_object_map_entry_is_charged_what_tracemalloc_measures_it_keeps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     count = 20_000
     entry = apfs._OMAP_VALUE
     leaves = [
@@ -1093,19 +1095,10 @@ def test_an_object_map_entry_is_charged_what_tracemalloc_measures_it_keeps() -> 
             return bytes(64)  # an object map whose tree is at block 0
 
     def build() -> apfs._Omap:
-        # The real ``_Omap``, its walk yielding the leaves built above.
-        walk = apfs._walk
-        apfs._walk = lambda *args, **kwargs: iter(leaves)
-        try:
-            return apfs._Omap(
-                _Head(),
-                1,
-                1 << 62,
-                "map",
-                lambda n, what: charged.append(n),
-            )
-        finally:
-            apfs._walk = walk
+        return apfs._Omap(_Head(), 1, 1 << 62, "map", lambda n, what: charged.append(n))
+
+    # The real ``_Omap``, its walk yielding the leaves built above.
+    monkeypatch.setattr(apfs, "_walk", lambda *args, **kwargs: iter(leaves))
 
     gc.collect()
     gc.disable()
