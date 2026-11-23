@@ -57,6 +57,7 @@ from archivey.internal.backends.sevenzip_salvage_walk import (
     copy_at,
     decode_lzma1_prefix,
     first_lzma_chunk_decodes,
+    lzma1_dictionary,
     lzma2_dict_prop,
     scan_chain,
 )
@@ -634,6 +635,57 @@ def test_an_lzma1_folder_is_one_member_of_unknown_size(
             while chunk := stream.read(65536):
                 got += chunk
     assert b"".join(source_files(12).values()).startswith(bytes(got))
+
+
+def _lzma1_area(data: bytes) -> bytes:
+    """A start header that passes its CRC and puts the next header past the file,
+    then ``data`` as an LZMA1 stream with 7-Zip's properties, cut halfway: the walk
+    lists it as the LZMA1 member at offset 32."""
+    signature = bytearray(NONSOLID[:32])
+    signature[12:20] = struct.pack("<Q", 1 << 40)
+    packed = lzma.compress(
+        data,
+        format=lzma.FORMAT_RAW,
+        filters=[
+            {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 20, "lc": 3, "lp": 0, "pb": 2}
+        ],
+    )
+    return fix_start_crc(bytes(signature)) + packed[: len(packed) // 2]
+
+
+def test_an_lzma1_member_reserves_the_dictionary_its_read_can_fill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its size is not known, so its dictionary is the most its read can give under
+    max_ratio, not max_decoder_memory (review C5: 2 GiB for any member). It reads
+    the same bytes, then TruncatedError."""
+    text = _text(random.Random(1771), 200_000)
+    damaged = _lzma1_area(text)
+    sizes = _record_dictionaries(monkeypatch)
+    with open_archive(io.BytesIO(damaged), salvage=True) as reader:
+        [member] = reader.members_report().members
+        assert [m.algo for m in member.compression] == [CompressionAlgorithm.LZMA]
+        got = bytearray()
+        with pytest.raises(TruncatedError), reader.open(member) as stream:
+            while chunk := stream.read(65536):
+                got += chunk
+    assert len(got) > 1000 and text.startswith(bytes(got))
+    expected = lzma1_dictionary(len(damaged) - 32, DecoderLimits())
+    assert expected < 64 << 20
+    assert member.compression[0].properties == b"\x5d" + expected.to_bytes(4, "little")
+    assert sizes and max(sizes) <= expected
+    # A small member: the least the ratio check lets a read give.
+    assert lzma1_dictionary(100, DecoderLimits()) == 5 << 20
+
+
+def test_an_lzma1_member_past_max_ratio_is_refused() -> None:
+    """A read that gives more than max_ratio of its packed bytes raises
+    ResourceLimitError, so the dictionary holds every byte a read returns."""
+    damaged = _lzma1_area(bytes(64 << 20))
+    with open_archive(io.BytesIO(damaged), salvage=True) as reader:
+        [member] = reader.members_report().members
+        with pytest.raises(ResourceLimitError, match="max_ratio"):
+            reader.read(member)
 
 
 @requires_7zip

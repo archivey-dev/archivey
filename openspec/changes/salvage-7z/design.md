@@ -399,7 +399,10 @@ Each stream the walk or the search finds, and that no header copy names, is one 
   smallest LZMA2 value at least the stream's unpacked size: a match cannot reach back
   past the stream's first byte, so this is always enough, and `max_decoder_memory`
   checks it as for any declared dictionary. The LZMA1 member, whose size is unknown,
-  uses `max_decoder_memory`, capped at 4 GiB − 1. A cut stream reads every byte that
+  uses the most bytes its read can give: `max_ratio` times its packed size, at least
+  `ratio_activation_threshold`, at most `max_decoder_memory` and 4 GiB − 1. liblzma
+  reserves the whole dictionary, so `max_decoder_memory` alone cost 2 GiB for any
+  member (Cursor review round 1, C5). A cut stream reads every byte that
   decodes, then raises `TruncatedError`. A decoder error raises `CorruptionError` after
   the bytes before it. The decoder is fed so that the bytes decoded before a failing
   input piece are delivered (the prototype lost a 64 KiB piece's output).

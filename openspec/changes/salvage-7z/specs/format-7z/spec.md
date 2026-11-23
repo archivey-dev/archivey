@@ -105,10 +105,12 @@ stream and for an LZMA1 stream; no times, mode or attributes; `verifiable` `UNLO
 one `MEMBER_NAME_UNKNOWN` at listing, with `unchecked` holding `"name"` and `"filters"`,
 and `"size"` when the size is `None`. Its read SHALL decode the stream as a one-coder
 folder whose LZMA2 dictionary is the smallest at least its unpacked size (an LZMA1
-stream: `max_decoder_memory`, at most 4 GiB − 1), under `DecoderLimits` and
-`ExtractionLimits`. A cut stream's read SHALL deliver every byte that decodes, then
-raise `TruncatedError`. A decoder error SHALL raise `CorruptionError` after the bytes
-before it. The pass SHALL end in the error the default raises at open.
+stream, whose size is not known: the most bytes its read can give, `max_ratio` times its
+packed size and at least `ratio_activation_threshold`, at most `max_decoder_memory` and
+4 GiB − 1), under `DecoderLimits` and `ExtractionLimits`. A cut stream's read SHALL
+deliver every byte that decodes, then raise `TruncatedError`. A decoder error SHALL
+raise `CorruptionError` after the bytes before it. The pass SHALL end in the error the
+default raises at open.
 
 #### Scenario: 7z packed-area walk
 

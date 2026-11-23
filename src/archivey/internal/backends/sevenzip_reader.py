@@ -1319,7 +1319,7 @@ class SevenZipReader(BaseArchiveReader):
             walk.streams,
             major_version=signature[6],
             minor_version=signature[7],
-            max_decoder_memory=self._config.decoder_limits.max_decoder_memory,
+            decoder_limits=self._config.decoder_limits,
             end_offset=end,
         )
 

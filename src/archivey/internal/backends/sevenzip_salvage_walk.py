@@ -30,6 +30,7 @@ is a walk position again. Each stream becomes a content member,
 from __future__ import annotations
 
 import lzma
+import math
 import re
 from array import array
 from collections.abc import Callable
@@ -1060,12 +1061,32 @@ def content_name(index: int) -> str:
     return f"__salvaged__/7z-stream-{index + 1:04d}.bin"
 
 
+def lzma1_dictionary(packed: int, limits: DecoderLimits) -> int:
+    """The dictionary of an LZMA1 content member, whose size is not known: the most
+    bytes its read can give, ``max_ratio`` times its ``packed`` bytes and at least
+    ``ratio_activation_threshold`` (``DecoderLimits``: a read that would give more
+    raises), at most ``max_decoder_memory`` and 4 GiB - 1. A dictionary as large as
+    the output decodes it exactly, and liblzma reserves the whole of it, so the cap
+    alone cost a 2 GiB reservation for any member (review C5)."""
+    size = MAX_LZMA1_DICT
+    if limits.max_ratio is not None:
+        size = min(
+            size,
+            max(
+                limits.ratio_activation_threshold, math.ceil(packed * limits.max_ratio)
+            ),
+        )
+    if limits.max_decoder_memory is not None:
+        size = min(size, limits.max_decoder_memory)
+    return max(size, _MIN_DICT)
+
+
 def content_archive(
     streams: list[ContentStream],
     *,
     major_version: int,
     minor_version: int,
-    max_decoder_memory: int | None,
+    decoder_limits: DecoderLimits,
     end_offset: int,
 ) -> SevenZipArchive:
     """A synthetic archive with one folder of one coder per stream, no CRC, so each
@@ -1079,9 +1100,7 @@ def content_archive(
                 METHOD_LZMA2, 1, 1, bytes((lzma2_dict_prop(stream.read_size),))
             )
         else:
-            dict_size = MAX_LZMA1_DICT
-            if max_decoder_memory is not None:
-                dict_size = min(dict_size, max_decoder_memory)
+            dict_size = lzma1_dictionary(stream.end - stream.start, decoder_limits)
             coder = SevenZipCoder(
                 METHOD_LZMA,
                 1,
@@ -1158,6 +1177,7 @@ __all__ = [
     "decode_lzma1_prefix",
     "first_lzma_chunk_decodes",
     "layout_agrees",
+    "lzma1_dictionary",
     "lzma1_starts_at",
     "lzma2_dict_prop",
     "scan_chain",
