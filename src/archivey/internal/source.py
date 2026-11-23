@@ -295,7 +295,6 @@ class PipeView(io.RawIOBase):
     # an instance whose ``__init__`` did not.
     _inner: BinaryIO | None = None
     _owns: bool = False
-    _read_only: bool = False
 
     def __init__(self, inner: BinaryIO, *, owns: bool, name: str | None) -> None:
         super().__init__()
@@ -321,21 +320,14 @@ class PipeView(io.RawIOBase):
         inner = self._inner
         if inner is None or self.closed:
             raise ValueError("read from a closed pipe view")
-        readinto = None if self._read_only else getattr(inner, "readinto", None)
-        if readinto is not None:
-            try:
-                return readinto(b)
-            except (NotImplementedError, io.UnsupportedOperation):
-                # ``RawIOBase.readinto`` is abstract, and a buffered stream may
-                # refuse it; such a stream reads through ``read()`` alone, as it does
-                # when it is a pipe. Raised before any byte moves, so nothing is lost.
-                self._read_only = True
-        view = memoryview(b).cast("B")
-        data = inner.read(len(view))
-        if data is None:
-            return None  # type: ignore[return-value]  # a non-blocking source has nothing yet
-        view[: len(data)] = data
-        return len(data)
+        # The shared adapters every other source path uses: a stream whose
+        # ``readinto`` is missing or refused (``RawIOBase``'s abstract default, an
+        # ``UnsupportedOperation``) reads through ``read()``, and a non-blocking
+        # stream with nothing ready raises ``BlockingIOError``.
+        n = try_readinto(inner, b)
+        if n is not None:
+            return n
+        return readinto_via_read(inner, b)
 
     @override
     def close(self) -> None:
