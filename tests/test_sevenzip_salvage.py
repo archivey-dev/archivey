@@ -14,6 +14,7 @@ import io
 import lzma
 import random
 import struct
+import time
 import zlib
 from collections.abc import Callable
 from contextlib import nullcontext
@@ -45,6 +46,7 @@ from archivey.internal.backends.sevenzip_salvage import (
     one_byte_candidates,
 )
 from archivey.internal.backends.sevenzip_salvage_walk import (
+    LEAD_WORK_FACTOR,
     BytesReader,
     CachedReader,
     ContentStream,
@@ -930,6 +932,74 @@ def test_r3_finds_an_end_header_in_a_zero_run() -> None:
     listing = _salvage(damaged)
     assert listing.contents == FILES
     assert {c.offset for c in listing.found().values()} == {start}
+
+
+def _search_bait(body: bytes) -> bytes:
+    """A start header that passes its CRC and puts the next header past the file,
+    then ``02`` at offset 32 (no stream starts there), then ``body``: the walk stops
+    at once and the stream search runs over ``body``."""
+    signature = bytearray(NONSOLID[:32])
+    signature[12:20] = struct.pack("<Q", 1 << 40)
+    return fix_start_crc(bytes(signature)) + b"\x02" + body
+
+
+def test_a_run_of_01_bytes_is_searched_in_linear_time() -> None:
+    """Each ``01`` is a candidate whose uncompressed chunks run to the window's end.
+    Each run is walked once, not once per candidate (review C1: 80 000 bytes took
+    4 s)."""
+    data = _search_bait(b"\x01" * 80_000)
+    started = time.perf_counter()
+    listing = _salvage(data)
+    assert time.perf_counter() - started < 1
+    assert listing.names == []
+
+
+def test_the_checks_of_a_window_decode_a_bounded_amount(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4-byte uncompressed chunks that all lead to one LZMA chunk that fails: each
+    ``01`` is a candidate whose check decodes up to 256 KiB. The checks of one
+    window decode at most LEAD_WORK_FACTOR times it."""
+    decoded: list[int] = []
+    real = sevenzip_salvage_walk._lead_decodes
+
+    def counting(reader: object, start: int, end: int, size: int) -> bool:
+        decoded.append(end - start)
+        return real(reader, start, end, size)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sevenzip_salvage_walk, "_lead_decodes", counting)
+    chunk = bytearray(lzma2_stream(b"a" * 100)[:-1])
+    chunk[0] = 0xC0  # sets the properties, does not reset the dictionary
+    chunk[-1] ^= 0xFF  # and fails to decode
+    body = b"\x01\x00\x00\x01" * 40_000 + bytes(chunk)
+    listing = _salvage(_search_bait(body))
+    assert listing.names == []
+    assert decoded
+    assert sum(decoded) <= LEAD_WORK_FACTOR * (len(body) + 64)
+
+
+def test_a_chain_of_dictionary_resets_is_scanned_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cut chain of small LZMA chunks that each reset the dictionary: each chunk is
+    a stream the search finds, unconfirmed, and the search goes on inside it. Each
+    chunk header is read a bounded number of times, not once per stream found before
+    it (review C1: 8 000 chunks took 29 s)."""
+    reads = 0
+    real = CachedReader.read
+
+    def counting(self: CachedReader, offset: int, size: int) -> bytes:
+        nonlocal reads
+        reads += 1
+        return real(self, offset, size)
+
+    monkeypatch.setattr(CachedReader, "read", counting)
+    chunk = lzma2_stream(b"a" * 100)[:-1]
+    assert chunk[0] == 0xE0
+    count = 2_000
+    listing = _salvage(_search_bait(chunk * count))
+    assert len(listing.names) == count
+    assert reads <= 4 * count
 
 
 def _lzma1_bomb(size: int) -> bytes:

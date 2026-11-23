@@ -551,6 +551,13 @@ Where the code departs from the decisions above, or settles what they leave open
   (`TailBudget`), not through `search_forward`. The stream search counts its own bytes
   through the driver, so a byte in the tail can count twice: once for the tail search,
   once for the stream search.
+- **The stream search is linear in the area** (Cursor review round 1, C1). Each `01`
+  byte is a candidate, and walking each candidate's chain on its own was quadratic in a
+  window of them (80 000 bytes took 4 s). The runs of uncompressed chunks are walked
+  once per window, a chain scanned to its end is kept so later scans that reach it stop
+  there (`KnownChains`), and the decodes that judge one window's candidates are held to
+  `LEAD_WORK_FACTOR` (64) times the window, past which its remaining candidates are not
+  tried; random bytes use about 24.
 - **The region message is the driver's.** `ARCHIVE_REGION_SKIPPED` says "no header
   passes the format's checks in it", not the 7z text of decision 9.
 - **No listing-time `max_ratio` check.** The read holds `DecoderLimits` as for any

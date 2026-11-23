@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import lzma
 import re
+from array import array
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Literal, Protocol
@@ -88,6 +89,13 @@ _LZMA1_PIECE = 1 << 12
 # The most bytes from a candidate the stream search reads to judge it: its first
 # LZMA chunk must end within them (a few uncompressed chunks may come first).
 _STREAM_HEADER_SPAN = 1 << 18
+#: How many times its own size the stream search decodes, in one window, to judge
+#: the candidates in it. Each check decodes up to :data:`_STREAM_HEADER_SPAN` bytes,
+#: and the uncompressed chunks of many candidates can lead to one LZMA chunk, so
+#: without a bound a window of them cost a decode of up to 256 KiB per byte (review
+#: C1: 160 KB of 4-byte chunks took 13 s). Random bytes decode about 24 times the
+#: window.
+LEAD_WORK_FACTOR = 64
 
 
 def _valid_props_class() -> bytes:
@@ -194,10 +202,13 @@ def _valid_props(prop: int) -> bool:
     return lc + lp <= 4
 
 
-def scan_chain(reader: ChunkReader, start: int, end: int) -> Chain | None:
+def scan_chain(
+    reader: ChunkReader, start: int, end: int, known: KnownChains | None = None
+) -> Chain | None:
     """The LZMA2 chunk chain from ``start`` to at most ``end``, or ``None`` when its
     first chunk does not start a stream (:func:`starts_lzma2`). Reads chunk headers
-    only."""
+    only. With ``known``, a chain that reaches a chunk of one scanned before takes
+    the rest from it, and is kept there in turn."""
     pos = start
     unpacked = 0
     lzma_chunks = 0
@@ -205,11 +216,19 @@ def scan_chain(reader: ChunkReader, start: int, end: int) -> Chain | None:
     first_lzma_unpacked = 0
     have_props = False
     first = True
+    steps: list[_Step] = []
 
     def stop(
-        status: ChainStatus, *, declared: int = 0, broken_at: int | None = None
+        status: ChainStatus,
+        *,
+        declared: int = 0,
+        broken_at: int | None = None,
+        rest: tuple[_Scanned, int] | None = None,
+        props_decide: bool = False,
     ) -> Chain:
-        return Chain(
+        """``props_decide``: the chunk the chain stops at stops it as it does only
+        because the chain had its properties, or did not."""
+        chain = Chain(
             start,
             status,
             pos,
@@ -220,8 +239,22 @@ def scan_chain(reader: ChunkReader, start: int, end: int) -> Chain | None:
             broken_at,
             first_lzma_unpacked,
         )
+        if rest is not None:
+            chain = rest[0].joined(chain, rest[1])
+        if known is not None:
+            known.add(chain, steps, rest, free=not props_decide)
+        return chain
 
     while True:
+        if known is not None and not first:
+            rest = known.at(pos, have_props)
+            if rest is not None:
+                if first_lzma_end is None:
+                    lead = rest[0].first_lzma[rest[1]]
+                    if lead is not None:
+                        first_lzma_end = lead[0]
+                        first_lzma_unpacked = unpacked + lead[1]
+                return stop("complete", rest=rest)
         if pos >= end:
             return stop("cut")
         head = reader.read(pos, 6)
@@ -240,6 +273,7 @@ def scan_chain(reader: ChunkReader, start: int, end: int) -> Chain | None:
             chunk_end = pos + 3 + size
             if chunk_end > end:
                 return stop("cut", declared=size)
+            steps.append(_Step(pos, control, have_props, size, chunk_end))
             unpacked += size
         elif control >= 0x80:
             header_size = 6 if control >= 0xC0 else 5
@@ -253,14 +287,15 @@ def scan_chain(reader: ChunkReader, start: int, end: int) -> Chain | None:
             if prop is not None:
                 if not _valid_props(prop):
                     return stop("broken", broken_at=pos)
-                have_props = True
             elif not have_props:
-                return stop("broken", broken_at=pos)
+                return stop("broken", broken_at=pos, props_decide=True)
             size = ((control & 0x1F) << 16) + int.from_bytes(head[1:3], "big") + 1
             packed = int.from_bytes(head[3:5], "big") + 1
             chunk_end = pos + header_size + packed
             if chunk_end > end:
-                return stop("cut", declared=size)
+                return stop("cut", declared=size, props_decide=prop is None)
+            steps.append(_Step(pos, control, have_props, size, chunk_end))
+            have_props = True
             unpacked += size
             lzma_chunks += 1
             if first_lzma_end is None:
@@ -274,6 +309,123 @@ def scan_chain(reader: ChunkReader, start: int, end: int) -> Chain | None:
         first = False
 
 
+@dataclass(frozen=True)
+class _Step:
+    """One whole chunk of a scanned chain: where it starts, its control byte,
+    whether the chain had its properties before it, its unpacked size and where it
+    ends."""
+
+    pos: int
+    control: int
+    had_props: bool
+    unpacked: int
+    end: int
+
+
+class _Scanned:
+    """A chain :class:`KnownChains` keeps, by its chunks: for the ``i``-th, the
+    unpacked bytes and LZMA chunks before it, whether the chain had its properties
+    before it, whether the rest of the chain is the same with or without them, and
+    where the first LZMA chunk from it on ends with the bytes unpacked up to there."""
+
+    def __init__(
+        self,
+        chain: Chain,
+        steps: list[_Step],
+        rest: tuple[_Scanned, int] | None,
+        free: bool,
+    ) -> None:
+        self.chain = chain
+        self.unpacked_before: list[int] = []
+        self.lzma_before: list[int] = []
+        self.had_props: list[bool] = []
+        unpacked = lzma_chunks = 0
+        for step in steps:
+            self.unpacked_before.append(unpacked)
+            self.lzma_before.append(lzma_chunks)
+            self.had_props.append(step.had_props)
+            unpacked += step.unpacked
+            lzma_chunks += step.control >= 0x80
+        # Backwards: from the chunk where the scan stopped (or took the rest of a
+        # chain from), whether the properties it has matter, and the first LZMA
+        # chunk ahead.
+        if rest is not None:
+            free = rest[0].props_free[rest[1]]
+            ahead = rest[0].first_lzma[rest[1]]
+        else:
+            ahead = None
+        self.props_free: list[bool] = [False] * len(steps)
+        self.first_lzma: list[tuple[int, int] | None] = [None] * len(steps)
+        for index in range(len(steps) - 1, -1, -1):
+            step = steps[index]
+            if step.control >= 0xC0:
+                free = True
+            elif step.control >= 0x80:
+                free = False
+            if step.control >= 0x80:
+                ahead = (step.end, step.unpacked)
+            elif ahead is not None:
+                ahead = (ahead[0], step.unpacked + ahead[1])
+            self.props_free[index] = free
+            self.first_lzma[index] = ahead
+
+    def joined(self, prefix: Chain, index: int) -> Chain:
+        """``prefix``, which reached this chain's ``index``-th chunk, with the rest
+        of this chain after it."""
+        unpacked = self.chain.unpacked - self.unpacked_before[index]
+        return replace(
+            self.chain,
+            start=prefix.start,
+            unpacked=prefix.unpacked + unpacked,
+            declared=prefix.unpacked
+            + self.chain.declared
+            - self.unpacked_before[index],
+            lzma_chunks=prefix.lzma_chunks
+            + self.chain.lzma_chunks
+            - self.lzma_before[index],
+            first_lzma_end=prefix.first_lzma_end,
+            first_lzma_unpacked=prefix.first_lzma_unpacked,
+        )
+
+
+class KnownChains:
+    """The chains one stream search scanned to their end, by chunk. A chain from a
+    later candidate that reaches one of their chunks is the same from there on, so
+    its scan takes the rest from it: each chunk header is read once, however many
+    candidates' chains run through it (review C1: a cut chain of small chunks that
+    each reset the dictionary is one candidate per chunk, and each read the chain to
+    the area's end again)."""
+
+    def __init__(self) -> None:
+        self._at: dict[int, tuple[_Scanned, int]] = {}
+
+    def at(self, pos: int, have_props: bool) -> tuple[_Scanned, int] | None:
+        """The kept chain with a chunk at ``pos`` and its index, when a chain that
+        reaches it with ``have_props`` goes on as that one does."""
+        found = self._at.get(pos)
+        if found is None:
+            return None
+        scanned, index = found
+        if scanned.had_props[index] != have_props and not scanned.props_free[index]:
+            return None
+        return found
+
+    def add(
+        self,
+        chain: Chain,
+        steps: list[_Step],
+        rest: tuple[_Scanned, int] | None,
+        *,
+        free: bool,
+    ) -> None:
+        """Keep ``chain`` by its whole chunks ``steps``; ``rest`` is the kept chain it
+        took the rest from, and ``free`` whether the chunk it stopped at stops it
+        whatever properties it had."""
+        scanned = _Scanned(chain, steps, rest, free)
+        for index, step in enumerate(steps):
+            self._at[step.pos] = (scanned, index)
+
+
 def first_lzma_chunk_decodes(reader: ChunkReader, chain: Chain) -> bool:
     """Whether the chain's first LZMA chunk, with the chunks before it, decodes
     without error to the size their headers declare. ``False`` when it holds none,
@@ -281,14 +433,22 @@ def first_lzma_chunk_decodes(reader: ChunkReader, chain: Chain) -> bool:
     a longer run of uncompressed chunks before it is not read to judge it."""
     if chain.first_lzma_end is None:
         return False
-    if chain.first_lzma_end - chain.start > _STREAM_HEADER_SPAN:
+    return _lead_decodes(
+        reader, chain.start, chain.first_lzma_end, chain.first_lzma_unpacked
+    )
+
+
+def _lead_decodes(reader: ChunkReader, start: int, lzma_end: int, size: int) -> bool:
+    """Whether the chunks from ``start`` to ``lzma_end``, the last of them the first
+    LZMA chunk, decode without error to ``size`` bytes (see
+    :func:`first_lzma_chunk_decodes`)."""
+    if lzma_end - start > _STREAM_HEADER_SPAN:
         return False
-    size = chain.first_lzma_unpacked
     decoder = lzma.LZMADecompressor(
         lzma.FORMAT_RAW,
         filters=[{"id": lzma.FILTER_LZMA2, "dict_size": max(size, 4096)}],
     )
-    data = reader.read(chain.start, chain.first_lzma_end - chain.start)
+    data = reader.read(start, lzma_end - start)
     try:
         out = decoder.decompress(data, max_length=size + 1)
     except lzma.LZMAError:
@@ -608,6 +768,87 @@ def tail_copy_search(
     return None
 
 
+class _UncompressedRuns:
+    """Where the first LZMA chunk of a chain from each candidate in a window ends,
+    found without walking the same chunks twice.
+
+    A chain's uncompressed chunks (``01``, ``02``) are each followed by one at a place
+    their header gives, so two candidates whose chains meet share every chunk after
+    that place. Walking each candidate's chain on its own made the stream search
+    quadratic in a window of ``01`` bytes, each of them a candidate whose chain of
+    uncompressed chunks runs to the window's end (review C1: 80 000 bytes took 4 s).
+    Each run is walked once, and where it ends is kept for every chunk on it.
+    """
+
+    def __init__(self, window: bytes) -> None:
+        self._window = window
+        # For each offset whose byte is 01 or 02 and that a run was walked through:
+        # where the run of uncompressed chunks from it ends (-1: it runs past the
+        # window's end), and the bytes the run unpacks to. 0: not walked yet. Made
+        # at the first run, so that a search that finds a stream before any costs
+        # no more than its window.
+        self._run_end = array("i")
+        self._unpacked = array("i")
+
+    def _run(self, pos: int) -> tuple[int, int]:
+        window = self._window
+        size = len(window)
+        if not self._run_end:
+            self._run_end = array("i", (0,)) * size
+            self._unpacked = array("i", (0,)) * size
+        run_end = self._run_end
+        path: list[int] = []
+        sizes: list[int] = []
+        at = pos
+        while run_end[at] == 0:
+            path.append(at)
+            if at + 3 > size:
+                sizes.append(0)
+                end, total = -1, 0
+                break
+            chunk = int.from_bytes(window[at + 1 : at + 3], "big") + 1
+            sizes.append(chunk)
+            after = at + 3 + chunk
+            if after >= size:
+                end, total = -1, 0
+                break
+            if window[after] not in (0x01, 0x02):
+                end, total = after, 0
+                break
+            at = after
+        else:
+            end, total = run_end[at], self._unpacked[at]
+        for at, chunk in zip(reversed(path), reversed(sizes), strict=True):
+            total += chunk
+            run_end[at] = end
+            self._unpacked[at] = total
+        return run_end[pos], self._unpacked[pos]
+
+    def first_lzma(self, index: int) -> tuple[int, int] | None:
+        """For the candidate at ``index``, where its chain's first LZMA chunk ends and
+        the bytes the chain unpacks to up to there; ``None`` when its chain ends,
+        breaks or leaves the window before an LZMA chunk ends, as :func:`scan_chain`
+        would find it."""
+        window = self._window
+        if window[index] == 0x01:
+            lzma_at, unpacked = self._run(index)
+            if lzma_at < 0:
+                return None
+            # No LZMA chunk set the properties yet: this one must.
+            if window[lzma_at] < 0xC0:
+                return None
+        else:
+            lzma_at, unpacked = index, 0
+        head = window[lzma_at : lzma_at + 6]
+        if len(head) < 6 or not _valid_props(head[5]):
+            return None
+        size = ((head[0] & 0x1F) << 16) + int.from_bytes(head[1:3], "big") + 1
+        end = lzma_at + 6 + int.from_bytes(head[3:5], "big") + 1
+        if end > len(window):
+            return None
+        return end, unpacked + size
+
+
 class StreamFinder:
     """The finder of the search for the next LZMA2 stream, for the shared search
     driver, where the walk cannot go on.
@@ -631,6 +872,7 @@ class StreamFinder:
         # a search's first read.
         self._window_start: int | None = None
         self.chains: dict[int, Chain] = {}
+        self._known = KnownChains()
         self.search = HeaderSearch(
             find_header=self.find, step=1, max_header_size=_STREAM_HEADER_SPAN
         )
@@ -648,16 +890,23 @@ class StreamFinder:
         base = self._window_start
         assert base is not None, "find before the search's first read"
         local = BytesReader(window)
+        runs = _UncompressedRuns(window)
+        work = LEAD_WORK_FACTOR * len(window)
         for match in _STREAM_START.finditer(window, start):
             index = match.start()
             if index >= stop:
                 break
-            head = scan_chain(local, index, len(window))
-            if head is None or head.first_lzma_end is None:
+            lead = runs.first_lzma(index)
+            if lead is None or lead[0] - index > _STREAM_HEADER_SPAN:
                 continue
-            if not first_lzma_chunk_decodes(local, head):
+            work -= lead[0] - index
+            if work < 0:
+                # The checks of this window's candidates are spent: the rest of its
+                # candidates are not tried.
+                break
+            if not _lead_decodes(local, index, *lead):
                 continue
-            chain = scan_chain(self._area, base + index, self._end)
+            chain = scan_chain(self._area, base + index, self._end, self._known)
             if chain is None or chain.status == "broken":
                 continue
             self.chains[base + index] = chain
@@ -833,6 +1082,7 @@ def content_archive(
 
 
 __all__ = [
+    "LEAD_WORK_FACTOR",
     "TAIL_COPY_SEARCH",
     "UNKNOWN_SIZE",
     "BytesReader",
@@ -843,6 +1093,7 @@ __all__ = [
     "ContentStream",
     "HeaderBudget",
     "HeaderCopy",
+    "KnownChains",
     "SearchFn",
     "StreamFinder",
     "WalkResult",
