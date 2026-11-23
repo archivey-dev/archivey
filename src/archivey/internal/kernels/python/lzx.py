@@ -9,6 +9,8 @@ mode; this class gives it the package's API, a port of the package's
 
 from __future__ import annotations
 
+from typing import SupportsIndex
+
 from archivey.exceptions import ArchiveyError, CorruptionError
 from archivey.internal.kernels.python._args import U32_MAX, index, u64
 from archivey.internal.kernels.python._buffers import raw_bytes
@@ -40,19 +42,23 @@ class Decompressor:
         "total_out",
     )
 
-    def __init__(self, window_bits: int, *, output_size: int | None = None) -> None:
+    def __init__(
+        self, window_bits: SupportsIndex, *, output_size: SupportsIndex | None = None
+    ) -> None:
         from archivey.internal.streams.codecs.lzx_decoder import (
             LzxDecoder,
         )
 
+        # In the package's order: PyO3 checks ``output_size`` before its body reads
+        # ``window_bits``.
+        if output_size is not None:
+            output_size = u64(output_size, "output_size")
         bits = index(window_bits, "window_bits")
         if not 0 <= bits <= U32_MAX:
             # As the package: a value its kernel cannot take, named by its range.
             raise CorruptionError("LZX window bits outside 0 to 2**32 - 1")
         self._window_bits = bits
         self._d = LzxDecoder(bits)
-        if output_size is not None:
-            output_size = u64(output_size, "output_size")
         self._output_size = output_size
         # The last frame decoded, returned from ``_out_pos`` on.
         self._out = b""
@@ -95,7 +101,7 @@ class Decompressor:
 
     # ── Decoding ─────────────────────────────────────────────────────────────────────
 
-    def set_output_size(self, output_size: int) -> None:
+    def set_output_size(self, output_size: SupportsIndex) -> None:
         """Give the declared output size once it is known, before the last frame
         ends."""
         from archivey.internal.streams.codecs.lzx_decoder import (
@@ -133,14 +139,14 @@ class Decompressor:
         # The frame that waited for input may now be shorter: try it again.
         self._starved = False
 
-    def reset(self, output_size: int | None = None) -> None:
+    def reset(self, output_size: SupportsIndex | None = None) -> None:
         """Start again with an empty window, as at the start of a cabinet folder."""
         if output_size is not None:
             output_size = u64(output_size, "output_size")
         self.__init__(self._window_bits, output_size=output_size)
 
     def decompress(
-        self, data: bytes | bytearray | memoryview, max_length: int = -1
+        self, data: bytes | bytearray | memoryview, max_length: SupportsIndex = -1
     ) -> bytes:
         max_length = index(max_length, "max_length")
         if self.eof:
@@ -155,7 +161,7 @@ class Decompressor:
             self._starved = False
         return self._run(max_length)
 
-    def flush(self, max_length: int = -1) -> bytes:
+    def flush(self, max_length: SupportsIndex = -1) -> bytes:
         """Mark the end of the input and return the rest of the output, at most
         ``max_length`` bytes a call; a frame the input still does not cover raises
         ``TruncatedError``."""

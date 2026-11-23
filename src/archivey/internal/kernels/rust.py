@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, SupportsIndex, TypeVar
 
 from archivey.internal.kernels._select import (
     Kernels,
@@ -62,7 +62,9 @@ def crc16_arc(module: ModuleType) -> Crc16:
     """The package's ``crc16_arc(data, value=0)``."""
     kernel = module.crc16_arc
 
-    def crc16(data: bytes | bytearray | memoryview, value: int = 0, /) -> int:
+    def crc16(
+        data: bytes | bytearray | memoryview, value: SupportsIndex | None = 0, /
+    ) -> int:
         with panic_to_corruption("CRC-16"):
             return kernel(data, value)
 
@@ -132,7 +134,7 @@ class Arm64Decoder(BranchDecoder):
     __slots__ = ()
     _label = "ARM64"
 
-    def __init__(self, module: Kernels, start_offset: int = 0) -> None:
+    def __init__(self, module: Kernels, start_offset: SupportsIndex = 0) -> None:
         super().__init__(module, lambda: module.filters.Arm64Decoder(start_offset))
 
 
@@ -140,11 +142,16 @@ class RiscvDecoder(BranchDecoder):
     __slots__ = ()
     _label = "RISC-V"
 
-    def __init__(self, module: Kernels, start_offset: int = 0) -> None:
+    def __init__(self, module: Kernels, start_offset: SupportsIndex = 0) -> None:
         super().__init__(module, lambda: module.filters.RiscvDecoder(start_offset))
 
 
 # ── LZO1X ─────────────────────────────────────────────────────────────────────────────
+
+
+def _given(**sizes: SupportsIndex | None) -> dict[str, SupportsIndex]:
+    """The sizes that are not ``None``."""
+    return {name: size for name, size in sizes.items() if size is not None}
 
 
 def lzo1x_decompress(module: Kernels) -> Lzo1xDecompress:
@@ -155,18 +162,13 @@ def lzo1x_decompress(module: Kernels) -> Lzo1xDecompress:
         block: bytes | bytearray | memoryview,
         /,
         *,
-        out_size: int | None = None,
-        max_size: int | None = None,
+        out_size: SupportsIndex | None = None,
+        max_size: SupportsIndex | None = None,
     ) -> bytes:
-        # Checked here, as the twin does: the child's proxy passes only one of them on.
-        if (out_size is None) == (max_size is None):
-            raise TypeError(
-                "lzo1x.decompress() takes exactly one of out_size= and max_size="
-            )
+        # The sizes given go on, so the kernel (or the child's proxy) checks them,
+        # and that exactly one is given, in its own order.
         with codec_errors(module, "LZO1X"):
-            if out_size is not None:
-                return kernel(block, out_size=out_size)
-            return kernel(block, max_size=max_size)
+            return kernel(block, **_given(out_size=out_size, max_size=max_size))
 
     return decompress
 
@@ -186,17 +188,11 @@ def apple_lz_decompress(module: Kernels, kernel: str) -> Lzo1xDecompress:
         data: bytes | bytearray | memoryview,
         /,
         *,
-        out_size: int | None = None,
-        max_size: int | None = None,
+        out_size: SupportsIndex | None = None,
+        max_size: SupportsIndex | None = None,
     ) -> bytes:
-        if (out_size is None) == (max_size is None):
-            raise TypeError(
-                f"{kernel}.decompress() takes exactly one of out_size= and max_size="
-            )
         with codec_errors(module, label):
-            if out_size is not None:
-                return decompress(data, out_size=out_size)
-            return decompress(data, max_size=max_size)
+            return decompress(data, **_given(out_size=out_size, max_size=max_size))
 
     return call
 
@@ -217,7 +213,7 @@ class LzwDecompressor(_Guarded):
         self,
         module: Kernels,
         *,
-        max_width: int | None = None,
+        max_width: SupportsIndex | None = None,
         block_mode: bool | None = None,
         nine_bit_widens: bool | None = None,
     ) -> None:
@@ -231,11 +227,11 @@ class LzwDecompressor(_Guarded):
         )
 
     def decompress(
-        self, data: bytes | bytearray | memoryview, max_length: int = -1
+        self, data: bytes | bytearray | memoryview, max_length: SupportsIndex = -1
     ) -> bytes:
         return self._run(lambda: self._k.decompress(data, max_length))
 
-    def flush(self, max_length: int = -1) -> bytes:
+    def flush(self, max_length: SupportsIndex = -1) -> bytes:
         return self._run(lambda: self._k.flush(max_length))
 
     @property
@@ -288,22 +284,26 @@ class LzxDecompressor(_Guarded):
     holds_decoder_child = True
 
     def __init__(
-        self, module: Kernels, window_bits: int, *, output_size: int | None = None
+        self,
+        module: Kernels,
+        window_bits: SupportsIndex,
+        *,
+        output_size: SupportsIndex | None = None,
     ) -> None:
         super().__init__(
             module,
             lambda: module.lzx.Decompressor(window_bits, output_size=output_size),
         )
 
-    def set_output_size(self, output_size: int) -> None:
+    def set_output_size(self, output_size: SupportsIndex) -> None:
         self._run(lambda: self._k.set_output_size(output_size))
 
     def decompress(
-        self, data: bytes | bytearray | memoryview, max_length: int = -1
+        self, data: bytes | bytearray | memoryview, max_length: SupportsIndex = -1
     ) -> bytes:
         return self._run(lambda: self._k.decompress(data, max_length))
 
-    def flush(self, max_length: int = -1) -> bytes:
+    def flush(self, max_length: SupportsIndex = -1) -> bytes:
         return self._run(lambda: self._k.flush(max_length))
 
     @property
@@ -340,14 +340,14 @@ class Bcj2Decompressor(_Guarded):
         jump: Any,
         rc: Any,
         *,
-        out_size: int,
+        out_size: SupportsIndex,
     ) -> None:
         super().__init__(
             module,
             lambda: module.bcj2.Decompressor(main, call, jump, rc, out_size=out_size),
         )
 
-    def read(self, max_length: int = -1) -> bytes:
+    def read(self, max_length: SupportsIndex = -1) -> bytes:
         return self._run(lambda: self._k.read(max_length))
 
     @property

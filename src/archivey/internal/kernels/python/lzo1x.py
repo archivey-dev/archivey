@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing import SupportsIndex
+
 from archivey.exceptions import CorruptionError
 from archivey.internal.kernels.python._args import u64
 from archivey.internal.kernels.python._buffers import raw_bytes
@@ -12,8 +14,8 @@ def decompress(
     block: bytes | bytearray | memoryview,
     /,
     *,
-    out_size: int | None = None,
-    max_size: int | None = None,
+    out_size: SupportsIndex | None = None,
+    max_size: SupportsIndex | None = None,
 ) -> bytes:
     """One LZO1X block: exactly ``out_size`` bytes (lzop records each block's size), or
     at most ``max_size`` (SquashFS records only the most a block may decode to). Exactly

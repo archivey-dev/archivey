@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import operator
 import struct
-from typing import Protocol
+from typing import Protocol, SupportsIndex
 
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.kernels.python._args import index, u64
@@ -209,7 +209,7 @@ class Decompressor:
         jump: _Readable,
         rc: _Readable,
         *,
-        out_size: int,
+        out_size: SupportsIndex,
     ) -> None:
         out_size = u64(out_size, "out_size")
         self._streams = tuple(_Counted(s) for s in (main, call, jump, rc))
@@ -260,7 +260,7 @@ class Decompressor:
             rc - self._rc.left(),
         )
 
-    def read(self, max_length: int = -1) -> bytes:
+    def read(self, max_length: SupportsIndex = -1) -> bytes:
         """Up to ``max_length`` bytes of output (all of it when negative); ``b""`` at
         the end. ``read(0)`` decodes nothing and reads no input: it raises an error
         the decoder holds, else returns ``b""``."""

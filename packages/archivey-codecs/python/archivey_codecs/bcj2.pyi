@@ -1,4 +1,4 @@
-from typing import Protocol, Self
+from typing import Protocol, Self, SupportsIndex
 
 from _typeshed import ReadableBuffer as Buffer
 
@@ -13,9 +13,9 @@ class Decompressor:
         jump: _Readable,
         rc: _Readable,
         *,
-        out_size: int,
+        out_size: SupportsIndex,
     ) -> None: ...
-    def read(self, max_length: int = -1) -> bytes:
+    def read(self, max_length: SupportsIndex = -1) -> bytes:
         """Up to ``max_length`` bytes (all when negative). The bytes before an error
         come first, and the error raises from the next call. ``read(0)`` decodes
         nothing and reads no input: it raises an error the decoder holds."""

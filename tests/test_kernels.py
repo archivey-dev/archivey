@@ -685,17 +685,16 @@ def test_a_panic_in_an_lzo_read_is_corruption(monkeypatch: pytest.MonkeyPatch) -
 
 @pytest.mark.parametrize("codecs", [True, False], ids=["rust", "python"])
 @pytest.mark.parametrize("sizes", [{}, {"out_size": 3, "max_size": 3}])
-def test_lzo_takes_exactly_one_size(
-    monkeypatch: pytest.MonkeyPatch, codecs: bool, sizes: dict[str, int]
-) -> None:
-    """Both sides refuse a call with both sizes or neither, before decoding."""
-    _fake(monkeypatch, lzo1x=1)
+def test_lzo_takes_exactly_one_size(codecs: bool, sizes: dict[str, int]) -> None:
+    """Both sides refuse a call with both sizes or neither, before decoding: the
+    package's own check, which the wrapper leaves to it."""
+    if codecs and not deps.archivey_codecs.available():
+        pytest.skip("archivey-codecs is not installed")
     excluded = frozenset() if codecs else EXCLUDED
     lzo = kernels.lzo1x(excluded, isolated=False)
     assert (lzo.library is not None) is codecs
     with pytest.raises(TypeError, match="exactly one of out_size= and max_size="):
         lzo.decompress(_LZO_BLOCK, **sizes)
-    assert _FakeLzo1x.calls == []
 
 
 def test_a_zipcrypto_state_refuses_every_call_after_a_panic(
@@ -2084,6 +2083,17 @@ _THROUGH_THE_CHILD: dict[str, Callable[[Callable[..., Any]], object]] = {
         b"\x11\0\0", max_size=_IntLike(9)
     ),
     "lzo1x block None": lambda k: k("lzo1x").decompress(None, max_size=9),
+    # Two bad arguments: the same one is reported first.
+    "lzw max_width float and block_mode int": lambda k: k("lzw").Decompressor(
+        max_width=1.5, block_mode=1
+    ),
+    "lzx window_bits and output_size": lambda k: k("lzx").Decompressor(
+        0, output_size=-1
+    ),
+    "lzo1x block None and out_size float": lambda k: k("lzo1x").decompress(
+        None, out_size=1.0
+    ),
+    "lzo1x block None and no size": lambda k: k("lzo1x").decompress(None),
 }
 
 

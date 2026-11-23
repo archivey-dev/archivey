@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing import SupportsIndex
+
 from archivey.exceptions import CorruptionError
 from archivey.internal.kernels.python._args import u64
 from archivey.internal.kernels.python._buffers import raw_bytes
@@ -12,8 +14,8 @@ def decompress(
     data: bytes | bytearray | memoryview,
     /,
     *,
-    out_size: int | None = None,
-    max_size: int | None = None,
+    out_size: SupportsIndex | None = None,
+    max_size: SupportsIndex | None = None,
 ) -> bytes:
     """Decode a whole LZFSE stream (blocks up to ``bvx$``, nothing after it): exactly
     ``out_size`` bytes, or at most ``max_size``. Exactly one of the two is given. Damage

@@ -25,7 +25,7 @@ from __future__ import annotations
 import functools
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, overload
+from typing import Any, Literal, Protocol, SupportsIndex, overload
 
 from archivey.internal.kernels._select import (
     caused_by_panic,
@@ -82,7 +82,7 @@ _CODECS = OptionalLibrary.ARCHIVEY_CODECS
 class Crc16(Protocol):
     """``crc16_arc(data, value=0)``: CRC-16/ARC of ``data`` going on from ``value``."""
 
-    def __call__(self, data: Buffer, value: int = 0, /) -> int: ...
+    def __call__(self, data: Buffer, value: SupportsIndex | None = 0, /) -> int: ...
 
 
 class Readable(Protocol):
@@ -123,9 +123,9 @@ class LzwDecompressor(Protocol):
     """``lzw.Decompressor(*, max_width=None, block_mode=None, nine_bit_widens=None)``:
     Unix ``compress`` with the ``lzma.LZMADecompressor`` interface plus ``flush()``."""
 
-    def decompress(self, data: Buffer, max_length: int = -1) -> bytes: ...
+    def decompress(self, data: Buffer, max_length: SupportsIndex = -1) -> bytes: ...
 
-    def flush(self, max_length: int = -1) -> bytes: ...
+    def flush(self, max_length: SupportsIndex = -1) -> bytes: ...
 
     @property
     def eof(self) -> bool: ...
@@ -161,11 +161,11 @@ class LzxDecompressor(Protocol):
     ``set_output_size()``. It has no ``unused_data`` or ``total_in``: the stream ends
     at its output size, and the Python decoder reads its input ahead of the output."""
 
-    def set_output_size(self, output_size: int, /) -> None: ...
+    def set_output_size(self, output_size: SupportsIndex, /) -> None: ...
 
-    def decompress(self, data: Buffer, max_length: int = -1) -> bytes: ...
+    def decompress(self, data: Buffer, max_length: SupportsIndex = -1) -> bytes: ...
 
-    def flush(self, max_length: int = -1) -> bytes: ...
+    def flush(self, max_length: SupportsIndex = -1) -> bytes: ...
 
     @property
     def eof(self) -> bool: ...
@@ -184,7 +184,7 @@ class Bcj2Decompressor(Protocol):
     """``bcj2.Decompressor(main, call, jump, rc, *, out_size)``: 7-Zip's BCJ2 over its
     four input streams, read with :meth:`read`."""
 
-    def read(self, max_length: int = -1) -> bytes: ...
+    def read(self, max_length: SupportsIndex = -1) -> bytes: ...
 
     @property
     def eof(self) -> bool: ...
@@ -210,25 +210,25 @@ class ZipCryptoFactory(Protocol):
 
 
 class BranchFactory(Protocol):
-    def __call__(self, start_offset: int = 0) -> BranchDecoder: ...
+    def __call__(self, start_offset: SupportsIndex = 0) -> BranchDecoder: ...
 
 
 class Lzo1xDecompress(Protocol):
     """Exactly one of ``out_size=`` and ``max_size=``."""
 
     @overload
-    def __call__(self, block: Buffer, /, *, out_size: int) -> bytes: ...
+    def __call__(self, block: Buffer, /, *, out_size: SupportsIndex) -> bytes: ...
 
     @overload
-    def __call__(self, block: Buffer, /, *, max_size: int) -> bytes: ...
+    def __call__(self, block: Buffer, /, *, max_size: SupportsIndex) -> bytes: ...
 
     def __call__(
         self,
         block: Buffer,
         /,
         *,
-        out_size: int | None = None,
-        max_size: int | None = None,
+        out_size: SupportsIndex | None = None,
+        max_size: SupportsIndex | None = None,
     ) -> bytes: ...
 
 
@@ -236,7 +236,7 @@ class LzwFactory(Protocol):
     def __call__(
         self,
         *,
-        max_width: int | None = None,
+        max_width: SupportsIndex | None = None,
         block_mode: bool | None = None,
         nine_bit_widens: bool | None = None,
     ) -> LzwDecompressor: ...
@@ -244,7 +244,7 @@ class LzwFactory(Protocol):
 
 class LzxFactory(Protocol):
     def __call__(
-        self, window_bits: int, *, output_size: int | None = None
+        self, window_bits: SupportsIndex, *, output_size: SupportsIndex | None = None
     ) -> LzxDecompressor: ...
 
 
@@ -256,7 +256,7 @@ class Bcj2Factory(Protocol):
         jump: Readable,
         rc: Readable,
         *,
-        out_size: int,
+        out_size: SupportsIndex,
     ) -> Bcj2Decompressor: ...
 
 

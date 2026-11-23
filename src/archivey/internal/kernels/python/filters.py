@@ -8,6 +8,7 @@ stream fed in chunks.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import SupportsIndex
 
 from archivey.internal.kernels.python._args import u64
 from archivey.internal.kernels.python._buffers import raw_bytes
@@ -26,7 +27,7 @@ class _BranchDecoder:
 
     _decode: Callable[[bytes, int], bytes]
 
-    def __init__(self, start_offset: int = 0) -> None:
+    def __init__(self, start_offset: SupportsIndex = 0) -> None:
         # The pc of the first byte in self._raw.
         self._position = u64(start_offset, "start_offset")
         self._raw = b""  # input not yet decoded: the few bytes decode left

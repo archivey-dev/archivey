@@ -22,6 +22,10 @@ def index(value: SupportsIndex, name: str) -> int:
     try:
         return operator.index(value)
     except TypeError as exc:
+        # As PyO3: only an exact ``TypeError`` gets the prefix; a subclass raised by
+        # an ``__index__`` hook goes on as it is.
+        if type(exc) is not TypeError:
+            raise
         raise TypeError(f"argument '{name}': {exc}") from None
 
 

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, SupportsIndex, cast
 
 from archivey.internal import logs
 from archivey.internal.kernels.python._args import flag, index, u64
@@ -130,12 +130,12 @@ class ChildBranchDecoder(_Counted):
 class ChildLzwDecompressor(_Counted):
     """``lzw.Decompressor`` in a child."""
 
-    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+    def decompress(self, data: bytes, max_length: SupportsIndex = -1) -> bytes:
         return self._call(
             "decompress", raw_bytes(data), index(max_length, "max_length")
         )
 
-    def flush(self, max_length: int = -1) -> bytes:
+    def flush(self, max_length: SupportsIndex = -1) -> bytes:
         return self._call("flush", None, index(max_length, "max_length"))
 
     @property
@@ -172,15 +172,15 @@ class ChildLzwDecompressor(_Counted):
 class ChildLzxDecompressor(_Counted):
     """``lzx.Decompressor`` in a child."""
 
-    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+    def decompress(self, data: bytes, max_length: SupportsIndex = -1) -> bytes:
         return self._call(
             "decompress", raw_bytes(data), index(max_length, "max_length")
         )
 
-    def flush(self, max_length: int = -1) -> bytes:
+    def flush(self, max_length: SupportsIndex = -1) -> bytes:
         return self._call("flush", None, index(max_length, "max_length"))
 
-    def set_output_size(self, output_size: int) -> None:
+    def set_output_size(self, output_size: SupportsIndex) -> None:
         self._call("set_output_size", None, u64(output_size, "output_size"))
 
     @property
@@ -203,7 +203,7 @@ class _ChildLzx:
         self._kernels = kernels
 
     def __call__(
-        self, window_bits: int, *, output_size: int | None = None
+        self, window_bits: SupportsIndex, *, output_size: SupportsIndex | None = None
     ) -> ChildLzxDecompressor:
         if output_size is not None:
             output_size = u64(output_size, "output_size")
@@ -251,28 +251,42 @@ class ChildCodecs:
     def _lzw(
         self,
         *,
-        max_width: int | None = None,
+        max_width: SupportsIndex | None = None,
         block_mode: bool | None = None,
         nine_bit_widens: bool | None = None,
     ) -> ChildLzwDecompressor:
+        # In the package's order: PyO3 checks the bools before the body reads
+        # ``max_width``.
+        block_mode = flag(block_mode, "block_mode")
+        nine_bit_widens = flag(nine_bit_widens, "nine_bit_widens")
         if max_width is not None:
             max_width = index(max_width, "max_width")
         child = self.build(
             "lzw.Decompressor",
             max_width=max_width,
-            block_mode=flag(block_mode, "block_mode"),
-            nine_bit_widens=flag(nine_bit_widens, "nine_bit_widens"),
+            block_mode=block_mode,
+            nine_bit_widens=nine_bit_widens,
         )
         return ChildLzwDecompressor(child)
 
     def _lzo1x(
-        self, block: bytes, *, out_size: int | None = None, max_size: int | None = None
+        self,
+        block: bytes,
+        *,
+        out_size: SupportsIndex | None = None,
+        max_size: SupportsIndex | None = None,
     ) -> bytes:
-        block = raw_bytes(block)
+        # In the package's order: the sizes, then that exactly one is given, then
+        # the block.
         if out_size is not None:
             out_size = u64(out_size, "out_size")
         if max_size is not None:
             max_size = u64(max_size, "max_size")
+        if (out_size is None) == (max_size is None):
+            raise TypeError(
+                "lzo1x.decompress() takes exactly one of out_size= and max_size="
+            )
+        block = raw_bytes(block)
         child = _start()
         try:
             return child.call("lzo1x", block, (out_size, max_size))

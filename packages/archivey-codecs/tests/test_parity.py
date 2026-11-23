@@ -1378,6 +1378,17 @@ class _Refusing:
         raise OSError("refused")
 
 
+class _IndexTypeError(TypeError):
+    """A ``TypeError`` subclass, which PyO3 passes on without the argument's name."""
+
+
+class _RefusingAsTypeError:
+    """An ``__index__`` that raises a ``TypeError`` subclass."""
+
+    def __index__(self) -> int:
+        raise _IndexTypeError("refused")
+
+
 def _bcj2(codecs: object, *, out_size: object = 4, main: object = None) -> object:
     """A BCJ2 decoder whose main stream reads as ``main`` gives, if given."""
     first = types.SimpleNamespace(read=lambda n: main) if main is not None else _EMPTY()
@@ -1442,6 +1453,31 @@ _BAD_ARGUMENTS: dict[str, Callable[[object], object]] = {
     "lzx output_size huge": lambda c: c.lzx.Decompressor(15, output_size=_HUGE),
     "lzx max_length raises": lambda c: c.lzx.Decompressor(15).decompress(
         b"", _Refusing()
+    ),
+    # A TypeError subclass from a hook is not prefixed with the argument's name.
+    "arm64 start_offset TypeError subclass": lambda c: c.filters.Arm64Decoder(
+        _RefusingAsTypeError()
+    ),
+    "lzx window_bits TypeError subclass": lambda c: c.lzx.Decompressor(
+        _RefusingAsTypeError()
+    ),
+    "lzx flush max_length TypeError subclass": lambda c: c.lzx.Decompressor(15).flush(
+        _RefusingAsTypeError()
+    ),
+    # Two bad arguments: both sides report the same one first.
+    "lzx window_bits and output_size": lambda c: c.lzx.Decompressor(0, output_size=-1),
+    "lzw max_width float and block_mode int": lambda c: c.lzw.Decompressor(
+        max_width=1.5, block_mode=1
+    ),
+    "lzo1x block list and out_size float": lambda c: c.lzo1x.decompress(
+        [1], out_size=1.0
+    ),
+    "lzo1x block list and no size": lambda c: c.lzo1x.decompress([1]),
+    "lzfse both sizes negative": lambda c: c.lzfse.decompress(
+        b"bvx$", out_size=-1, max_size=-1
+    ),
+    "bcj2 out_size float and a list stream": lambda c: _bcj2(
+        c, out_size=1.0, main=[0]
     ),
     "lzx window_bits float": lambda c: c.lzx.Decompressor(15.0),
     "lzx output_size negative": lambda c: c.lzx.Decompressor(15, output_size=-1),

@@ -7,6 +7,8 @@ gives it the package's API, a port of the package's ``LzwDecompressor`` wrapper.
 
 from __future__ import annotations
 
+from typing import SupportsIndex
+
 from archivey.exceptions import CorruptionError
 from archivey.internal.kernels.python._args import flag, index
 from archivey.internal.kernels.python._buffers import raw_bytes
@@ -38,7 +40,7 @@ class Decompressor:
     def __init__(
         self,
         *,
-        max_width: int | None = None,
+        max_width: SupportsIndex | None = None,
         block_mode: bool | None = None,
         nine_bit_widens: bool | None = None,
     ) -> None:
@@ -46,10 +48,12 @@ class Decompressor:
             LzwState,
         )
 
-        if max_width is not None:
-            max_width = index(max_width, "max_width")
+        # In the package's order: PyO3 checks the bools before its body reads
+        # ``max_width``.
         block_mode = flag(block_mode, "block_mode")
         nine_bit_widens = flag(nine_bit_widens, "nine_bit_widens")
+        if max_width is not None:
+            max_width = index(max_width, "max_width")
         # As in the package, ``max_width`` needs ``block_mode``, and a lone
         # ``block_mode`` is ignored (the header is read from the stream).
         if max_width is not None and block_mode is None:
@@ -119,7 +123,7 @@ class Decompressor:
     # ── Decoding ─────────────────────────────────────────────────────────────────────
 
     def decompress(
-        self, data: bytes | bytearray | memoryview, max_length: int = -1
+        self, data: bytes | bytearray | memoryview, max_length: SupportsIndex = -1
     ) -> bytes:
         max_length = index(max_length, "max_length")
         if self.eof:
@@ -147,7 +151,7 @@ class Decompressor:
         self._clear_offsets = first + self._clear_offsets
         return out
 
-    def flush(self, max_length: int = -1) -> bytes:
+    def flush(self, max_length: SupportsIndex = -1) -> bytes:
         """Mark the end of the input and return the rest of the output, at most
         ``max_length`` bytes a call; ``eof`` is true once all of it is returned."""
         max_length = index(max_length, "max_length")

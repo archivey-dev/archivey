@@ -10,6 +10,7 @@ left out. The twins raise archivey's errors, as the package's kernels do through
 from __future__ import annotations
 
 import operator
+from typing import SupportsIndex
 
 from archivey.internal.kernels.python._buffers import raw_bytes
 
@@ -27,7 +28,9 @@ def _crc16_table() -> list[int]:
 _CRC16_TABLE = _crc16_table()
 
 
-def crc16_arc(data: bytes | bytearray | memoryview, value: int | None = 0, /) -> int:
+def crc16_arc(
+    data: bytes | bytearray | memoryview, value: SupportsIndex | None = 0, /
+) -> int:
     """CRC-16/ARC (polynomial 0x8005, reflected) of ``data``, going on from ``value``:
     the checksum LHA keeps for its data and headers."""
     # As the package: ``None`` is 0, and an int is compared however large.
