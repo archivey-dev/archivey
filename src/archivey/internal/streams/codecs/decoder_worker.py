@@ -360,7 +360,6 @@ class _Codecs:
         "header_params",
         "nine_bit_widens",
         "clear_offsets",
-        "unused_data",
         "output_size",
         "total_in",
         "total_out",

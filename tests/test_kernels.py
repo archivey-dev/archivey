@@ -915,6 +915,17 @@ def test_the_switch_gives_the_same_signature_on_both_sides() -> None:
         kernels.lzx(frozenset(), isolated=False).Decompressor(15, out_size=3)
 
 
+def test_the_child_does_not_send_lzx_buffered_input() -> None:
+    """The worker reports no ``unused_data``: LZX's getter copies its buffered input,
+    and no proxy reads it."""
+    archivey_codecs = deps.archivey_codecs.load()
+    if archivey_codecs is None:
+        pytest.skip("needs archivey-codecs")
+    worker = decoder_worker._Codecs(archivey_codecs)
+    worker.build("lzx.Decompressor", [15], {"output_size": 5})
+    assert "unused_data" not in worker.report()
+
+
 def _z_with_a_bad_last_code() -> tuple[bytes, bytes]:
     """A widening 9-bit ``.Z`` stream whose last code is bad, and its clean data. The
     table fills near the end, so the bad code is met by the final pass, after it has

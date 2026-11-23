@@ -157,7 +157,9 @@ class ChildLzwDecompressor(_Counted):
 
     @property
     def unused_data(self) -> bytes:
-        return cast("bytes", self._child.reported("unused_data"))
+        # A .Z stream ends where its input ends: nothing follows it. (Not reported:
+        # LZX's getter copies its buffered input, and no proxy of LZX reads it.)
+        return b""
 
 
 class ChildLzxDecompressor(_Counted):
