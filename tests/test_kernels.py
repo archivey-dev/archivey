@@ -75,7 +75,7 @@ from archivey.internal.streams.codecs.unix_compress_decoder import (
 )
 from tests.bcj2_util import bcj2_encode
 from tests.cab_util import CabFile, CabFolder, LzxEncoder, write_cab
-from tests.conftest import requires
+from tests.conftest import CPYTHON, requires
 from tests.lha_util import Member, archive
 from tests.streams_util import make_unix_compress
 from tests.zipcrypto import build_stored_zipcrypto_zip, build_zipcrypto_zip
@@ -358,6 +358,10 @@ def test_a_latch_raises_a_fresh_copy_each_time(panic: type[BaseException]) -> No
                 raised.append((frames, kernels.caused_by_panic(exc)))
                 del exc
         del wrapper
+        if not CPYTHON:
+            # PyPy frees nothing without a collection; the wrapper must still go
+            # with one, so no raised copy keeps it alive.
+            gc.collect()
         alive = ref() is not None
     finally:
         gc.enable()
