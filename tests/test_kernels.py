@@ -56,6 +56,11 @@ from archivey.internal.streams.codecs.decoder_child import (
     rebuild_error,
 )
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, ISOLATED
+from archivey.internal.streams.codecs.lzfse_decoder import (
+    decoder,
+    lzfse_decompress,
+    lzvn_decompress,
+)
 from archivey.internal.streams.codecs.lzma_filter_decoder import (
     branch_maker,
 )
@@ -78,6 +83,7 @@ from tests.zipcrypto import build_stored_zipcrypto_zip, build_zipcrypto_zip
 EXCLUDED = frozenset({OptionalLibrary.ARCHIVEY_CODECS})
 TWIN_BRANCHES = (filters_twin.Arm64Decoder, filters_twin.RiscvDecoder)
 OFF = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={"archivey-codecs"}))
+DMG_FIXTURES = Path(__file__).parent / "fixtures" / "external" / "dmg_hdiutil"
 RISCV_7Z = Path(__file__).parent / "fixtures" / "sevenzip" / "riscv_lzma2.7z"
 # 12 000 lines of text in lzop blocks, as tests/fixtures/external/lzop/README says.
 LZOP_TEXT = Path(__file__).parent / "fixtures" / "external" / "lzop" / "text.txt.lzo"
@@ -763,6 +769,120 @@ def test_other_exceptions_pass_unchanged() -> None:
         raise KeyboardInterrupt
 
 
+# ── LZFSE and LZVN ────────────────────────────────────────────────────────────────────
+
+
+def _fake_apple(monkeypatch: pytest.MonkeyPatch, panic: bool = False, **kernels: int):
+    """A fake package whose ``lzfse`` and ``lzvn`` run the Python decoders with the
+    kernel's ``max_size`` contract, recording each call as ``(kernel, max_size)``;
+    with ``panic`` set, each raises the fake panic instead."""
+    module = _fake(monkeypatch, **kernels)
+    calls: list[tuple[str, int]] = []
+
+    def kernel(name: str, python):
+        def decompress(data: bytes, *, max_size: int) -> bytes:
+            calls.append((name, max_size))
+            if panic:
+                raise PanicException("index out of bounds")
+            try:
+                return python(data, max_size)
+            except TruncatedError as exc:
+                raise module.TruncatedDataError(exc.raw_message) from None
+            except CorruptionError as exc:
+                raise module.CorruptDataError(exc.raw_message) from None
+
+        return types.SimpleNamespace(decompress=decompress)
+
+    module.lzfse = kernel("lzfse", lzfse_decompress)
+    module.lzvn = kernel("lzvn", lzvn_decompress)
+    return calls
+
+
+def _read_all(path: Path, config: ArchiveyConfig | None = None) -> dict[str, bytes]:
+    with open_archive(path, config=config) as reader:
+        return {m.name: reader.read(m) for m in reader.members() if m.is_file}
+
+
+def test_lzfse_uses_the_kernel_unless_switched_off_or_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _fake_apple(monkeypatch, lzfse=1, lzvn=1)
+    lzfse = decoder("lzfse", frozenset(), isolated=False)
+    lzvn = decoder("lzvn", frozenset(), isolated=False)
+    stream = b"bvx-\x03\0\0\0abc" + b"bvx$"
+    assert lzfse(stream, 3) == b"abc"
+    assert lzvn(bytes([0x40, 0x01]) + b"a" + bytes([0x06]) + bytes(7), 4) == b"aaaa"
+    assert calls == [("lzfse", 3), ("lzvn", 4)]
+    # The kernel's errors come back as the Python decoder's, with its message.
+    with pytest.raises(CorruptionError, match="decodes to more than 2 bytes"):
+        lzfse(stream, 2)
+    with pytest.raises(TruncatedError, match="ends before its end-of-stream block"):
+        lzfse(stream[:-1], 3)
+    for excluded, isolated in ((EXCLUDED, False), (frozenset(), True)):
+        assert decoder("lzfse", excluded, isolated=isolated) is lzfse_decompress
+        assert decoder("lzvn", excluded, isolated=isolated) is lzvn_decompress
+    _fake_apple(monkeypatch, lzfse=0, lzvn=1)
+    assert decoder("lzfse", frozenset(), isolated=False) is lzfse_decompress
+
+
+def test_dmg_and_hfs_reads_use_the_kernels_unless_switched_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ULFO image's runs go through the LZFSE kernel, and its decmpfs file
+    ``compressed.txt`` (type 8) through the LZVN one; with the switch off, or under
+    ``NATIVE_DECODERS``, the Python decoders read the same bytes."""
+    path = DMG_FIXTURES / "hfs-ULFO.dmg"
+    expected = _read_all(path, OFF)
+    calls = _fake_apple(monkeypatch, lzfse=1, lzvn=1)
+    assert _read_all(path) == expected
+    assert {name for name, _size in calls} == {"lzfse", "lzvn"}
+    calls.clear()
+    isolated = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    for config in (OFF, isolated):
+        assert _read_all(path, config) == expected
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("name", "kernel", "match"),
+    [
+        ("hfs-ULFO.dmg", "lzfse", "lzfse run .* LZFSE decoder failed"),
+        # compressed.txt is decmpfs type 8: LZVN chunks in its resource fork.
+        ("hfs-UDRO.dmg", "lzvn", "compressed data of file .* LZVN decoder failed"),
+    ],
+)
+def test_a_panic_in_a_dmg_read_is_corruption_caused_by_it(
+    monkeypatch: pytest.MonkeyPatch, name: str, kernel: str, match: str
+) -> None:
+    """A panic in either kernel reaches the caller as ``CorruptionError`` that names
+    the run or the file, with the panic as its cause."""
+    _fake_apple(monkeypatch, panic=True, **{kernel: 1})
+    with pytest.raises(CorruptionError, match=match) as info:
+        _read_all(DMG_FIXTURES / name)
+    assert kernels.caused_by_panic(info.value)
+    assert isinstance(info.value.__cause__, PanicException)
+
+
+def test_opening_a_dmg_without_lzfse_runs_looks_up_no_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The LZFSE decoder is chosen at the first LZFSE run: opening and listing an
+    image with none (UDRO) never looks up the LZFSE or LZVN kernel."""
+    looked_up: list[str] = []
+    lookup = kernels.kernels
+
+    def spy(name: str, excluded: frozenset[OptionalLibrary]):
+        looked_up.append(name)
+        return lookup(name, excluded)
+
+    monkeypatch.setattr(kernels, "kernels", spy)
+    with open_archive(DMG_FIXTURES / "hfs-UDRO.dmg") as reader:
+        assert reader.members()
+    assert not {"lzfse", "lzvn"} & set(looked_up)
+    _read_all(DMG_FIXTURES / "hfs-ULFO.dmg")
+    assert "lzfse" in looked_up
+
+
 # ── The real package ──────────────────────────────────────────────────────────────────
 
 needs_codecs = pytest.mark.skipif(
@@ -1322,6 +1442,52 @@ def test_squashfs_lzo_uses_the_kernel_and_reads_the_same(name: str) -> None:
             )
     assert results[0] == results[1]
     assert results[0]
+
+
+@needs_codecs
+@pytest.mark.parametrize("name", ["hfs-ULFO.dmg", "apfs-ULFO.dmg", "hfs-UDZO.dmg"])
+def test_dmg_uses_the_kernels_and_reads_the_same(name: str) -> None:
+    """The real kernels read every file the Python decoders read, ``compressed.txt``
+    (LZVN in its resource fork) included."""
+    path = DMG_FIXTURES / name
+    assert decoder("lzfse", frozenset(), isolated=False) is not lzfse_decompress
+    assert _read_all(path) == _read_all(path, OFF)
+
+
+@needs_codecs
+def test_damaged_lzfse_runs_fail_the_same_way() -> None:
+    """Damage inside the image's LZFSE runs gives the same error with the kernel as
+    with the Python decoder."""
+    from tests.test_lzfse_decoder import _LZFSE, _tables
+
+    path = DMG_FIXTURES / "hfs-ULFO.dmg"
+    raw = path.read_bytes()
+    runs = [
+        (off, length)
+        for _crc, table in _tables(path)
+        for kind, _sectors, off, length in table
+        if kind == _LZFSE
+    ]
+    rng = random.Random(5)
+    differing = 0
+    for _ in range(30):
+        bad = bytearray(raw)
+        off, length = rng.choice(runs)
+        at = off + rng.randrange(length)
+        bad[at] ^= 1 << rng.randrange(8)
+        results = []
+        for config in (None, OFF):
+            try:
+                with open_archive(io.BytesIO(bytes(bad)), config=config) as reader:
+                    got = {
+                        m.name: reader.read(m) for m in reader.members() if m.is_file
+                    }
+                results.append(("ok", got))
+            except (CorruptionError, TruncatedError, UnsupportedFeatureError) as exc:
+                results.append((type(exc).__name__, str(exc)))
+        assert results[0] == results[1], at
+        differing += results[0][0] != "ok"
+    assert differing
 
 
 # ── LZX (CAB) ─────────────────────────────────────────────────────────────────────────

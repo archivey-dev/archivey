@@ -18,6 +18,7 @@ This is a pre-release. Every kernel has its final, standard-library-shaped API
 | `filters.Arm64Decoder`, `filters.RiscvDecoder` | 7z ARM64 and RISC-V branch filters | `kernels.python.filters` |
 | `lzx.Decompressor` | LZX folders in Microsoft cabinets | `kernels.python.lzx` |
 | `bcj2.Decompressor` | 7z BCJ2 (four-stream x86 filter) | `kernels.python.bcj2` |
+| `lzfse.decompress`, `lzvn.decompress` | LZFSE runs in DMG images, LZFSE and LZVN compressed files on HFS+ | `kernels.python.lzfse`, `kernels.python.lzvn` |
 
 Each twin (in `archivey.internal.kernels.python`) has the subset of the package's API
 that archivey's call sites use, with the same names, arguments and behaviour. It

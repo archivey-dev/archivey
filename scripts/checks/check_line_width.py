@@ -277,6 +277,8 @@ def segment(lines: list[str], *, docstring: bool) -> Layout:
         structural = (
             _hard_break(line)  # a deliberate line break: the line stays as it is
             or rest_stripped.startswith(("|", "<", "+--", "+=="))
+            # A mkdocstrings directive (``::: archivey.Name``) stands on its own line.
+            or (not docstring and rest_stripped.startswith(":::"))
             or HEADING.match(rest)
             or RULE.match(rest)
             or LINK_DEF.match(rest)

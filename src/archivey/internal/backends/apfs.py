@@ -30,7 +30,7 @@ import bisect
 import itertools
 import struct
 from array import array
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Container, Iterable, Iterator
 from contextlib import AbstractContextManager
 from typing import NamedTuple
 
@@ -109,11 +109,47 @@ MAX_DEPTH = 32
 READ_PIECE = 1 << 20
 # The format's NX_MAX_FILE_SYSTEMS: the superblock's volume array has this many slots.
 _MAX_VOLUMES = 100
-# A filesystem node's records cost about this much each beyond their bytes.
-_RECORD_COST = 64
+# What one record keeps beyond its bytes, by kind: (the first record of its object
+# id, each further one), rounded up from tracemalloc on CPython 3.11 (3.12 and 3.13
+# measured the same) over 1,000 to 350,000 records of the costliest shape: distinct
+# large ids and values, names and values of two bytes (one byte or none would be
+# CPython's cached objects), the fewest bytes the record parses from. The bytes are
+# charged as read; these weights are charged for what ``ApfsVolume._add`` keeps.
+# - inode: an ``Inode`` of ten ints and its dict slot, measured 366 to 396.
+# - directory record: a ``Child``, its name and its list slot, measured 116 to
+#   123; the first of a directory also a dict slot and a list, 258 to 288 in all.
+# - extended attribute: an ``Xattr``, its name and its value, measured 152 to
+#   183; the first of an object also a dict slot and a dict, 377 to 415 in all.
+#   That is for an ASCII name; a wider one is charged what its ``str`` keeps
+#   beyond its bytes on top (``_wider_than_read``).
+# - extent: the first of a stream adds a dict slot and an array, measured 134 to
+#   164; each further one 24 bytes of the array, fewer than its 40 bytes read.
+#   The first one with an encryption id adds a set entry, measured 18 to 76 more.
+# - sibling link: the first of an inode adds a dict slot and a count, measured 46
+#   to 76; a further one changes the count only.
+# Other kinds are read and not kept.
+_KEPT_WEIGHTS: dict[int, tuple[int, int]] = {
+    INODE: (400, 0),
+    DIR_REC: (288, 128),
+    XATTR: (416, 184),
+    EXTENT: (168, 0),
+    SIBLING_LINK: (80, 0),
+}
+_ENCRYPTED_STREAM_WEIGHT = 80
+# What one object map entry keeps (its record's bytes are not charged): the
+# (xid, flags, address) tuple of large ints and the dict slot, measured 201 to 232
+# on CPython 3.11, 3.12 and 3.13 over 1,000 to 350,000 entries.
+_OMAP_ENTRY_WEIGHT = 240
 # What one damaged range holds beyond its reason's text (the tuple, its bounds and
 # the index's entry for it), measured on CPython 3.11.
 _DAMAGE_COST = 200
+# A data stream with more extents and damaged ranges than this has its check kept
+# (``stream_reader``). One kept check holds at most _VIEW_COST bytes, and
+# _VIEW_RANGE_COST more per damaged range it bounds (the range itself is charged
+# already); measured on CPython 3.11.
+_KEPT_VIEW_MIN = 16
+_VIEW_COST = 256
+_VIEW_RANGE_COST = 64
 
 
 def fletcher64(block: bytes) -> int:
@@ -421,7 +457,7 @@ def _walk(
                 )
         except (CorruptionError, TruncatedError) as exc:
             virtual = None if resolve is None else ident
-            damage.append(Damage(low, high, address, str(exc), virtual))
+            damage.append(Damage(low, high, address, exc.raw_message, virtual))
             continue
         if node.leaf:
             yield _Leaf(node.records, low, high, address)
@@ -466,7 +502,7 @@ class _Omap:
         try:
             head = blocks.object(address, (_T_OMAP,), oid=None, max_xid=max_xid)
         except (CorruptionError, TruncatedError) as exc:
-            self.damage.append(Damage(None, None, address, str(exc)))
+            self.damage.append(Damage(None, None, address, exc.raw_message))
             return
         (tree,) = struct.unpack_from("<Q", head, 48)
         for leaf in _walk(
@@ -479,7 +515,7 @@ class _Omap:
             damage=self.damage,
             seen=set(),
         ):
-            charge(len(leaf.records) * _RECORD_COST, what)
+            charge(len(leaf.records) * _OMAP_ENTRY_WEIGHT, what)
             # A leaf is all or nothing: a value that does not parse drops the leaf.
             found: list[tuple[int, int, int, int]] = []
             for key, value in leaf.records:
@@ -769,7 +805,7 @@ class ApfsContainer:
                 volume.load_omap()
                 volumes.append(volume)
             except (CorruptionError, TruncatedError) as exc:
-                lost.append(str(exc))
+                lost.append(exc.raw_message)
         return volumes, refused, lost
 
 
@@ -852,6 +888,17 @@ class FsTree:
         # Per inode: how many sibling-link records (one per hard-link name) it has.
         self.siblings: dict[int, int] = {}
         self.damage = DamageIndex(charge)
+        # Per data stream: its checked extents, for a stream costly to check
+        # (``stream_reader``). A kept check stays true for the life of the tree:
+        # ``extents`` and ``damage`` are complete once ``ApfsVolume.walk`` returns,
+        # and nothing adds to them after it.
+        self.stream_views: dict[int, _StreamView] = {}
+        self._charge = charge
+
+    def keep_view(self, stream: int, view: _StreamView) -> None:
+        if self._charge is not None:
+            self._charge(_VIEW_COST + _VIEW_RANGE_COST * len(view.lows))
+        self.stream_views[stream] = view
 
     def damaged(self, oid: int, kind: int) -> Damage | None:
         """The damaged range that may hold a record (``oid``, ``kind``), if any."""
@@ -938,25 +985,30 @@ class ApfsVolume:
             seen=set(),
         ):
             records = leaf.records
-            charge(
-                sum(len(k) + len(v) for k, v in records) + _RECORD_COST * len(records),
-                what,
-            )
+            charge(sum(len(k) + len(v) for k, v in records), what)
             try:
-                self._add(tree, records)
+                self._add(tree, records, lambda n: charge(n, what))
             except (CorruptionError, TruncatedError) as exc:
-                tree.damage.append(leaf.damage(str(exc)))
+                tree.damage.append(leaf.damage(exc.raw_message))
         return tree
 
-    def _add(self, tree: FsTree, records: list[tuple[bytes, bytes]]) -> None:
+    def _add(
+        self,
+        tree: FsTree,
+        records: list[tuple[bytes, bytes]],
+        charge: Callable[[int], None],
+    ) -> None:
         """One leaf's records into ``tree``. A record that does not parse is damage
         in a node whose checksum passed: the leaf is all or nothing, so it is parsed
-        in full before anything is kept, and the error leaves ``tree`` as it was."""
+        in full before anything is kept, and the error leaves ``tree`` as it was.
+        What the records keep (``_KEPT_WEIGHTS``) is charged to ``charge`` before
+        they are kept."""
         inodes: list[tuple[int, Inode]] = []
         children: list[tuple[int, Child]] = []
         xattrs: list[tuple[int, str, Xattr]] = []
         extents: list[tuple[int, int, int, int, int]] = []
         siblings: list[int] = []
+        wide = 0  # what attribute names keep beyond their bytes, past the weight's
         for key, value in records:
             (word,) = struct.unpack_from("<Q", key)
             oid, kind = word & _OID_MASK, word >> 60
@@ -966,7 +1018,9 @@ class ApfsVolume:
                 children.append((oid, self._child(key, value)))
             elif kind == XATTR:
                 name, attr = _xattr(key, value)
-                xattrs.append((oid, self.container.context.decode_name(name), attr))
+                text = self.container.context.decode_name(name)
+                xattrs.append((oid, text, attr))
+                wide += _wider_than_read(text, len(name))
             elif kind == SIBLING_LINK:
                 siblings.append(oid)
             elif kind == EXTENT:
@@ -977,6 +1031,16 @@ class ApfsVolume:
                 extents.append(
                     (oid, logical, flags_length & ((1 << 56) - 1), block, crypto)
                 )
+        charge(
+            wide
+            + _kept_weight(INODE, (oid for oid, _ in inodes), tree.inodes)
+            + _kept_weight(DIR_REC, (oid for oid, _ in children), tree.children)
+            + _kept_weight(XATTR, (oid for oid, _, _ in xattrs), tree.xattrs)
+            + _kept_weight(EXTENT, (each[0] for each in extents), tree.extents)
+            + _kept_weight(SIBLING_LINK, siblings, tree.siblings)
+            + _ENCRYPTED_STREAM_WEIGHT
+            * len({e[0] for e in extents if e[4]} - tree.encrypted_streams)
+        )
         for oid, inode in inodes:
             tree.inodes[oid] = inode
         for oid, child in children:
@@ -1007,6 +1071,34 @@ class ApfsVolume:
             raise CorruptionError("an APFS directory record is too short")
         file_id, _, flags = _DREC.unpack_from(value)
         return Child(_name(key[at : at + length]), file_id, flags & 0xF)
+
+
+def _wider_than_read(text: str, read: int) -> int:
+    """What the decoded name ``text`` keeps beyond the ``read`` bytes it came from
+    and the two-byte ASCII name the attribute weights were measured with. CPython
+    keeps a ``str`` at 1, 2 or 4 bytes a character, set by its widest character,
+    and a name that is not ASCII has a header 24 bytes larger: one astral
+    character in a long ASCII name keeps it at 4 bytes a character."""
+    if text.isascii():
+        return 0
+    widest = max(map(ord, text))
+    width = 4 if widest > 0xFFFF else 2 if widest > 0xFF else 1
+    return max(0, 24 + width * len(text) - read)
+
+
+def _kept_weight(kind: int, oids: Iterable[int], held: Container[int]) -> int:
+    """What records of ``kind`` for ``oids`` keep: the first weight for an id
+    ``held`` lacks (once), the further weight for each other record."""
+    first, further = _KEPT_WEIGHTS[kind]
+    new: set[int] = set()
+    total = 0
+    for oid in oids:
+        if oid in held or oid in new:
+            total += further
+        else:
+            new.add(oid)
+            total += first
+    return total
 
 
 def _inode(value: bytes) -> Inode:
@@ -1051,6 +1143,83 @@ def _xattr(key: bytes, value: bytes) -> tuple[bytes, Xattr]:
 # ── Data streams ─────────────────────────────────────────────────────────────────────
 
 
+class _StreamView(NamedTuple):
+    """What checking a data stream's extents found; nothing in it depends on the size
+    read or on the name of the file."""
+
+    # The first bad extent: ("overlap", its start, 0) or ("past", its first block,
+    # its end block); None when every extent is good.
+    fault: tuple[str, int, int] | None
+    # A read to a size above this meets a hole or a zero extent.
+    sparse_from: int
+    # The damaged ranges that may hold the stream's extent keys, in key order (the
+    # index's merged ranges are disjoint, so their lowest offsets ascend): those
+    # lowest offsets, and the running maximum of their highest offsets.
+    lows: tuple[int, ...]
+    peaks: tuple[float, ...]
+
+
+def _offsets(each: Damage, prefix: tuple[int, int]) -> tuple[int, float]:
+    """The lowest and highest offsets of the extent keys of stream ``prefix`` that the
+    damaged range ``each`` may hold."""
+    low = each.low[2] if each.low is not None and each.low[:2] == prefix else 0
+    high = (
+        each.high[2]
+        if each.high is not None and each.high[:2] == prefix
+        else float("inf")
+    )
+    return low, high
+
+
+def _check_stream(
+    flat: array[int], damage: DamageIndex, stream: int, bs: int, count: int
+) -> _StreamView:
+    """Check the extents ``flat`` of ``stream`` (in key order) once, and gather the
+    damaged ranges that may hold more of them."""
+    fault: tuple[str, int, int] | None = None
+    sparse_from: int | None = None
+    pos = 0
+    for i in range(0, len(flat), 3):
+        start, length, address = flat[i], flat[i + 1], flat[i + 2]
+        if start < pos:
+            fault = ("overlap", start, 0)
+            break
+        if start > pos and sparse_from is None:
+            sparse_from = pos
+        if address == 0:
+            if sparse_from is None or start < sparse_from:
+                sparse_from = start
+        elif address + -(-length // bs) > count:
+            fault = ("past", address, address + -(-length // bs))
+            break
+        pos = start + length
+    lows: list[int] = []
+    peaks: list[float] = []
+    prefix = (stream, EXTENT)
+    peak = float("-inf")
+    for each in damage.holding(prefix):
+        low, high = _offsets(each, prefix)
+        peak = max(peak, high)
+        lows.append(low)
+        peaks.append(peak)
+    sparse_from = pos if sparse_from is None else min(sparse_from, pos)
+    return _StreamView(fault, sparse_from, tuple(lows), tuple(peaks))
+
+
+def stream_view(volume: ApfsVolume, tree: FsTree, stream: int) -> _StreamView:
+    """The check of data stream ``stream``'s extents: kept on ``tree``, and charged,
+    when it is costly (``stream_reader``). Only the charge raises
+    (``ResourceLimitError``); a bad extent is recorded in the view, for the read."""
+    view = tree.stream_views.get(stream)
+    if view is None:
+        blocks = volume.container._blocks
+        flat = tree.extents.get(stream, array("Q"))
+        view = _check_stream(flat, tree.damage, stream, blocks.size, blocks.count)
+        if len(flat) // 3 + len(view.lows) > _KEPT_VIEW_MIN:
+            tree.keep_view(stream, view)
+    return view
+
+
 def stream_reader(
     volume: ApfsVolume, tree: FsTree, stream: int, size: int, what: str
 ) -> tuple[Callable[[int, int], bytes], bool]:
@@ -1058,7 +1227,12 @@ def stream_reader(
     exactly ``n`` bytes, or ``TruncatedError`` past ``size``; and whether the stream
     has holes. Holes read as zeros, except where a damaged node may hold the extent
     that fills them (``CorruptionError``). The extents are checked here, so a bad
-    extent fails the read that opens the stream."""
+    extent fails the read that opens the stream.
+
+    Inodes may share a stream, and each one opens it: a stream whose check costs more
+    than ``_KEPT_VIEW_MIN`` extents and damaged ranges is checked once and its
+    :class:`_StreamView` kept on ``tree`` and charged, so the calls together cost
+    what the stream holds and not that times the inodes."""
     blocks = volume.container._blocks
     bs = blocks.size
     if stream in tree.encrypted_streams:
@@ -1066,49 +1240,42 @@ def stream_reader(
             f"{what} has an extent with an encryption id on an unencrypted volume"
         )
     flat = tree.extents.get(stream, array("Q"))
-    starts = flat[0::3]
-    lengths = flat[1::3]
-    addresses = flat[2::3]
-    sparse = False
-    pos = 0
-    for start, length, address in zip(starts, lengths, addresses):
-        if start < pos:
-            raise CorruptionError(f"{what} has overlapping extents at byte {start}")
-        if start > pos and pos < size:
-            sparse = True
-        if address == 0 and start < size:
-            sparse = True
-        elif address and address + -(-length // bs) > blocks.count:
-            raise CorruptionError(
-                f"an extent of {what} (blocks {address} to {address + -(-length // bs)}) "
-                f"is past the container's {blocks.count} blocks"
-            )
-        pos = start + length
-    if pos < size:
-        sparse = True
-    # The damaged offsets of this stream's extent keys: [low, high] each.
-    lost: list[tuple[int, float, Damage]] = []
-    prefix = (stream, EXTENT)
-    for each in tree.damage.holding(prefix):
-        low = each.low[2] if each.low is not None and each.low[:2] == prefix else 0
-        high = (
-            each.high[2]
-            if each.high is not None and each.high[:2] == prefix
-            else float("inf")
+    view = stream_view(volume, tree, stream)
+    if view.fault is not None:
+        kind, first, last = view.fault
+        if kind == "overlap":
+            raise CorruptionError(f"{what} has overlapping extents at byte {first}")
+        raise CorruptionError(
+            f"an extent of {what} (blocks {first} to {last}) "
+            f"is past the container's {blocks.count} blocks"
         )
-        lost.append((low, high, each))
+    sparse = view.sparse_from < size
+    lows, peaks = view.lows, view.peaks
+    extents = range(len(flat) // 3)
+
+    def start_of(i: int) -> int:
+        return flat[3 * i]
 
     def hole(at: int, stop: int) -> None:
         """Serve zeros over [``at``, ``stop``), unless an extent the records cannot
         show may start between the last known extent before ``at`` and ``stop``."""
-        index = bisect.bisect_right(starts, at) - 1
-        before = starts[index] if index >= 0 else -1
-        for low, high, each in lost:
-            if low < stop and high > before:
-                raise CorruptionError(
-                    f"the extents of {what} from byte {at} are in a damaged node of "
-                    f"the filesystem tree ({each.place}: {each.reason})"
-                )
+        index = bisect.bisect_right(extents, at, key=start_of) - 1
+        before = flat[3 * index] if index >= 0 else -1
+        # The ranges that start below ``stop`` are the first ``below`` (they are in
+        # key order), and the first range whose high end is past ``before`` is where
+        # ``peaks`` first passes it: a scan of every range finds the same one.
+        below = bisect.bisect_left(lows, stop)
+        first = bisect.bisect_right(peaks, before)
+        if first < below:
+            # The view kept the bounds only; the range is found again, the same
+            # one since the tree's damage does not change after the walk.
+            prefix = (stream, EXTENT)
+            each = next(itertools.islice(tree.damage.holding(prefix), first, None))
+            assert _offsets(each, prefix)[0] == lows[first]
+            raise CorruptionError(
+                f"the extents of {what} from byte {at} are in a damaged node of "
+                f"the filesystem tree ({each.place}: {each.reason})"
+            )
 
     source = volume.container.source
 
@@ -1120,27 +1287,23 @@ def stream_reader(
         parts: list[bytes] = []
         at = offset
         end = offset + n
-        index = max(0, bisect.bisect_right(starts, at) - 1)
+        index = max(0, bisect.bisect_right(extents, at, key=start_of) - 1)
         while at < end:
-            if (
-                index < len(starts)
-                and starts[index] <= at < starts[index] + lengths[index]
-            ):
-                take = min(end, starts[index] + lengths[index]) - at
-                address = addresses[index]
-                if address:
-                    parts.append(
-                        source.read_exact(address * bs + at - starts[index], take)
-                    )
-                else:
-                    parts.append(bytes(take))
-                at += take
-                index += 1
-                continue
-            if index < len(starts) and starts[index] + lengths[index] <= at:
-                index += 1
-                continue
-            following = starts[index] if index < len(starts) else end
+            if index < len(extents):
+                start, length, address = flat[3 * index : 3 * index + 3]
+                if start <= at < start + length:
+                    take = min(end, start + length) - at
+                    if address:
+                        parts.append(source.read_exact(address * bs + at - start, take))
+                    else:
+                        parts.append(bytes(take))
+                    at += take
+                    index += 1
+                    continue
+                if start + length <= at:
+                    index += 1
+                    continue
+            following = flat[3 * index] if index < len(extents) else end
             take = min(end, following) - at
             hole(at, at + take)
             parts.append(bytes(take))
