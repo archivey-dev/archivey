@@ -61,7 +61,7 @@ env:
 
 jobs:
   rust-checks:
-    name: cargo fmt and clippy
+    name: cargo fmt, clippy and test
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -76,6 +76,11 @@ jobs:
       - name: cargo clippy
         working-directory: ${{ env.PACKAGE }}
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: cargo test
+        # The kernels' Rust unit tests: they check what no Python test can see, such as
+        # how far an output buffer's capacity grows.
+        working-directory: ${{ env.PACKAGE }}
+        run: cargo test --locked
 
   wheels:
     name: wheels / ${{ matrix.name }}
