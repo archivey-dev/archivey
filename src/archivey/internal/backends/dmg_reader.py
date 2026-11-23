@@ -69,6 +69,7 @@ from archivey.internal.backends.udif import (
     crc32_value,
 )
 from archivey.internal.format_adapter import register_builtin_format
+from archivey.internal.listing_limits import str_retained_bytes
 from archivey.internal.overrides import override
 from archivey.internal.streams.callers_source import from_source_callback
 from archivey.terminal import quoted
@@ -92,6 +93,9 @@ ENCRYPTED_V1 = b"cdsaencr"
 
 # The names macOS gives a volume it mounts with no usable name (``/Volumes/Untitled``).
 _UNTITLED = "Untitled"
+# What a member the listing holds to sort costs beyond its name, roughly: the member,
+# its record and its locator (``DmgReader._ordered``).
+_HELD_MEMBER_BYTES = 512
 
 
 class FileData(NamedTuple):
@@ -102,6 +106,7 @@ class FileData(NamedTuple):
     record: bytes  # its catalog file record
     decmpfs: hfsplus.Attribute | None  # its com.apple.decmpfs, when compressed
     refusal: tuple[type[ArchiveyError], str] | None = None
+    position: int = -1  # its place in the listing (``iter_members``)
 
 
 class ApfsData(NamedTuple):
@@ -112,6 +117,7 @@ class ApfsData(NamedTuple):
     oid: int
     compressed: bool
     refusal: tuple[type[ArchiveyError], str] | None = None
+    position: int = -1  # its place in the listing (``iter_members``)
 
 
 Locator = FileData | ApfsData | None
@@ -478,12 +484,19 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
         """Every member of every volume, in partition order, each HFS+ volume in
         catalog order (parent folder id, then name), each APFS volume a directory at a
         time from the root. Damage in one volume stops or thins that volume's listing;
-        the other volumes are listed, then the first error is raised."""
+        the other volumes are listed, then the first error is raised.
+
+        Where reading a volume's files in that order would decode a compressed run
+        twice, that volume's members come in data order instead
+        (:meth:`_in_data_order`), as CAB sorts its file table: each run is then
+        decoded once. Each locator carries its member's place in the order, which
+        tells ``UdifImage.member_reads`` which reads make a pass in listing order."""
         units = self._load()
         names = self._volume_names()
         failure = self._load_failure
         spanning = self._context._spanning_check
         check = None
+        position = 0
         for index, unit in enumerate(units):
             walk: _VolumeWalk | _ApfsWalk
             if unit.hfs is not None:
@@ -501,10 +514,15 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
                     check = self._checks[unit.part] = spanning(
                         ("dmg partition", unit.part)
                     )
-            for record in walk.members():
+            for record in self._ordered(unit, walk.members()):
+                locator = record.locator
+                if locator is not None:
+                    locator = locator._replace(position=position)
+                    record = record._replace(locator=locator)
+                position += 1
                 # A file whose read is refused proves nothing, whatever the CRC says.
                 if check is not None and (
-                    record.locator is not None and record.locator.refusal is None
+                    locator is not None and locator.refusal is None
                 ):
                     check.cover(record.member)
                 if self._encrypted:
@@ -514,6 +532,125 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
                 failure = walk.failure
         if failure is not None:
             raise failure
+
+    def _ordered(
+        self, unit: _Unit, walk: Iterator[MemberRecord[Locator]]
+    ) -> Iterator[MemberRecord[Locator]]:
+        """A volume's walk, whole, in the order :meth:`_in_data_order` picks; then
+        the error that stopped it, if any. The walk is held only while it fits the
+        listing limits (``max_members``, and ``max_metadata_bytes`` at a rough
+        weight per member): past either, the members come in listing order as they
+        are walked, and archivey refuses the listing at its limit."""
+        limits = self._context.config.listing_limits
+        records: list[MemberRecord[Locator]] = []
+        weight = 0
+        too_many = False
+        try:
+            for record in walk:
+                records.append(record)
+                weight += str_retained_bytes(record.member.name) + _HELD_MEMBER_BYTES
+                if (
+                    limits.max_members is not None and len(records) > limits.max_members
+                ) or (
+                    limits.max_metadata_bytes is not None
+                    and weight > limits.max_metadata_bytes
+                ):
+                    too_many = True
+                    break
+        except ArchiveyError:
+            yield from self._in_data_order(unit, records)
+            raise
+        if too_many:
+            yield from records
+            yield from walk
+            return
+        yield from self._in_data_order(unit, records)
+
+    def _in_data_order(
+        self, unit: _Unit, records: list[MemberRecord[Locator]]
+    ) -> list[MemberRecord[Locator]]:
+        """A volume's members in listing order, or, where reading the files in that
+        order would decode a compressed run twice, in data order.
+
+        The run cache holds a few runs (``udif.CACHE_RUNS``). Writers lay files out
+        as they copy them, so reading in listing order decodes each run once. In
+        another layout each file would decode a whole run again; the check replays
+        the cache over each file's disk ranges, with nothing read
+        (``UdifImage.decodes_twice``). Then the order is: directories and the other
+        members with no data ranges, in listing order (a directory still comes before
+        its contents); the files, by the disk offset of their first byte; the hard
+        links, in listing order (each after the member it names). As for SquashFS
+        fragments and CAB folders, the order changes for ``members()`` too."""
+        ranges = [self._ranges(unit, record) for record in records]
+        if not self._image.decodes_twice(r for r in ranges if r):
+            return records
+        first: list[MemberRecord[Locator]] = []
+        files: list[tuple[int, int, MemberRecord[Locator]]] = []
+        links: list[MemberRecord[Locator]] = []
+        for index, (record, spans) in enumerate(zip(records, ranges, strict=True)):
+            if record.member.type is MemberType.HARDLINK:
+                links.append(record)
+            elif spans:
+                files.append((spans[0][0], index, record))
+            else:
+                first.append(record)
+        files.sort(key=lambda item: item[:2])
+        return [*first, *(record for _, _, record in files), *links]
+
+    def _ranges(
+        self, unit: _Unit, record: MemberRecord[Locator]
+    ) -> list[tuple[int, int]]:
+        """The disk ranges a read of the member's data reads, in order, as far as
+        the listing knows them without reading more: an HFS+ fork's eight extents in
+        its record (the overflow ones are left out), an APFS stream's extents. Empty
+        for a member with no data, a refused one, and decmpfs data kept in its
+        attribute."""
+        locator = record.locator
+        if locator is None or locator.refusal is not None or not record.member.is_file:
+            return []
+        if isinstance(locator, FileData):
+            volume = unit.hfs
+            assert volume is not None
+            if locator.decmpfs is None:
+                fork = hfsplus.data_fork(locator.record)
+            else:
+                fork = hfsplus.resource_fork(locator.record)
+            base = getattr(volume.source, "start", 0)
+            size = volume.header.block_size
+            left = fork.size
+            spans: list[tuple[int, int]] = []
+            for start, count in fork.extents:
+                if left <= 0:
+                    break
+                length = min(count * size, left)
+                spans.append((base + start * size, base + start * size + length))
+                left -= length
+            return spans
+        volume = unit.apfs
+        assert volume is not None
+        tree = self._tree(locator.volume)
+        inode = tree.inodes.get(locator.oid)
+        if inode is None:
+            return []
+        stream = inode.stream
+        if locator.compressed:
+            rsrc = tree.xattrs.get(locator.oid, {}).get(apfs.RESOURCE_FORK_XATTR)
+            if rsrc is None or rsrc.value is not None:
+                return []
+            stream = rsrc.stream
+        flat = tree.extents.get(stream)
+        if flat is None:
+            return []
+        blocks = volume.container._blocks
+        base = getattr(volume.container.source, "start", 0)
+        return [
+            (
+                base + flat[i + 2] * blocks.size,
+                base + (flat[i + 2]) * blocks.size + flat[i + 1],
+            )
+            for i in range(0, len(flat), 3)
+            if flat[i + 2]
+        ]
 
     @override
     def open_member(
@@ -540,7 +677,11 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
                 rsrc.size,
                 lambda: volume.fork_reader(cnid, hfsplus.RESOURCE_FORK, rsrc),
             )
-            stream = block_stream(header.size, hfsplus.DECMPFS_CHUNK, read_chunk)
+            stream = block_stream(
+                header.size,
+                hfsplus.DECMPFS_CHUNK,
+                self._image.member_reads(read_chunk, locator.position),
+            )
             return MemberData(stream, bounded=True)
         fork = hfsplus.data_fork(record)
         read = volume.fork_reader(cnid, hfsplus.DATA_FORK, fork)
@@ -549,7 +690,8 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
         def read_piece(i: int) -> bytes:
             return read(i * piece, min(piece, fork.size - i * piece))
 
-        return MemberData(block_stream(fork.size, piece, read_piece), bounded=True)
+        read_block = self._image.member_reads(read_piece, locator.position)
+        return MemberData(block_stream(fork.size, piece, read_block), bounded=True)
 
     def _open_apfs(self, locator: ApfsData) -> MemberData:
         volume = self._load()[locator.volume].apfs
@@ -560,7 +702,11 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
         if not locator.compressed:
             read, _ = apfs.stream_reader(volume, tree, inode.stream, inode.size, what)
             stream = block_stream(
-                inode.size, apfs.READ_PIECE, apfs.read_pieces(inode.size, read)
+                inode.size,
+                apfs.READ_PIECE,
+                self._image.member_reads(
+                    apfs.read_pieces(inode.size, read), locator.position
+                ),
             )
             return MemberData(stream, bounded=True)
         xattrs = tree.xattrs.get(locator.oid, {})
@@ -591,7 +737,11 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
             rsrc.size if rsrc is not None else 0,
             open_fork,
         )
-        stream = block_stream(header.size, hfsplus.DECMPFS_CHUNK, read_chunk)
+        stream = block_stream(
+            header.size,
+            hfsplus.DECMPFS_CHUNK,
+            self._image.member_reads(read_chunk, locator.position),
+        )
         return MemberData(stream, bounded=True)
 
     # ── The checksum pass (design §7.2) ──────────────────────────────────────────────
