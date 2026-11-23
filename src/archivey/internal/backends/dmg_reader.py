@@ -40,6 +40,7 @@ from archivey.exceptions import (
     ResourceUnavailableError,
     TruncatedError,
     UnsupportedFeatureError,
+    exception_detail,
 )
 from archivey.formats import (
     IndexedFormatHandler,
@@ -252,7 +253,8 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
                     self._report_unlisted(
                         candidate,
                         candidate.label,
-                        f"an APFS container archivey does not read ({exc})",
+                        "an APFS container archivey does not read "
+                        f"({exception_detail(exc)})",
                     )
                 else:
                     self._open_failure = self._open_failure or exc
@@ -1130,13 +1132,17 @@ class _VolumeWalk:
                     head = hfsplus.attribute_value(self._volume, entry.cnid, attribute)
                 except ArchiveyError as exc:
                     problem = (
-                        f"has a com.apple.decmpfs attribute that cannot be read ({exc})"
+                        "has a com.apple.decmpfs attribute that cannot be read "
+                        f"({exception_detail(exc)})"
                     )
             if head is not None and problem is None:
                 try:
                     size = hfsplus.parse_decmpfs(head).size
                 except ArchiveyError as exc:
-                    problem = f"has a damaged com.apple.decmpfs attribute ({exc})"
+                    problem = (
+                        "has a damaged com.apple.decmpfs attribute "
+                        f"({exception_detail(exc)})"
+                    )
         if problem is not None:
             member.size = 0
             return self._refused(
@@ -1168,7 +1174,7 @@ class _VolumeWalk:
                 reason="damaged",
                 message=(
                     f"The target of the HFS+ symlink {quoted(member.name)} cannot be "
-                    f"read: {exc}"
+                    f"read: {exception_detail(exc)}"
                 ),
                 target_in_archive=True,
             )
@@ -1446,7 +1452,7 @@ class _ApfsWalk:
                 # damaged.
                 raise
             except ArchiveyError as exc:
-                return ApfsData(self._index, oid, False, (type(exc), str(exc)))
+                return ApfsData(self._index, oid, False, (type(exc), exc.raw_message))
             member.is_sparse = sparse
             return ApfsData(self._index, oid, False)
         attr = tree.xattrs.get(oid, {}).get(apfs.DECMPFS_XATTR)
@@ -1482,7 +1488,10 @@ class _ApfsWalk:
                 True,
                 (
                     CorruptionError,
-                    f"{what} has a damaged com.apple.decmpfs attribute ({exc})",
+                    (
+                        f"{what} has a damaged com.apple.decmpfs attribute "
+                        f"({exception_detail(exc)})"
+                    ),
                 ),
             )
         return ApfsData(self._index, oid, True)
@@ -1530,7 +1539,7 @@ class _ApfsWalk:
                 reason="damaged",
                 message=(
                     f"The target of the APFS symlink {quoted(member.name)} cannot be "
-                    f"read: {exc}"
+                    f"read: {exception_detail(exc)}"
                 ),
                 target_in_archive=True,
             )
