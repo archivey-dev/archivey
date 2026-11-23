@@ -309,6 +309,15 @@ def test_a_panic_reaches_the_caller_as_corruption(
     assert isinstance(info.value.__cause__, PanicException)
 
 
+def _assert_raised_again(again: BaseException, first: BaseException) -> None:
+    """``again`` is ``first`` raised again by a latch: a new copy, never the kept
+    instance, with its type, message and panic cause."""
+    assert again is not first
+    assert (type(again), str(again)) == (type(first), str(first))
+    assert type(again.__cause__) is type(first.__cause__)
+    assert kernels.caused_by_panic(again)
+
+
 class _Latched:
     """A wrapper of a kernel object, as ``rust.py``'s, whose call panics."""
 
@@ -488,7 +497,7 @@ def test_a_branch_filter_refuses_every_call_after_a_panic(
     for again in (branch.flush, lambda: branch.decode(b"\x00" * 8)):
         with pytest.raises(CorruptionError) as repeat:
             again()
-        assert repeat.value is info.value
+        _assert_raised_again(repeat.value, info.value)
     assert _FakeBranch.calls == calls
 
 
@@ -551,7 +560,7 @@ def test_an_lzw_state_refuses_every_call_after_a_panic(
     for again in (d.flush, lambda: d.decompress(b"more")):
         with pytest.raises(CorruptionError) as repeat:
             again()
-        assert repeat.value is info.value
+        _assert_raised_again(repeat.value, info.value)
     assert _FakeLzw.calls == 1
 
 
@@ -671,7 +680,7 @@ def test_a_zipcrypto_state_refuses_every_call_after_a_panic(
     for again in (lambda: keys.decrypt(b"x" * 100), keys.copy):
         with pytest.raises(CorruptionError) as repeat:
             again()
-        assert repeat.value is info.value
+        _assert_raised_again(repeat.value, info.value)
     assert _FakeDecryptor.calls == calls
     # Errors other than a panic leave the state usable.
     _FakeDecryptor.panic = False
@@ -1505,7 +1514,7 @@ def test_a_panic_in_a_bcj2_read_is_corruption_and_refuses_after(
     assert isinstance(info.value.__cause__, PanicException)
     with pytest.raises(CorruptionError) as again:
         stream.read(10)
-    assert again.value is info.value
+    _assert_raised_again(again.value, info.value)
     assert _FakeBcj2.calls == 1
     python = Bcj2DecoderStream(
         *(io.BytesIO(s) for s in streams),
@@ -1774,7 +1783,7 @@ def test_a_panic_in_the_child_is_reported_as_one() -> None:
     assert isinstance(info.value.__cause__, kernel_child.ChildPanic)
     with pytest.raises(CorruptionError) as again:
         branch.flush()
-    assert again.value is info.value
+    _assert_raised_again(again.value, info.value)
     assert proxy.calls == 1
 
 

@@ -265,7 +265,6 @@ def test_a_view_is_read_as_its_bytes(codecs: object, kind: str) -> None:
     assert (a.decompress(zv), a.total_in) == (b.decompress(z), b.total_in)
 
 
-@BOTH
 class _ReadsAs(io.BytesIO):
     """A stream whose ``read()`` returns each chunk as a view of ``kind``."""
 
@@ -298,6 +297,7 @@ def test_bcj2_reads_a_view_from_its_streams_as_its_bytes(
     assert d.read() == want
 
 
+@BOTH
 def test_crc16_refuses_a_value_outside_16_bits(codecs: object) -> None:
     for data in (b"", b"x"):
         for value in (-1, 1 << 16):
