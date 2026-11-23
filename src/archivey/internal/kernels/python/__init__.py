@@ -28,6 +28,9 @@ _CRC16_TABLE = _crc16_table()
 def crc16_arc(data: bytes | bytearray | memoryview, value: int = 0, /) -> int:
     """CRC-16/ARC (polynomial 0x8005, reflected) of ``data``, going on from ``value``:
     the checksum LHA keeps for its data and headers."""
+    if not 0 <= value <= 0xFFFF:
+        # As the package: a CRC-16 has 16 bits, so a value outside them is a mistake.
+        raise ValueError(f"CRC-16 value {value} is outside 0 to 0xFFFF")
     table = _CRC16_TABLE
     crc = value
     for byte in raw_bytes(data):

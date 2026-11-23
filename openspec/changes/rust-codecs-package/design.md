@@ -256,6 +256,10 @@ gets a new `KERNELS` key (for example `"lzx2"`) next to the old one, or waits fo
 Before 1.0, and within a major version after it, a release removes no kernel and lowers
 no revision.
 
+Revisions count from the first release. Until a version is on PyPI no build has a
+revision to keep, so changes before it, such as the LZW `from_state()` fix that accepts
+a CLEAR's pending group padding, stay at revision 1.
+
 The "change it twice" rule stays: a fix to a twinned Python decoder is made in Rust in
 the same PR, and the kernel's revision goes up. Users get the fixed Python version
 until the next codecs release turns the kernel back on.

@@ -257,6 +257,15 @@ def test_a_view_is_read_as_its_bytes(codecs: object, kind: str) -> None:
     assert (a.decompress(zv), a.total_in) == (b.decompress(z), b.total_in)
 
 
+@BOTH
+def test_crc16_refuses_a_value_outside_16_bits(codecs: object) -> None:
+    for data in (b"", b"x"):
+        for value in (-1, 1 << 16):
+            with pytest.raises(ValueError, match="outside 0 to 0xFFFF"):
+                codecs.crc16_arc(data, value)
+        assert codecs.crc16_arc(data, 0xFFFF) == PYTHON.crc16_arc(data, 0xFFFF)
+
+
 def test_crc16_parity() -> None:
     rng = random.Random(7)
     for _ in range(SEEDS // 3):
@@ -439,7 +448,7 @@ def test_lzx_waits_for_an_owed_pad_byte(codecs: object) -> None:
     has not ended and needs input, and the byte fed in a later call is taken; with no
     more input, ``flush()`` ends the stream without it."""
     stream = _odd_stored_lzx()
-    lzx = codecs.lzx  # type: ignore[attr-defined]
+    lzx = codecs.lzx
     d = lzx.Decompressor(15, output_size=5)
     assert d.decompress(stream[:-1]) == b"hello"
     assert (d.eof, d.needs_input) == (False, True)
