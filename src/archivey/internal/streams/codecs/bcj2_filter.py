@@ -101,6 +101,11 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
             if not more:
                 break
             out += more
+        if not self._d.eof and self._d.total_out == self._size:
+            # The decoder runs its end check with the read that returns the last
+            # byte and raises its error from the next call: make that call here, so
+            # the read that ends the output raises it, as for any other error.
+            self._d.read(1)
         return out
 
     @override

@@ -431,6 +431,21 @@ def test_a_byte_left_over_in_an_input_is_corruption(
         _decode(streams, size)
 
 
+@pytest.mark.parametrize(("index", "label"), [(0, "main"), (1, "call"), (2, "jump")])
+def test_the_read_that_ends_the_output_raises_a_left_over_byte(
+    index: int, label: str
+) -> None:
+    """The end check runs with the read that returns the last byte, and that read
+    raises its error: a reader that asks for exactly the output size sees it."""
+    from tests.bcj2_util import bcj2_encode
+
+    streams = list(bcj2_encode(random.Random(1), 5000))
+    streams[index] += b"\x00"
+    stream = _bcj2(*map(io.BytesIO, streams), unpack_size=5000)
+    with raises_corruption_not_truncation(match=f"BCJ2 {label} stream has bytes past"):
+        stream.read(5000)
+
+
 class _ReadCounter(io.BytesIO):
     def __init__(self, data: bytes) -> None:
         super().__init__(data)
