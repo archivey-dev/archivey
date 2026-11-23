@@ -287,11 +287,11 @@ in the repository measures what each limit costs in time and memory on your mach
   about 25-50 µs and 1.5 KiB of memory per member, under 15 s and 384 MiB at the default.
 - **`listing_limits.max_metadata_bytes`**, default 64 MiB, caps the text kept for names, comments
   and link targets. It's a safety weight against hostile archives, not a memory cap: it counts what
-  the archive controls, plus a measured weight for each small record an archive can repeat without
-  adding a member, but not the overhead of ordinary text or the fixed cost of each member. A ZIP
-  read from a pipe also keeps up to this much of its small members' data, in case they are links, on
-  top of the text. It costs about 1.7 MiB of memory per MiB counted, 110 MiB at the default, and up
-  to 64 MiB more for a ZIP read from a pipe.
+  the archive controls, plus a fixed weight, mostly measured, for each small record an archive can
+  repeat without adding a member, but not the overhead of ordinary text or the fixed cost of each
+  member. A ZIP read from a pipe also keeps up to this much of its small members' data, in case they
+  are links, on top of the text. It costs about 1.7 MiB of memory per MiB counted, 110 MiB at the
+  default, and up to 64 MiB more for a ZIP read from a pipe.
 - **`listing_limits.max_decoded_bytes`**, default 4 GiB, caps what one listing decodes before you
   read anything: listing a `.tar.gz` decodes all of it. For an archive that holds archives, such as
   a `.pkg`'s payloads or a `.deb`'s tars, it caps all of them together. Member data you read doesn't
