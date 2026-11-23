@@ -41,6 +41,7 @@ those use the AI plan's quota.
 | `dmg-macos.yml` | weekly (Tuesday 06:41 UTC), on demand, and after a merge to `main` that changes the DMG code, its test writer or the check; never on a PR (dispatch it on the branch instead) | no | an image from `tests/dmg_build.py` failed `hdiutil verify`, `fsck_hfs -n` or its mount check, or archivey's listing of a fresh `hdiutil create` image differs from the mounted volume; the table is the run's job summary ([DMG](formats/dmg.md) §8); not a required check and not a release gate |
 | `xar-oracle.yml` | on demand only | no | an investigation probe: compares archivey's XAR reads with Apple's `xar` and bsdtar on macOS ([XAR](formats/xar.md) §3); ignore unless you are working on XAR |
 | `publish.yml` | a `v*` tag, or on demand | no | see [Release checklist](release-checklist.md) §6 |
+| `codecs-publish.yml` | a `codecs-v*` tag, on demand, and on a pull request that changes `packages/archivey-codecs/` or the workflow | no | a wheel failed to build or failed the package's tests on one platform, or the sdist or its metadata check failed; a tag or dispatch publishes archivey-codecs (see [Release checklist](release-checklist.md#archivey-codecs-releases)) |
 
 At the lower budget, review rounds are the cost to control. The implementing agent adds
 the `review` label when its PR is ready ([Review loop](review-loop.md)). To refuse a round

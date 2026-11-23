@@ -121,24 +121,36 @@ before returning when the total would pass the cap, leaving the total unchanged.
 
 archivey SHALL run `check`, `full_check` and `then` under the same scoped handle guard
 and adapter state as the plugin call that handed over the request, entered and left
-around each callback. Only the provider SHALL run with no archivey lock held: before
-each provider call archivey SHALL leave every guard and physical lock it holds for the
-request, including an outer frame's (listing finalization reading link targets), and
-SHALL keep the request's ownership as a record instead: the active worker for a returned
-request, the paused walk for a yielded one. Every same-reader entry that would wait on
-that owner (listing, iteration, member `open()`, `stream_members()`, `close()`,
-link-target reads) SHALL raise `ArchiveyUsageError` at once when called from the
-provider's own thread or a context copied from it, and SHALL wait for the answer when
-called from any other thread. No plugin call SHALL be repeated to try a provider answer.
-Retry state SHALL live on the request. When the adapter calls a hook again on its own (a
-data walk, a respawn, a rewalk), it SHALL try first the saved winner of each request,
-keyed by the plugin call plus the request's index in that call's chain. archivey SHALL
-call the provider only on a first open of a member (the caller's `open()`, a data walk
-it starts, the first open of a lazy `stream_members()` or extraction handle), never on a
-replacement open of an already unlocked stream, and SHALL give a respawned stream the
-new `MemberData.unlocked` verdict. When resolution fails for a yielded request, archivey
-SHALL close the generator and the error SHALL end the walk. Two workers needing the
-provider at once SHALL be served one after the other.
+around each callback. Before each provider call archivey SHALL leave the handle guard it
+holds for the request and take it again after the answer, putting back the adapter state
+the request's step had set. A lock that orders the request against other work on the
+reader (the walk lock a listing or a paused walk holds, an outer frame's, such as
+listing finalization reading link targets) SHALL stay held: the request's owner is then
+the thread holding it, the active worker for a returned request or the paused walk for a
+yielded one. Every same-reader entry that would wait on that owner (listing, iteration,
+member `open()`, `stream_members()`, `close()`, link-target reads) SHALL raise
+`ArchiveyUsageError` at once when called from the provider's own thread or a context
+copied from it, and SHALL wait for the answer when called from any other thread. No
+plugin call SHALL be repeated to try a provider answer. Retry state SHALL live on the
+request. When the adapter calls a hook again on its own (a data walk, a respawn, a
+rewalk), it SHALL try first the saved winner of each request, keyed by the plugin call
+plus the request's index in that call's chain. A replacement open SHALL try first the
+winners the stream it replaces was unlocked with, even when another open has since
+saved a different winner for the same request, and SHALL keep that password when
+`check` does not reject it; a random-access data walk left idle SHALL be taken for a
+replacement open only when it unlocked the requests it passed with those same winners.
+On a fresh open a saved winner that `check` does not confirm SHALL compete with the
+other passwords as the first `INCONCLUSIVE` survivor, so a password confirmed since by
+another unit can win. archivey SHALL call the provider only on
+the first unlock of a unit: a request from the handler's `open` (with `member=None`), a
+listing walk's request, or a first open of a member (the caller's `open()`, a data walk
+it starts, the first open of a lazy `stream_members()` or extraction handle). It SHALL
+never call it on a replacement open of an already unlocked stream, and SHALL give a
+replacement stream the new `unlocked` verdict (a respawn's `MemberData`, a data walk's
+span). A replacement whose `digests`, `checked` or `bounded` differ from the first
+open's SHALL be refused as a plugin bug. When resolution fails for a yielded request,
+archivey SHALL close the generator and the error SHALL end the walk. Two workers needing
+the provider at once SHALL be served one after the other.
 
 #### Scenario: concurrency
 
@@ -155,7 +167,7 @@ provider at once SHALL be served one after the other.
 | Another thread calls `reader.members()` while the walk waits on the provider | Waits, then gets the full list |
 | DMG `open` returns a request | Handler `open` called once; `then` returns the reader |
 | Provider calls `reader.close()` from a copied context while an `open_member` request waits on it | `ArchiveyUsageError` in the helper, no deadlock |
-| Listing finalization reads an encrypted link target whose request needs the provider | Listing lock released for the provider call; provider's own-context `reader.members()` raises `ArchiveyUsageError`; another thread's waits |
+| Listing finalization reads an encrypted link target whose request needs the provider | Listing lock stays held for the provider call; provider's own-context `reader.members()` raises `ArchiveyUsageError`; another thread's waits |
 | Toy plugin with one shared handle, two overlapping requests, `full_check` decoding on the handle | Callbacks serialized by the handle guard; provider runs with the guard released |
 | Provider's own thread calls `reader.read(member)` during a paused walk | `ArchiveyUsageError`, no deadlock |
 
@@ -167,6 +179,7 @@ provider at once SHALL be served one after the other.
 | Indexed member opened `INCONCLUSIVE`; backward seek respawns it and the toy plugin's `then` now reports `CONFIRMED` | The replacement stream is checked as `CONFIRMED` |
 | Same with the original `CONFIRMED` and the replacement `INCONCLUSIVE` | A digest mismatch on the replacement raises the unverified-data `EncryptionError` |
 | Respawn (replacement open) inside `read()` where the saved winner no longer unlocks the unit | D2 exhaustion error from that `read()`; provider not called |
+| Handle A unlocked a member with an `INCONCLUSIVE` provider answer; handle B, a fresh open of the same member, then won a different, confirmed password; A seeks back to a nonzero offset | A's respawn or data walk unlocks with A's own password and returns the bytes it returned before; B's winner and B's idle data walk are not used for it |
 | Reader closed, then reopened with `open_archive` | No saved winners carried over |
 | `open_member` chain: header request then data request, each won by a different provider answer; then seek to zero, provider has no more answers | Both saved winners reused; replacement stream reads |
 | Fresh reader, provider only, ARJ garbled member read through `stream_members()` | Provider asked on the handle's first `read()`; member reads |

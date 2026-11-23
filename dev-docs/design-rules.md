@@ -457,13 +457,18 @@ that is right on one format and wrong on another breaks callers silently.
   kept the retry and asked for it on every interpreter (2026-10-20, PR 915). Reopen if
   the collection on the refusal path has a measured cost that matters.
 
-- A deliberate exception: `ArchiveyConfig.recover_partial_data=False` skips the second
+- A deliberate exception: `ArchiveyConfig.recover_partial_data=OFF` skips the second
   decode that hands back the bytes before damage in a member, so a read that meets the
   damage loses up to one decoder call's bytes before it. It changes only partial bytes
   before the same error: the members, the whole members' data and the error type stay
   the same. A compressed TAR's own stream recovers either way, so every member before
   the damage still reads whole. davi asked for it so callers who discard a damaged
-  member anyway don't pay for recovery (2026-11-11; name ruled 2026-11-12).
+  member anyway don't pay for recovery (2026-11-11; name ruled 2026-11-12). The field
+  became the enum `PartialDataRecovery` (`OFF`, `BEFORE_DAMAGE` the default, `ALL`) in
+  0.6.0, and a bool raises (davi, 2026-11-21). `ALL` also returns the bytes of a read
+  whose checksum or size check fails, and the next read raises the same error: again
+  only the partial bytes before the error differ. Extraction under
+  `OnError.KEEP_PARTIAL` reads at `ALL`.
 
 **Reopen if** matching would require an OS feature that one platform lacks; then refuse
 on every platform rather than diverge.
@@ -714,7 +719,8 @@ field would be false for most members of an ordinary read.
   2026-09-23, PR 398).
 - RAR stream spool: "let's add a cap, it would be a config field" (2026-09-26, PR 485).
 - PPMd in-process threshold is a config field, not a constant (2026-09-26, PR 481).
-- ISO path-table entries count against `max_members` (2026-10-06, PR 612).
+- ISO path-table entries count against `max_members` (2026-10-06, PR 612). No longer
+  applies: since PR 1701 the native ISO parser does not read path tables to list.
 - Hard-link copies at the link-count limit count toward `max_ratio`; cross-device copies
   count only toward bytes (2026-10-07, PR 623).
 - A container inside a compression stream (a `.tar.gz`, a handler's `.cpio.xz`) holds
@@ -761,7 +767,8 @@ rule.
   (2026-09-26, PR 493).
 - `detect_format` must not allocate an LZMA dictionary at whatever size a crafted header
   declares (2026-10-07).
-- ISO path-table entries count against `max_members` (2026-10-06, PR 612).
+- ISO path-table entries count against `max_members` (2026-10-06, PR 612). No longer
+  applies: since PR 1701 the native ISO parser does not read path tables to list.
 - Decoder memory is capped before allocation (PR 398).
 
 **Known limits.** Limits cap bytes, entries and key-derivation rounds, not time; the

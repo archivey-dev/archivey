@@ -14,13 +14,24 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, DiagnosticPolicy, open_archive
+from archivey import (
+    ArchiveyConfig,
+    DecoderLimits,
+    DiagnosticPolicy,
+    PasswordRequest,
+    open_archive,
+)
 from archivey.diagnostics import (
     ARCHIVE_INTEGRITY_CODES,
     DiagnosticCode,
     EncryptedVerificationContext,
 )
-from archivey.exceptions import CorruptionError, DiagnosticRaisedError, EncryptionError
+from archivey.exceptions import (
+    CorruptionError,
+    DiagnosticRaisedError,
+    EncryptionError,
+    ResourceLimitError,
+)
 from archivey.types import ArchiveMember
 from tests.conftest import requires, requires_binary
 
@@ -360,3 +371,27 @@ def test_rar_checked_password_partial_read_is_not_reported(
         with reader.open(member) as stream:
             assert stream.read(2)
         assert _unverified(reader) == []
+
+
+def test_a_provider_retry_and_its_trial_decodes_draw_the_decoded_byte_budget() -> None:
+    """A provider answer that passes the check byte and decodes to garbage is
+    rejected and the provider asked again; each answer's trial decode counts toward
+    the nest's cap as the caller's own read does."""
+    answers: list[int] = []
+
+    def provider(request: PasswordRequest) -> str | None:
+        answers.append(request.attempt)
+        return {1: "wrong173", 2: "secret"}.get(request.attempt)
+
+    def config(cap: int) -> ArchiveyConfig:
+        return ArchiveyConfig(decoder_limits=DecoderLimits(max_nest_decoded_bytes=cap))
+
+    with open_archive(_COLLISION, password=provider, config=config(10**8)) as reader:
+        assert len(reader.read("deflated.txt")) == 9448
+    assert answers == [1, 2]
+    answers.clear()
+    with (
+        open_archive(_COLLISION, password=provider, config=config(9448 + 100)) as r,
+        pytest.raises(ResourceLimitError, match="max_nest_decoded_bytes"),
+    ):
+        r.read("deflated.txt")
