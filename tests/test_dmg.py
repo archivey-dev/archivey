@@ -1075,6 +1075,30 @@ def test_an_hfs_name_that_cannot_be_a_path_component_is_damage(stored: str) -> N
     assert sorted(seen) == ["sub/", "sub/ok", "top"]
 
 
+def test_a_bad_name_beside_an_orphan_names_both() -> None:
+    nodes = [
+        d.Node("sub/bad", data=b"x", raw_name="..".encode("utf-16-be")),
+        d.Node("o/orph", data=b"o"),
+        d.Node("top", data=b"t"),
+    ]
+
+    def orphan(records: list[d.CatalogRecord]) -> None:
+        raw = "orph".encode("utf-16-be")
+        next(r for r in records if r.name == raw).parent = 9999
+
+    seen: list[str] = []
+    with (
+        _open(_image(nodes, hfs_options={"patch_catalog": orphan})) as reader,
+        pytest.raises(
+            CorruptionError,
+            match=r"\('\.\.' in the folder 'sub'\) and is not listed; also, 1 record is",
+        ),
+    ):
+        for member in reader:
+            seen.append(member.name)
+    assert sorted(seen) == ["o/", "sub/", "top"]
+
+
 def test_an_hfs_folder_named_dotdot_leaves_out_what_it_holds() -> None:
     """A folder stored as ``..`` listed its child as ``../evil.txt``."""
     nodes = [

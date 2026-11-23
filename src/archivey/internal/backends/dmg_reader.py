@@ -887,14 +887,18 @@ class _VolumeWalk:
             count = len(self._bad_names)
             records = "1 record" if count == 1 else f"{count} records"
             has, are = ("has", "is") if count == 1 else ("have", "are")
+            first = "the first is " if count > 1 else ""
             below = ""
             if self._inside_bad:
                 inside = self._inside_bad
                 more = "is 1 record" if inside == 1 else f"are {inside} records"
                 below = f", nor {more} inside such folders"
+            if orphans:
+                stray = "1 record is" if orphans == 1 else f"{orphans} records are"
+                below += f"; also, {stray} in folders the catalog does not hold"
             failure = CorruptionError(
                 f"{records} of the HFS+ catalog {has} a name that cannot be a path "
-                f"component (the first is {quoted(bad)} in the folder "
+                f"component ({first}{quoted(bad)} in the folder "
                 f"{quoted(where or '/')}) and {are} not listed{below}"
             )
         elif failure is None and orphans:
@@ -959,6 +963,8 @@ class _VolumeWalk:
             and self._is_journal(entry)
         ):
             return None
+        # After the hidden-folder checks: the name of the private-data folder
+        # (``hfsplus.PRIVATE_DATA``) holds NULs, so it would count as a bad name.
         if self._in_bad_folder(entry.parent):
             self._inside_bad += 1
             return None
