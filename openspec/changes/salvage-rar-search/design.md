@@ -597,8 +597,10 @@ open:
 - **`SALVAGE_UNAVAILABLE` reasons.** Header-encrypted archives use
   `reason="no_salvage_search"`, the closer of the two (archivey has no search for
   encrypted headers), with a RAR-specific message. A RAR read forward only, inside
-  another archive (`RarForwardReader`), uses `"forward_only_reader"`. RAR has no data
-  re-walk: member reads go by offset, so `QuietSalvageState` is not needed.
+  another archive (`RarForwardReader`), uses `"forward_only_reader"`. A random-access
+  RAR reader has no data re-walk: member reads go by offset. A nested
+  `RarForwardReader` is built again with a `QuietSalvageState` to reach a member's
+  data, and that repeat reader records nothing, so the reason appears once.
 - **An archive comment** (a RAR5 `CMT`, a RAR 1.5-4 `CMT` service) is not read once
   the walk is past damage: a found one may belong to an inner archive. One exception:
   after a lost start (§8.1) whose search finds MAIN first, the comment after that MAIN

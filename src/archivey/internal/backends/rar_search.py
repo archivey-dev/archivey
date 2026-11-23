@@ -208,10 +208,11 @@ def rar5_header_end(window: bytes, pos: int) -> int | None:
     its CRC passes (checks 1 to 5 of ``openspec/changes/salvage-rar-search``
     design §3); ``None`` otherwise.
 
-    The size vint is 1 to 3 bytes (the RAR5 note caps a header at 2 MiB) and at
-    least 3, the smallest header. The type is one the note defines. The extra area,
-    when the flags declare one, is smaller than the header, as ``unrar`` and the walk
-    require. The type's own fields fit in the header; no field value is checked.
+    The size vint is 1 to 3 bytes (the RAR5 note caps a header at 2 MiB) and at least 3,
+    the smallest header. The type is one the note defines. The extra area, when the
+    flags declare one, is smaller than the whole header (CRC and size vint included), as
+    ``unrar`` and the walk require. The type's own fields fit in the header; no field
+    value is checked.
     """
     n = len(window)
     q = pos + 4
@@ -256,7 +257,11 @@ def rar5_header_end(window: bytes, pos: int) -> int | None:
         if field is None:
             return None
         extra_size, q = field
-        if extra_size >= size:
+        # ``unrar`` 7.00 reports "Corrupt header" for ``ExtraSize >= HeadSize``,
+        # and ``HeadSize`` counts the whole header, its CRC and size vint
+        # included; so does the walk (``_walk_rar5_file_extras``). Comparing with
+        # the body length ``size`` instead would drop a header the walk lists.
+        if extra_size >= end - pos:
             return None
     if flags & 0x02:
         field = _vint_in(window, q, end)

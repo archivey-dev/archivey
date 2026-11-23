@@ -592,14 +592,17 @@ class RarForwardReader(RarReader):
         del end_offset, program_resources
         if self._salvage_mode.enabled:
             # The header walk reads back to a found member's data, which a source
-            # that reads forward only cannot give.
+            # that reads forward only cannot give. A repeat reader (the inner
+            # archive built again to reach a member's data) records nothing: the
+            # first one already did.
             self._salvage_mode.enabled = False
-            emit_salvage_unavailable(
-                self._diagnostics_collector,
-                archive_name=self._archive_name,
-                format_name=ArchiveFormat.RAR.display_name,
-                reason="forward_only_reader",
-            )
+            if not self._salvage_mode.repeat:
+                emit_salvage_unavailable(
+                    self._diagnostics_collector,
+                    archive_name=self._archive_name,
+                    format_name=ArchiveFormat.RAR.display_name,
+                    reason="forward_only_reader",
+                )
         self._origin = 0
         self._end = None
         self._program_tail = False

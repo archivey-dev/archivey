@@ -331,6 +331,34 @@ def test_a_header_with_the_split_after_flag_is_found() -> None:
     assert Rar5Finder().find(data, offset, offset + 1) == offset
 
 
+def test_a_rar5_extra_area_is_bounded_by_the_whole_header() -> None:
+    """An extra size at least the body length but under the whole header length
+    (CRC and size vint included): ``unrar`` 7.00 lists the member and so does the
+    walk, so the finder keeps the header. At the whole length ``unrar`` reports
+    "Corrupt header", and the finder drops it."""
+
+    def block(body: bytes) -> bytes:
+        size = bytes([len(body)])
+        return zlib.crc32(size + body).to_bytes(4, "little") + size + body
+
+    def header(extra_size: int) -> bytes:
+        # FILE, header flags 0x01 (extra area), then file flags, unpacked size,
+        # attributes, compression information, host OS, a 1-byte name.
+        body = bytes([2, 0x01, extra_size, 0, 0, 0, 0, 0, 1]) + b"a"
+        return block(body + bytes(20 - len(body)))
+
+    assert len(header(20)) == 25
+    for extra_size in (20, 24):
+        data = bytes(7) + header(extra_size)
+        assert Rar5Finder().find(data, 0, None) == 7
+    assert Rar5Finder().find(bytes(7) + header(25), 0, None) is None
+
+    signature = b"Rar!\x1a\x07\x01\x00"
+    archive = signature + block(b"\x01\x00\x00") + header(20) + block(b"\x05\x00\x00")
+    with open_archive(io.BytesIO(archive)) as reader:
+        assert [m.name for m in reader.members()] == ["a"]
+
+
 def test_a_rar3_header_with_the_split_flags_is_found() -> None:
     """RAR 1.5-4 file flags 0x01 and 0x02 (data from and into other volumes)."""
     data = bytearray(write_rar29_stored([("a.txt", b"alpha" * 20)]))
@@ -811,7 +839,9 @@ def test_a_found_member_over_the_in_place_threshold_reads_from_a_copy(
 )
 def test_a_rar_inside_another_archive_records_forward_only_reader() -> None:
     """An inner archive is read forward only (``RarForwardReader``), where the
-    header search cannot run: ``SALVAGE_UNAVAILABLE`` with ``forward_only_reader``."""
+    header search cannot run: ``SALVAGE_UNAVAILABLE`` with ``forward_only_reader``,
+    recorded once. Reading a member builds the inner reader again, and that repeat
+    reader records nothing."""
     from archivey import PluginContainer, StreamFormat
     from archivey.formats import (
         ForwardStream,
@@ -843,22 +873,27 @@ def test_a_rar_inside_another_archive_records_forward_only_reader() -> None:
             return BoxReader(context)
 
     data = b"RARBOX" + (_RAR / "basic_nonsolid__.rar").read_bytes()
+    seen: list[Diagnostic] = []
+    config = ArchiveyConfig(on_diagnostic=seen.append)
     with registration_scope():
         register_format(BoxHandler)
-        with open_archive(io.BytesIO(data), salvage=True) as reader:
-            names = [m.name for m in reader.members()]
-            records = [
-                d.context
-                for d in reader.diagnostics.retained
-                if d.code is DiagnosticCode.SALVAGE_UNAVAILABLE
-            ]
-    assert "file1.txt" in names
-    rar = [
-        c
-        for c in records
-        if isinstance(c, SalvageUnavailableContext) and c.format == "RAR"
-    ]
-    assert [c.reason for c in rar] == ["forward_only_reader"]
+        with open_archive(io.BytesIO(data), salvage=True, config=config) as reader:
+            members = reader.members()
+            [member] = [m for m in members if m.name == "file1.txt"]
+            assert reader.read(member)
+            retained = list(reader.diagnostics.retained)
+
+    def reasons(diagnostics: list[Diagnostic]) -> list[str]:
+        return [
+            d.context.reason
+            for d in diagnostics
+            if d.code is DiagnosticCode.SALVAGE_UNAVAILABLE
+            and isinstance(d.context, SalvageUnavailableContext)
+            and d.context.format == "RAR"
+        ]
+
+    assert reasons(retained) == ["forward_only_reader"]
+    assert reasons(seen) == ["forward_only_reader"]
 
 
 def test_crafted_rar3_ext_time_candidates_parse_no_header(
