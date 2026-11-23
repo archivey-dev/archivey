@@ -1262,27 +1262,35 @@ class SevenZipReader(BaseArchiveReader):
             end = header_start
         origin = self._origin
         state = self._salvage_mode
-        # R3 and R4 claimed the file's tail already; an area that ends before the
-        # file's end has a tail of its own.
-        tail = budget if end == file_size else TailBudget(state)
+        # R3 and R4 claimed the file's tail already: the walk's tail search and its
+        # stream search count only the bytes no claim counted.
 
         def search(
             start: int, stop: int, finder: HeaderSearch, read: ReadAt
         ) -> int | None:
-            # The search driver counts in the source, as the regions it records do.
-            result = search_forward(
-                state,
-                lambda offset, size: read(offset - origin, size),
-                finder,
-                start=origin + start,
-                end=origin + stop,
-                base=origin,
-            )
+            # The bytes a claim counted are not counted again by the driver: they
+            # are taken off before it runs, and what it did not reach is put back.
+            first = max(start, state.position() - origin)
+            state.searched_bytes -= budget.paid(first, stop)
+            try:
+                # The search driver counts in the source, as the regions it records
+                # do.
+                result = search_forward(
+                    state,
+                    lambda offset, size: read(offset - origin, size),
+                    finder,
+                    start=origin + start,
+                    end=origin + stop,
+                    base=origin,
+                )
+            finally:
+                reached = max(first, state.position() - origin)
+                state.searched_bytes += budget.paid(reached, stop)
             return None if result.found is None else result.found - origin
 
         def claim(lo: int, stop: int) -> int:
-            claimed = tail.claim(lo, stop)
-            tail.stopped(stop)
+            claimed = budget.claim(lo, stop)
+            budget.stopped(stop)
             return claimed
 
         # A header copy is held to the listing's text limit as well as to the

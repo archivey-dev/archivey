@@ -548,9 +548,12 @@ Where the code departs from the decisions above, or settles what they leave open
 
 - **The tail bytes are counted outside the driver.** R3 and R4, and the header copy's
   tail search, claim the file's last bytes against `max_search_bytes` once
-  (`TailBudget`), not through `search_forward`. The stream search counts its own bytes
-  through the driver, so a byte in the tail can count twice: once for the tail search,
-  once for the stream search.
+  (`TailBudget`), not through `search_forward`. The stream search runs through the
+  driver, which does not count again the bytes a claim counted: they are taken off
+  before it runs and what it did not reach is put back (Cursor review round 1, C2; it
+  counted them twice, and a cap of one pass over a cut file with a damaged start
+  header lost streams). One `TailBudget` serves R3, R4 and the walk, so an area that
+  ends before the file counts its tail once too.
 - **The stream search is linear in the area** (Cursor review round 1, C1). Each `01`
   byte is a candidate, and walking each candidate's chain on its own was quadratic in a
   window of them (80 000 bytes took 4 s). The runs of uncompressed chunks are walked

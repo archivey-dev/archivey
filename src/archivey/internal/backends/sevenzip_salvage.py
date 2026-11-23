@@ -169,44 +169,85 @@ def repair_one_byte(
 
 
 class TailBudget:
-    """The bytes of the file's tail R3 and R4 examine, counted once against
-    ``SalvageLimits.max_search_bytes``.
+    """The bytes of the file's tail R3 and R4 examine, and the walk's tail search,
+    counted once against ``SalvageLimits.max_search_bytes``.
 
-    ``claim(lo, file_size)`` gives the lowest offset the search may examine: ``lo``
-    when the budget pays for every byte from there to the end, else as far back from
-    the end as the budget reaches. Bytes already claimed are not counted again. When
-    the budget fell short, :meth:`stopped` records the ``search_limit`` region.
+    ``claim(lo, end)`` gives the lowest offset the search may examine below ``end``:
+    ``lo`` when the budget pays for every byte from there to ``end``, else as far back
+    from ``end`` as the budget reaches. Bytes already claimed are not counted again.
+    :meth:`paid` says how many bytes of a range are claimed, so that a search through
+    the shared driver can leave them uncounted (review C2). When the budget fell
+    short, :meth:`stopped` records the ``search_limit`` region.
     """
 
     def __init__(self, state: SalvageState) -> None:
         self._state = state
-        self._claimed_from: int | None = None
+        # The claimed ranges, disjoint and in order.
+        self._ranges: list[tuple[int, int]] = []
         self.short = False
         self._wanted_from = 0
+        self._stopped_at = 0
 
-    def claim(self, lo: int, file_size: int) -> int:
+    def claim(self, lo: int, end: int) -> int:
         lo = max(lo, SIGNATURE_HEADER_SIZE)
-        start = file_size if self._claimed_from is None else self._claimed_from
-        if lo >= start:
-            return lo
-        want = start - lo
+        pos = end
+        for start, stop in reversed(self._ranges):
+            if pos <= lo:
+                break
+            if stop < pos:
+                # The gap from this range's end up to pos is not paid for yet.
+                low = max(stop, lo)
+                pos = self._charge(low, pos)
+                if pos > low:
+                    break
+            if start < pos:
+                pos = max(start, lo)
+        else:
+            if pos > lo:
+                pos = self._charge(lo, pos)
+        if pos < end:
+            self._add(pos, end)
+        if self.short and pos > lo:
+            self._wanted_from = lo
+            self._stopped_at = pos
+        return max(pos, lo)
+
+    def _charge(self, low: int, high: int) -> int:
+        """Charge the bytes from ``low`` to ``high``, or as many below ``high`` as the
+        budget pays for; gives the lowest offset charged."""
+        want = high - low
         remaining = self._state.remaining_bytes()
         if self._state.limit_reached:
             remaining = 0
         if remaining is not None and remaining < want:
             self.short = True
-            self._wanted_from = lo
             want = remaining
         self._state.searched_bytes += want
-        self._claimed_from = start - want
-        return self._claimed_from
+        return high - want
 
-    def stopped(self, file_size: int) -> None:
-        """Record that the budget stopped the tail search, once."""
+    def _add(self, low: int, high: int) -> None:
+        ranges = [*self._ranges, (low, high)]
+        ranges.sort()
+        merged: list[tuple[int, int]] = []
+        for start, stop in ranges:
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], stop))
+            else:
+                merged.append((start, stop))
+        self._ranges = merged
+
+    def paid(self, low: int, high: int) -> int:
+        """The bytes from ``low`` to ``high`` that a claim counted already."""
+        return sum(
+            max(0, min(high, stop) - max(low, start)) for start, stop in self._ranges
+        )
+
+    def stopped(self, end: int) -> None:
+        """Record that the budget stopped the tail search below ``end``, once."""
         if not self.short or self._state.limit_reached:
             return
         self._state.limit_reached = True
-        examined = file_size if self._claimed_from is None else self._claimed_from
+        examined = self._stopped_at if self._stopped_at else end
         self._state.record_search_limit(
             layer=ARCHIVE_LAYER,
             started_at=self._wanted_from,

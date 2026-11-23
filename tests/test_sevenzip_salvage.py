@@ -1093,6 +1093,65 @@ def test_r3_charges_the_search_budget_once_for_its_tail() -> None:
     assert "search_limit" not in [r.reason for r in listing.regions()]
 
 
+def _text(rng: random.Random, size: int) -> bytes:
+    words = [b"alpha", b"beta", b"gamma", b"delta", b"omega"]
+    out = bytearray()
+    while len(out) < size:
+        out += rng.choice(words) + str(rng.randint(0, 999)).encode() + b" "
+    return bytes(out[:size])
+
+
+def test_the_walk_does_not_count_a_claimed_tail_again() -> None:
+    """R3 claims the tail from the start of the file, then the walk's search runs
+    inside it: those bytes count once, so a cap of one pass over the file lists what
+    no cap lists (review C2: it listed one stream of three, and the error named the
+    limit)."""
+    rng = random.Random(1770)
+    data = write_7z({f"part-{i}.txt": _text(rng, 80_000) for i in range(4)})
+    spans = packed_stream_spans(data)
+    damaged, _ = _zero_second_stream(data, len(data) * 3 // 4)
+    damaged = flip(damaged, 20)
+    uncapped = _salvage(damaged)
+    config = ArchiveyConfig(salvage_limits=SalvageLimits(max_search_bytes=len(damaged)))
+    with open_archive(io.BytesIO(damaged), salvage=True, config=config) as reader:
+        report = reader.members_report()
+        searched = reader._salvage_mode.searched_bytes
+    assert [m.name for m in report.members] == uncapped.names
+    assert [unknown.offset for unknown in _unknown(uncapped).values()] == [
+        spans[0][0],
+        spans[2][0],
+        spans[3][0],
+    ]
+    assert searched <= len(damaged)
+    assert "max_search_bytes" not in str(report.error)
+
+
+def test_the_tail_budget_counts_each_byte_once() -> None:
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.salvage import SalvageState
+
+    state = SalvageState(
+        requested=True,
+        enabled=True,
+        limits=SalvageLimits(max_search_bytes=1000),
+        collector=DiagnosticCollector(),
+        archive_name="x.7z",
+        format_name="7Z",
+    )
+    budget = sevenzip_salvage.TailBudget(state)
+    assert budget.claim(600, 1000) == 600
+    assert state.searched_bytes == 400
+    # An area that ends before the file: its claim counts only what is new.
+    assert budget.claim(300, 800) == 300
+    assert state.searched_bytes == 700
+    assert budget.paid(0, 2000) == 700
+    assert budget.paid(500, 700) == 200
+    # The budget runs out: the claim reaches back as far as it pays for.
+    assert budget.claim(0, 1200) == 200
+    assert state.searched_bytes == 1000
+    assert budget.short
+
+
 def test_a_header_copy_of_many_empty_members_is_read_whole() -> None:
     """A header of many empty files compresses far: 30 000 of them decode to over
     1 MiB from a few KB. The copy is read whole, every member named."""
