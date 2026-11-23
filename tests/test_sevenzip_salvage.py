@@ -669,6 +669,23 @@ def test_a_cut_before_the_end_header_lists_from_its_copy(data: bytes) -> None:
     _assert_add_only(damaged, listing)
 
 
+def test_a_copy_found_past_a_short_claim_does_not_name_the_limit() -> None:
+    """Nothing starts at offset 32, so the tail search looks for the copy, under a
+    cap that reaches the copy but not the whole tail. The copy names every member,
+    so the error does not say that nothing after the limit is listed (review C4);
+    a cap short of the copy still says it."""
+    damaged = bytearray(NONSOLID[: next_header_span(NONSOLID)[0]])
+    damaged[32] = 0
+    copy_from_end = len(damaged) - header_stream_start(NONSOLID)
+    reached = _salvage(bytes(damaged), limit=copy_from_end + 10)
+    assert reached.names == list(FILES)
+    assert "a copy of the end header" in str(reached.error)
+    assert "max_search_bytes" not in str(reached.error)
+    short = _salvage(bytes(damaged), limit=copy_from_end - 10)
+    assert short.names == []
+    assert "max_search_bytes stopped the search" in str(short.error)
+
+
 def test_a_plain_header_at_a_walk_position_is_a_copy() -> None:
     """A plain end header the start header no longer leads to, R1 to R3 failing
     (three of its bytes changed, the next-header CRC among them), is found where

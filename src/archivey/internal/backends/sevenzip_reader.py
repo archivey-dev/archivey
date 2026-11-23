@@ -1513,7 +1513,9 @@ class SevenZipReader(BaseArchiveReader):
             )
         else:
             notes.append("salvage found no end header it could use")
-        if outcome.limit_reached:
+        # An end header, found or a copy, names every member: nothing the search
+        # did not reach could change the listing (review C4).
+        if outcome.limit_reached and outcome.find is None:
             notes.append(
                 "SalvageLimits.max_search_bytes stopped the search, so nothing after "
                 "that point is listed"
