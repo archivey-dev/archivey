@@ -672,6 +672,12 @@ class ArchiveSource(ReadOnlyIOStream):
         reporter = self._reporter
         return None if reporter is None else reporter.successor(name, size)
 
+    def _raise_if_stopped(self) -> None:
+        """Raise what ``on_source_read`` raised before the next source I/O, so a read
+        after a stop never waits on or reads the caller's source."""
+        if self._progress is not None:
+            self._progress.raise_if_stopped()
+
     def raise_if_read_stopped(self) -> None:
         """Raise again what ``on_source_read`` raised, if it has; nothing when unset.
 
@@ -907,12 +913,13 @@ class ArchiveSource(ReadOnlyIOStream):
             # memory buffer or a joined set (``source_size_fact``, ``for_volumes``),
             # each full-count by construction, so a short here is the inner breaking
             # its own contract, not a stall.
+            progress = self._progress
+            if progress is not None:
+                # A stop ``on_source_read`` raised holds before any I/O, and at the
+                # end too, where the read that took the last bytes lost them.
+                progress.raise_if_stopped()
             avail = min(n, length - self._pos)
             if avail <= 0:
-                if self._progress is not None:
-                    # As in ``readinto``: a stop raised on the read that took the last
-                    # bytes raises here again, not an empty answer.
-                    self._progress.raise_if_stopped()
                 return b""
             data = read_blocking(reader, avail)
             if len(data) > avail:
@@ -973,6 +980,7 @@ class ArchiveSource(ReadOnlyIOStream):
         return reader
 
     def _read_source(self, n: int) -> bytes:
+        self._raise_if_stopped()
         remaining = None if self._length is None else self._length - self._pos
         data = read_within_reach(
             self._full_count_reader(),
@@ -993,6 +1001,7 @@ class ArchiveSource(ReadOnlyIOStream):
         else:
             # A drain in sized reads (the inner may have no ``readall``), each one
             # full-count, so a stall after a short chunk raises.
+            self._raise_if_stopped()
             rest = self._full_count_reader().read(-1)
             self._pos += len(rest)
             if self._progress is not None:
@@ -1005,6 +1014,11 @@ class ArchiveSource(ReadOnlyIOStream):
         # step. A replayed prefix or the gathering strategy goes through ``read``.
         if self._replay or self._gatherer is not None or self._reader is None:
             return super().readinto(b)
+        # A stop holds before any I/O, and at the end too, as in ``read`` (inlined,
+        # as there: every read of an archive pays for this method's calls).
+        progress = self._progress
+        if progress is not None:
+            progress.raise_if_stopped()
         # Views released on return: see try_readinto.
         with memoryview(b) as outer, outer.cast("B") as whole:
             limit = len(whole)
@@ -1012,11 +1026,6 @@ class ArchiveSource(ReadOnlyIOStream):
                 limit = min(limit, max(self._length - self._pos, 0))
             if not limit:
                 # Nothing asked, or nothing left: answered without I/O, as ``read`` is.
-                # A stop raised on the read that took the last bytes raises here
-                # again (``read`` does the same), or the decoder takes the bytes it
-                # lost for a cut file.
-                if self._progress is not None:
-                    self._progress.raise_if_stopped()
                 return 0
             with whole[:limit] as view:
                 return self._fill(b, view)
@@ -1079,6 +1088,7 @@ class ArchiveSource(ReadOnlyIOStream):
             # it raises instead of leaving this prefix short or empty. Not bounded
             # by the step — ``n`` is detection's own window, never a number read
             # out of the archive.
+            self._raise_if_stopped()
             chunk = self._full_count_reader().read(missing)
             replay.extend(chunk)
             if self._progress is not None:
@@ -1111,6 +1121,7 @@ class ArchiveSource(ReadOnlyIOStream):
             return b""
         if replay:
             return self._take_replayed(n)
+        self._raise_if_stopped()
         data = read_arrived(self._stream(), n)
         self._pos += len(data)
         if self._progress is not None:
@@ -1149,6 +1160,7 @@ class ArchiveSource(ReadOnlyIOStream):
             raise io.UnsupportedOperation("peek: the source is seekable; rewind it")
         missing = n - len(replay)
         if missing > 0:
+            self._raise_if_stopped()
             chunk = read_arrived(self._stream(), missing)
             if not chunk:
                 self._peek_met_end = True

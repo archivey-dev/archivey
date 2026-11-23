@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import lzma
 import os
@@ -561,6 +562,174 @@ def test_a_stop_during_the_re_decode_of_a_damaged_member_is_not_lost(
         with pytest.raises(stop_type) as caught:
             go(_stop_on(n, stop_type))
         assert type(caught.value) is stop_type
+
+
+class _StopDropsMarks(ValueError):
+    """A stop whose copy is a fresh instance, without the attributes on the first."""
+
+    def __copy__(self) -> _StopDropsMarks:
+        return type(self)(*self.args)
+
+
+class _StopEOFDropsMarks(EOFError):
+    """An ``EOFError`` stop whose copy drops its attributes, as above."""
+
+    def __copy__(self) -> _StopEOFDropsMarks:
+        return type(self)(*self.args)
+
+
+def _check_stop_holds(
+    open_reads: Any, sizes: list[int], stop_type: type[BaseException]
+) -> int:
+    """Stop at each report in turn and run ``sizes`` as reads. The read during
+    which the callback raised must raise the stop, and so must every read after it.
+    Returns how many runs stopped inside a read."""
+    recorder = _Recorder()
+    try:
+        with open_reads(recorder) as read:
+            for size in sizes:
+                read(size)
+    except Exception:  # noqa: BLE001 - a damaged file ends in its own error
+        pass
+    stopped = 0
+    for n in range(1, len(recorder.calls) + 1):
+        raised = False
+        inner = _stop_on(n, stop_type)
+
+        def callback(progress: SourceProgress, inner: Any = inner) -> None:
+            nonlocal raised
+            try:
+                inner(progress)
+            except BaseException:
+                raised = True
+                raise
+
+        try:
+            context = open_reads(callback)
+            read = context.__enter__()
+        except stop_type:
+            continue
+        try:
+            for size in sizes:
+                if raised:
+                    with pytest.raises(stop_type):
+                        read(size)
+                    continue
+                try:
+                    read(size)
+                except stop_type:
+                    assert raised
+                    stopped += 1
+                except Exception:  # noqa: BLE001 - the data error, before any stop
+                    assert not raised, f"report {n}: the stop became a data error"
+                else:
+                    assert not raised, f"report {n}: the read that stopped returned"
+        finally:
+            context.__exit__(None, None, None)
+    return stopped
+
+
+def _stream_reads(path: Path, **config: Any) -> Any:
+    @contextlib.contextmanager
+    def open_reads(callback: Any) -> Any:
+        cfg = ArchiveyConfig(on_source_read=callback, source_read_step=0, **config)
+        with open_stream(path, config=cfg) as stream:
+            yield stream.read
+
+    return open_reads
+
+
+@pytest.mark.parametrize("stop_type", [_StopValue, KeyboardInterrupt])
+def test_a_stop_on_a_feed_read_holds_for_a_smaller_read(
+    tmp_path: Path, stop_type: type[BaseException]
+) -> None:
+    # A stop on the compressed read outside a decoder call: the output decoded
+    # before it stays buffered, and a smaller read must not get it.
+    path = _gz_file(tmp_path, 2 << 20)
+    sizes = [1 << 20, 1, 4096, 1 << 20, -1]
+    reads = _stream_reads(path, use_rapidgzip="off")
+    assert _check_stop_holds(reads, sizes, stop_type)
+
+
+@pytest.mark.parametrize("stop_type", [_StopDropsMarks, _StopEOFDropsMarks])
+def test_a_stop_whose_copy_drops_its_attributes_still_holds(
+    tmp_path: Path, stop_type: type[BaseException]
+) -> None:
+    # The stream keeps a copy of a stop. A copy without the caller's marks must not
+    # let buffered bytes out, nor turn an ``EOFError`` into a truncation error.
+    path = _bad_crc_gz(tmp_path, 0, 1 << 16, 1 << 18)
+    sizes = [1 << 20, 1 << 20, 1, -1]
+    reads = _stream_reads(path, use_rapidgzip="off")
+    assert _check_stop_holds(reads, sizes, stop_type)
+
+
+def test_a_read_after_a_stop_does_not_touch_the_caller_s_source() -> None:
+    import gzip
+
+    data = gzip.compress(os.urandom(2 << 20), 1)
+
+    class Recording(io.BytesIO):
+        stopped = False
+        after = 0
+
+        def read(self, n: int | None = -1, /) -> bytes:
+            self.after += self.stopped
+            return super().read(n)
+
+        def readinto(self, b: Any, /) -> int:
+            self.after += self.stopped
+            return super().readinto(b)
+
+    source = Recording(data)
+    calls = 0
+
+    def stop(progress: SourceProgress) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 4:
+            source.stopped = True
+            raise _StopValue("stop")
+
+    config = ArchiveyConfig(
+        on_source_read=stop, source_read_step=0, use_rapidgzip="off"
+    )
+    with open_stream(source, seekable=True, config=config) as stream:
+        with pytest.raises(_StopValue):
+            while stream.read(1 << 20):
+                pass
+        for size in (1 << 20, 1, -1):
+            with pytest.raises(_StopValue):
+                stream.read(size)
+        # A seek restarts the decoder, which then reads the source again.
+        stream.seek(0)
+        for size in (1 << 20, 1, -1):
+            with pytest.raises(_StopValue):
+                stream.read(size)
+    assert source.stopped
+    assert source.after == 0
+
+
+@pytest.mark.parametrize("stop_type", [_StopValue, KeyboardInterrupt])
+def test_a_stop_holds_through_a_streaming_tar_gz_buffer(
+    tmp_path: Path, stop_type: type[BaseException]
+) -> None:
+    # Streaming TAR.GZ reads members through a read-ahead buffer above the decoder.
+    path = _tar_gz(tmp_path, 1, 2 << 20)
+
+    @contextlib.contextmanager
+    def open_reads(callback: Any) -> Any:
+        cfg = ArchiveyConfig(on_source_read=callback, source_read_step=0)
+        with (
+            open_archive(path, config=cfg, streaming=True) as reader,
+            reader.stream_members() as members,
+        ):
+            for _, stream in members:
+                if stream is not None:
+                    yield stream.read
+                    return
+
+    sizes = [2048, 1 << 20, 1, 1 << 20, -1]
+    assert _check_stop_holds(open_reads, sizes, stop_type)
 
 
 def test_a_stop_on_the_read_of_the_last_bytes_holds_on_the_next_read(

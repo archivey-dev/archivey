@@ -1712,7 +1712,14 @@ class DecompressorStream(ReadOnlyIOStream):
         is, since a pipe held open must not wait for bytes nobody asked for
         (:meth:`read_ahead`). The next feed ends at the same boundary."""
         want = _FEED_SLICE - (self._compressed_read - self._feed_origin) % _FEED_SLICE
-        return self._inner.read(want)
+        try:
+            return self._inner.read(want)
+        except BaseException as exc:
+            # A stop from ``on_source_read`` on this read, outside any decoder call:
+            # kept, so a later read raises it before any bytes already decoded.
+            if from_callers_source(exc):
+                self._spent = KeptError.of(exc)
+            raise
 
     def _read_decompressed_chunk(self, max_length: int = -1) -> bytes:
         """One decoder call's output, at most ``max_length`` bytes when bounded, and
@@ -2130,9 +2137,7 @@ class DecompressorStream(ReadOnlyIOStream):
     def _read(self, need: int, n: int) -> bytes:
         """At least ``need`` bytes, or fewer only at the end, and at most ``n``."""
         self._settle()
-        if self._spent is not None and (
-            not self._buffer or from_callers_source(self._spent.error)
-        ):
+        if self._spent is not None and (not self._buffer or self._spent.callers_source):
             # A decoder error waits behind the bytes buffered before it; the caller's
             # own exception (a stop from ``on_source_read``) does not.
             self._raise_spent()

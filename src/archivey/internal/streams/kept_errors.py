@@ -23,6 +23,13 @@ import traceback
 from dataclasses import dataclass
 from typing import NoReturn, TypeVar
 
+from archivey.internal.streams.callers_source import (
+    from_callers_source,
+    from_source_callback,
+    mark_callers_source,
+    mark_source_callback,
+)
+
 _E = TypeVar("_E", bound=BaseException)
 
 
@@ -59,11 +66,28 @@ class KeptError:
     first_raise: str
     """The first raise's traceback, its causes included, as text."""
 
+    callers_source: bool = False
+    """The error came from the caller's source or ``on_source_read``
+    (:func:`~archivey.internal.streams.callers_source.from_callers_source`)."""
+
+    source_callback: bool = False
+    """The error was raised by ``on_source_read``
+    (:func:`~archivey.internal.streams.callers_source.from_source_callback`)."""
+
     @classmethod
     def of(cls, raised: BaseException) -> KeptError:
-        """Keep ``raised``, which is being raised now (its traceback so far)."""
+        """Keep ``raised``, which is being raised now (its traceback so far).
+
+        The caller's marks are read off ``raised`` here, not off the copy: a type whose
+        ``__copy__`` builds a fresh instance drops them.
+        """
         first_raise = "".join(traceback.format_exception(raised))
-        return cls(unraised(raised), first_raise)
+        return cls(
+            unraised(raised),
+            first_raise,
+            callers_source=from_callers_source(raised),
+            source_callback=from_source_callback(raised),
+        )
 
     def raise_again(self) -> NoReturn:
         """Raise a fresh copy of the error, caused by where it was first raised.
@@ -74,6 +98,12 @@ class KeptError:
         the error."""
         again = unraised(self.error)
         again.__traceback__ = None
+        # Each copy carries the caller's marks again, so every boundary above raises
+        # it as itself (an ``EOFError`` stop is not taken for a cut stream).
+        if self.source_callback:
+            mark_source_callback(again)
+        elif self.callers_source:
+            mark_callers_source(again)
         try:
             raise again from EarlierRaise(f"first raised here:\n{self.first_raise}")
         finally:
