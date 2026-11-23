@@ -1215,34 +1215,58 @@ def test_lzw_bad_code_inside_flush_raises_from_the_next_call() -> None:
     assert inside_flush > 0
 
 
-def test_lzw_drained_to_eof_raises_a_bad_code_one_flush_returns() -> None:
+@pytest.mark.parametrize("twin", [False, True], ids=["kernel", "twin"])
+def test_lzw_drained_to_eof_raises_a_bad_code_one_flush_returns(twin: bool) -> None:
     """The archivey-codecs README's example: ``flush()`` called until ``eof`` raises
-    a bad code that one ``flush()`` passes over, returning the output before it (after
-    a ``decompress()`` capped by ``max_length``, as a reader calls it)."""
-    make = kernels.lzw(frozenset(), isolated=False).Decompressor
-    rng = random.Random(11)
-    found = 0
-    for _ in range(200):
-        data = b"".join(
-            rng.choice((b"abc", b"hello ", bytes([rng.randrange(256)])))
-            for _ in range(rng.randint(50, 3000))
-        )
-        bad = bytearray(make_unix_compress(data))
-        for _ in range(rng.randint(1, 3)):
-            bad[rng.randrange(3, len(bad))] ^= rng.randrange(1, 256)
-        for d in (make(), lzw_twin.Decompressor()):
-            try:
-                d.decompress(bytes(bad), rng.choice((1, 50, 1000)))
-                d.flush()
-            except CorruptionError:
-                continue
-            if d.eof:
-                continue
-            found += 1
-            with pytest.raises(CorruptionError):
-                while not d.eof:
-                    d.flush()
-    assert found > 0
+    a bad code that one ``flush()`` passes over, returning the output before it."""
+    if not twin and not deps.archivey_codecs.available():
+        pytest.skip("needs archivey-codecs")
+    raw, data = _z_with_a_bad_last_code()
+    lzw = (
+        types.SimpleNamespace(Decompressor=lzw_twin.Decompressor)
+        if twin
+        else kernels.lzw(frozenset(), isolated=False)
+    )
+    d = lzw.Decompressor()
+    out = d.decompress(raw)
+    with pytest.raises(CorruptionError, match="invalid code"):
+        while not d.eof:
+            out += d.flush()
+    assert out and data.startswith(out)
+
+
+class _OtherByteArray(bytearray):
+    """A ``bytearray`` whose ``__bytes__`` gives other bytes than its buffer."""
+
+    def __bytes__(self) -> bytes:
+        return b"\x11\x00\x00"
+
+
+@needs_codecs
+def test_an_isolated_kernel_reads_a_buffer_as_its_own_bytes() -> None:
+    """A decoder child gets the buffer's own bytes, as the in-process kernel and
+    the twin read them, never ``__bytes__``."""
+    data = random.Random(3).randbytes(64)
+    for isolated in (False, True):
+        decoder = kernels.filters(frozenset(), isolated=isolated).Arm64Decoder()
+        try:
+            got = decoder.decode(_OtherByteArray(data)) + decoder.flush()
+        finally:
+            close = getattr(decoder, "close", None)
+            if close is not None:
+                close()
+        twin = filters_twin.Arm64Decoder()
+        assert got == twin.decode(data) + twin.flush(), isolated
+    block = _OtherByteArray(b"\x00" * 4)  # damaged as its own bytes
+    outcomes = []
+    for isolated in (False, True):
+        decode = kernels.lzo1x(frozenset(), isolated=isolated).decompress
+        try:
+            outcomes.append(("ok", decode(block, max_size=64)))
+        except CorruptionError as exc:
+            outcomes.append(("corrupt", str(exc)))
+    assert outcomes[0] == outcomes[1]
+    assert outcomes[0][0] == "corrupt"
 
 
 @needs_codecs
