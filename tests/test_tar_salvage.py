@@ -10,6 +10,7 @@ the GNU tar comparison runs where GNU tar is installed.
 
 from __future__ import annotations
 
+import bz2
 import gzip
 import io
 import random
@@ -974,9 +975,10 @@ def test_a_gzip_tar_lists_what_the_same_tar_lists(data: bytes) -> None:
 
 def test_a_forward_only_tar_inside_another_archive_stays_on_the_hold() -> None:
     """A TAR read forward-only inside another archive (a makeself payload, read
-    from its decoder) keeps the rule of the 4 MiB hold (option (b) of PR 1768): a
-    found member bigger than the hold is listed unconfirmed with its size trusted,
-    its data reads whole, and the tar stored in it is not listed."""
+    from its decoder) keeps the rule of the 4 MiB hold: a found member bigger than
+    the hold is listed unconfirmed with its size trusted, its data reads whole, and
+    the tar stored in it is not listed. A forward-only walk cannot see the block
+    after the data, so this fallback stays for it."""
     data = _tar_inside_a_big_member()
     direct = _list(data, salvage=True)
     nested = _list(_as_makeself(data), salvage=True)
@@ -994,7 +996,8 @@ def test_a_forward_only_tar_inside_another_archive_stays_on_the_hold() -> None:
 
 def test_a_deb_extracts_a_member_bigger_than_the_hold(tmp_path: Path) -> None:
     """``extract_all`` on the deb writes ``big.bin`` whole and every member after
-    it, and still ends in the damage error (K6: it stopped at ``big.bin``)."""
+    it, and still ends in the damage error: extraction must not stop at
+    ``big.bin``."""
     data = _tar_inside_a_big_member()
     direct = _list(data, salvage=True)
     with (
@@ -1189,6 +1192,31 @@ def test_the_window_seeks_to_a_restart_point_and_otherwise_reads_through(
         assert inner.read_bytes == 1 << 20
         assert window.eof_at == 1 << 20
         assert (window.start, window.end) == ((1 << 20) - 1000, 1 << 20)
+
+
+@pytest.mark.parametrize(
+    "compress",
+    [
+        pytest.param(lambda d: gzip.compress(d, compresslevel=1), id="gzip"),
+        pytest.param(bz2.compress, id="bzip2"),
+    ],
+)
+def test_a_compressed_tar_searches_inside_a_size_past_the_end(
+    compress: Callable[[bytes], bytes],
+) -> None:
+    """A found header on a codec stream whose size points 8 MiB past the end of the
+    decoded data: the look for the block after its data meets the stream's end,
+    sees a short block, and the search goes on inside the data, so the listing is
+    the plain tar's. This guards against the look seeking past the end, which
+    counts bytes no decoder produced, so the ratio guard refused the archive and
+    the listing was lost."""
+    data = _lying_size(8 << 20)
+    plain = _list(data, salvage=True)
+    packed = _list(compress(data), salvage=True)
+    assert len(plain.names) == 22
+    assert packed.names == plain.names
+    assert packed.members == plain.members
+    assert type(packed.error) is type(plain.error) is CorruptionError
 
 
 def test_dense_headers_cost_the_decoded_length_on_a_gzip_tar() -> None:

@@ -1437,9 +1437,10 @@ class TarReader(BaseArchiveReader):
             pos = walker.position
             looked = pos in salvage.known or pos == salvage.clean_end
         # ``None``: a forward-only walk cannot see the block after the data within
-        # the span it holds. A found member's size is then trusted: the walk reads
-        # on through its data, and searches back inside it only when the block
-        # there does not confirm it, or the stream ends first.
+        # the span it holds. The member's size is then trusted: the walk reads
+        # on through its data. When the block there does not confirm the member, or
+        # the stream ends first, the search goes back through the bytes the window
+        # still holds. This fallback stays for forward-only walks.
         trusted = looked is None
         confirmed = bool(looked)
         if trusted:
