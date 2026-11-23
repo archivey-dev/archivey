@@ -82,10 +82,14 @@ SYMLINK_MAX = 1024
 XATTR_VALUE_MAX = 1024
 # decmpfs headers and inline data are kept for the read; a value is at most one chunk
 # and the header, so this bounds what one attribute can keep.
-_DECMPFS_KEEP = DECMPFS_CHUNK + 64
+DECMPFS_KEEP = DECMPFS_CHUNK + 64
 # What one kept extent costs in memory: a (start, count) tuple of two ints, and its
 # slots in the list and in the final tuple.
 _EXTENT_CHARGE = 96
+# The memory one kept folder thread holds besides its name: a dict slot, its int key,
+# a (parent, name) tuple, the parent int and the bytes object (about 207 bytes measured
+# with tracemalloc on CPython 3.12 for an empty name).
+_THREAD_CHARGE = 208
 # The block a fork read gathers at a time through the extents.
 READ_PIECE = 1 << 20
 
@@ -93,7 +97,7 @@ _S_IFMT = 0o170000
 _S_IFREG = 0o100000
 _S_IFDIR = 0o040000
 _S_IFLNK = 0o120000
-_SPECIAL = {
+SPECIAL_FILES = {
     0o010000: "fifo",
     0o020000: "char_device",
     0o060000: "block_device",
@@ -600,8 +604,8 @@ def file_kind(info: FileInfo) -> tuple[str, str | None]:
     if info.mode:
         if kind == _S_IFLNK:
             return SYMLINK, None
-        if kind in _SPECIAL:
-            return SPECIAL, _SPECIAL[kind]
+        if kind in SPECIAL_FILES:
+            return SPECIAL, SPECIAL_FILES[kind]
         if kind in (_S_IFREG, 0):
             return REGULAR, None
         if kind == _S_IFDIR:
@@ -627,6 +631,10 @@ class Catalog(NamedTuple):
     folders: dict[int, tuple[int, str]]  # folder id: (parent id, name)
     inodes: dict[int, Entry]  # link id: the iNode file in the private folder
     hidden: frozenset[int]  # folder ids whose contents are not listed
+    # The folders whose thread record is missing, unreadable, or names another parent
+    # or name, by folder id. Paths come from the folder records; a thread only
+    # cross-checks them.
+    bad_threads: tuple[int, ...] = ()
 
 
 def read_catalog(
@@ -641,10 +649,24 @@ def read_catalog(
     hidden: set[int] = set()
     inode_records: list[Entry] = []
     failure: ArchiveyError | None = None
+    threads: dict[int, tuple[int, bytes] | None] = {}
     try:
         for key, data in volume.catalog().leaf_records():
+            if data[:2] == b"\x00\x03":
+                # A folder thread: keyed by the folder's id with an empty name, it
+                # holds the folder's parent id and name (TN1150 "Catalog File").
+                cnid, _ = _catalog_key(key)
+                if cnid in threads:
+                    continue
+                thread = _thread_record(data)
+                charge(
+                    _THREAD_CHARGE + (len(thread[1]) if thread else 0),
+                    "the HFS+ folder threads",
+                )
+                threads[cnid] = thread
+                continue
             if data[:2] != b"\x00\x01" and data[:2] != b"\x00\x02":
-                continue  # thread records
+                continue  # file threads; pass 2 refuses an unknown type
             parent, raw = _catalog_key(key)
             if data[:2] == b"\x00\x01":
                 if len(data) < _FOLDER_RECORD:
@@ -663,6 +685,9 @@ def read_catalog(
                 charge(len(data) + len(raw), "the HFS+ hard-link inodes")
     except ArchiveyError as exc:
         failure = exc
+    # A private folder found after its inodes' records (it sorts by its parent, the
+    # root, which comes first, so only a damaged catalog does this): its inodes are
+    # read again in the second pass's order, so a link may find none.
     inodes: dict[int, Entry] = {}
     for entry in inode_records:
         if entry.name.startswith("iNode"):
@@ -670,10 +695,30 @@ def read_catalog(
                 inodes[int(entry.name[5:])] = entry
             except ValueError:
                 pass
-    # A private folder found after its inodes' records (it sorts by its parent, the
-    # root, which comes first, so only a damaged catalog does this): its inodes are
-    # read again in the second pass's order, so a link may find none.
-    return Catalog(folders, inodes, frozenset(hidden)), failure
+    bad_threads: tuple[int, ...] = ()
+    # A pass stopped by a damaged node has not read the later threads, so every later
+    # folder would look like it had none: the cross-check runs on a whole pass only.
+    if failure is None:
+        bad_threads = tuple(
+            cnid
+            for cnid, (parent, name) in folders.items()
+            if (thread := threads.get(cnid)) is None
+            or thread[0] != parent
+            or _decode_name(thread[1]) != name
+        )
+    return Catalog(folders, inodes, frozenset(hidden), bad_threads), failure
+
+
+def _thread_record(data: bytes) -> tuple[int, bytes] | None:
+    """A thread record's (parent id, name as stored UTF-16BE), or ``None`` when it is
+    too short for its name: it then disagrees, as a missing one does, and the listing,
+    which does not need it, goes on."""
+    if len(data) < 10:
+        return None
+    parent, length = struct.unpack_from(">IH", data, 4)
+    if length > 255 or 10 + 2 * length > len(data):
+        return None
+    return parent, data[10 : 10 + 2 * length]
 
 
 def _file_entry(parent: int, raw_name: bytes, data: bytes) -> Entry:
@@ -798,7 +843,7 @@ def read_attributes(
                 if 16 + size > len(data):
                     bad.add(cnid)
                     continue
-                keep = _DECMPFS_KEEP if name == DECMPFS else XATTR_VALUE_MAX
+                keep = DECMPFS_KEEP if name == DECMPFS else XATTR_VALUE_MAX
                 value = data[16 : 16 + size] if size <= keep else None
                 charge(
                     2 * length + (len(value) if value else 0) + 32, "HFS+ attributes"
@@ -858,7 +903,7 @@ def attribute_value(volume: HfsVolume, cnid: int, attribute: Attribute) -> bytes
     fork = attribute.fork
     if fork is None:
         raise CorruptionError(f"the attribute of file {cnid} was not kept")
-    if fork.size > _DECMPFS_KEEP:
+    if fork.size > DECMPFS_KEEP:
         raise CorruptionError(
             f"an attribute of file {cnid} is {fork.size} bytes, more than archivey "
             "reads"
@@ -905,14 +950,16 @@ _LZFSE_KINDS = (11, 12)
 
 
 def decmpfs_reader(
-    volume: HfsVolume,
     context: ReaderContext,
     cnid: int,
     header: Decmpfs,
-    rsrc: Fork,
+    fork_size: int,
+    open_fork: Callable[[], Callable[[int, int], bytes]],
 ) -> Callable[[int], bytes]:
     """``read_block(i)`` for a ``block_stream`` of 64 KiB chunks over the decoded
-    file. Every length is checked before it is used."""
+    file. ``open_fork()`` gives ``read(offset, n)`` over the ``fork_size`` bytes of the
+    resource fork (an HFS+ fork, or APFS's ``com.apple.ResourceFork`` attribute), and is
+    called only for a type stored there. Every length is checked before it is used."""
     kind, size = header.kind, header.size
     if kind not in _INLINE and kind not in _IN_RESOURCE_FORK:
         raise UnsupportedFeatureError(
@@ -945,12 +992,11 @@ def decmpfs_reader(
             return _decode_chunk(context, kind, header.inline, size, cnid)
 
         return inline_block
-    if not rsrc.size:
+    if not fork_size:
         raise CorruptionError(
             f"file {cnid} is compressed in its resource fork, which is empty"
         )
-    read = volume.fork_reader(cnid, RESOURCE_FORK, rsrc)
-    fork_size = rsrc.size
+    read = open_fork()
     if kind == 4:
         if fork_size < 260:
             raise CorruptionError(f"the resource fork of file {cnid} is too short")
@@ -1004,8 +1050,18 @@ def _decode_chunk(
 ) -> bytes:
     """One decmpfs chunk, which must decode to exactly ``want`` bytes."""
     try:
-        if kind in (1, 10):
+        if kind == 1:
             out = data
+        elif kind == 10:
+            # Each chunk is its raw block behind a 0xCC byte. The macOS kernel reads
+            # that layout and refuses a chunk without the byte (EINVAL), as the macOS
+            # check against hdiutil found (tasks.md §M).
+            if data[:1] != b"\xcc":
+                raise CorruptionError(
+                    f"a type 10 chunk of the compressed file {cnid} does not start "
+                    "with the 0xCC byte macOS requires"
+                )
+            out = data[1:]
         elif kind == 9:
             # 7-Zip (``HfsHandler.cpp``) reads type 9 only after a 0xCC byte and
             # refuses it without; no macOS sample shows what Apple writes or accepts

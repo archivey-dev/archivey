@@ -45,7 +45,9 @@ wrapping the image, not mounted here.
 
 from __future__ import annotations
 
+import functools
 import io
+import itertools
 import re
 import stat
 import struct
@@ -271,9 +273,9 @@ class _ParseBudget:
 # How many files only another tree holds are reported per tree
 # (``IsoReader._report_files_in_other_trees``).
 _OTHER_TREE_REPORTS = 16
-# What ``IsoReader._report_unlisted`` decodes a reported file's name from: a directory
-# entry, or a UDF name already decoded.
-_NameSource = TypeVar("_NameSource")
+# What ``IsoReader._report_unlisted`` renders a reported file's path from: a directory
+# entry, or a UDF path already decoded.
+_PathSource = TypeVar("_PathSource")
 
 
 # The key the UDF tree is counted under in ``_ParseBudget``, beside the ISO 9660 trees'
@@ -470,9 +472,12 @@ def _sorted_children(directory: IsoEntry) -> list[IsoEntry]:
     ECMA-119 9.3 has a writer record a directory's entries sorted by identifier, and
     every writer seen does. Sorting here lists an image that does not in the same
     order. The sort is stable, so entries that share an identifier keep their on-disc
-    order, which decides which of them is current.
+    order, which decides which of them is current. A directory already in order comes
+    back as its own ``children`` list, not a copy; callers do not change it.
     """
     children = directory.children or []
+    if all(a.ident <= b.ident for a, b in itertools.pairwise(children)):
+        return children
     return sorted(children, key=_ident_of)
 
 
@@ -725,6 +730,13 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         # directory, built the first time a link target is followed through it, so
         # following many targets through one wide directory stays linear.
         self._rock_ridge_children: dict[int, dict[bytes, IsoEntry]] = {}
+        # Each directory's entries in identifier order (``_sorted_children``), by
+        # ``id()`` of the directory. Name and link target decoding can ask for one
+        # directory's entries many times: a link target such as ``x\xff/../x\xff/..``
+        # searches ``x\xff`` once per component (``_joliet_directory``), and so do
+        # many ``CL`` placeholders pointing at one directory. Without this, each
+        # search would sort the whole directory again.
+        self._sorted: dict[int, list[IsoEntry]] = {}
         # The primary tree's first directory at each extent, for Rock Ridge ``CL``
         # relocation; built on the first ``CL`` entry met (``_relocated``).
         self._entry_at_extent: dict[int, IsoEntry] | None = None
@@ -1202,7 +1214,11 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         names it from the placeholder's ``NM``. A placeholder that points at nothing
         is listed as the file record it is.
         """
-        for child in _sorted_children(directory):
+        key = id(directory)
+        ordered = self._sorted.get(key)
+        if ordered is None:
+            ordered = self._sorted[key] = _sorted_children(directory)
+        for child in ordered:
             named = child
             if use_rr and child.rr is not None:
                 if child.is_dir and child.parent_linked:
@@ -1381,7 +1397,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
                 "Joliet",
                 "file_only_in_joliet",
                 self._entry_tree_files(JOLIET_TREE),
-                self._joliet_text,
+                functools.partial(self._entry_tree_path, name_of=self._joliet_text),
                 listed_extents,
             )
         if self._namespace == "joliet" or (
@@ -1391,7 +1407,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
                 "ISO 9660",
                 "file_only_in_iso9660",
                 self._entry_tree_files(PRIMARY_TREE),
-                self._plain_text,
+                functools.partial(self._entry_tree_path, name_of=self._plain_text),
                 listed_extents,
             )
         if self._udf is not None and self._namespace != "udf":
@@ -1399,7 +1415,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
                 "UDF",
                 "file_only_in_udf",
                 self._udf_tree_files(self._udf),
-                lambda name: name,
+                lambda path: path,
                 listed_extents,
             )
 
@@ -1409,17 +1425,18 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         shape: Literal[
             "file_only_in_joliet", "file_only_in_iso9660", "file_only_in_udf"
         ],
-        files: Iterator[tuple[int | None, str, _NameSource]],
-        name_of: Callable[[_NameSource], str],
+        files: Iterator[tuple[int | None, _PathSource]],
+        path_of: Callable[[_PathSource], str],
         listed_extents: set[int],
     ) -> None:
-        """Report the files of ``files``, ``(extent, directory path, name source)``,
-        whose extent no listed file has. A name is decoded only for a file reported."""
+        """Report the files of ``files``, ``(extent, path source)``, whose extent no
+        listed file has. A path is rendered only for a file reported, so a deep tree
+        costs no path per directory."""
         reported = 0
-        for extent, dirpath, name_source in files:
+        for extent, path_source in files:
             if extent is not None and extent in listed_extents:
                 continue
-            path = dirpath + name_of(name_source)
+            path = path_of(path_source)
             reported += 1
             cap = (
                 f" No more than {_OTHER_TREE_REPORTS} such files are reported per tree."
@@ -1444,28 +1461,37 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
             if reported == _OTHER_TREE_REPORTS:
                 return
 
-    def _entry_tree_files(
-        self, tree: int
-    ) -> Iterator[tuple[int | None, str, IsoEntry]]:
-        """``(image offset, directory path, entry)`` of every non-empty file in the
-        Joliet or plain ISO 9660 tree."""
+    def _entry_tree_files(self, tree: int) -> Iterator[tuple[int | None, IsoEntry]]:
+        """``(image offset, entry)`` of every non-empty file in the Joliet or plain
+        ISO 9660 tree."""
         volume = self._volume
         assert volume is not None
         if tree == JOLIET_TREE:
             assert volume.joliet is not None
-            root, name_of = volume.joliet.root, self._joliet_text
+            root = volume.joliet.root
         else:
-            root, name_of = volume.primary.root, self._plain_text
+            root = volume.primary.root
         block_size = volume.block_size
-        stack: list[tuple[str, IsoEntry]] = [("", root)]
+        stack = [root]
         while stack:
-            dirpath, directory = stack.pop()
+            directory = stack.pop()
             for child in _sorted_children(directory):
                 if child.is_dir:
                     if child.children is not None:
-                        stack.append((f"{dirpath}{name_of(child)}/", child))
+                        stack.append(child)
                 elif child.data_length:
-                    yield child.extent * block_size, dirpath, child
+                    yield child.extent * block_size, child
+
+    @staticmethod
+    def _entry_tree_path(entry: IsoEntry, name_of: Callable[[IsoEntry], str]) -> str:
+        """An entry's path in its tree, from its parent links: the ``name_of`` of each
+        directory above it, root left out, then its own, joined with ``/``."""
+        parts = [name_of(entry)]
+        parent = entry.parent
+        while parent is not None and parent.parent is not None:
+            parts.append(name_of(parent))
+            parent = parent.parent
+        return "/".join(reversed(parts))
 
     @staticmethod
     def _plain_text(entry: IsoEntry) -> str:
@@ -1474,16 +1500,15 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         return name if entry.is_dir else _strip_version(name, listed=True)[0]
 
     @staticmethod
-    def _udf_tree_files(udf: UdfVolume) -> Iterator[tuple[int | None, str, str]]:
-        """``(image offset, directory path, name)`` of every non-empty file in the UDF
-        tree. The offset is ``None`` for data held inside the File Entry, which no
-        ISO 9660 record can point at."""
+    def _udf_tree_files(udf: UdfVolume) -> Iterator[tuple[int | None, str]]:
+        """``(image offset, path)`` of every non-empty file in the UDF tree. The offset
+        is ``None`` for data held inside the File Entry, which no ISO 9660 record can
+        point at."""
         for name in udf.walk():
             entry = name.entry
             if entry.is_directory or entry.is_symlink or not entry.info_length:
                 continue
-            dirpath, _, base = name.path.rpartition("/")
-            yield entry.first_extent, f"{dirpath}/" if dirpath else "", base
+            yield entry.first_extent, name.path
 
     def _make_udf_member(self, name: UdfName, index: int) -> ArchiveMember:
         """The member for one name of the UDF tree.
