@@ -25,9 +25,13 @@ the precise, technical record. -->
 
 <!-- What could break, and for whom, if this change is wrong.
 Tier: the "tier:" line that `python3 scripts/review/review_prep.py tier` prints (light,
-standard or deep), and the paths behind it.
-Public API: "none", or the names added, changed or removed (the diff of
-dev-docs/api-surface.txt lists them). Removing or renaming a public name is the
+standard or deep), and the paths behind it. When the change is tricky in a way the paths
+do not show (architecture, concurrency, crypto, resumable state, limits), end a commit
+message with the trailer `Review-Tier: deep (why)`: its own line in the last paragraph,
+after a blank line. The script then prints deep; the same words inside prose do not count.
+Public API: "none" when the script's "public API:" line says unchanged, or the names
+added, changed or removed (the diff of dev-docs/api-surface.txt or of an archivey-codecs
+.pyi stub lists them). Removing or renaming a public name is the
 maintainer's call.
 Security: "yes" or "no", and the rule behind it. Yes when the change, on any path:
 allocates, loops or recurses on a size, count or offset read from the archive; adds
@@ -53,5 +57,5 @@ gate). Add any it cannot see: a new subsystem, a reversed ruling. -->
 - [ ] The change follows [CONTRIBUTING.md](https://github.com/archivey-dev/archivey/blob/main/CONTRIBUTING.md): its coding and testing rules and its gates.
 - [ ] A bug fix comes with a test that fails without the fix.
 - [ ] The user docs (`docs/`) and the specs (`openspec/`) match the new behaviour, or the change does not touch them.
-- [ ] `CHANGELOG.md` is unchanged. The release PR writes it.
+- [ ] A `CHANGELOG.md` edit is under `## [Unreleased]`, fits its sections, and merges into the line on the same topic when one exists, or the change has none. A plain bug fix needs no line: the release counts it in the shared Fixed line.
 - [ ] A change in behaviour that needs a minor release (see "Versioning and stability" in [How it is built](https://archivey-dev.github.io/archivey/how-it-is-built/)) has the `needs-minor` label, or the change has none.

@@ -622,14 +622,14 @@ def test_a_large_read_finds_the_failing_byte_in_few_calls(
     assert counts["calls"] <= 4096
 
 
-_NO_RECOVERY = replace(_CONFIG, recover_partial_data=False)
+_NO_RECOVERY = replace(_CONFIG, redecode_before_damage=False)
 
 
 @pytest.mark.parametrize("name", list(CODECS))
 def test_recovery_off_does_not_decode_again(
     name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``recover_partial_data=False``: the read that meets the damage raises the same
+    """``redecode_before_damage=False``: the read that meets the damage raises the same
     error with no second decode, and the bytes the failing decoder call gave before
     it are lost."""
     from archivey.internal.streams.decompressor_stream import DecompressorStream
