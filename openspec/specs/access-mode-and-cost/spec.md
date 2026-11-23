@@ -269,7 +269,7 @@ report to a caller MUST NOT change the complete-or-raise behaviour of `members()
 The system SHALL behave per this canonical table (`✅` allowed,
 `⛔` → `ArchiveyUsageError`):
 
-| Method | `streaming=False` | `streaming=True` |
+| Method | `streaming=False` | `streaming=True` or `pipe=True` |
 | --- | --- | --- |
 | `__iter__` | ✅ repeatable after **successful** complete cache; yield-then-raise on terminal archive error | ✅ **once** (no replay); yield-then-raise on terminal archive error |
 | `stream_members` | ✅; yield-then-raise on terminal archive error | ✅ once; yield-then-raise |
@@ -279,9 +279,9 @@ The system SHALL behave per this canonical table (`✅` allowed,
 | `members` / `get` / `open` / `read` | ✅; `members`/`get` complete-or-raise | ⛔ |
 | `in` (identity) | ✅ no scan (incl. recovered report members) | ✅ no scan |
 | `cost` / `info` / `format` / `close` / CM | ✅ | ✅ |
-| at `open_archive()` | fail fast if source not RA-capable | any source |
+| at `open_archive()` | `StreamNotSeekableError` if the source cannot seek | `streaming=True`: `StreamNotSeekableError` if the source cannot seek; `pipe=True`: any source, read once as a pipe (a format that needs seeking still refuses) |
 
-In streaming mode, `__iter__` / `stream_members` / `extract_all` share one pass.
+In streaming mode and pipe mode, `__iter__` / `stream_members` / `extract_all` share one pass.
 
 #### Scenario: summary checks
 
