@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import array
 import ast
+import contextlib
 import re
 import subprocess
 import zipfile
@@ -18,7 +19,13 @@ from archivey import PasswordRequest, open_archive
 from archivey.exceptions import ArchiveyUsageError, EncryptionError
 from archivey.internal.backends.sevenzip_reader import SevenZipReader
 from archivey.internal.measurement import enable_measurement
-from archivey.internal.password import _PasswordCandidates, wrong_password_error
+from archivey.internal.password import (
+    PasswordConfirmVerdict,
+    _PasswordCandidates,
+    wrong_password_error,
+)
+from archivey.internal.password_confirm import attempt_with_confirm
+from archivey.internal.plugin_passwords import SavedWinner, resolve_request
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires, requires_binary
 
@@ -719,7 +726,34 @@ def test_survivors_the_full_check_all_rejects_exhaust_the_list() -> None:
 
 
 def test_provider_answers_are_not_gathered() -> None:
-    """The provider is lazy: its first answer that survives the probe wins."""
+    """The provider is lazy: it is asked one answer at a time, and its first answer
+    that survives the probe and the full check wins."""
+    asked: list[int] = []
+    settled: list[bytes] = []
+
+    def provider(request: PasswordRequest) -> str | None:
+        asked.append(request.attempt)
+        return ["a", "b"][request.attempt - 1] if request.attempt <= 2 else None
+
+    def settle(password: bytes, _result: object) -> tuple[bytes, str]:
+        settled.append(password)
+        return (password, "settled")
+
+    candidates = _PasswordCandidates.from_input(provider)
+    result = candidates.attempt(
+        None,
+        _verdict_decrypt({b"a": "inconclusive", b"b": "confirmed"}, []),
+        settled=_is_confirmed,
+        settle=settle,
+    )
+    assert result == (b"a", "settled")
+    assert asked == [1]
+    assert settled == [b"a"]
+
+
+def test_a_provider_answer_the_full_check_rejects_asks_again() -> None:
+    """Built-in and plugin requests alike: an unconfirmed provider answer goes
+    through the full check, and a rejected one leads to the next provider call."""
     asked: list[int] = []
 
     def provider(request: PasswordRequest) -> str | None:
@@ -729,9 +763,228 @@ def test_provider_answers_are_not_gathered() -> None:
     candidates = _PasswordCandidates.from_input(provider)
     result = candidates.attempt(
         None,
-        _verdict_decrypt({b"a": "inconclusive", b"b": "confirmed"}, []),
+        _verdict_decrypt({b"a": "inconclusive", b"b": "inconclusive"}, []),
         settled=_is_confirmed,
-        settle=lambda _password, _result: pytest.fail("provider answers not settled"),
+        settle=_settle_only(b"b"),
     )
-    assert result == (b"a", "inconclusive")
+    assert result == "confirmed"
+    assert asked == [1, 2]
+
+
+def _settle_only(right: bytes) -> Callable[[bytes, str], str]:
+    def settle(password: bytes, _result: str) -> str:
+        if password != right:
+            raise EncryptionError("checksum failed")
+        return "confirmed"
+
+    return settle
+
+
+def test_a_lone_survivor_is_settled_when_a_provider_can_answer() -> None:
+    """A known-good password from another unit that survives a weak probe alone goes
+    through the full check while the provider can still be asked, and a rejected one
+    leads to the provider."""
+    asked: list[int] = []
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        asked.append(request.attempt)
+        return b"right"
+
+    candidates = _PasswordCandidates.from_input(provider)
+    candidates.record_success(b"earlier")
+    result = candidates.attempt(
+        None,
+        lambda _password: "probe passed",
+        settled=lambda result: result == "confirmed",
+        settle=_settle_only(b"right"),
+    )
+    # The provider's answer goes through the full check too, and passes it.
+    assert result == "confirmed"
     assert asked == [1]
+
+
+def test_a_lone_survivor_wins_unsettled_with_no_provider() -> None:
+    """With no provider there is nothing else to try: the lone survivor wins without
+    the full check, and the read's own check reports a wrong one."""
+    settled: list[bytes] = []
+
+    def settle(password: bytes, result: str) -> str:
+        settled.append(password)
+        return "confirmed"
+
+    candidates = _PasswordCandidates.from_input("only")
+    result = candidates.attempt(
+        None,
+        lambda _password: "probe passed",
+        settled=lambda result: result == "confirmed",
+        settle=settle,
+    )
+    assert result == "probe passed"
+    assert settled == []
+
+
+# Both entry points, the built-in ``attempt_with_confirm`` and the plugin
+# ``plugin_passwords.resolve_request``, run ``_PasswordCandidates.attempt``: these cases
+# check that the plugin adapter's verdict mapping keeps its candidate order, promotion
+# and survivor rules. What only a plugin request has (a saved winner, callback guards)
+# is tested in ``test_format_api_passwords.py``.
+_V = PasswordConfirmVerdict
+_PARITY_CASES = {
+    "first confirmed wins": ([b"a", b"b", b"c"], (), {b"b": _V.CONFIRMED}, {}, True),
+    "lone survivor, unchecked": ([b"a", b"b"], (), {b"a": _V.INCONCLUSIVE}, {}, True),
+    "survivors settled in order": (
+        [b"a", b"b", b"c"],
+        (),
+        {b"a": _V.INCONCLUSIVE, b"c": _V.INCONCLUSIVE},
+        {b"a": _V.REJECTED, b"c": _V.CONFIRMED},
+        True,
+    ),
+    "settled inconclusive, first kept": (
+        [b"a", b"b"],
+        (),
+        {b"a": _V.INCONCLUSIVE, b"b": _V.INCONCLUSIVE},
+        {b"a": _V.INCONCLUSIVE, b"b": _V.INCONCLUSIVE},
+        True,
+    ),
+    "all rejected": ([b"a", b"b"], (), {}, {}, True),
+    "survivors all fail the full check": (
+        [b"a", b"b"],
+        (),
+        {b"a": _V.INCONCLUSIVE, b"b": _V.INCONCLUSIVE},
+        {},
+        True,
+    ),
+    "known-good first": ([b"a", b"k"], (b"k",), {b"k": _V.CONFIRMED}, {}, True),
+    "no full check, first survivor": (
+        [b"a", b"b"],
+        (),
+        {b"a": _V.INCONCLUSIVE, b"b": _V.INCONCLUSIVE},
+        {},
+        False,
+    ),
+    "provider after a rechecked lone survivor": (
+        None,
+        (b"earlier",),
+        {b"earlier": _V.INCONCLUSIVE, b"right": _V.CONFIRMED},
+        {},
+        True,
+    ),
+}
+
+
+def _parity_run(
+    driver: str,
+    listed: list[bytes] | None,
+    known: tuple[bytes, ...],
+    probes: dict[bytes, PasswordConfirmVerdict],
+    fulls: dict[bytes, PasswordConfirmVerdict],
+    has_full: bool,
+) -> tuple[object, list[str], list[bytes]]:
+    calls: list[str] = []
+    candidates = _PasswordCandidates.from_input(
+        listed if listed is not None else (lambda request: b"right")
+    )
+    for password in known:
+        candidates.record_success(password)
+
+    def verdict(kind: str, table: dict[bytes, PasswordConfirmVerdict], pw: bytes):
+        calls.append(f"{kind}:{pw.decode()}")
+        return table.get(pw, _V.REJECTED)
+
+    outcome: object
+    if driver == "builtin":
+
+        def as_builtin(kind: str, table: dict[bytes, PasswordConfirmVerdict]):
+            def run(pw: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
+                found = verdict(kind, table, pw)
+                if found is _V.REJECTED:
+                    raise wrong_password_error("Wrong password for the unit")
+                return pw, found
+
+            return run
+
+        try:
+            outcome = attempt_with_confirm(
+                candidates,
+                None,
+                as_builtin("check", probes),
+                as_builtin("full", fulls) if has_full else None,
+            )
+        except EncryptionError:
+            outcome = "EncryptionError"
+    else:
+
+        def as_plugin(kind: str, table: dict[bytes, PasswordConfirmVerdict]):
+            def run(pw: bytes) -> tuple[bytes | None, PasswordConfirmVerdict]:
+                found = verdict(kind, table, pw)
+                return (None if found is _V.REJECTED else pw), found
+
+            return run
+
+        try:
+            resolution = resolve_request(
+                what="the unit",
+                check=as_plugin("check", probes),
+                full_check=as_plugin("full", fulls) if has_full else None,
+                member=None,
+                passwords=candidates,
+                run=lambda fn: fn(),
+                unguarded=contextlib.nullcontext,
+                allow_provider=True,
+                saved=None,
+                owner="Parity",
+            )
+            outcome = (resolution.unlocked, resolution.verdict)
+        except EncryptionError:
+            outcome = "EncryptionError"
+    return outcome, calls, list(candidates.iter_candidates())
+
+
+@pytest.mark.parametrize("case", list(_PARITY_CASES))
+def test_builtin_and_plugin_loops_choose_alike(case: str) -> None:
+    builtin = _parity_run("builtin", *_PARITY_CASES[case])
+    plugin = _parity_run("plugin", *_PARITY_CASES[case])
+    assert plugin == builtin
+
+
+def _resolve_saved(
+    candidates: _PasswordCandidates,
+    probes: dict[bytes, PasswordConfirmVerdict],
+    saved: SavedWinner | None,
+    *,
+    allow_provider: bool,
+) -> tuple[object, PasswordConfirmVerdict]:
+    def check(pw: bytes) -> tuple[bytes | None, PasswordConfirmVerdict]:
+        found = probes.get(pw, _V.REJECTED)
+        return (None if found is _V.REJECTED else pw), found
+
+    resolution = resolve_request(
+        what="the unit",
+        check=check,
+        full_check=None,
+        member=None,
+        passwords=candidates,
+        run=lambda fn: fn(),
+        unguarded=contextlib.nullcontext,
+        allow_provider=allow_provider,
+        saved=saved,
+        owner="Saved",
+    )
+    return resolution.unlocked, resolution.verdict
+
+
+@pytest.mark.parametrize("fresh", [True, False])
+def test_a_weak_saved_winner_competes_only_on_a_fresh_open(fresh: bool) -> None:
+    """A unit first won ``INCONCLUSIVE`` by a provider answer; another unit has since
+    confirmed a different password. A fresh open of the first unit lets the confirmed
+    one win; a replacement of its stream keeps the password it was unlocked with."""
+    candidates = _PasswordCandidates.from_input(lambda request: None)
+    candidates.record_success(b"confirmed-elsewhere")
+    probes = {b"weak": _V.INCONCLUSIVE, b"confirmed-elsewhere": _V.CONFIRMED}
+    outcome = _resolve_saved(
+        candidates, probes, SavedWinner(b"weak", False), allow_provider=fresh
+    )
+    if fresh:
+        assert outcome == (b"confirmed-elsewhere", _V.CONFIRMED)
+    else:
+        assert outcome == (b"weak", _V.INCONCLUSIVE)

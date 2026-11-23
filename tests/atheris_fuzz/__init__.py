@@ -22,6 +22,7 @@ DEFAULT_BUDGETS: dict[str, int] = {
     "iso": 8,
     "squashfs": 8,
     "dmg": 8,
+    "dmg_apfs": 8,
     "xar": 8,
     "cab": 8,
     "lha": 8,
