@@ -216,8 +216,9 @@ same user, and there is no timeout. All of it is on the
 Eight of archivey's own decoders (LZX, LZW, LZO1X, BCJ2, the ARM64 and RISC-V filters,
 ZipCrypto and LHA's CRC-16) have Rust versions in the optional `archivey-codecs`
 package. Each Python decoder has a twin with the package's API, and a switch in
-`internal/kernels/` (one per package module; the two filters share one) picks one, so call sites never mention the package. Both give the
-same bytes and errors. See the [codec kernels](../topics/codec-kernels.md) topic page.
+`internal/kernels/` (one per package module; the two filters share one) picks one, so
+call sites never mention the package. Both give the same bytes and errors. See the
+[codec kernels](../topics/codec-kernels.md) topic page.
 
 ## Who closes what
 

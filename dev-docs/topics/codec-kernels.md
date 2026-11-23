@@ -4,13 +4,13 @@
 CAB's LZX, Unix `compress` (`.Z`), LZO, 7z's BCJ2 and its ARM64 and RISC-V branch
 filters, ZIP's traditional encryption (ZipCrypto) and LHA's CRC-16. The optional
 `archivey-codecs` package has Rust versions of the same eight kernels. Each Python
-decoder has a *twin* with the package's exact API, and a switch picks the Rust kernel
-or the twin: one switch per package module, so the two branch filters share one. A call site builds its decoder through the switch and does not
-know which one it got: both give the same bytes and raise the same errors, so the
-package changes speed only. This page covers the switch, the two sides, what happens
-under `NATIVE_DECODERS`, and the rules for changing a kernel. The guide's
-[streams and codecs](../guide/06-streams-and-codecs.md) page sets the codec layer in
-context.
+decoder has a *twin* with the package's exact API, and a switch picks the Rust kernel or
+the twin: one switch per package module, so the two branch filters share one. A call
+site builds its decoder through the switch and does not know which one it got: both give
+the same bytes and raise the same errors, so the package changes speed only. This page
+covers the switch, the two sides, what happens under `NATIVE_DECODERS`, and the rules
+for changing a kernel. The guide's [streams and
+codecs](../guide/06-streams-and-codecs.md) page sets the codec layer in context.
 
 The code is in `src/archivey/internal/kernels/` (archivey's side) and
 `packages/archivey-codecs/` (the package). Other pages own parts of this, and this page
@@ -46,9 +46,9 @@ links them rather than repeating them:
   `FormatPolicy` (`exclude_libraries` or `only_libraries`) turns the package off. No
   environment variable does.
 - **Isolation.** Under `KNOWN_CRASHES` (the default) and `NONE` the kernels run in the
-  caller's process. Under `NATIVE_DECODERS` the decoding kernels (LZX, LZW, LZO1X, ARM64,
-  RISC-V) run in the decoder child. BCJ2 decodes as its twin there, and CRC-16 and
-  ZipCrypto stay in the caller's process under every setting (§2.4).
+  caller's process. Under `NATIVE_DECODERS` the decoding kernels (LZX, LZW, LZO1X,
+  ARM64, RISC-V) run in the decoder child. BCJ2 decodes as its twin there, and CRC-16
+  and ZipCrypto stay in the caller's process under every setting (§2.4).
 - **A Rust panic is `CorruptionError`.** The panic is its cause, and the kernel object
   that panicked refuses every later call (§2.3).
 - **What you might expect and will not find:**
@@ -74,10 +74,10 @@ links them rather than repeating them:
   rest of the page: the twins need the same API (§2.2), a kernel too old to match its
   twin is skipped (§2.5), and a fix is made on both sides at once (§3).
 - **One API, so call sites have one code path.** Each twin has the package module's
-  names, arguments and attributes, so a call site builds what the switch returns and uses
-  it the same way whichever it is. The switch is the only code that knows the package
-  exists. The parity tests and the kernel benchmark use the same property from the other
-  side: one driver runs over a `PYTHON` namespace and the `RUST` module.
+  names, arguments and attributes, so a call site builds what the switch returns and
+  uses it the same way whichever it is. The switch is the only code that knows the
+  package exists. The parity tests and the kernel benchmark use the same property from
+  the other side: one driver runs over a `PYTHON` namespace and the `RUST` module.
 - **The decoders have the standard library's shapes.** A stream decoder is shaped like
   `lzma.LZMADecompressor` (`decompress(data, max_length)`, `eof`, `needs_input`,
   `unused_data`), plus `flush()` where the format has no end marker (LZW, LZX). The
