@@ -50,6 +50,7 @@ from archivey.internal.backends.sevenzip_salvage_walk import (
     BytesReader,
     CachedReader,
     ContentStream,
+    DecoderCap,
     HeaderBudget,
     StreamFinder,
     content_name,
@@ -963,9 +964,9 @@ def test_the_checks_of_a_window_decode_a_bounded_amount(
     decoded: list[int] = []
     real = sevenzip_salvage_walk._lead_decodes
 
-    def counting(reader: object, start: int, end: int, size: int) -> bool:
+    def counting(reader: object, start: int, end: int, *rest: object) -> bool:
         decoded.append(end - start)
-        return real(reader, start, end, size)  # type: ignore[arg-type]
+        return real(reader, start, end, *rest)  # type: ignore[arg-type]
 
     monkeypatch.setattr(sevenzip_salvage_walk, "_lead_decodes", counting)
     chunk = bytearray(lzma2_stream(b"a" * 100)[:-1])
@@ -1029,8 +1030,8 @@ def test_a_header_copy_candidate_is_held_to_max_metadata_bytes(
     decoded: list[int] = []
     real = sevenzip_salvage_walk.decode_lzma1_prefix
 
-    def counting(data: bytes, max_out: int) -> bytes:
-        out = real(data, max_out)
+    def counting(data: bytes, max_out: int, cap: object = None) -> bytes:
+        out = real(data, max_out, cap)  # type: ignore[arg-type]
         decoded.append(len(out))
         return out
 
@@ -1040,6 +1041,53 @@ def test_a_header_copy_candidate_is_held_to_max_metadata_bytes(
     with open_archive(io.BytesIO(data), salvage=True, config=config) as reader:
         assert not reader.members_report().members
     assert decoded and sum(decoded) <= 1 << 16
+
+
+def _record_dictionaries(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The dictionary of every LZMA decoder built from here on."""
+    sizes: list[int] = []
+    real = lzma.LZMADecompressor
+
+    def recording(*args: object, **kwargs: object) -> lzma.LZMADecompressor:
+        for spec in kwargs.get("filters") or ():  # type: ignore[attr-defined]
+            if "dict_size" in spec:
+                sizes.append(spec["dict_size"])
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(lzma, "LZMADecompressor", recording)
+    return sizes
+
+
+def test_the_header_copy_decode_is_held_to_max_decoder_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The copy's decode sizes its dictionary from its output bound, up to 64 MiB,
+    and holds it to max_decoder_memory: under a 1 MiB cap the copy still names
+    every member (review C3: it reserved 64 MiB)."""
+    data = write_7z({"a.txt": b"hello " * 10, "b.txt": b"world " * 10})
+    damaged = data[: next_header_span(data)[0]]
+    sizes = _record_dictionaries(monkeypatch)
+    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=1 << 20))
+    with open_archive(io.BytesIO(damaged), salvage=True, config=config) as reader:
+        names = [m.name for m in reader.members_report().members]
+    assert names == ["a.txt", "b.txt"]
+    assert sizes and max(sizes) <= 1 << 20
+
+
+def test_the_stream_checks_are_held_to_max_decoder_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A candidate's check sizes its dictionary from the bytes it decodes, and holds
+    it to max_decoder_memory."""
+    stream = lzma2_stream(bytes(range(256)) * 2048)  # 512 KiB, one LZMA chunk
+    chain = scan_chain(BytesReader(stream), 0, len(stream))
+    assert chain is not None
+    sizes = _record_dictionaries(monkeypatch)
+    assert first_lzma_chunk_decodes(BytesReader(stream), chain)
+    assert sizes == [chain.first_lzma_unpacked]
+    small = DecoderCap(DecoderLimits(max_decoder_memory=1 << 16))
+    first_lzma_chunk_decodes(BytesReader(stream), chain, small)
+    assert sizes[-1] == 1 << 16
 
 
 def test_an_all_zero_area_lists_no_member() -> None:

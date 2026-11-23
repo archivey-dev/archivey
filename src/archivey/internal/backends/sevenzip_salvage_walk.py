@@ -36,6 +36,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Literal, Protocol
 
+from archivey.config import DecoderLimits
 from archivey.exceptions import (
     CorruptionError,
     ResourceLimitError,
@@ -52,6 +53,8 @@ from archivey.internal.backends.sevenzip_parser import (
     SevenZipFolder,
     parse_header_prefix,
 )
+from archivey.internal.config import check_decoder_memory
+from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.salvage import HeaderSearch
 
 ReadAt = Callable[[int, int], bytes]
@@ -113,6 +116,38 @@ _STREAM_START = re.compile(
     rb"(?=\x01|[\xe0-\xff][\x00-\xff]{4}[" + _valid_props_class() + rb"]\x00)",
     re.DOTALL,
 )
+
+
+# liblzma's smallest dictionary.
+_MIN_DICT = 1 << 12
+
+
+@dataclass(frozen=True)
+class DecoderCap:
+    """``DecoderLimits.max_decoder_memory`` for the walk's own trial decodes, which
+    judge candidates and decode a header copy: each dictionary is the one its
+    output needs, at most the cap (a dictionary as large as the output decodes it
+    exactly), and checked before the decoder is built (review C3: a header copy's
+    decode reserved 64 MiB under a 1 MiB cap)."""
+
+    limits: DecoderLimits = field(default_factory=DecoderLimits)
+    usage: ResourceUsageRecorder | None = None
+
+    def dictionary(self, output: int) -> int:
+        """The dictionary for a trial decode of at most ``output`` bytes."""
+        size = output
+        cap = self.limits.max_decoder_memory
+        if cap is not None:
+            size = min(size, cap)
+        size = max(size, _MIN_DICT)
+        check_decoder_memory(
+            size,
+            limits=self.limits,
+            what="the dictionary of a trial LZMA decode in 7z salvage",
+            counted_from="the bytes the decode may give, at least 4 KiB",
+            usage=self.usage,
+        )
+        return size
 
 
 class ChunkReader(Protocol):
@@ -426,7 +461,9 @@ class KnownChains:
             self._at[step.pos] = (scanned, index)
 
 
-def first_lzma_chunk_decodes(reader: ChunkReader, chain: Chain) -> bool:
+def first_lzma_chunk_decodes(
+    reader: ChunkReader, chain: Chain, cap: DecoderCap | None = None
+) -> bool:
     """Whether the chain's first LZMA chunk, with the chunks before it, decodes
     without error to the size their headers declare. ``False`` when it holds none,
     or when it ends more than :data:`_STREAM_HEADER_SPAN` bytes into the chain:
@@ -434,11 +471,17 @@ def first_lzma_chunk_decodes(reader: ChunkReader, chain: Chain) -> bool:
     if chain.first_lzma_end is None:
         return False
     return _lead_decodes(
-        reader, chain.start, chain.first_lzma_end, chain.first_lzma_unpacked
+        reader,
+        chain.start,
+        chain.first_lzma_end,
+        chain.first_lzma_unpacked,
+        cap or DecoderCap(),
     )
 
 
-def _lead_decodes(reader: ChunkReader, start: int, lzma_end: int, size: int) -> bool:
+def _lead_decodes(
+    reader: ChunkReader, start: int, lzma_end: int, size: int, cap: DecoderCap
+) -> bool:
     """Whether the chunks from ``start`` to ``lzma_end``, the last of them the first
     LZMA chunk, decode without error to ``size`` bytes (see
     :func:`first_lzma_chunk_decodes`)."""
@@ -446,7 +489,7 @@ def _lead_decodes(reader: ChunkReader, start: int, lzma_end: int, size: int) -> 
         return False
     decoder = lzma.LZMADecompressor(
         lzma.FORMAT_RAW,
-        filters=[{"id": lzma.FILTER_LZMA2, "dict_size": max(size, 4096)}],
+        filters=[{"id": lzma.FILTER_LZMA2, "dict_size": cap.dictionary(size)}],
     )
     data = reader.read(start, lzma_end - start)
     try:
@@ -473,19 +516,16 @@ def _range_coder_start(data: bytes) -> bool:
     return len(data) >= 5 and data[0] == 0 and data[1:5] != bytes(4)
 
 
-def lzma1_starts_at(read_at: ReadAt, offset: int, end: int) -> bool:
+def lzma1_starts_at(
+    read_at: ReadAt, offset: int, end: int, cap: DecoderCap | None = None
+) -> bool:
     """Whether an LZMA1 stream with 7-Zip's properties starts at ``offset``: its first
     bytes can start a range coder (:func:`_range_coder_start`), and they decode
     without error."""
     data = read_at(offset, min(_LZMA1_PROBE_INPUT, end - offset))
     if not _range_coder_start(data):
         return False
-    decoder = lzma.LZMADecompressor(
-        lzma.FORMAT_RAW,
-        filters=[
-            {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 16, "lc": 3, "lp": 0, "pb": 2}
-        ],
-    )
+    decoder = _lzma1_decoder((cap or DecoderCap()).dictionary(_LZMA1_PROBE_OUTPUT))
     try:
         out = decoder.decompress(data, max_length=_LZMA1_PROBE_OUTPUT)
     except lzma.LZMAError:
@@ -615,24 +655,26 @@ def _lzma1_decoder(dict_size: int) -> lzma.LZMADecompressor:
     )
 
 
-def _lzma1_header_start(data: bytes) -> bool:
+def _lzma1_header_start(data: bytes, cap: DecoderCap) -> bool:
     """Whether the LZMA1 stream that ``data`` starts decodes to a plain header's
     first two bytes (``kHeader``, then a section)."""
     if not _range_coder_start(data):
         return False
     try:
-        out = _lzma1_decoder(1 << 12).decompress(data, max_length=2)
+        out = _lzma1_decoder(cap.dictionary(2)).decompress(data, max_length=2)
     except lzma.LZMAError:
         return False
     return len(out) == 2 and out[0] == 0x01 and out[1] in _HEADER_SECOND
 
 
-def decode_lzma1_prefix(data: bytes, max_out: int) -> bytes:
+def decode_lzma1_prefix(
+    data: bytes, max_out: int, cap: DecoderCap | None = None
+) -> bytes:
     """Decode ``data`` as LZMA1 with 7-Zip's properties, keeping the bytes decoded
     before an error: LZMA1 has no end marker, so a decode runs on past its stream
     into whatever follows. The output is at most ``max_out`` bytes, and the
-    dictionary is sized from it."""
-    dict_size = max(max_out, 1 << 12)
+    dictionary is sized from it, at most ``max_decoder_memory`` (``cap``)."""
+    dict_size = (cap or DecoderCap()).dictionary(max_out)
 
     def feed(decoder: lzma.LZMADecompressor, piece: bytes, out: bytearray) -> bool:
         """Feed ``piece``; ``False`` when the output reached a bound."""
@@ -697,12 +739,13 @@ def _lzma1_copy(
     span: int,
     streams: list[ContentStream],
     header: HeaderBudget,
+    cap: DecoderCap,
 ) -> HeaderCopy | None:
     max_out = header.left
     if max_out <= 0:
         return None
     data = read_at(pos, min(span, _input_for(max_out)))
-    decoded = decode_lzma1_prefix(data, max_out)
+    decoded = decode_lzma1_prefix(data, max_out, cap)
     header.left -= len(decoded)
     return _check_copy(pos, decoded, streams)
 
@@ -713,6 +756,7 @@ def copy_at(
     end: int,
     streams: list[ContentStream],
     header: HeaderBudget,
+    cap: DecoderCap | None = None,
 ) -> HeaderCopy | None:
     """The header copy at walk position ``pos``, when one starts there: a plain
     header, or after offset 32 an LZMA1 stream that decodes to one (LZMA1 is tried
@@ -729,8 +773,9 @@ def copy_at(
         copy = _check_copy(pos, read_at(pos, span), streams)
         if copy is not None:
             return copy
-    if pos > SIGNATURE_HEADER_SIZE and _lzma1_header_start(head):
-        return _lzma1_copy(read_at, pos, span, streams, header)
+    cap = cap or DecoderCap()
+    if pos > SIGNATURE_HEADER_SIZE and _lzma1_header_start(head, cap):
+        return _lzma1_copy(read_at, pos, span, streams, header, cap)
     return None
 
 
@@ -740,6 +785,7 @@ def tail_copy_search(
     streams: list[ContentStream],
     claim: ClaimFn,
     header: HeaderBudget,
+    cap: DecoderCap,
 ) -> HeaderCopy | None:
     """The header copy in the area's last :data:`TAIL_COPY_SEARCH` bytes, from the
     end backwards, for when the walk stopped before reaching it (an LZMA1 or BCJ2
@@ -759,10 +805,10 @@ def tail_copy_search(
     data = read_at(lo, end - lo)
     at = len(data)
     while (at := data.rfind(b"\x00", 0, at)) >= 0:
-        if _lzma1_header_start(data[at : at + 64]):
+        if _lzma1_header_start(data[at : at + 64], cap):
             if header.left <= 0:
                 return None
-            copy = _lzma1_copy(read_at, lo + at, end - lo - at, streams, header)
+            copy = _lzma1_copy(read_at, lo + at, end - lo - at, streams, header, cap)
             if copy is not None:
                 return copy
     return None
@@ -864,8 +910,11 @@ class StreamFinder:
     passing chain.
     """
 
-    def __init__(self, read_at: ReadAt, end: int) -> None:
+    def __init__(
+        self, read_at: ReadAt, end: int, cap: DecoderCap | None = None
+    ) -> None:
         self._read_at = read_at
+        self._cap = cap or DecoderCap()
         self._area = CachedReader(read_at, end)
         self._end = end
         # Where the window the driver gives next starts in the area; ``None`` until
@@ -904,7 +953,7 @@ class StreamFinder:
                 # The checks of this window's candidates are spent: the rest of its
                 # candidates are not tried.
                 break
-            if not _lead_decodes(local, index, *lead):
+            if not _lead_decodes(local, index, *lead, self._cap):
                 continue
             chain = scan_chain(self._area, base + index, self._end, self._known)
             if chain is None or chain.status == "broken":
@@ -922,18 +971,19 @@ def _walk_from(
     end: int,
     result: WalkResult,
     header: HeaderBudget,
+    cap: DecoderCap,
 ) -> int | None:
     """Walk from ``pos`` while a stream starts at each walk position, adding to
     ``result``. Gives where the search goes on from, or ``None`` when the walk
     reached the area's end, ran into a cut stream, or found the header copy."""
     while pos < end:
-        copy = copy_at(read_at, pos, end, result.streams, header)
+        copy = copy_at(read_at, pos, end, result.streams, header, cap)
         if copy is not None:
             result.copy = copy
             return None
         chain = scan_chain(reader, pos, end)
         if chain is not None and (
-            chain.status != "broken" or first_lzma_chunk_decodes(reader, chain)
+            chain.status != "broken" or first_lzma_chunk_decodes(reader, chain, cap)
         ):
             # A chain that breaks is listed only when an LZMA chunk in it decodes:
             # random or encrypted bytes pass a first chunk header often enough.
@@ -945,7 +995,7 @@ def _walk_from(
                 return chain.broken_at
             pos = chain.end
             continue
-        if pos == SIGNATURE_HEADER_SIZE and lzma1_starts_at(read_at, pos, end):
+        if pos == SIGNATURE_HEADER_SIZE and lzma1_starts_at(read_at, pos, end, cap):
             # Unconfirmed: only its position says it is a stream (LZMA1 has no end
             # marker and no chunk headers to check).
             result.streams.append(
@@ -962,24 +1012,28 @@ def walk_packed_area(
     *,
     search: SearchFn,
     claim: ClaimFn,
+    cap: DecoderCap,
     max_header: int = MAX_NEXT_HEADER_SIZE,
 ) -> WalkResult:
     """Walk the packed area from offset 32 to ``end``: the streams at walk positions
     and the header copy; when the walk stops before the area's end, the copy in the
     area's tail, then the streams the search finds. A header copy is held to
     ``max_header`` bytes, decoded or plain, and so is the sum of the bytes decoded
-    across all the walk's LZMA1 candidates (:class:`HeaderBudget`)."""
+    across all the walk's LZMA1 candidates (:class:`HeaderBudget`). Its trial
+    decodes are held to ``cap``."""
     reader = CachedReader(read_at, end)
     result = WalkResult()
     header = HeaderBudget(max_header)
-    resume = _walk_from(reader, read_at, SIGNATURE_HEADER_SIZE, end, result, header)
+    resume = _walk_from(
+        reader, read_at, SIGNATURE_HEADER_SIZE, end, result, header, cap
+    )
     if resume is None:
         return result
-    copy = tail_copy_search(read_at, end, result.streams, claim, header)
+    copy = tail_copy_search(read_at, end, result.streams, claim, header, cap)
     if copy is not None:
         result.copy = copy
         return result
-    finder = StreamFinder(read_at, end)
+    finder = StreamFinder(read_at, end, cap)
     while resume is not None and resume < end:
         finder.begin()
         found = search(resume, end, finder.search, finder.read)
@@ -996,7 +1050,7 @@ def walk_packed_area(
             resume = found + 1
             continue
         result.streams.append(stream_from_chain(chain, end))
-        resume = _walk_from(reader, read_at, chain.end, end, result, header)
+        resume = _walk_from(reader, read_at, chain.end, end, result, header, cap)
     return result
 
 
@@ -1091,6 +1145,7 @@ __all__ = [
     "ChunkReader",
     "ClaimFn",
     "ContentStream",
+    "DecoderCap",
     "HeaderBudget",
     "HeaderCopy",
     "KnownChains",

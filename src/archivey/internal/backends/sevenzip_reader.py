@@ -107,6 +107,7 @@ from archivey.internal.backends.sevenzip_salvage import (
 )
 from archivey.internal.backends.sevenzip_salvage_walk import (
     ContentStream,
+    DecoderCap,
     ReadAt,
     content_archive,
     walk_packed_area,
@@ -1299,8 +1300,9 @@ class SevenZipReader(BaseArchiveReader):
         max_header = MAX_NEXT_HEADER_SIZE
         if max_metadata is not None:
             max_header = min(max_header, max_metadata)
+        cap = DecoderCap(self._config.decoder_limits, self._usage)
         walk = walk_packed_area(
-            read_at, end, search=search, claim=claim, max_header=max_header
+            read_at, end, search=search, claim=claim, cap=cap, max_header=max_header
         )
         outcome.limit_reached = state.limit_reached
         if walk.copy is not None:
