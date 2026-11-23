@@ -302,14 +302,12 @@ fn crc16_arc(
     };
     // A CRC-16 has 16 bits: a value outside them is refused rather than masked, since
     // it can only be a caller's mistake. Any int is compared, however large.
-    let value = match value.extract::<u16>() {
-        Ok(v) => v,
-        Err(_) if value.is_instance_of::<PyInt>() => {
-            return Err(PyValueError::new_err(format!(
-                "CRC-16 value {value} is outside 0 to 0xFFFF"
-            )));
-        }
-        Err(e) => return Err(e),
+    // An `__index__` object (a NumPy integer) is compared as its int.
+    let value = as_int(value)?;
+    let Ok(value) = value.extract::<u16>() else {
+        return Err(PyValueError::new_err(format!(
+            "CRC-16 value {value} is outside 0 to 0xFFFF"
+        )));
     };
     Ok(u32::from(crc16_update(py, value, data)?))
 }

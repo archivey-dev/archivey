@@ -35,6 +35,7 @@ class Decompressor:
         "_out_pos",
         "_output_size",
         "_starved",
+        "_window_bits",
         "total_out",
     )
 
@@ -43,7 +44,8 @@ class Decompressor:
             LzxDecoder,
         )
 
-        self._d = LzxDecoder(index(window_bits, "window_bits"))
+        self._window_bits = index(window_bits, "window_bits")
+        self._d = LzxDecoder(self._window_bits)
         if output_size is not None:
             output_size = u64(output_size, "output_size")
         self._output_size = output_size
@@ -125,6 +127,12 @@ class Decompressor:
         self._output_size = output_size
         # The frame that waited for input may now be shorter: try it again.
         self._starved = False
+
+    def reset(self, output_size: int | None = None) -> None:
+        """Start again with an empty window, as at the start of a cabinet folder."""
+        if output_size is not None:
+            output_size = u64(output_size, "output_size")
+        self.__init__(self._window_bits, output_size=output_size)
 
     def decompress(
         self, data: bytes | bytearray | memoryview, max_length: int = -1

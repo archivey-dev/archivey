@@ -27,9 +27,8 @@ class _BranchDecoder:
     _decode: Callable[[bytes, int], bytes]
 
     def __init__(self, start_offset: int = 0) -> None:
-        self._position = u64(
-            start_offset, "start_offset"
-        )  # pc of the first byte in self._raw
+        # The pc of the first byte in self._raw.
+        self._position = u64(start_offset, "start_offset")
         self._raw = b""  # input not yet decoded: the few bytes decode left
         self.total_in = 0
         self.total_out = 0

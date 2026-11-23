@@ -1108,6 +1108,16 @@ _BIG = 2**64
 _EMPTY = io.BytesIO
 
 
+class _Index:
+    """An int as a NumPy integer is one: ``__index__`` only."""
+
+    def __init__(self, value: int) -> None:
+        self._value = value
+
+    def __index__(self) -> int:
+        return self._value
+
+
 def _bcj2(codecs: object, *, out_size: object = 4, main: object = None) -> object:
     """A BCJ2 decoder whose main stream reads as ``main`` gives, if given."""
     first = types.SimpleNamespace(read=lambda n: main) if main is not None else _EMPTY()
@@ -1125,6 +1135,8 @@ _BAD_ARGUMENTS: dict[str, Callable[[object], object]] = {
     "crc16 data str": lambda c: c.crc16_arc("ab"),
     "crc16 value float": lambda c: c.crc16_arc(b"a", 1.0),
     "crc16 value big": lambda c: c.crc16_arc(b"a", _BIG),
+    "crc16 value __index__ big": lambda c: c.crc16_arc(b"a", _Index(70000)),
+    "crc16 value __index__ negative": lambda c: c.crc16_arc(b"a", _Index(-1)),
     "zipcrypto password list": lambda c: c.zipcrypto.Decryptor([1, 2]),
     "zipcrypto password int": lambda c: c.zipcrypto.Decryptor(3),
     "zipcrypto password str": lambda c: c.zipcrypto.Decryptor("ab"),
@@ -1162,6 +1174,9 @@ _BAD_ARGUMENTS: dict[str, Callable[[object], object]] = {
     ),
     "lzx set_output_size big": lambda c: c.lzx.Decompressor(15).set_output_size(_BIG),
     "lzx set_output_size None": lambda c: c.lzx.Decompressor(15).set_output_size(None),
+    "lzx reset negative": lambda c: c.lzx.Decompressor(15).reset(-1),
+    "lzx reset big": lambda c: c.lzx.Decompressor(15).reset(_BIG),
+    "lzx reset float": lambda c: c.lzx.Decompressor(15).reset(1.0),
     "lzx data str": lambda c: c.lzx.Decompressor(15).decompress("a"),
     "lzx max_length float": lambda c: c.lzx.Decompressor(15).decompress(b"", 1.0),
     "lzx flush max_length float": lambda c: c.lzx.Decompressor(15).flush(1.0),
@@ -1208,3 +1223,14 @@ def test_any_int_is_a_max_length(
 @BOTH
 def test_none_is_a_crc16_value_of_0(codecs: object) -> None:
     assert codecs.crc16_arc(b"abc", None) == codecs.crc16_arc(b"abc")
+
+
+@BOTH
+def test_lzx_reset_starts_a_new_stream(codecs: object) -> None:
+    decoder = codecs.lzx.Decompressor(15, output_size=5)
+    decoder.reset(0)
+    assert decoder.output_size == 0
+    assert decoder.eof
+    decoder.reset()
+    assert decoder.output_size is None
+    assert not decoder.eof
