@@ -2,8 +2,9 @@
 
 **In one minute.** archivey has its own Python decoders for a few old or rare formats:
 CAB's LZX, Unix `compress` (`.Z`), LZO, 7z's BCJ2 and its ARM64 and RISC-V branch
-filters, ZIP's traditional encryption (ZipCrypto) and LHA's CRC-16. The optional
-`archivey-codecs` package has Rust versions of the same eight kernels. Each Python
+filters, ZIP's traditional encryption (ZipCrypto), LHA's CRC-16, and Apple's LZFSE and
+LZVN (DMG images and HFS+ compressed files). The optional `archivey-codecs` package has
+Rust versions of the same ten kernels. Each Python
 decoder has a *twin* with the package's exact API, and a switch picks the Rust kernel or
 the twin: one switch per package module, so the two branch filters share one. A call
 site builds its decoder through the switch and does not know which one it got: both give
@@ -23,7 +24,8 @@ links them rather than repeating them:
   [`cab.md`](../formats/cab.md) (LZX), [`7z.md`](../formats/7z.md) (BCJ2 and the branch
   filters), [`unix-compress.md`](../formats/unix-compress.md) (LZW),
   [`squashfs.md`](../formats/squashfs.md) (LZO blocks), [`lha.md`](../formats/lha.md)
-  (CRC-16) and [`zip.md`](../formats/zip.md) (ZipCrypto).
+  (CRC-16), [`zip.md`](../formats/zip.md) (ZipCrypto) and [`dmg.md`](../formats/dmg.md)
+  (LZFSE and LZVN).
 - The decoder child that runs the kernels under `NATIVE_DECODERS` is
   [`process-isolation.md`](process-isolation.md)'s.
 - The package's own README (`packages/archivey-codecs/README.md`) has the table of
@@ -31,11 +33,12 @@ links them rather than repeating them:
 
 ## At a glance
 
-- **Eight kernels, seven switches.** `kernels.crc16_arc`, `kernels.zipcrypto`,
+- **Ten kernels, nine switches.** `kernels.crc16_arc`, `kernels.zipcrypto`,
   `kernels.filters` (ARM64 and RISC-V, two kernels), `kernels.lzo1x`, `kernels.lzw`,
-  `kernels.lzx` and `kernels.bcj2`. Each takes the call's excluded libraries (and, for a
-  decoding kernel, whether the call is isolated) and returns a namespace with the
-  package module's names: `kernels.lzx(...).Decompressor`, and so on.
+  `kernels.lzx`, `kernels.bcj2`, `kernels.lzfse` and `kernels.lzvn`. Each takes the
+  call's excluded libraries (and, for a decoding kernel, whether the call is isolated)
+  and returns a namespace with the package module's names:
+  `kernels.lzx(...).Decompressor`, and so on.
 - **Same bytes, same errors.** The package raises its own `CorruptDataError`,
   `TruncatedDataError` and `UnsupportedDataError`. archivey's wrappers raise them as
   `CorruptionError`, `TruncatedError` and `UnsupportedFeatureError` with the same
@@ -47,14 +50,15 @@ links them rather than repeating them:
   environment variable does.
 - **Isolation.** Under `KNOWN_CRASHES` (the default) and `NONE` the kernels run in the
   caller's process. Under `NATIVE_DECODERS` the decoding kernels (LZX, LZW, LZO1X,
-  ARM64, RISC-V) run in the decoder child. BCJ2 decodes as its twin there, and CRC-16
-  and ZipCrypto stay in the caller's process under every setting (§2.4).
+  ARM64, RISC-V) run in the decoder child. BCJ2, LZFSE and LZVN decode as their twins
+  there, and CRC-16 and ZipCrypto stay in the caller's process under every setting
+  (§2.4).
 - **A Rust panic is `CorruptionError`.** The panic is its cause, and the kernel object
   that panicked refuses every later call (§2.3).
 - **What you might expect and will not find:**
-  - A kernel for every decoder archivey has. Only these eight have one. The DMG reader's
-    LZFSE and LZVN decoders, PPMd, LHA's and ARJ's decompressors and the rest are Python
-    or another library only.
+  - A kernel for every decoder archivey has. Only these ten have one. The DMG reader's
+    ADC decoder, PPMd, LHA's and ARJ's decompressors and the rest are Python or another
+    library only.
   - The package's whole API on the twins. A twin has only what archivey's call sites
     use: no `Crc16Arc` class, no state methods (`getstate`, `from_state`, and `copy`
     except ZipCrypto's), and no LZX `reset()`, `window_bits`, `unused_data` or
@@ -114,12 +118,14 @@ The call sites:
 | `lzw` | `streams/codecs/unix_compress_decoder.py` |
 | `lzx` | `backends/cab_reader.py` (its folder stream's frame loop) |
 | `bcj2` | `streams/codecs/bcj2_filter.py` |
+| `lzfse`, `lzvn` | `streams/codecs/lzfse_decoder.py` (DMG runs, HFS+ compressed files) |
 
 LZO is the exception to "one code path". Its order is archivey-codecs, then
 compress-utils, then Python (design question 11), so its call site takes only the
 package from the switch, falls back to compress-utils itself, and calls the Python
-decoder last. It is also the call site that reads `library`, to record which backend
-decoded the block.
+decoder last. It is also the one call site that records `library` as the backend
+that decoded the block. The LZFSE and LZVN call site reads `library` too, but only to
+call its Python decoder directly when the switch gives the twin.
 
 ### 2.2 The Python twins (`kernels/python/`)
 
@@ -136,6 +142,7 @@ was, and the twin gives it the package's API.
 | `python.lzw` | `streams/codecs/unix_compress_decoder.py` |
 | `python.lzx` | `streams/codecs/lzx_decoder.py` (`LzxDecoder` in push mode) |
 | `python.bcj2` | its own decoder (the core moved into the twin) |
+| `python.lzfse`, `python.lzvn` | `streams/codecs/lzfse_decoder.py` |
 
 A twin raises archivey's errors directly. It reads any buffer (`bytes`, `bytearray`,
 `memoryview`) as its bytes, as the package does.
@@ -179,6 +186,8 @@ panic in the child comes back as `ChildPanic`, which `is_panic` counts as a pani
 - **BCJ2 decodes as its twin.** The child protocol carries one input stream, and BCJ2
   reads four. Until the protocol carries four (task 2.7 of the change), the switch gives
   the twin under `isolated`.
+- **LZFSE and LZVN decode as their twins.** The child cannot run them yet, so under
+  `isolated` their switches give the twins.
 - **CRC-16 and ZipCrypto stay in the caller's process** under every setting, as
   checksums and AES decryption do. They take no part in decoding a compressed stream.
 - **LZO takes a child for each block.** LZO1X is a one-shot call, so each SquashFS or
@@ -226,7 +235,7 @@ an error class is not a new revision; it is a new `KERNELS` key (design D4).
 | Symptom | Where it lives |
 | --- | --- |
 | `CorruptionError` whose cause is a `PanicException`. | **archivey.** A missed check in a kernel. The object refuses every later call. Fix it in Rust, and add the input to the parity tests. |
-| Under `NATIVE_DECODERS`, a 7z with BCJ2 decodes no faster with the package. | **archivey.** BCJ2 decodes as its twin there (§2.4). |
+| Under `NATIVE_DECODERS`, a 7z with BCJ2, or a DMG with LZFSE, decodes no faster with the package. | **archivey.** BCJ2, LZFSE and LZVN decode as their twins there (§2.4). |
 
 ## 5. Decisions
 
@@ -253,8 +262,9 @@ an error class is not a new revision; it is a new `KERNELS` key (design D4).
 
 - **BCJ2 in the decoder child.** It needs the child protocol to carry four input
   streams (task 2.7). Until then, `NATIVE_DECODERS` gets the Python speed for BCJ2.
-- **LZFSE and LZVN.** The DMG reader's decoders are the next kernel (design D1, task
-  4.3). This page and the README gain their rows when it lands.
+- **LZFSE and LZVN in the decoder child.** They are one-shot calls like LZO1X, so the
+  child can carry them; it does not yet. Until then, `NATIVE_DECODERS` gets the Python
+  speed for them.
 
 ## 7. Verify
 
