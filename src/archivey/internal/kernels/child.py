@@ -5,11 +5,11 @@ process, so under it the decoding kernels (ARM64, RISC-V, LZW, LZO1X, LZX) run i
 archivey's decoder child, as zlib and lzma do (openspec change ``rust-codecs-package``,
 question 13). :func:`open_kernels` gives a stand-in for the ``archivey_codecs`` module
 whose kernel objects each live in a child of their own (``decoder_worker._Codecs``):
-the wrappers in :mod:`archivey.internal.native` use it as they use the module, so the
+the wrappers in :mod:`archivey.internal.kernels.rust` use it as they use the module, so the
 bytes and errors are the same as in-process. The package is never imported here.
 
 A panic in the child comes back as :class:`ChildPanic`, which
-:func:`archivey.internal.native.is_panic` counts as a panic, so it reaches the caller
+:func:`archivey.internal.kernels.is_panic` counts as a panic, so it reaches the caller
 as ``CorruptionError`` as in-process. When no child can start, or the child cannot
 import the package, :func:`open_kernels` returns ``None`` and the call site uses its
 Python twin in this process: Python is not native, so the promise holds, and the read
@@ -100,7 +100,19 @@ class _KernelProxy(_ChildProxy):
             raise
 
 
-class ChildBranchDecoder(_KernelProxy):
+class _Counted(_KernelProxy):
+    """A kernel object with ``total_in`` and ``total_out``."""
+
+    @property
+    def total_in(self) -> int:
+        return cast("int", self._child.reported("total_in"))
+
+    @property
+    def total_out(self) -> int:
+        return cast("int", self._child.reported("total_out"))
+
+
+class ChildBranchDecoder(_Counted):
     """``filters.Arm64Decoder`` or ``RiscvDecoder`` in a child."""
 
     def decode(self, data: bytes) -> bytes:
@@ -110,7 +122,7 @@ class ChildBranchDecoder(_KernelProxy):
         return self._call("flush", None)
 
 
-class ChildLzwDecompressor(_KernelProxy):
+class ChildLzwDecompressor(_Counted):
     """``lzw.Decompressor`` in a child."""
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
@@ -143,8 +155,14 @@ class ChildLzwDecompressor(_KernelProxy):
     def clear_offsets(self) -> list[tuple[int, int]]:
         return cast("Any", self._child.reported("clear_offsets"))
 
+    @property
+    def unused_data(self) -> bytes:
+        # A .Z stream ends where its input ends: nothing follows it. (Not reported:
+        # LZX's getter copies its buffered input, and no proxy of LZX reads it.)
+        return b""
 
-class ChildLzxDecompressor(_KernelProxy):
+
+class ChildLzxDecompressor(_Counted):
     """``lzx.Decompressor`` in a child."""
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
@@ -159,6 +177,14 @@ class ChildLzxDecompressor(_KernelProxy):
     @property
     def eof(self) -> bool:
         return self._child.flag("eof")
+
+    @property
+    def needs_input(self) -> bool:
+        return self._child.flag("needs_input")
+
+    @property
+    def output_size(self) -> int | None:
+        return cast("int | None", self._child.reported("output_size"))
 
 
 class _ChildLzx:
@@ -177,7 +203,7 @@ class _ChildLzx:
 
 
 class ChildCodecs:
-    """The parts of ``archivey_codecs`` that :mod:`archivey.internal.native` uses, with
+    """The parts of ``archivey_codecs`` that :mod:`archivey.internal.kernels.rust` uses, with
     each kernel object in a decoder child of its own, taken from the pool."""
 
     CodecError = ChildCodecError
@@ -213,10 +239,12 @@ class ChildCodecs:
             raise
         return child
 
-    def _lzo1x(self, block: bytes, *, max_size: int) -> bytes:
+    def _lzo1x(
+        self, block: bytes, *, out_size: int | None = None, max_size: int | None = None
+    ) -> bytes:
         child = _start()
         try:
-            return child.call("lzo1x", block, (max_size,))
+            return child.call("lzo1x", block, (out_size, max_size))
         finally:
             child.close()
 

@@ -330,7 +330,7 @@ def test_open_archive_does_not_wait_for_the_writer(
 ) -> None:
     with (
         _held_open_pipe(make(2000), buffered=buffered) as (stream, closed),
-        open_archive(stream, streaming=True) as reader,
+        open_archive(stream, pipe=True) as reader,
     ):
         assert not closed.is_set(), "open_archive waited for the writer"
         assert reader.format == expected
@@ -348,7 +348,7 @@ def test_a_streaming_tar_yields_its_first_member_before_the_writer_closes(
     payload = _tar(2000)
     with (
         _held_open_pipe(payload, buffered=buffered) as (stream, closed),
-        open_archive(stream, streaming=True) as reader,
+        open_archive(stream, pipe=True) as reader,
     ):
         for member, member_stream in reader.stream_members():
             assert member_stream is not None
@@ -374,7 +374,7 @@ def _reads_to_the_last_byte_before_the_close(
     """
     with (
         _releasable_pipe(payload, buffered=buffered) as (stream, closed, release_in),
-        open_archive(stream, streaming=True, format=fmt) as reader,
+        open_archive(stream, pipe=True, format=fmt) as reader,
     ):
         assert not closed.is_set(), "open_archive waited for the writer"
         for _, member_stream in reader.stream_members():
@@ -485,7 +485,7 @@ def test_a_zip_with_data_descriptors_ends_its_last_member_only_when_the_writer_c
             closed,
             release_in,
         ),
-        open_archive(stream, streaming=True) as reader,
+        open_archive(stream, pipe=True) as reader,
     ):
         assert not closed.is_set(), "open_archive waited for the writer"
         for member, member_stream in reader.stream_members():
@@ -545,7 +545,7 @@ def test_a_streaming_tar_read_in_small_pieces_matches_the_whole_bytes() -> None:
 
     expected = _members(payload)
     assert len(expected) == 5
-    with open_archive(_Trickle(payload, 7), streaming=True) as reader:  # type: ignore[arg-type]  # RawIOBase double
+    with open_archive(_Trickle(payload, 7), pipe=True) as reader:  # type: ignore[arg-type]  # RawIOBase double
         assert _read_members(reader) == expected
 
 
@@ -643,7 +643,7 @@ def _open_waits_for_the_writer(payload: bytes) -> None:
     """
     with _releasable_pipe(payload, buffered=True) as (stream, closed, release_in):
         release_in(_RELEASE_DELAY_SECONDS)
-        with open_archive(stream, streaming=True) as reader:
+        with open_archive(stream, pipe=True) as reader:
             assert closed.is_set(), "open_archive returned before the writer closed"
             got = _read_members(reader)
     assert got == _members(payload)
@@ -662,7 +662,7 @@ def _first_member_reads_before_the_close(
         expected = _read_members(reader)[0]
     with (
         _releasable_pipe(payload, buffered=buffered) as (stream, closed, _),
-        open_archive(stream, streaming=True, format=fmt) as reader,
+        open_archive(stream, pipe=True, format=fmt) as reader,
     ):
         assert not closed.is_set(), "open_archive waited for the writer"
         for member, member_stream in reader.stream_members():
@@ -681,7 +681,7 @@ def test_a_detected_compressed_file_opens_and_reads_at_once(
     data = os.urandom(_NO_WAIT_SIZE)
     with (
         _releasable_pipe(compress(data), buffered=True) as (stream, closed, _),
-        open_archive(stream, streaming=True) as reader,
+        open_archive(stream, pipe=True) as reader,
     ):
         assert not closed.is_set(), "open_archive waited for the writer"
         assert reader.format == bare
@@ -798,7 +798,7 @@ def test_a_bzip2_block_waits_for_its_last_byte_and_not_for_the_close(
         send_rest_in,
     ):
         send_rest_in(_RELEASE_DELAY_SECONDS)
-        with open_archive(stream, streaming=True, format=fmt) as reader:
+        with open_archive(stream, pipe=True, format=fmt) as reader:
             if fmt is None:
                 assert sent.is_set(), "open_archive returned before the block ended"
             for _, member_stream in reader.stream_members():

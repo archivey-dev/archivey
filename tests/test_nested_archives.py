@@ -81,6 +81,7 @@ from tests.sample_archives import (
     publish_cached,
     skip_unless_runnable,
 )
+from tests.streams_util import open_mode
 
 CONTAINERS = (
     "zip",
@@ -260,7 +261,10 @@ def _open_level(
             source, format=StreamFormat(fmt), seekable=seek, config=config
         )
     return archivey.open_archive(
-        source, seekable_members=seek, streaming=streaming, config=config
+        source,
+        seekable_members=seek,
+        **open_mode(source, streaming=streaming),
+        config=config,
     )
 
 
@@ -283,7 +287,7 @@ def _walk(
         return
     if forward_only and fmt == "zip" and config.use_rapidgzip is AcceleratorMode.ON:
         with (
-            archivey.open_archive(source, streaming=True, config=config) as reader,
+            archivey.open_archive(source, pipe=True, config=config) as reader,
             pytest.raises(StreamNotSeekableError, match="use_rapidgzip"),
         ):
             for _member, stream in reader.stream_members():
@@ -508,7 +512,7 @@ def test_auto_ignores_seek_demand_on_a_forward_only_compressed_tar() -> None:
     with archivey.open_archive(io.BytesIO(outer), streaming=True) as reader:
         for _member, stream in reader.stream_members():
             with archivey.open_archive(
-                stream, streaming=True, seekable_members=True, config=_config("auto")
+                stream, pipe=True, seekable_members=True, config=_config("auto")
             ) as inner:
                 got = {m.name: s.read() for m, s in inner.stream_members() if s}
     assert got == leaf

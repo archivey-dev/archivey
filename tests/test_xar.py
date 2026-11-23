@@ -788,6 +788,21 @@ def test_deep_paths_are_charged_to_max_metadata_bytes() -> None:
         _open(raw, config=_limits(max_metadata_bytes=charged - 1))
 
 
+def test_non_ascii_paths_are_weighed_like_listed_names() -> None:
+    # The path text is weighed by the listing's rule for a name, four bytes a
+    # character once it is not ASCII, and the raw path by its UTF-8 length.
+    tree = XarFile("\u00e9", type="directory")
+    for _ in range(19):
+        tree = XarFile("\u00e9", type="directory", children=[tree])
+    raw = write_xar([tree])
+    charged = sum(4 * (2 * k - 1) + (3 * k - 1) for k in range(1, 21))
+    with pytest.raises(
+        ResourceLimitError,
+        match=f"max_metadata_bytes={charged - 1} .*{charged} bytes of paths before",
+    ):
+        _open(raw, config=_limits(max_metadata_bytes=charged - 1))
+
+
 def test_a_file_without_data_is_empty() -> None:
     with _open(write_xar([XarFile("empty.txt")])) as reader:
         (member,) = reader.members()

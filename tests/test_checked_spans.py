@@ -30,7 +30,7 @@ from archivey.internal.streams.checked_spans import CheckedSpans
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.decompressor_stream import DecompressorStream
 from tests.conftest import requires, requires_binary
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, open_mode
 
 
 def test_spans_merge_where_they_touch_or_overlap() -> None:
@@ -150,7 +150,11 @@ def _levels_while_streaming(
     files: list[archivey.ArchiveMember] = []
     levels: dict[str, Verification] = {}
     source = NonSeekableBytesIO(blob) if source is None else source
-    with archivey.open_archive(source, streaming=True, config=config) as archive:
+    with archivey.open_archive(
+        source,
+        **open_mode(source, streaming=True),
+        config=config,
+    ) as archive:
         for member, stream in archive.stream_members():
             if member.is_file:
                 files.append(member)
@@ -243,7 +247,7 @@ def test_the_members_before_a_damaged_block_are_checksum_verified(compress) -> N
     source = NonSeekableBytesIO(bytes(blob))
     with (
         pytest.raises(CorruptionError),
-        archivey.open_archive(source, streaming=True) as archive,
+        archivey.open_archive(source, pipe=True) as archive,
     ):
         for member, stream in archive.stream_members():
             seen.append(member)
@@ -328,7 +332,7 @@ def test_verify_all_of_an_intact_archive_from_a_pipe_fails_nothing(compress) -> 
     the walk buffer's read-ahead; its end still counts as reached, so the whole-stream
     check passes and no file is left unconfirmed."""
     source = NonSeekableBytesIO(compress(_tar()))
-    with archivey.open_archive(source, streaming=True) as archive:
+    with archivey.open_archive(source, pipe=True) as archive:
         report = archive.verify_all()
         files = [m for m in archive._listed if m.is_file]
     assert report.failures == ()

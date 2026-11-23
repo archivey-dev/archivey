@@ -1,5 +1,5 @@
-//! Traditional ZipCrypto (APPNOTE 6.1): a port of archivey's `ZipCryptoKeys`
-//! (`internal/backends/zipcrypto.py`).
+//! Traditional ZipCrypto (APPNOTE 6.1): a port of archivey's Python twin
+//! `zipcrypto.Decryptor` (`internal/kernels/python/zipcrypto.py`).
 
 const fn crc_table() -> [u32; 256] {
     let mut table = [0u32; 256];

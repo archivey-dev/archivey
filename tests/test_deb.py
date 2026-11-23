@@ -165,7 +165,7 @@ def _source(data: bytes, pipe: bool) -> io.BytesIO:
 @pytest.mark.parametrize("kind", FIXTURES)
 def test_dpkg_deb_packages_list_as_dpkg_deb_unpacks_them(kind: str, pipe: bool) -> None:
     raw = (DATA / f"hello-{kind}.deb").read_bytes()
-    with open_archive(_source(raw, pipe), streaming=pipe) as reader:
+    with open_archive(_source(raw, pipe), pipe=pipe) as reader:
         listed = {}
         for member, stream in reader.stream_members():
             listed[member.name] = (member.type, stream.read() if stream else None)
@@ -238,7 +238,7 @@ def test_a_gnu_ar_name_with_a_slash_is_a_deb() -> None:
 )
 def test_every_compression_dpkg_deb_reads(control_kind: str, data_kind: str) -> None:
     raw = _deb(control_kind=control_kind, data_kind=data_kind)
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as reader:
+    with open_archive(NonSeekableBytesIO(raw), pipe=True) as reader:
         read = {m.name: s.read() for m, s in reader.stream_members() if s}
         extra = dict(reader.info.extra)
     assert read["usr/a"] == b"alpha"
@@ -371,7 +371,7 @@ def test_a_data_member_in_debian_is_refused(
     seen = []
     with (
         pytest.raises(CorruptionError, match="DEBIAN/") as caught,
-        open_archive(_source(raw, pipe), streaming=pipe) as reader,
+        open_archive(_source(raw, pipe), pipe=pipe) as reader,
     ):
         for member, _stream in reader.stream_members():
             seen.append(member.name)
@@ -428,7 +428,7 @@ def test_a_control_member_outside_debian_is_refused(
     seen = []
     with (
         pytest.raises(CorruptionError, match="outside DEBIAN/") as caught,
-        open_archive(_source(_deb(control=control), pipe), streaming=pipe) as reader,
+        open_archive(_source(_deb(control=control), pipe), pipe=pipe) as reader,
     ):
         for member, _stream in reader.stream_members():
             seen.append(member.name)
@@ -546,7 +546,7 @@ def test_a_data_symlink_into_debian_is_refused(
     seen = []
     with (
         pytest.raises(CorruptionError, match="symlink to a path in DEBIAN/") as caught,
-        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+        open_archive(_source(_deb(data=data), pipe), pipe=pipe) as reader,
     ):
         for member, _stream in reader.stream_members():
             seen.append(member.name)
@@ -594,7 +594,7 @@ def test_a_later_data_symlink_that_sends_an_earlier_one_into_debian_is_refused(
     seen = []
     with (
         pytest.raises(CorruptionError, match="symlink to a path in DEBIAN/") as caught,
-        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+        open_archive(_source(_deb(data=data), pipe), pipe=pipe) as reader,
     ):
         for member, _stream in reader.stream_members():
             seen.append(member.name)
@@ -614,7 +614,7 @@ def test_a_data_symlink_into_debian_by_its_lexical_target_is_refused(
     data = [("./y@symlink", b"a/b"), ("./x@symlink", b"y/../DEBIAN/control")]
     with (
         pytest.raises(CorruptionError, match="symlink to a path in DEBIAN/") as caught,
-        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+        open_archive(_source(_deb(data=data), pipe), pipe=pipe) as reader,
     ):
         for _member, _stream in reader.stream_members():
             pass
@@ -640,7 +640,7 @@ def test_a_file_over_a_data_symlink_keeps_it_in_the_tree(
     ]
     with (
         pytest.raises(CorruptionError, match="symlink to a path in DEBIAN/") as caught,
-        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+        open_archive(_source(_deb(data=data), pipe), pipe=pipe) as reader,
     ):
         for _member, _stream in reader.stream_members():
             pass
@@ -716,7 +716,7 @@ def test_a_data_symlink_sharing_its_path_is_refused(
     directory is refused there too."""
     with (
         pytest.raises(CorruptionError, match=message) as caught,
-        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+        open_archive(_source(_deb(data=data), pipe), pipe=pipe) as reader,
     ):
         for _member, _stream in reader.stream_members():
             pass
@@ -783,7 +783,7 @@ def test_a_data_member_under_a_data_symlink_is_refused_whatever_is_selected(
     raw = _deb(data=data)
     with (
         pytest.raises(CorruptionError, match="under a symlink") as caught,
-        open_archive(_source(raw, pipe), streaming=pipe) as reader,
+        open_archive(_source(raw, pipe), pipe=pipe) as reader,
     ):
         reader.extract_all(
             tmp_path, members=lambda m: m.name != "y", overwrite=overwrite
@@ -836,7 +836,7 @@ def test_a_hard_link_to_a_data_symlink_is_checked_as_a_symlink(
     ``h/DEBIAN/postinst`` lands in ``DEBIAN`` through ``h -> .``."""
     with (
         pytest.raises(CorruptionError, match="DEBIAN/") as caught,
-        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+        open_archive(_source(_deb(data=data), pipe), pipe=pipe) as reader,
     ):
         for _member, _stream in reader.stream_members():
             pass
@@ -931,7 +931,7 @@ def test_steps_inside_followed_targets_count_against_max_members(pipe: bool) -> 
         ),
         open_archive(
             _source(_deb(data=_long_routes(20, 20)), pipe),
-            streaming=pipe,
+            pipe=pipe,
             config=config,
         ) as reader,
     ):
@@ -1163,7 +1163,7 @@ def test_a_huge_version_member_is_refused_before_it_is_read() -> None:
     def refuse() -> None:
         with (
             pytest.raises(ResourceLimitError, match="debian-binary member"),
-            open_archive(NonSeekableBytesIO(bytes(raw)), streaming=True) as reader,
+            open_archive(NonSeekableBytesIO(bytes(raw)), pipe=True) as reader,
         ):
             reader.members()
 

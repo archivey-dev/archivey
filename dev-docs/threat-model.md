@@ -459,7 +459,11 @@ data its pass keeps for link targets beside it.
   64 MiB read, decoded or served from zero-fill runs (`apfs.SCAN_BUDGET`); the open
   itself reads and decodes at most 64 MiB past the property list (`udif.OPEN_BUDGET`).
   Zero-fill runs make a large disk from a tiny file, so member reads count in the
-  archive-wide ratio like ISO's, and the in-house ADC, LZFSE and LZVN decoders are
+  archive-wide ratio like ISO's. A volume whose listing order would decode a compressed
+  run twice lists in data order, as CAB and SquashFS do; a run that a member stream or a
+  pass in listing order decodes again counts in one total per image, held to `max_ratio`
+  times the file size like the checksum pass below (the first decode of a run is free:
+  [§5](#dmg-runs-decoded-once-are-free)). The in-house ADC, LZFSE and LZVN decoders are
   bounded by the run's sectors. Each run a listing decodes, a cache miss included,
   counts toward `max_decoded_bytes` (`ReaderContext._listing_draw`, from
   `UdifImage._decode_run`), so a catalog spread over more runs than the cache holds
@@ -1748,6 +1752,18 @@ with 4 or more zero padding bytes, about three folders in four from 7-Zip or py7
 ([7z handbook](formats/7z.md)). With several candidates it only breaks a tie the anchor
 leaves: the writer chooses the last block, so a crafted archive can make a wrong
 candidate pass it. Those still walk once per candidate.
+
+### DMG runs decoded once are free
+
+A DMG member read decodes whole UDIF runs of up to 16 MiB. The reader lists in data
+order when listing order would decode a run twice, and charges a run decoded again by
+the same stream or the same pass in listing order against `max_ratio` times the file
+size ([formats/dmg.md](formats/dmg.md) §2.3). The first decode of each run is free, so a
+file of one-block extents, each in its own run, costs up to 4,096 times its output,
+bounded by the run count (36 bytes a run against `max_metadata_bytes`). Reads in an
+order the caller picks are charged within each stream only: re-decoding across members
+there is the caller's own work. Charging every first decode would refuse honest images
+(5,000 files of 200 bytes decode 519 MB from a 649 KB image in random order).
 
 ### OSS-Fuzz
 

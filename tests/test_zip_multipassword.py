@@ -33,7 +33,7 @@ from archivey.exceptions import (
     EncryptionError,
     TruncatedError,
 )
-from archivey.internal import password as password_module, password_confirm
+from archivey.internal import kernels, password as password_module, password_confirm
 from archivey.internal.backends import zip_reader, zipcrypto
 from archivey.internal.password import is_wrong_password
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_PREFIX_BYTES
@@ -513,7 +513,7 @@ def test_confirmed_winner_is_reopened_fresh(monkeypatch: pytest.MonkeyPatch) -> 
 
     def tracking_keys(
         password: bytes, header: bytes, *args: Any
-    ) -> tuple[zipcrypto.CipherState, int]:
+    ) -> tuple[kernels.ZipCryptoDecryptor, int]:
         # One call per decrypt stage the reader opens.
         tried.append(password)
         return original(password, header, *args)
@@ -998,7 +998,7 @@ def test_a_zero_central_crc_takes_the_check_byte_from_the_local_crc(
     cd = blob.index(b"PK\x01\x02")
     blob[cd + 16 : cd + 20] = b"\0\0\0\0"
     source = NonSeekableBytesIO(bytes(blob)) if piped else io.BytesIO(bytes(blob))
-    with open_archive(source, streaming=piped, password=RIGHT) as ar:
+    with open_archive(source, pipe=piped, password=RIGHT) as ar:
         if piped:
             read = []
             for _, stream in ar.stream_members():

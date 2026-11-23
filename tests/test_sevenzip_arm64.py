@@ -21,13 +21,13 @@ from archivey.exceptions import TruncatedError, UnsupportedFeatureError
 from archivey.internal.backends import sevenzip_parser, sevenzip_pipeline
 from archivey.internal.backends.sevenzip_parser import SevenZipCoder
 from archivey.internal.backends.sevenzip_pipeline import plan_folder
+from archivey.internal.kernels.python import filters as twin
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
 from archivey.internal.streams.codecs.isolated import IN_PROCESS
 from archivey.internal.streams.codecs.lzma_filter_decoder import (
     BranchFilterDecoder,
     FilterStream,
-    PythonBranch,
     branch_maker,
 )
 from archivey.types import OptionalLibrary
@@ -53,7 +53,7 @@ def _decoder(
     )
     assert make_branch is not None
     python = OptionalLibrary.ARCHIVEY_CODECS in excluded
-    assert isinstance(make_branch(), PythonBranch) is python
+    assert isinstance(make_branch(), (twin.Arm64Decoder, twin.RiscvDecoder)) is python
     return BranchFilterDecoder(make_branch=make_branch, unpack_size=unpack_size)
 
 

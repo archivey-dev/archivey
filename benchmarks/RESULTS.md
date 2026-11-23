@@ -10,7 +10,8 @@ knows which commit was measured last. When the expensive run fires it:
 
 - records results (JSON + markdown report artifacts, job summary table) with
   `measured_at` / source provenance;
-- hard-fails on the ~13× sanity ceiling **or** when a case is slower than on the
+- hard-fails on the ~13× sanity ceiling (when the time past it is at least 1 ms)
+  **or** when a case is slower than on the
   commit the last measuring run timed, pass or fail. Both commits run in the same
   job on the same runner, alternating, three harness runs each, and
   `benchmarks/compare_refs.py --fail-on-slower` compares each side's fastest run:

@@ -664,7 +664,7 @@ class ReadBackend(ABC):
     READ_IMPLEMENTED: bool = True
     # The ``UnsupportedFeatureError`` text when ``READ_IMPLEMENTED`` is false.
     UNSUPPORTED_MESSAGE: str | None = None
-    # Whether open_archive(streaming=True) may open a NON-SEEKABLE source: true for,
+    # Whether open_archive(pipe=True) may open a NON-SEEKABLE source: true for,
     # among others, TAR, ZIP (by its local headers) and the single-file codecs; false
     # for, among others, ISO and 7z. Each backend with it false says why in
     # NON_SEEKABLE_REASON. Random access (streaming=False) always requires a seekable

@@ -23,7 +23,7 @@ handbook is `dev-docs/formats/ar.md`.
 ### Requirement: Read ar archives of either dialect in one pass
 
 The ar backend SHALL read an archive that starts with `!<arch>\n` in one forward pass,
-from a file, a seekable stream, a pipe (`streaming=True`) or inside any single-file
+from a file, a seekable stream, a pipe (`pipe=True`) or inside any single-file
 compression stream. It SHALL list every member as a `FILE`, skip the symbol tables
 (`/`, `/SYM64/`, `__.SYMDEF` and its `SORTED` and `_64` forms), and report the dialect
 in `ArchiveInfo.extra["ar.dialect"]` (`"gnu"` or `"bsd"`) and whether a symbol table
@@ -49,9 +49,10 @@ A BSD name stored in the data area (`#1/N`) longer than 64 KiB, or longer than i
 member, SHALL raise `CorruptionError` before any of it is read. This is a structural
 bound, not a policy limit: no file system takes a path that long, and the check keeps a
 damaged length from growing one buffer to the member's size. The GNU long-name table is
-held for the whole walk instead, so it SHALL be no larger than
-`ListingLimits.max_metadata_bytes` on its own; it is held beside the member names, which
-the listing counts separately.
+held for the whole walk instead, so its size SHALL be charged to
+`ListingLimits.max_metadata_bytes` before it is read, in the same total as the members'
+names and fields: the table and the listing share one budget, and the charge is released
+when the walk ends.
 
 #### Scenario: ar name bounds
 
@@ -60,6 +61,7 @@ the listing counts separately.
 | `#1/65537` in a member of 70 000 bytes | `CorruptionError` naming the header offset |
 | `#1/99` in a member of 5 bytes | `CorruptionError` |
 | `//` table larger than `max_metadata_bytes` | `ResourceLimitError` |
+| A `//` table and a member named from it, each within `max_metadata_bytes` but not together | `ResourceLimitError` while the member is listed |
 
 ### Requirement: Refuse thin archives by name
 

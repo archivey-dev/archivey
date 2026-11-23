@@ -586,7 +586,7 @@ def _check_source_pipe(path: Path, entry: CorpusEntry) -> Check:
     try:
         with open_archive(
             NonSeekable(data),
-            streaming=True,
+            pipe=True,
             password=_password(entry),
         ) as reader:
             cap = reader.cost.stream_capability
@@ -609,7 +609,7 @@ def _check_source_pipe(path: Path, entry: CorpusEntry) -> Check:
             OK,
             "forward_only (or refuse)",
             "raise StreamNotSeekableError",
-            "no CostReceipt; format refuses a pipe even with streaming=True",
+            "no CostReceipt; format refuses a pipe even with pipe=True",
         )
     except ArchiveyUsageError as exc:
         return Check(

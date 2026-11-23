@@ -33,7 +33,6 @@ from archivey import (
 )
 from archivey.diagnostics import UnexpectedNameDuplicateContext
 from archivey.exceptions import DiagnosticRaisedError
-from archivey.internal import native
 from archivey.internal.backends import cab_reader
 from archivey.internal.streams.codecs import deps, lzx_decoder
 from archivey.internal.streams.codecs.lzx_decoder import LzxDecoder
@@ -50,6 +49,7 @@ from tests.cab_util import (
     code_lengths,
     write_cab,
 )
+from tests.kernels_util import use_python_twin
 
 LIBARCHIVE = Path(__file__).parent / "fixtures" / "external" / "cab_libarchive"
 _RNG = random.Random(7)
@@ -114,7 +114,7 @@ CASES = {"stored": CabFolder("none"), "mszip": CabFolder("mszip"), **LZX_CASES}
 def lzx_kernel(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
     """Every test with each LZX decoder: archivey's own, and archivey-codecs'."""
     if request.param == "python":
-        monkeypatch.setattr(native, "lzx", lambda *_a, **_k: None)
+        use_python_twin(monkeypatch, "lzx")
     return request.param
 
 
@@ -226,18 +226,14 @@ def test_members_read_in_order_decode_each_frame_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = 0
-    python = LzxDecoder.decode_frame
-    kernel = native.NativeLzx.decode_frame
+    real = cab_reader._FolderStream._lzx_frame
 
-    def counting(self: LzxDecoder | native.NativeLzx, size: int) -> bytes:
+    def counting(self: cab_reader._FolderStream, size: int) -> bytes:
         nonlocal calls
         calls += 1
-        if isinstance(self, LzxDecoder):
-            return python(self, size)
-        return kernel(self, size)
+        return real(self, size)
 
-    monkeypatch.setattr(LzxDecoder, "decode_frame", counting)
-    monkeypatch.setattr(native.NativeLzx, "decode_frame", counting)
+    monkeypatch.setattr(cab_reader._FolderStream, "_lzx_frame", counting)
     raw = _case("lzx-16")
     with open_archive(io.BytesIO(raw)) as reader:
         for name in NAMES:
@@ -495,18 +491,14 @@ def test_a_refused_block_fails_only_the_members_that_reach_it(
 
 def test_an_empty_member_decodes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = 0
-    python = LzxDecoder.decode_frame
-    kernel = native.NativeLzx.decode_frame
+    real = cab_reader._FolderStream._lzx_frame
 
-    def counting(self: LzxDecoder | native.NativeLzx, size: int) -> bytes:
+    def counting(self: cab_reader._FolderStream, size: int) -> bytes:
         nonlocal calls
         calls += 1
-        if isinstance(self, LzxDecoder):
-            return python(self, size)
-        return kernel(self, size)
+        return real(self, size)
 
-    monkeypatch.setattr(LzxDecoder, "decode_frame", counting)
-    monkeypatch.setattr(native.NativeLzx, "decode_frame", counting)
+    monkeypatch.setattr(cab_reader._FolderStream, "_lzx_frame", counting)
     files = [CabFile("a", TEXT), CabFile("empty", b"")]
     with open_archive(io.BytesIO(_cab(CabFolder("lzx"), files))) as reader:
         assert reader.read("empty") == b""

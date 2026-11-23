@@ -121,7 +121,7 @@ def test_detection_by_the_header_whatever_the_name() -> None:
 
 def test_a_pipe_reads_in_one_pass() -> None:
     data = (DATA / "xz-2.7.1.run").read_bytes()
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
         got = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
     assert {k: v for k, v in got.items() if k in FILES} == FILES
 
@@ -714,9 +714,7 @@ def test_openssl_payloads_read_with_the_password(name: str) -> None:
 @pytest.mark.parametrize("name", OPENSSL)
 def test_openssl_payloads_read_from_a_pipe(name: str) -> None:
     data = (DATA / name).read_bytes()
-    with open_archive(
-        NonSeekableBytesIO(data), streaming=True, password="secret"
-    ) as reader:
+    with open_archive(NonSeekableBytesIO(data), pipe=True, password="secret") as reader:
         got = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
     assert {k: v for k, v in got.items() if k in FILES} == FILES
 

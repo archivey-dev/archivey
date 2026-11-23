@@ -425,7 +425,7 @@ def test_unicode_comment_field_gives_the_member_comment(
     source: io.RawIOBase | io.BytesIO = (
         NonSeekableBytesIO(blob) if pipe else io.BytesIO(blob)
     )
-    with archivey.open_archive(source, encoding=encoding, streaming=pipe) as ar:
+    with archivey.open_archive(source, encoding=encoding, pipe=pipe) as ar:
         # A pipe pass fills the comment in when it reaches the directory, after the
         # last member, so the member is checked once the pass is done.
         (member,) = [member for member, _ in ar.stream_members()]

@@ -76,7 +76,7 @@ a listing decodes.
 
 ### Extract while downloading
 
-An HTTP response can't seek, so it opens with `streaming=True`. Nothing is saved apart from the
+An HTTP response can't seek, so it opens with `pipe=True`. Nothing is saved apart from the
 extracted files:
 
 ```python
@@ -87,7 +87,7 @@ import archivey
 URL = "https://example.com/dataset.tar.gz"
 
 with urllib.request.urlopen(URL) as response:
-    with archivey.open_archive(response, streaming=True) as archive:
+    with archivey.open_archive(response, pipe=True) as archive:
         archive.extract_all("data/", overwrite="replace")
 ```
 
@@ -99,7 +99,8 @@ previous recipe.
 If the download stops partway, the call raises `TruncatedError` or another `CorruptionError`. From
 a TAR, the members written before then stay in `data/`. A ZIP keeps its index at the end, so its
 members are put in place only once the whole download has arrived, and a download that stops
-earlier leaves nothing in `data/`. [Reading once](reading.md#reading-once) has the details.
+earlier leaves nothing in `data/`. [Reading from a pipe](reading.md#reading-from-a-pipe) has the
+details.
 
 ### Read members without extracting
 
@@ -167,8 +168,8 @@ print(row_counts)
 
 `stream_members` decompresses the archive once, from start to end, and gives you each member with
 a stream of its contents. The function passed to it chooses the members, and the others are skipped
-without being handed to you. Each stream works only until the loop moves on. With
-`streaming=True`, the same loop also reads from an HTTP response, as in [Extract while
+without being handed to you. Each stream works only until the loop moves on. With `pipe=True` in
+place of `streaming=True`, the same loop also reads from an HTTP response, as in [Extract while
 downloading](#extract-while-downloading). [Read everything in one
 pass](index.md#read-everything-in-one-pass) explains the loop.
 

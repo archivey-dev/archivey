@@ -360,7 +360,7 @@ def test_cheap_size_still_needs_seekability(suffix: str = ".lz") -> None:
     """Non-seekable sources still get no cheap size -- that gate is the real one."""
     payload = b"payload" * 500
     stream = NonSeekableBytesIO(make_lzip_member(payload))
-    with open_archive(stream, streaming=True) as ar:
+    with open_archive(stream, pipe=True) as ar:
         assert next(iter(ar)).size is None
 
 
@@ -370,7 +370,7 @@ def test_compressed_size_on_a_non_seekable_source_ignores_its_size_claim() -> No
     # reported, so this is about seekability, not about trusting the claim.
     data = gzip.compress(b"payload" * 500)
     stream = SizedNonSeekable(data, size=123_456_789)
-    with open_archive(stream, streaming=True) as ar:
+    with open_archive(stream, pipe=True) as ar:
         assert next(iter(ar)).compressed_size is None
 
 
@@ -503,7 +503,7 @@ def test_non_seekable_member_stream_reports_its_advertised_compressed_size(
         outer.open("x.gz") as member,
     ):
         assert not member.seekable()
-        with open_archive(member, streaming=True) as nested:
+        with open_archive(member, pipe=True) as nested:
             sizes = [m.compressed_size for m in nested]
     assert sizes == [len(data)]
 
@@ -593,7 +593,7 @@ def test_gzip_open_does_not_scan_for_a_second_member() -> None:
 
 def test_gzip_omits_crc32_on_nonseekable_source() -> None:
     data = gzip.compress(b"pipe-payload")
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as ar:
         report = ar.members_report_if_available()
         assert report is not None
         assert HashAlgorithm.CRC32 not in report[0].hashes
@@ -828,7 +828,7 @@ def test_non_seekable_gzip_streams_fine() -> None:
     # Single-file formats stream from a non-seekable source under streaming=True
     # (the mode a non-seekable source requires).
     data = gzip.compress(b"streamed payload")
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as ar:
         # Read while the generator is live: exhaustion closes the current stream.
         pairs = list(ar.stream_members())
         assert len(pairs) == 1
@@ -836,7 +836,7 @@ def test_non_seekable_gzip_streams_fine() -> None:
         assert stream is not None
         # Re-open via random open is unavailable in streaming mode; drain via a fresh
         # streaming pass that reads before the generator finishes.
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as ar:
         for _member, stream in ar.stream_members():
             assert stream is not None
             assert stream.read() == b"streamed payload"
@@ -854,7 +854,7 @@ def test_unix_compress_non_seekable_requires_streaming_mode() -> None:
 def test_unix_compress_non_seekable_streams_fine() -> None:
     data = make_unix_compress(b"lzw payload")
     with open_archive(
-        NonSeekableBytesIO(data), format=ArchiveFormat.Z, streaming=True
+        NonSeekableBytesIO(data), format=ArchiveFormat.Z, pipe=True
     ) as ar:
         for _member, stream in ar.stream_members():
             assert stream is not None
@@ -964,7 +964,7 @@ def test_truncated_gzip_raises_truncated() -> None:
     full = gzip.compress(b"streamed payload" * 1000)
     truncated = full[: len(full) // 2]  # gzip magic intact -> detection picks GZ
     with (
-        open_archive(NonSeekableBytesIO(truncated), streaming=True) as ar,
+        open_archive(NonSeekableBytesIO(truncated), pipe=True) as ar,
         pytest.raises(TruncatedError),
     ):
         _read_single_streamed_member(ar)
@@ -976,7 +976,7 @@ def test_truncation_is_caught_as_corruption() -> None:
     assert issubclass(TruncatedError, CorruptionError)
     full = gzip.compress(b"streamed payload" * 1000)
     with (
-        open_archive(NonSeekableBytesIO(full[: len(full) // 2]), streaming=True) as ar,
+        open_archive(NonSeekableBytesIO(full[: len(full) // 2]), pipe=True) as ar,
         pytest.raises(CorruptionError) as caught,
     ):
         _read_single_streamed_member(ar)
@@ -987,7 +987,7 @@ def test_corrupt_gzip_raises_corruption() -> None:
     data = bytearray(gzip.compress(b"streamed payload" * 100))
     data[15:35] = b"\x00" * 20  # clobber the deflate body (past the 10-byte header)
     with (
-        open_archive(NonSeekableBytesIO(bytes(data)), streaming=True) as ar,
+        open_archive(NonSeekableBytesIO(bytes(data)), pipe=True) as ar,
         raises_corruption_not_truncation(),
     ):
         _read_single_streamed_member(ar)
@@ -1273,7 +1273,7 @@ def test_non_seekable_source_still_defers_validation_to_the_read() -> None:
         open_archive(
             NonSeekableBytesIO(b"\x00" * 40_000),
             format=ArchiveFormat.GZ,
-            streaming=True,
+            pipe=True,
         ) as ar,
         raises_corruption_not_truncation(),
     ):
@@ -1313,7 +1313,7 @@ def test_a_short_cut_stream_fails_at_open_from_a_pipe_as_from_a_file(
     if suffix == ".bz2":
         # bzip2 gives no byte before its block decodes: the cut fails the probe.
         assert from_file == "TruncatedError"
-    assert _open_verdict(NonSeekableBytesIO(cut), streaming=True) == from_file
+    assert _open_verdict(NonSeekableBytesIO(cut), pipe=True) == from_file
 
 
 @pytest.mark.parametrize(
@@ -1623,7 +1623,7 @@ def test_the_member_names_the_stream_codec(
     want = () if expected is None else (CompressionMethod(expected),)
     with open_archive(io.BytesIO(data), config=config) as ar:
         assert ar.members()[0].compression == want
-    with open_archive(NonSeekableBytesIO(data), streaming=True, config=config) as ar:
+    with open_archive(NonSeekableBytesIO(data), pipe=True, config=config) as ar:
         assert [m.compression for m, _ in ar.stream_members()] == [want]
 
 

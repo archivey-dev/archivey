@@ -12,7 +12,7 @@ format added from outside uses, and is registered as a built-in the way ISO is.
 | --- | --- |
 | Read | Yes. `internal/backends/ar_reader.py`, an `ArHandler` (`SequentialFormatHandler`) and an `ArReader` (`SequentialReader`), registered with `register_builtin_format` |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
-| Source | A file, a stream that can seek, or a pipe (`streaming=True`). Inside any single-file compression stream (`.a.gz`, `.ar.xz`, …), as TAR is |
+| Source | A file, a stream that can seek, or a pipe (`pipe=True`). Inside any single-file compression stream (`.a.gz`, `.ar.xz`, …), as TAR is |
 | Listing cost | `REQUIRES_SCANNING`, header by header; inside a compression stream, `REQUIRES_DECOMPRESSION`, as a compressed TAR is |
 | Access cost | `DIRECT` from a source that can seek; inside a compression stream, `SOLID`, as a compressed TAR is |
 | Core dependencies | None |
@@ -112,11 +112,10 @@ ar names are archive-controlled bytes like any format's, and go through the same
 extraction rules ([`threat-model.md`](../threat-model.md)). The format-specific surface is
 memory a header can ask for:
 
-- The `//` long-name table is held for the whole walk, so it is capped at
-  `ListingLimits.max_metadata_bytes` on its own: a larger table raises
-  `ResourceLimitError`. The cap is a separate check, not a share of the listing's
-  running count: the table is held beside the member names, which the listing
-  counts as usual.
+- The `//` long-name table is held for the whole walk, so its size is charged to
+  `ListingLimits.max_metadata_bytes` before it is read, in the same running total as
+  the members' names and fields: a table that would take the total over the cap raises
+  `ResourceLimitError`. The charge is released when the walk ends.
 - A BSD name is read into memory before the member, so it is bounded: over 64 KiB, or
   longer than its member, is `CorruptionError` before it is read.
 - Size fields are parsed but never allocated; member data is streamed by the framework.

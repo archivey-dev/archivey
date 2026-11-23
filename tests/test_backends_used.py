@@ -185,7 +185,7 @@ def test_a_forward_zip_aes_read_lists_cryptography() -> None:
     # A non-seekable source reads through ZipForwardReader, which decrypts itself.
     data = (_FIXTURES / "external" / "aes_ae1_pyzipper036.zip").read_bytes()
     source = io.BufferedReader(NonSeekableBytesIO(data))
-    with open_archive(source, password="secret", streaming=True) as reader:
+    with open_archive(source, password="secret", pipe=True) as reader:
         for member, stream in reader.stream_members():
             if stream is not None:
                 assert stream.read()
