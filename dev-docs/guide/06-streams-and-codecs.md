@@ -211,6 +211,14 @@ A crash signal becomes `CorruptionError`; the out-of-memory killer's SIGKILL bec
 same user, and there is no timeout. All of it is on the
 [process isolation](../topics/process-isolation.md) topic page.
 
+## Rust kernels
+
+Eight of archivey's own decoders (LZX, LZW, LZO1X, BCJ2, the ARM64 and RISC-V filters,
+ZipCrypto and LHA's CRC-16) have Rust versions in the optional `archivey-codecs`
+package. Each Python decoder has a twin with the package's API, and one switch per kernel
+in `internal/kernels/` picks one, so call sites never mention the package. Both give the
+same bytes and errors. See the [codec kernels](../topics/codec-kernels.md) topic page.
+
 ## Who closes what
 
 Every wrapper has to answer "when I am closed, do I close the stream under me?" The rule
