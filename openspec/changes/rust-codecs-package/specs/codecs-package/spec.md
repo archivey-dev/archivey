@@ -42,29 +42,29 @@ have `decompress(data, max_length=-1) -> bytes` and the attributes `eof`, `needs
 and `unused_data`, with the meaning `lzma.LZMADecompressor` gives them, and SHALL
 return at most `max_length` bytes when it is not negative. The LZX decompressor SHALL
 take the declared output size (`output_size=` or `set_output_size(n)` before the last
-frame), SHALL decode whole frames of 32 KiB with only the last one shorter, whatever
-`max_length` is, and SHALL set `eof` when `total_out` reaches it. LZX and LZW SHALL have
-`flush(max_length=-1)`, which marks the end of input and returns the remaining output;
-before it, input that ends inside a frame or code only means more input is needed. LZX's
-`flush()` SHALL finish the last frame with the Python twin's zero padding and SHALL
-raise `TruncatedDataError` when the frame still cannot finish. LZW's `flush()` SHALL
-then set `eof` and `truncation` (`None` or a message), and SHALL NOT raise for a
-truncation it can only suspect, so the bytes before it are kept. The pull decoder
-(BCJ2) SHALL take the declared output size as the required `out_size`, SHALL read from
-its four input streams with `read(n)` and SHALL have `read(max_length=-1) -> bytes` and
-`eof`, returning at most `max_length` bytes when it is not negative and setting `eof`
-after exactly `out_size` bytes. An input that ends before then SHALL raise
-`TruncatedDataError`, and bytes left in `main`, `call` or `jump` after the last output
-byte SHALL raise `CorruptDataError`. A length-keeping transform (the ARM64 and RISC-V
-filters with `decode(data)` and `flush()`, ZipCrypto with `decrypt(data)`) SHALL return
-at most the input given plus the bytes it held back from the previous call, and
-`flush()` SHALL return the held-back bytes. A block function whose output size is known
-(LZO, later LZFSE) SHALL be `decompress(block, *, out_size)` and SHALL never allocate
-more than `out_size` bytes; LZO SHALL also take `max_size=` in its place, for a
-container that records only the most a block may decode to (SquashFS), returning the
-block's output and never allocating more than `max_size` bytes. Every allocation SHALL be
-bounded by a constructor argument, `max_length`, the input length, `out_size` or
-`max_size`.
+frame ends), SHALL decode whole frames of 32 KiB with only the last one shorter,
+whatever `max_length` is, and SHALL set `eof` when `total_out` reaches it. LZX and LZW
+SHALL have `flush(max_length=-1)`, which marks the end of input and returns the
+remaining output; before it, input that ends inside a frame or code only means more
+input is needed. LZX's `flush()` SHALL finish the last frame with the Python twin's zero
+padding and SHALL raise `TruncatedDataError` when the frame still cannot finish. LZW's
+`flush()` SHALL then set `eof` and `truncation` (`None` or a message), and SHALL NOT
+raise for a truncation it can only suspect, so the bytes before it are kept. The pull
+decoder (BCJ2) SHALL take the declared output size as the required `out_size`, SHALL
+read from its four input streams with `read(n)` and SHALL have
+`read(max_length=-1) -> bytes` and `eof`, returning at most `max_length` bytes when it
+is not negative and setting `eof` after exactly `out_size` bytes. An input that ends
+before then SHALL raise `TruncatedDataError`, and bytes left in `main`, `call` or `jump`
+after the last output byte SHALL raise `CorruptDataError`. A length-keeping transform
+(the ARM64 and RISC-V filters with `decode(data)` and `flush()`, ZipCrypto with
+`decrypt(data)`) SHALL return at most the input given plus the bytes it held back from
+the previous call, and `flush()` SHALL return the held-back bytes. A block function
+whose output size is known (LZO, later LZFSE) SHALL be `decompress(block, *, out_size)`
+and SHALL never allocate more than `out_size` bytes; LZO SHALL also take `max_size=` in
+its place, for a container that records only the most a block may decode to (SquashFS),
+returning the block's output and never allocating more than `max_size` bytes. Every
+allocation SHALL be bounded by a constructor argument, `max_length`, the input length,
+`out_size` or `max_size`.
 
 #### Scenario: decoder interface
 
@@ -110,14 +110,19 @@ and SHALL NOT hold input that the object holds but has not used. An object made 
 `from_state` and fed each input from its `total_in` offset SHALL produce exactly the
 output a straight decode produces from offset `total_out` (for ZipCrypto, from offset
 `total_in`). `from_state` SHALL refuse a state written by another kernel or another
-revision with `UnsupportedDataError`. Block functions have no state; a seek point is the
-block's offset.
+revision with `UnsupportedDataError`. A decoder that holds a decode error (LZW, LZX,
+BCJ2) SHALL refuse `getstate()` with `ValueError`: while it holds the error, every later
+decoding call raises it, and it has no state to resume from. (An LZX `set_output_size()`
+that gives back the input the error was met in drops it.) Block functions have no state;
+a seek point is the block's offset.
 
 #### Scenario: resume from a saved state
 
 | Case | Expected |
 | --- | --- |
-| Save at any call boundary, resume from `total_in` | Output equals the straight decode from `total_out`, byte for byte, errors included |
+| Save at any call boundary before a decode error, resume from `total_in` | Output equals the straight decode from `total_out`, byte for byte, errors included |
+| LZW, LZX or BCJ2 `getstate()` after a decode error | `ValueError`; every later decoding call raises the same error while the decoder holds it |
+| LZX without an output size, saved after it read input past the stream, then a late `set_output_size()` | The original gives that input back and drops an error met in it, unless it has already dropped that input from its buffer; the restored decoder keeps it consumed and keeps the error |
 | BCJ2 saved mid-stream, restored with four new streams each at its own `total_in` | Output equals the straight decode from `total_out` |
 | BCJ2 restored twice from one state, with independent streams, reads interleaved past their buffers | Both produce the straight decode; neither affects the other |
 | `bcj2.Decompressor.copy` | Does not exist |
