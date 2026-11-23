@@ -10,19 +10,20 @@ error on both sides.
 from __future__ import annotations
 
 import operator
+from typing import SupportsIndex
 
 U64_MAX = 2**64 - 1
 
 
-def index(value: object, name: str) -> int:
+def index(value: SupportsIndex, name: str) -> int:
     """``value`` as an int, as ``operator.index`` gives it, else ``TypeError``."""
     try:
-        return operator.index(value)  # ty: ignore[invalid-argument-type]
+        return operator.index(value)
     except TypeError as exc:
         raise TypeError(f"argument '{name}': {exc}") from None
 
 
-def u64(value: object, name: str) -> int:
+def u64(value: SupportsIndex, name: str) -> int:
     """A size or offset: an int in 0 to 2**64 - 1, else ``ValueError``."""
     n = index(value, name)
     if not 0 <= n <= U64_MAX:
