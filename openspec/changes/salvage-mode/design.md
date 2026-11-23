@@ -280,9 +280,10 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
   which is at most 4 MiB before where the read ended. So a real member bigger than the
   span reads whole and a tar stored in it is not listed, and a size that lies by more
   than the span loses the members whose headers are in all but the last 4 MiB of the
-  read (the review's recommendation (round 3, K6), pending the maintainer's ruling). A
-  codec stream confirms past the span by decoding forward to the block, which the walk
-  decodes next anyway when the member is confirmed. That look is free for a member the
+  read. This fallback stays for forward-only walks: such a walk cannot see the block
+  after the data, so it trusts the size and reads on. A codec stream confirms past the
+  span by decoding forward to the block, which the walk decodes next anyway when the
+  member is confirmed. That look is free for a member the
   walk reached, whose walk goes on from the block whatever it holds, and for a found
   member that it confirms. When it fails for a found member, the search goes back into
   the data and decodes again from a restart point, so the failed looks share a budget:

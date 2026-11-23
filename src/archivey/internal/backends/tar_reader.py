@@ -605,7 +605,10 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
     count: rapidgzip indexes only output its prefetch has decoded, so that seek would
     skip no decoding and would lose the proof (``restarts_follow_decoding``). Reading
     those bytes is also faster than asking the child for a restart point at every
-    member. Any other seek passes through.
+    member. Any other seek passes through. A forward read-through that meets the
+    stream's end stops there and returns where it stopped: a seek past the end
+    would count bytes no decoder produced (a member size that lies past the end),
+    and the ratio guard would refuse the archive for them.
 
     Borrows the codec stream: the reader closes it, never this handle.
     """
@@ -640,8 +643,8 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
         while remaining > 0:
             chunk = read_blocking(inner, min(remaining, _SKIP_READ))
             if not chunk:
-                # Past the end: the codec stream's own seek says where.
-                return inner.seek(offset, whence)
+                # The stream ends first: stay at its end.
+                return inner.tell()
             remaining -= len(chunk)
         return offset
 
@@ -1322,9 +1325,9 @@ class TarReader(BaseArchiveReader):
             looked = False
         # ``None``: a forward-only walk cannot see the block after the data within
         # the span it holds. A found member's size is then trusted: the walk reads
-        # on through its data, and searches back inside it only when the block
-        # there does not confirm it, or the stream ends first (the review's
-        # recommendation (round 3, K6), pending the maintainer's ruling).
+        # on through its data. When the block there does not confirm the member, or
+        # the stream ends first, the search goes back through the bytes the window
+        # still holds. This fallback stays for forward-only walks.
         trusted = searched and looked is None
         confirmed = bool(looked)
         if trusted:

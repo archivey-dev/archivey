@@ -10,12 +10,14 @@ the GNU tar comparison runs where GNU tar is installed.
 
 from __future__ import annotations
 
+import bz2
 import gzip
 import io
 import random
 import shutil
 import subprocess
 import tarfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,7 +36,12 @@ from archivey.diagnostics import (
     RegionSkippedContext,
     SalvageScanContext,
 )
-from archivey.exceptions import ArchiveyError, CorruptionError, FormatDetectionError
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    FormatDetectionError,
+    TruncatedError,
+)
 from archivey.internal.backends import tar_parser
 from archivey.internal.backends.tar_parser import (
     BLOCKSIZE,
@@ -852,14 +859,14 @@ def test_a_deb_data_tar_lists_what_the_same_tar_lists(data: bytes) -> None:
     ``tar-inside-a-big-member``: a found member with 6 MiB of data, more than the
     4 MiB a forward-only read holds. Its size is trusted, so its data reads in full
     and the tar stored in it is not listed; it is the one member whose flag differs,
-    as nothing has confirmed it when it is listed (round 3 of PR 1768, K6: its
-    data stopped at 4 MiB with ``TruncatedError``, and ``inner0``..``inner4`` were
-    listed).
+    as nothing has confirmed it when it is listed. This guards against the data
+    stopping at 4 MiB with ``TruncatedError`` and ``inner0``..``inner4`` being
+    listed.
 
     ``lying-size-past-the-end``: the liar claims 8 MiB, more than the hold and past
-    the end of the data.tar, so the deb trusts its size. Its data met the stream's
-    end and ended the walk in ``TruncatedError`` (3 members, round 4 of PR 1768,
-    K9); it now ends there quietly and the search goes back inside it."""
+    the end of the data.tar, so the deb trusts its size. Its data ends quietly at
+    the stream's end and the search goes back inside it; this guards against the
+    stream's end ending the walk in ``TruncatedError`` after 3 members."""
     direct = _list(data, salvage=True)
     nested = _list(_as_deb(data), salvage=True)
     assert nested.names[0] == "DEBIAN/control"
@@ -891,7 +898,8 @@ def test_a_deb_data_tar_lists_what_the_same_tar_lists(data: bytes) -> None:
 
 def test_a_deb_extracts_a_trusted_member_bigger_than_the_hold(tmp_path: Path) -> None:
     """``extract_all`` on the deb writes ``big.bin`` whole and every member after
-    it, and still ends in the damage error (K6: it stopped at ``big.bin``)."""
+    it, and still ends in the damage error: extraction must not stop at
+    ``big.bin``."""
     data = _tar_inside_a_big_member()
     direct = _list(data, salvage=True)
     with (
@@ -933,6 +941,48 @@ def test_a_deb_searches_back_inside_a_trusted_size_that_lies() -> None:
     assert found["liar"].confirmed is False
     assert found["late"].offset == direct.found()["late"].offset
     assert isinstance(nested.error, CorruptionError)
+
+
+@pytest.mark.parametrize(
+    "compress",
+    [
+        pytest.param(lambda d: gzip.compress(d, compresslevel=1), id="gzip"),
+        pytest.param(bz2.compress, id="bzip2"),
+    ],
+)
+def test_a_compressed_tar_searches_inside_a_size_past_the_end(
+    compress: Callable[[bytes], bytes],
+) -> None:
+    """A found header on a codec stream whose size points 8 MiB past the end of the
+    decoded data: the look for the block after its data meets the stream's end,
+    sees a short block, and the search goes on inside the data, so the listing is
+    the plain tar's. This guards against the look seeking past the end, which
+    counts bytes no decoder produced, so the ratio guard refused the archive and
+    the listing was lost."""
+    data = _lying_size(8 << 20)
+    plain = _list(data, salvage=True)
+    packed = _list(compress(data), salvage=True)
+    assert len(plain.names) == 22
+    assert packed.names == plain.names
+    assert packed.members == plain.members
+    assert type(packed.error) is type(plain.error) is CorruptionError
+
+
+@pytest.mark.parametrize("salvage", [False, True])
+def test_a_gzip_tar_whose_last_size_points_past_the_end_ends_truncated(
+    salvage: bool,
+) -> None:
+    """The default walk on a ``.tar.gz`` whose last member claims 8 MiB past the
+    stream's end ends as the plain tar does, in ``TruncatedError`` with the member
+    listed. This guards against the walk's codec handle seeking past the end,
+    which counts 8 MiB as decoded, so the ratio guard refused the archive."""
+    info = tarfile.TarInfo("liar")
+    info.size = 8 << 20
+    data = info.tobuf(format=tarfile.GNU_FORMAT) + b"y" * 3072
+    plain = _list(data, salvage=salvage)
+    gzipped = _list(gzip.compress(data, compresslevel=1), salvage=salvage)
+    assert gzipped.names == plain.names == ["liar"]
+    assert type(gzipped.error) is type(plain.error) is TruncatedError
 
 
 def test_dense_headers_cost_the_decoded_length_on_a_gzip_tar() -> None:
@@ -1086,11 +1136,12 @@ def test_a_gzip_tar_confirms_big_members_as_the_tar_does(
     confirmations the plain tar gives them.
 
     ``six-found``: each ``big_i`` is found by a search after its own damage, and
-    ``ok_i`` confirms it. The far-look budget charged every look, so from the
-    third one on the looks were refused and ``big2``, ``big4`` and ``big5`` came
-    back unconfirmed (round 3 of PR 1768, K7); a look that confirms now costs
-    nothing. ``walk-reached``: one damage, then ``big1`` and ``big2`` reached by the
-    walk, which had no far look and came back unconfirmed (K8)."""
+    ``ok_i`` confirms it. A look that confirms costs nothing from the far-look
+    budget; this guards against a budget that charges every look, which refused
+    the looks from the third one on and left ``big2``, ``big4`` and ``big5``
+    unconfirmed. ``walk-reached``: one damage, then ``big1`` and ``big2`` reached
+    by the walk, which must look far for them too, or they come back
+    unconfirmed."""
     data = _big_groups(groups, damaged=damaged)
     plain = _list(data, salvage=True)
     gzipped = _list(gzip.compress(data, compresslevel=1), salvage=True)
