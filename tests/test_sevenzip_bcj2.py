@@ -25,6 +25,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal import native
 from archivey.internal.backends.sevenzip_parser import (
     SevenZipCoder,
     SevenZipFolder,
@@ -36,7 +37,7 @@ from archivey.internal.backends.sevenzip_pipeline import (
 )
 from archivey.internal.backends.sevenzip_reader import load_sevenzip_archive
 from archivey.internal.password import _PasswordCandidates
-from archivey.internal.streams.codecs import bcj2_filter as bcj2_mod
+from archivey.internal.streams.codecs import bcj2_filter as bcj2_mod, deps
 from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
 from archivey.types import CompressionAlgorithm
 from tests.conftest import requires, requires_binary
@@ -61,6 +62,35 @@ _FORCED = [
     "-mb0s1:2",
     "-mb0s2:3",
 ]
+
+
+@pytest.fixture(
+    autouse=True,
+    params=[
+        "python",
+        pytest.param(
+            "archivey-codecs",
+            marks=pytest.mark.skipif(
+                not deps.archivey_codecs.available(), reason="needs archivey-codecs"
+            ),
+        ),
+    ],
+)
+def bcj2_kernel(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Every test with each BCJ2 decoder: archivey's own, and archivey-codecs'."""
+    if request.param == "python":
+        monkeypatch.setattr(native, "bcj2", lambda *_a, **_k: None)
+    return request.param
+
+
+def _bcj2(*streams: BinaryIO, **kwargs: object) -> Bcj2DecoderStream:
+    """A ``Bcj2DecoderStream`` with the decoder ``bcj2_kernel`` picked."""
+    return Bcj2DecoderStream(
+        *streams,
+        excluded=frozenset(),
+        isolated=False,
+        **kwargs,  # type: ignore[arg-type]
+    )
 
 
 def _x86_like(seed: int, size: int) -> bytes:
@@ -328,7 +358,7 @@ def branches(inputs: dict[str, Path]) -> tuple[list[bytes], int, bytes]:
 
 
 def _decode(streams: list[bytes], size: int) -> bytes:
-    return Bcj2DecoderStream(*map(io.BytesIO, streams), unpack_size=size).read(size)
+    return _bcj2(*map(io.BytesIO, streams), unpack_size=size).read(size)
 
 
 def test_branches_decode_and_convert_targets(
@@ -361,7 +391,7 @@ def test_input_block_and_read_sizes_do_not_change_the_output(
 ) -> None:
     streams, size, expected = branches
     monkeypatch.setattr(bcj2_mod, "_BLOCK", block)
-    stream = Bcj2DecoderStream(*map(io.BytesIO, streams), unpack_size=size)
+    stream = _bcj2(*map(io.BytesIO, streams), unpack_size=size)
     if read_size is None:
         out = stream.read()
     else:
@@ -418,7 +448,7 @@ def test_leftover_check_reads_one_byte_and_does_not_drain(
     """D5: a hostile main tail is refused after one byte, not decoded in full."""
     streams, size, _ = branches
     main = _ReadCounter(streams[0] + b"\x00" * (8 * 1024 * 1024))
-    stream = Bcj2DecoderStream(main, *map(io.BytesIO, streams[1:]), unpack_size=size)
+    stream = _bcj2(main, *map(io.BytesIO, streams[1:]), unpack_size=size)
     with raises_corruption_not_truncation():
         stream.read(size)
     # Whole blocks already buffered count too; the check itself reads one byte.
@@ -426,15 +456,13 @@ def test_leftover_check_reads_one_byte_and_does_not_drain(
 
 
 def test_empty_output_reads_no_input() -> None:
-    stream = Bcj2DecoderStream(*(io.BytesIO() for _ in range(4)), unpack_size=0)
+    stream = _bcj2(*(io.BytesIO() for _ in range(4)), unpack_size=0)
     assert stream.read() == b""
 
 
 def test_close_closes_owned_inputs_only() -> None:
     inputs = [io.BytesIO(b"") for _ in range(4)]
-    stream = Bcj2DecoderStream(
-        *inputs, unpack_size=0, owns_inputs=[True, True, True, False]
-    )
+    stream = _bcj2(*inputs, unpack_size=0, owns_inputs=[True, True, True, False])
     stream.close()
     assert [s.closed for s in inputs] == [True, True, True, False]
 
@@ -514,7 +542,7 @@ def test_call_stream_cut_short_without_the_cli() -> None:
 def test_decoder_seeks_backward_and_forward() -> None:
     main, call = b"\xe8\xe8", _be(_T1, _T2)
     expected = b"\xe8" + _le(_T1, 1) + b"\xe8" + _le(_T2, 6)
-    stream = Bcj2DecoderStream(
+    stream = _bcj2(
         *map(io.BytesIO, [main, call, b"", _RC_CONVERT]), unpack_size=len(expected)
     )
     assert stream.seekable()
@@ -537,7 +565,7 @@ def test_decoder_seeks_backward_and_forward() -> None:
 def _seekable_decoder() -> tuple[Bcj2DecoderStream, bytes]:
     main, call = b"\xe8\xe8", _be(_T1, _T2)
     expected = b"\xe8" + _le(_T1, 1) + b"\xe8" + _le(_T2, 6)
-    stream = Bcj2DecoderStream(
+    stream = _bcj2(
         *map(io.BytesIO, [main, call, b"", _RC_CONVERT]), unpack_size=len(expected)
     )
     return stream, expected
@@ -560,7 +588,7 @@ def test_decoder_over_a_non_seekable_input_does_not_seek() -> None:
         def seekable(self) -> bool:
             return False
 
-    stream = Bcj2DecoderStream(
+    stream = _bcj2(
         _Forward(b"\xe8"), *map(io.BytesIO, [_be(_T1), b"", _RC_CONVERT]),
         unpack_size=5,
     )  # fmt: skip

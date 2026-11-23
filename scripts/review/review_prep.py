@@ -36,13 +36,16 @@ without one.
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.util
+import io
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import tokenize
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -345,16 +348,21 @@ NOT_LIGHT = (
     "benchmarks/wall_baseline.py",
 )
 
+# A pull request is deep when its review needs a second model: it moves the public API,
+# adds a reader, parser, codec or native kernel, changes code in a layer every format
+# goes through, or its author or reviewer raised it (a `Review-Tier: deep` trailer).
+# Deep is about the code a bug would sit in, not about who could attack the files: the
+# release's and the review loop's own files are standard with the security pass
+# (PROCESS_FILES), and the maintainer merges the ones that decide a merge
+# (MAINTAINER_FILES). Maintainer, 2026-11-22: "deep is for things that affect the
+# overall architecture, non-straightforward changes, tricky code and so on, which are
+# much more important than the CI workflows and skills we're using it for."
+
 # Paths where one bug breaks a safety guarantee for every format: writes stay inside the
 # destination, resources stay bounded, archive-supplied input never reaches a command
-# line or a terminal as anything but inert text. One of them makes the pull request deep.
+# line or a terminal as anything but inert text. A change to their code makes the pull
+# request deep; a change to a docstring or a comment alone does not (_code_changed).
 # Edit the list here; the skill does not repeat it.
-#
-# Format parsers and codecs (`internal/backends/`, `internal/streams/codecs/`) stay
-# standard by design, though they read hostile bytes: listing them would make nearly
-# every format PR deep, and they have their own defences that a review round does not
-# replace (the fuzzing jobs, the CVE replays, the hostile-input checklist every standard
-# round runs).
 DEEP_SECURITY = (
     "src/archivey/paths.py",
     "src/archivey/config.py",
@@ -373,18 +381,54 @@ DEEP_SECURITY = (
     "src/archivey/internal/resource_usage.py",
     "src/archivey/internal/external/",
     "src/archivey/internal/streams/child_process.py",
+    "src/archivey/internal/filters.py",
 )
-# A new file under one of these may be a new format reader, parser or codec: the pull
-# request gets the security pass (skill §1) whatever its tier. Other changes there get it
-# when the PR body's `Security:` line or the reviewer applies the template's rules.
-SECURITY_NEW_FILES = (
+# The layer every format goes through: the reader base and the plugin adapter, reader
+# state and its locks, passwords, the source, and the streams that check and defer
+# errors (with the kept errors and the verification combiner they use). A bug here
+# reaches every format at once, as one in DEEP_SECURITY does. `core.py` and
+# `registry.py` are also on every open but only dispatch to a reader: a bug there fails
+# every format's tests at once, so they stay standard.
+DEEP_CORE = (
+    "src/archivey/internal/base_reader.py",
+    "src/archivey/internal/format_adapter.py",
+    "src/archivey/internal/reader_state.py",
+    "src/archivey/internal/password.py",
+    "src/archivey/internal/plugin_passwords.py",
+    "src/archivey/internal/source.py",
+    "src/archivey/internal/streams/archive_stream.py",
+    "src/archivey/internal/streams/decompressor_stream.py",
+    "src/archivey/internal/streams/verify.py",
+    "src/archivey/internal/streams/kept_errors.py",
+    "src/archivey/internal/streams/verification.py",
+)
+# A new file under one of these is a new reader, parser, codec or native kernel: deep,
+# with the security pass. An edit to an existing one is standard, since nearly every
+# format PR edits one and they have their own defences that a review round does not
+# replace (the fuzzing jobs, the CVE replays, the hostile-input checklist every standard
+# round runs); the PR body's `Security:` line or the reviewer still gives it the pass,
+# and the author raises it to deep when the change is tricky.
+NEW_PARSER_DIRS = (
     "src/archivey/internal/backends/",
     "src/archivey/internal/streams/codecs/",
+    "packages/archivey-codecs/src/kernels/",
 )
-# The release's and the review loop's own files: deep, with the pull request's author as
-# the attacker (skill §1). The loop's rules are here because a pull request is reviewed
-# under its own copy of them (dev-docs/review-loop.md, Known rough edges).
-DEEP_PROCESS = (
+# The public API: archivey's (generated, `scripts/checks/api_surface.py`) and
+# archivey-codecs' type stubs, which are that package's API.
+API_SURFACE = "dev-docs/api-surface.txt"
+CODECS_API = "packages/archivey-codecs/python/archivey_codecs/"
+# The trailer that raises a pull request to deep, in any of its commit messages:
+# `Review-Tier: deep (why)`. History keeps it, so a later push cannot lower the tier.
+# Git parses the trailers (`%(trailers)`: the last paragraph only), so a body line that
+# happens to start with the key is not one.
+TIER_TRAILER = "Review-Tier"
+_DEEP_VALUE_RE = re.compile(r"^deep\b[ \t]*(.*)$", re.IGNORECASE)
+# The release's and the review loop's own files: standard, with the security pass and
+# the pull request's author as the attacker (skill §1). The loop's rules are here
+# because a pull request is reviewed under its own copy of them
+# (dev-docs/review-loop.md, Known rough edges); the ones that decide a merge also go to
+# the maintainer (MAINTAINER_FILES).
+PROCESS_FILES = (
     ".github/workflows/",
     "scripts/release/release.py",
     ".github/review-loop-prompt.md",
@@ -447,7 +491,8 @@ REQUIRED_CHECKS = (
 # (`pull_request_target`, `workflow_run`, and the comment and review triggers), or
 # reads the `github` context in an expression: any field but a few fixed ones can carry
 # text someone outside chose (a title, a branch, an actor's name). A new `run:` step
-# with no expression is not matched; the Opus pass and Cursor review it.
+# with no expression is not matched; the Opus pass and its security pass review it, and
+# the author adds a `Review-Tier: deep` trailer when the step is tricky.
 _GITHUB_FIXED = (
     "sha|repository|repository_id|repository_owner|repository_owner_id|run_id"
     "|run_number|run_attempt|workflow|job|server_url|api_url|graphql_url|event_name"
@@ -705,9 +750,6 @@ def maintainer_decisions(
     return list(dict.fromkeys(found))
 
 
-API_SURFACE = "dev-docs/api-surface.txt"
-
-
 def _matches(path: str, entries: Iterable[str]) -> bool:
     return any(path.startswith(e) if e.endswith("/") else path == e for e in entries)
 
@@ -715,27 +757,54 @@ def _matches(path: str, entries: Iterable[str]) -> bool:
 @dataclass
 class Tier:
     name: str  # "light", "standard" or "deep"
+    # What decided it: for deep, the lines `deep: ...` prints; otherwise the paths that
+    # kept it from light.
     reasons: list[str]
-    api_changed: bool
-    # New files under a parser or codec directory: the security pass runs on any tier.
+    # New files under a parser, codec or kernel directory (deep, with the security
+    # pass).
     new_parsers: list[str] = field(default_factory=list)
     # What makes the maintainer merge it (maintainer_decisions); empty: an agent merges.
     maintainer: list[str] = field(default_factory=list)
-    # Workflows that would make it deep but run on nobody else's input with a read-only
-    # token (quiet_workflow): standard instead, and the security pass still runs.
-    quiet_workflows: list[str] = field(default_factory=list)
+    # The release's and the review loop's files it touches: the security pass, with the
+    # pull request's author as the attacker.
+    process: list[str] = field(default_factory=list)
+    # The public API files it changes: archivey's surface and archivey-codecs' stubs.
+    api_paths: list[str] = field(default_factory=list)
+
+    @property
+    def api_changed(self) -> bool:
+        return bool(self.api_paths)
 
 
-def tier(paths: Iterable[str], added: Iterable[str] = ()) -> Tier:
+def tier(
+    paths: Iterable[str],
+    added: Iterable[str] = (),
+    code_changed: Callable[[str], bool] | None = None,
+    raised: Iterable[str] = (),
+) -> Tier:
     """Classify the changed paths (renames give both sides) into a review tier.
-    `added` are the paths the diff creates."""
+    `added` are the paths the diff creates. `code_changed(path)` says whether a
+    DEEP_SECURITY or DEEP_CORE path changed more than its docstrings and comments
+    (every one did, when it is not given). `raised` are the reasons of the
+    `Review-Tier: deep` trailers in the pull request's commits."""
     paths = sorted(set(paths))
-    new_parsers = sorted(p for p in set(added) if _matches(p, SECURITY_NEW_FILES))
-    security = [p for p in paths if _matches(p, DEEP_SECURITY)]
-    process = [p for p in paths if _matches(p, DEEP_PROCESS)]
-    api_changed = API_SURFACE in paths
-    if security or process:
-        return Tier("deep", security + process, api_changed, new_parsers)
+    added = set(added)
+    changed = code_changed or (lambda path: True)
+    new_parsers = sorted(
+        p for p in added if _matches(p, NEW_PARSER_DIRS) and not p.endswith(".md")
+    )
+    api = [p for p in paths if p == API_SURFACE or _matches(p, (CODECS_API,))]
+    api = [p for p in api if p == API_SURFACE or p.endswith(".pyi")]
+    core = [p for p in paths if _matches(p, DEEP_SECURITY + DEEP_CORE) and changed(p)]
+    process = [p for p in paths if _matches(p, PROCESS_FILES)]
+    deep = (
+        [f"public API: {p}" for p in api]
+        + [f"new reader, parser, codec or kernel: {p}" for p in new_parsers]
+        + [f"shared layer: {p}" for p in core]
+        + [f"raised in a commit: {r or '(no reason given)'}" for r in raised]
+    )
+    if deep:
+        return Tier("deep", deep, new_parsers, process=process, api_paths=api)
     heavier = [
         p
         for p in paths
@@ -747,8 +816,75 @@ def tier(paths: Iterable[str], added: Iterable[str] = ()) -> Tier:
         )
     ]
     if paths and not heavier:
-        return Tier("light", [], api_changed, new_parsers)
-    return Tier("standard", heavier, api_changed, new_parsers)
+        return Tier("light", [], new_parsers, process=process, api_paths=api)
+    return Tier("standard", heavier, new_parsers, process=process, api_paths=api)
+
+
+def _strip_docstrings(tree: ast.AST) -> ast.AST:
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (
+            isinstance(
+                node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+            )
+            and body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            node.body = body[1:] or [ast.Pass()]
+    return tree
+
+
+_DIRECTIVE_RE = re.compile(r"#\s*(?:type|pyrefly|ty|pyright|mypy)\s*:|#\s*noqa\b")
+
+
+def _directives(text: str) -> list[str]:
+    """The type-checker and lint directives among a file's comments, in order."""
+    return [
+        " ".join(tok.string.split())
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline)
+        if tok.type == tokenize.COMMENT and _DIRECTIVE_RE.search(tok.string)
+    ]
+
+
+def _code_changed(before: str | None, after: str | None) -> bool:
+    """Whether a Python file changed more than its docstrings and plain comments. A
+    type-checker or lint directive (`# type: ignore`, `# pyrefly: ignore`, `# noqa`...)
+    is not a plain comment: it changes what the checks accept, so it counts. A file
+    added or removed, one that does not parse, and anything not Python count as
+    changed."""
+    if before is None or after is None:
+        return True
+    try:
+        old, new = (_strip_docstrings(ast.parse(t)) for t in (before, after))
+        if _directives(before) != _directives(after):
+            return True
+    except (SyntaxError, tokenize.TokenError):
+        return True
+    return ast.dump(old) != ast.dump(new)
+
+
+def raised_tiers(values: str) -> list[str]:
+    """The reasons of the `deep` values among these `Review-Tier` trailer values, one
+    per line, as `git log --format=%(trailers:key=Review-Tier,valueonly)` prints them."""
+    return [
+        _unwrap(m.group(1).strip())
+        for line in values.splitlines()
+        if (m := _DEEP_VALUE_RE.match(line.strip()))
+    ]
+
+
+def _unwrap(reason: str) -> str:
+    """The reason without one pair of parentheses around all of it, if it has one."""
+    if not reason.startswith("("):
+        return reason
+    depth = 0
+    for i, ch in enumerate(reason):
+        depth += {"(": 1, ")": -1}.get(ch, 0)
+        if depth == 0:
+            return reason[1:-1].strip() if i == len(reason) - 1 else reason
+    return reason
 
 
 def _name_status(base: str, head: str) -> list[list[str]]:
@@ -768,189 +904,25 @@ def added_paths(base: str, head: str) -> list[str]:
     return [paths[0] for status, *paths in _name_status(base, head) if status == "A"]
 
 
-# The triggers a quiet workflow may have: someone with write access starts it, or the
-# clock does. Nothing a fork or an issue author chose reaches it.
-_QUIET_TRIGGERS = frozenset({"workflow_dispatch", "schedule"})
-# Every reader below fails closed: a spelling it does not read makes the workflow not
-# quiet, so the pull request stays deep. YAML and GitHub's expressions allow more forms
-# than a line regex can follow (quoted keys and values, flow mappings, `secrets['X']`),
-# and the unsafe answer must not be the default one.
-_ON_RE = re.compile(r"""^(?:on|"on"|'on'|true)\s*:\s*(.*?)\s*(?:#.*)?$""")
-_BARE_KEY_RE = re.compile(r"^(\s+)([\w-]+)\s*:(?:\s.*)?$")
-_PERMISSIONS_RE = re.compile(r"^(\s*)permissions\s*:\s*(.*?)\s*(?:#.*)?$")
-_READ_SCOPE_RE = re.compile(r"^\s+[\w-]+\s*:\s*(?:read|none)\s*(?:#.*)?$")
-# The job's own token, which `permissions:` bounds; any other mention of `secrets`
-# (another secret, `secrets: inherit`, `toJSON(secrets)`) is not quiet.
-_JOB_TOKEN_RE = re.compile(
-    r"""\bsecrets\s*(?:\.\s*GITHUB_TOKEN|\[\s*(['"])GITHUB_TOKEN\1\s*\])(?![\w-])""",
-    re.IGNORECASE,  # an expression's context names ignore case: `SECRETS.X` reads X
-)
-
-
-def _indent(line: str) -> int:
-    return len(line) - len(line.lstrip())
-
-
-def _triggers(text: str) -> set[str] | None:
-    """The event names under a workflow's top-level ``on:``, or None where the script
-    cannot tell: no ``on:`` or two of them, or any line of the block it does not read."""
-    lines = text.splitlines()
-    starts = [i for i, line in enumerate(lines) if _ON_RE.match(line)]
-    if len(starts) != 1:
-        return None
-    i = starts[0]
-    m = _ON_RE.match(lines[i])
-    assert m is not None
-    if inline := m.group(1):
-        if inline.startswith("[") and inline.endswith("]"):
-            inline = inline[1:-1]
-        names = [n.strip() for n in inline.split(",")]
-        return set(names) if all(re.fullmatch(r"[\w-]+", n) for n in names) else None
-    found: set[str] = set()
-    indent = None
-    for nxt in lines[i + 1 :]:
-        if not nxt.strip() or nxt.lstrip().startswith("#"):
-            continue
-        if not nxt[0].isspace():
-            break
-        if indent is None:
-            indent = _indent(nxt)
-        if _indent(nxt) > indent:
-            continue  # an event's own settings: inputs, cron lines
-        k = _BARE_KEY_RE.match(nxt)
-        if _indent(nxt) < indent or k is None:
-            return None  # a quoted key, a list item, a dedent: not read here
-        found.add(k.group(2))
-    return found or None
-
-
-def _read_only_permissions(lines: list[str]) -> bool:
-    """A top-level ``permissions:`` exists, and every ``permissions:`` grants only
-    ``read`` or ``none``, each scope on its own line (an allowlist: a quoted value or a
-    flow mapping is not read here, so it is not read-only)."""
-    top = False
-    for i, line in enumerate(lines):
-        m = _PERMISSIONS_RE.match(line)
-        if m is None:
-            if re.match(
-                r"""^\s*(?:-\s*)?["']permissions["']\s*:|^\s*-\s*permissions\s*:""",
-                line,
-            ):
-                return False  # a quoted or list-item key: not read here
-            continue
-        top |= m.group(1) == ""
-        value = m.group(2)
-        if value:
-            if value not in {"read-all", "{}"}:
-                return False
-            continue
-        for nxt in lines[i + 1 :]:
-            if not nxt.strip() or nxt.lstrip().startswith("#"):
-                continue
-            if _indent(nxt) <= len(m.group(1)):
-                break
-            if not _READ_SCOPE_RE.match(nxt):
-                return False
-    return top  # without one, the repository's default token, whatever that is set to
-
-
-def _read_only_grant(value: object) -> bool:
-    if value in ("read-all", {}):
-        return True
-    return isinstance(value, dict) and all(
-        isinstance(k, str) and v in ("read", "none") for k, v in value.items()
-    )
-
-
-def _parsed_quiet(text: str) -> bool:
-    """The line readers again, on the document Actions loads: a multi-line string can
-    hold a line that looks like `on:` or `permissions:`, and a folded scalar can hold
-    `write`. Both answers must be quiet. Without PyYAML (the runner image ships it)
-    nothing is quiet, which is the tier this script gave before."""
-    try:
-        import yaml  # only workflows need it; the script runs on a bare python3
-    except ImportError:
-        return False
-    try:
-        # An alias is refused before the load expands it: nested aliases grow
-        # exponentially, and Actions rejects them anyway.
-        if any(isinstance(e, yaml.AliasEvent) for e in yaml.parse(text)):
-            return False
-        doc = yaml.safe_load(text)
-    except yaml.YAMLError:
-        return False
-    if not isinstance(doc, dict):
-        return False
-    # YAML 1.1 reads a bare `on` key as the boolean true; Actions takes either.
-    on = [doc[k] for k in (True, "on") if k in doc]
-    if len(on) != 1:
-        return False
-    events = on[0]
-    if isinstance(events, str):
-        events = [events]
-    if not events or not set(events) <= _QUIET_TRIGGERS:
-        return False
-    if "permissions" not in doc or not _read_only_grant(doc["permissions"]):
-        return False
-    jobs = doc.get("jobs") or {}
-    if not isinstance(jobs, dict):
-        return False
-    return all(
-        isinstance(job, dict)
-        and ("permissions" not in job or _read_only_grant(job["permissions"]))
-        for job in jobs.values()
-    )
-
-
-def quiet_workflow(text: str | None) -> bool:
-    """A workflow that only a dispatch or the schedule starts, with an explicit token
-    scope that writes nothing and no secret but the job's own token. Every `github`
-    field it reads was then set by someone with write access or by the repository: no
-    outside attacker supplies its input, so it is not deep for its own sake. It still
-    reaches shared CI state that `permissions:` does not scope, such as the Actions
-    cache and artifacts other jobs restore, so the security pass stays on (tier_report).
-    A new one, or a change to its triggers or token, still goes to the maintainer
-    (maintainer_decisions)."""
-    if text is None:
-        return False
-    triggers = _triggers(text)
-    if not triggers or not triggers <= _QUIET_TRIGGERS:
-        return False
-    lines = text.splitlines()
-    if not _read_only_permissions(lines) or not _parsed_quiet(text):
-        return False
-    # Comments are read too: a `#` inside a `run:` string would otherwise hide the rest
-    # of its line, and a comment that names a secret only costs a deep review.
-    return not any(
-        re.search(r"\bsecrets\b", _JOB_TOKEN_RE.sub("", t), re.IGNORECASE)
-        for t in lines
-    )
-
-
 def review_tier(base: str, head: str) -> Tier:
     paths, added = changed_paths(base, head), added_paths(base, head)
-    t = tier(paths, added)
-    quiet = [
-        p
-        for p in t.reasons
-        if p.startswith(WORKFLOWS)
-        and p not in MAINTAINER_FILES
-        and quiet_workflow(base_text(head, p))
-    ]
-    if t.name == "deep" and quiet and len(quiet) == len(t.reasons):
-        rest = tier([p for p in paths if p not in quiet], added)
-        # Standard even when `rest` is light: a workflow is code that runs in CI, so it
-        # keeps the Opus pass when the rest of the diff is prose, tests or benchmarks.
-        t = Tier(
-            "standard",
-            quiet + rest.reasons,
-            t.api_changed,
-            t.new_parsers,
-            quiet_workflows=quiet,
-        )
-    files = parse_diff(git("diff", "-U0", "-M", f"{base}...{head}"))
     # `base...head` diffs from the merge base, so the "before" texts come from there too.
     fork = git("merge-base", base, head).strip()
+
+    def code_changed(path: str) -> bool:
+        if not path.endswith(".py"):
+            return True
+        return _code_changed(base_text(fork, path), base_text(head, path))
+
+    raised = raised_tiers(
+        git(
+            "log",
+            f"--format=%(trailers:key={TIER_TRAILER},valueonly,separator=%x0a)",
+            f"{fork}..{head}",
+        )
+    )
+    t = tier(paths, added, code_changed, raised)
+    files = parse_diff(git("diff", "-U0", "-M", f"{base}...{head}"))
     both = {
         path: (base_text(fork, path), base_text(head, path))
         for path in ("pyproject.toml", THREAT_MODEL)
@@ -975,29 +947,26 @@ def _not_light(reasons: list[str]) -> str:
 def tier_report(t: Tier) -> list[str]:
     lines = [f"tier: {t.name}"]
     if t.name == "deep":
-        lines += [f"  deep path: {p}" for p in t.reasons]
-    elif t.quiet_workflows:
-        lines += [
-            f"  quiet workflow (dispatch or schedule, read-only token): {p}"
-            for p in t.quiet_workflows
-        ]
-        if rest := t.reasons[len(t.quiet_workflows) :]:
-            lines.append(_not_light(rest))
+        lines += [f"  deep: {r}" for r in t.reasons]
     elif t.name == "standard" and not t.reasons:
         lines.append("  no committed changes against the base")
     elif t.name == "standard":
         lines.append(_not_light(t.reasons))
-    if t.name == "deep" or t.new_parsers or t.quiet_workflows:
+    if t.name == "deep" or t.process:
         lines.append("security pass: yes")
         lines += [
-            f"  new file under a parser or codec directory: {p}" for p in t.new_parsers
+            f"  new reader, parser, codec or kernel file: {p}" for p in t.new_parsers
+        ]
+        lines += [
+            f"  release or review-loop file (attacker: the pull request's author): {p}"
+            for p in t.process
         ]
     else:
         lines.append(
             "security pass: per the Risk line's rules (pull_request_template.md)"
         )
     lines.append(
-        f"public API: {'changed (' + API_SURFACE + ')' if t.api_changed else 'unchanged'}"
+        f"public API: {'changed (' + ', '.join(t.api_paths) + ')' if t.api_paths else 'unchanged'}"
     )
     if t.maintainer:
         lines.append("merge: the maintainer merges this one")
@@ -1007,7 +976,8 @@ def tier_report(t: Tier) -> list[str]:
             lines.append(f"  (+{len(t.maintainer) - len(shown)} more)")
     elif t.name == "deep":
         lines.append(
-            "merge: an agent merges once the Opus pass and Cursor approve and CI is green"
+            "merge: an agent merges once the Opus pass and a Codex or Cursor review "
+            "approve and CI is green"
         )
     elif t.name == "standard":
         # review_loop_gate.py OPUS_PASS_TIERS: standard and deep get the Opus pass.

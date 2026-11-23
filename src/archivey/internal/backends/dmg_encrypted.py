@@ -25,6 +25,11 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import BinaryIO, NamedTuple
 
+from archivey.diagnostics import (
+    ArchiveEofContext,
+    ArchiveStructureContext,
+    DiagnosticCode,
+)
 from archivey.exceptions import (
     CorruptionError,
     ResourceLimitError,
@@ -32,7 +37,12 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.formats import PasswordConfirmVerdict, ReaderContext, ReaderSource
-from archivey.internal.backends.udif import DiskView, parse_koly
+from archivey.internal.backends.udif import (
+    DecryptedImageSource,
+    DiskView,
+    first_nonzero,
+    parse_koly,
+)
 from archivey.internal.overrides import override
 from archivey.internal.streams.crypto import (
     AesParams,
@@ -92,6 +102,10 @@ class EncryptedHeader(NamedTuple):
     data_size: int  # the decrypted image's length
     data_offset: int
     entries: tuple[_PasswordEntry, ...]
+    data_end: int  # where the last encrypted block ends in the file
+    file_size: int
+    # The password entries skipped as unusable: each blob's file offset, and why.
+    skipped: tuple[tuple[int, str], ...]
 
 
 @dataclass(frozen=True)
@@ -180,6 +194,9 @@ def read_header(source: ReaderSource) -> EncryptedHeader:
         )
     table = source.read_exact(_HEADER.size, count * _ENTRY.size)
     entries: list[_PasswordEntry] = []
+    # Why each password entry archivey cannot use was skipped: raised only when no
+    # other password entry is usable.
+    refusals: list[tuple[int, CorruptionError | UnsupportedFeatureError]] = []
     for index in range(count):
         kind, offset, length = _ENTRY.unpack_from(table, index * _ENTRY.size)
         if length > _MAX_ENTRY_SIZE:
@@ -195,14 +212,26 @@ def read_header(source: ReaderSource) -> EncryptedHeader:
             )
         if kind != _ENTRY_PASSWORD:
             continue
-        entries.append(_password_entry(source, offset, length))
+        try:
+            entries.append(_password_entry(source, offset, length))
+        except (CorruptionError, UnsupportedFeatureError) as exc:
+            refusals.append((offset, exc))
+    if not entries and refusals:
+        raise refusals[0][1]
     if not entries:
         raise UnsupportedFeatureError(
             "the encrypted DMG image is locked with a certificate or keychain key, "
             "not a password, which archivey does not read"
         )
     return EncryptedHeader(
-        key_bits // 8, block_size, data_size, data_offset, tuple(entries)
+        key_bits // 8,
+        block_size,
+        data_size,
+        data_offset,
+        tuple(entries),
+        end,
+        size,
+        tuple((at, exc.raw_message) for at, exc in refusals),
     )
 
 
@@ -318,6 +347,52 @@ class Unlocker:
         self._head = source.read_exact(
             header.data_offset, head_blocks * header.block_size
         )
+        self._report_skipped()
+        self._report_tail()
+
+    def _report_skipped(self) -> None:
+        """Report each password entry skipped as unusable: a password that belongs
+        to it is rejected as wrong."""
+        origin = self._source._origin
+        for at, why in self._header.skipped:
+            self._context.report(
+                DiagnosticCode.ARCHIVE_STRUCTURE_INCONSISTENT,
+                (
+                    # ``why`` names the entry, as the refusal does when no entry is
+                    # usable; the context carries its file offset.
+                    f"One of the encrypted DMG image's password key entries is "
+                    f"skipped: {why}. A password for that entry is rejected as wrong."
+                ),
+                ArchiveStructureContext(
+                    format="dmg", structure="key_entry", offset=origin + at
+                ),
+            )
+
+    def _report_tail(self) -> None:
+        """Report non-zero bytes after the encrypted data as ``ARCHIVE_TRAILING_DATA``,
+        as ``UdifImage`` reports bytes no structure covers (``udif.first_nonzero``)."""
+        start, end = self._header.data_end, self._header.file_size
+        if end <= start:
+            return
+        found = first_nonzero(self._source.read_exact, start, end)
+        if found is None:
+            return
+        origin = self._source._origin
+        self._context.report(
+            DiagnosticCode.ARCHIVE_TRAILING_DATA,
+            (
+                f"The encrypted DMG image holds {end - start} bytes at file offset "
+                f"{origin + start}, after its encrypted data, with a non-zero byte at "
+                f"file offset {origin + found}. The listing does not account for them."
+            ),
+            ArchiveEofContext(
+                format="dmg",
+                expected_marker="zeros_to_eof",
+                expected_bytes=0,
+                observed_bytes=found - start,
+                observed_kind="nonzero",
+            ),
+        )
 
     def check(self, password: bytes) -> tuple[ImageKeys | None, PasswordConfirmVerdict]:
         for entry in self._header.entries:
@@ -409,9 +484,10 @@ def decrypt_blocks(
     return bytes(out)
 
 
-class EncryptedDmgSource(ReaderSource):
+class EncryptedDmgSource(DecryptedImageSource):
     """The decrypted image, as a :class:`~archivey.formats.ReaderSource` the UDIF
-    reader opens as it would the file. Offsets are the decrypted image's."""
+    reader opens as it would the file. Offsets are the decrypted image's, so its
+    ``_origin`` stays 0: no byte of the file sits at them."""
 
     def __init__(
         self,
@@ -439,7 +515,6 @@ class EncryptedDmgSource(ReaderSource):
             return io.BufferedReader(raw, buffer_size=64 << 10)
 
         super().__init__(view, length, None, read_at)
-        self._origin = source._origin
 
     def _read(self, offset: int, n: int) -> bytes:
         size = self._header.block_size
