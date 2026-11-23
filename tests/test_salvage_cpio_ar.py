@@ -946,3 +946,118 @@ def test_cpio_cut_inside_a_member_ends_as_the_default(
     salvage_names, salvage_error = listing(salvage=True)
     assert salvage_names == default_names
     assert str(salvage_error) == str(default_error)
+
+
+# Review round 3 ----------------------------------------------------------------------
+
+
+def _deb_with_planted(planted: bytes | None, *, damage_before_control: bool) -> bytes:
+    """A ``.deb`` with 60 zero bytes where an ar header was: after debian-binary, or
+    after the control tar. ``planted`` names a member put just past those bytes whose
+    payload is ``b"not-a-tar!"``: ``control.tar`` or ``data.tar``; ``None`` for none."""
+    from tests.test_deb import CONTROL, _ar, _tar
+
+    control = (b"control.tar", _tar([("./", None), ("./control", CONTROL)]))
+    data = (b"data.tar", _tar([("./", None), ("./usr/", None), ("./usr/a", b"x")]))
+    before = [(b"debian-binary", b"2.0\n")]
+    after = [control, data]
+    if not damage_before_control:
+        before.append(after.pop(0))
+    raw = _ar(*before) + bytes(60)
+    if planted is not None:
+        raw += _ar((planted, b"not-a-tar!"))[8:]
+    return raw + _ar(*after)[8:]
+
+
+@pytest.mark.parametrize(
+    ("planted", "damage_before_control"),
+    [(b"control.tar", True), (b"data.tar", False)],
+    ids=["control", "data"],
+)
+def test_deb_found_tar_that_does_not_open_is_passed_over(
+    planted: bytes, damage_before_control: bool, tmp_path: Path
+) -> None:
+    """A tar header the search finds past the damage whose payload is not a tar is
+    not listed: the search goes on past it, and the pass lists and ends as for the
+    same package without it."""
+    clean = _write(
+        tmp_path,
+        _deb_with_planted(None, damage_before_control=damage_before_control),
+        "clean.deb",
+    )
+    bad = _write(
+        tmp_path,
+        _deb_with_planted(planted, damage_before_control=damage_before_control),
+        "planted.deb",
+    )
+    members, _diagnostics, error = _read(clean, salvage=True, format="deb")
+    assert [m[0] for m in members] == [
+        "DEBIAN/",
+        "DEBIAN/control",
+        ".",
+        "usr/",
+        "usr/a",
+    ]
+    assert type(error) is CorruptionError
+    p_members, _p_diagnostics, p_error = _read(bad, salvage=True, format="deb")
+    assert p_members == members
+    assert type(p_error) is CorruptionError
+    assert p_error.raw_message == error.raw_message  # type: ignore[attr-defined]
+
+
+def test_cpio_lost_start_listing_again_after_a_limit_reads_the_same(
+    tmp_path: Path,
+) -> None:
+    """A lost-start listing stopped by ``max_members`` and started again searches as
+    the first did: the variant an earlier walk found does not set where the second
+    search looks."""
+    from archivey import core
+    from archivey.exceptions import ResourceLimitError
+
+    raw, offsets = _cpio("newc")
+    # The first intact header is at an offset that is not a multiple of 4.
+    path = _write(tmp_path, raw[offsets[1] + 7 :], "a.cpio")
+    assert (offsets[2] - offsets[1] - 7) % 4 != 0
+    original = core.requesting_salvage
+
+    def lost(requested: bool, *, supported: bool, lost_start: bool = False):  # type: ignore[no-untyped-def]
+        return original(requested, supported=supported, lost_start=True)
+
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=1))
+    core.requesting_salvage = lost  # type: ignore[assignment]
+    try:
+        with open_archive(path, salvage=True, format="cpio", config=config) as reader:
+            errors = []
+            for _ in range(2):
+                with pytest.raises(ResourceLimitError) as caught:
+                    reader.members()
+                errors.append(str(caught.value))
+    finally:
+        core.requesting_salvage = original  # type: ignore[assignment]
+    assert errors[0] == errors[1]
+    assert "max_members=1" in errors[0]
+
+
+def test_cpio_odc_search_finds_an_afio_large_header(tmp_path: Path) -> None:
+    """An odc archive with a damaged header, then a member under afio's large header:
+    the search finds it, reads it, and confirms it by the odc header after it."""
+    from tests.test_cpio import _afio_large_member
+
+    damaged = bytearray(_odc("b.txt", b"b" * 60, 2))
+    damaged[:6] = b"000000"
+    raw = (
+        _odc("a.txt", b"a" * 50, 1)
+        + bytes(damaged)
+        + _afio_large_member(b"c.txt", b"c" * 70, ino=3, uid=65536)
+        + _odc("d.txt", b"d" * 80, 4)
+        + _odc("TRAILER!!!", b"", 0)
+    )
+    path = _write(tmp_path, raw, "a.cpio")
+    members, diagnostics, _error = _assert_add_only(path)
+    assert [(m[0], m[2]) for m in members] == [
+        ("a.txt", b"a" * 50),
+        ("c.txt", b"c" * 70),
+        ("d.txt", b"d" * 80),
+    ]
+    found = _found(diagnostics)
+    assert [c.member_name for c in found] == ["c.txt", "d.txt"]

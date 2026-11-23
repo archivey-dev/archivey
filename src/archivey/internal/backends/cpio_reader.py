@@ -91,12 +91,29 @@ _CRC = b"070702"
 _AFIO_LARGE = b"070727"
 
 
-_ASCII_MAGICS = frozenset({_ODC, _NEWC, _CRC})
+# The ASCII magics, afio's large header among them: it is an odc member's header.
+_ASCII_MAGICS = frozenset({_ODC, _AFIO_LARGE, _NEWC, _CRC})
 _ODC_SIZE = 76
 _NEWC_SIZE = 110
-# Each field of a header the salvage search checks: digits only.
+_AFIO_HEADER_SIZE = 116
+# Each field of a header the salvage search checks: digits only, and afio's four
+# separators where they go. afio's 4-byte flag is not read, so it is not checked;
+# its xsize must be 0, since the walk refuses a header with extra bytes.
 _NEWC_DIGITS = re.compile(rb"[0-9A-Fa-f]{104}\Z")
 _ODC_DIGITS = re.compile(rb"[0-7]{70}\Z")
+_AFIO_DIGITS = re.compile(
+    rb"[0-9A-Fa-f]{24}m[0-7]{6}[0-9A-Fa-f]{48}n[0-9A-Fa-f]{4}.{4}0000s[0-9A-Fa-f]{16}:\Z",
+    re.DOTALL,
+)
+
+
+def _fixed_size(magic: bytes) -> int:
+    """The size of the ASCII header with ``magic``, before its name."""
+    if magic == _ODC:
+        return _ODC_SIZE
+    if magic == _AFIO_LARGE:
+        return _AFIO_HEADER_SIZE
+    return _NEWC_SIZE
 
 
 def _name_size(window: bytes, at: int, magics: frozenset[bytes]) -> int | None:
@@ -111,6 +128,11 @@ def _name_size(window: bytes, at: int, magics: frozenset[bytes]) -> int | None:
         if not _ODC_DIGITS.match(fields):
             return None
         name_size = int(fields[53:59], 8)
+    elif magic == _AFIO_LARGE:
+        fields = window[at + 6 : at + _AFIO_HEADER_SIZE]
+        if not _AFIO_DIGITS.match(fields):
+            return None
+        name_size = int(fields[80:84], 16)
     else:
         fields = window[at + 6 : at + _NEWC_SIZE]
         if not _NEWC_DIGITS.match(fields):
@@ -126,7 +148,7 @@ def _passes(window: bytes, at: int, magics: frozenset[bytes]) -> bool:
     name_size = _name_size(window, at, magics)
     if name_size is None:
         return False
-    end = at + (_ODC_SIZE if window[at : at + 6] == _ODC else _NEWC_SIZE) + name_size
+    end = at + _fixed_size(window[at : at + 6]) + name_size
     return end <= len(window) and window[end - 1] == 0
 
 
@@ -136,16 +158,16 @@ def _header_search(magics: frozenset[bytes], step: int) -> HeaderSearch:
     def find_header(window: bytes, start: int, stop: int) -> int | None:
         at = start
         while True:
-            # The three ASCII magics share their first five bytes. The end bound
-            # lets a match start only before ``stop``.
-            i = window.find(b"07070", at, stop + 4)
+            # The ASCII magics share their first four bytes. The end bound lets a
+            # match start only before ``stop``.
+            i = window.find(b"0707", at, stop + 3)
             if i < 0:
                 return None
             if i % step == 0 and _passes(window, i, magics):
                 return i
             at = i + 1
 
-    return HeaderSearch(find_header, step, _NEWC_SIZE + MAX_NAME_BYTES)
+    return HeaderSearch(find_header, step, _AFIO_HEADER_SIZE + MAX_NAME_BYTES)
 
 
 class Variant(Enum):
@@ -191,7 +213,7 @@ _S_IFMT = 0o170000
 
 # The magic each variant's salvage search looks for; binary has no search.
 _VARIANT_MAGICS = {
-    Variant.ODC: frozenset({_ODC}),
+    Variant.ODC: frozenset({_ODC, _AFIO_LARGE}),
     Variant.NEWC: frozenset({_NEWC}),
     Variant.CRC: frozenset({_CRC}),
 }
@@ -289,6 +311,12 @@ class CpioReader(SequentialReader):
         # damage the walk met, where the next search starts, and the origin of the
         # candidate positions (0, or a header found after a lost start).
         salvage = self._context._salvage(stream) if self._context._salvage else None
+        if salvage is not None and salvage.lost_start:
+            # After a lost start, the first header this walk finds names the variant
+            # and the alignment of the later searches. A variant an earlier walk left
+            # (one a listing limit stopped) would make the search start at offset 0
+            # with that variant's step, and miss a header off it.
+            self._variant = None
         damage: CorruptionError | None = None
         search_from: int | None = None
         base = 0
@@ -333,7 +361,7 @@ class CpioReader(SequentialReader):
                     # in TruncatedError. The search goes on past this header.
                     search_from = salvage.after(header.offset)
                     continue
-                confirmed = self._confirmed(salvage, header)
+                confirmed = self._confirmed(salvage, header, stream.offset)
                 salvage.found(
                     member,
                     offset=header.offset,
@@ -408,7 +436,7 @@ class CpioReader(SequentialReader):
             # The first header failed: its magic still names the variant.
             magic = salvage.read_at(0, len(_ODC))
             if magic == _AFIO_LARGE:
-                return frozenset({_ODC})
+                return _VARIANT_MAGICS[Variant.ODC]
             return frozenset({magic}) if magic in _ASCII_MAGICS else None
         return _VARIANT_MAGICS.get(variant)
 
@@ -443,23 +471,16 @@ class CpioReader(SequentialReader):
                 continue
             return header, raw, at if any_variant else base
 
-    def _confirmed(self, salvage: WalkSalvage, header: Header) -> bool:
-        """Whether the header after a found member's data passes the search's check
-        (the trailer included)."""
-        after = (
-            header.offset
-            + (_ODC_SIZE if header.variant is Variant.ODC else _NEWC_SIZE)
-            + header.name_size
-            + self._name_pad(header)
-            + header.file_size
-            + self._data_pad(header)
-        )
+    def _confirmed(self, salvage: WalkSalvage, header: Header, data_at: int) -> bool:
+        """Whether the header after a found member's data, which starts at
+        ``data_at``, passes the search's check (the trailer included)."""
+        after = data_at + header.file_size + self._data_pad(header)
         magics = _VARIANT_MAGICS[header.variant]
-        head = salvage.read_at(after, _NEWC_SIZE)
+        head = salvage.read_at(after, _AFIO_HEADER_SIZE)
         name_size = _name_size(head, 0, magics)
         if name_size is None:
             return False
-        fixed = _ODC_SIZE if head[:6] == _ODC else _NEWC_SIZE
+        fixed = _fixed_size(head[:6])
         whole = head[:fixed] + salvage.read_at(after + fixed, name_size)
         return _passes(whole, 0, magics)
 

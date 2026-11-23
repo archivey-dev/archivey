@@ -31,6 +31,7 @@ Handbook page: ``dev-docs/formats/deb.md``.
 from __future__ import annotations
 
 import io
+import itertools
 import re
 from collections.abc import Iterator
 from typing import BinaryIO
@@ -575,12 +576,15 @@ class DebReader(SequentialReader):
                 continue
             fmt = None if control else _tar_format(name, b"control", _CONTROL_STREAMS)
             if fmt is not None:
+                spans = self._opened(self._control(stream.take(size), fmt), damage)
+                if spans is None:
+                    # Past the damage, a control tar that does not open is not one:
+                    # the search goes on past its header.
+                    assert salvage is not None
+                    search_from = salvage.after(offset)
+                    continue
                 yield from self._found(
-                    salvage if damage else None,
-                    self._control(stream.take(size), fmt),
-                    offset,
-                    confirmed,
-                    searched,
+                    salvage if damage else None, spans, offset, confirmed, searched
                 )
                 control = True
                 stream.read(size & 1)
@@ -604,12 +608,15 @@ class DebReader(SequentialReader):
                 raise CorruptionError(
                     "Debian package has no control.tar member after debian-binary"
                 )
+            spans = self._opened(self._data(stream.take(size), fmt), damage)
+            if spans is None:
+                # Past the damage, a data tar that does not open is not one: the
+                # search goes on past its header, as for a control tar.
+                assert salvage is not None
+                search_from = salvage.after(offset)
+                continue
             yield from self._found(
-                salvage if damage else None,
-                self._data(stream.take(size), fmt),
-                offset,
-                confirmed,
-                searched,
+                salvage if damage else None, spans, offset, confirmed, searched
             )
             # dpkg-deb reads no further: members after the data tar are not part of
             # the package.
@@ -618,6 +625,29 @@ class DebReader(SequentialReader):
                     raise salvage.ending(damage)
                 salvage.state.finish()
             return
+
+    @staticmethod
+    def _opened(
+        spans: Iterator[MemberSpan], damage: CorruptionError | None
+    ) -> Iterator[MemberSpan] | None:
+        """``spans`` with its first member read, or ``None`` when the tar is past
+        ``damage`` and reading its first member raises ``CorruptionError``.
+
+        The salvage search checks little of an ar header (a name, a size, a date), so
+        a header past the damage can name a tar whose payload is not one. Such a tar
+        lists nothing and is not the package's: the walk searches on, and the pass
+        ends in the first damage. Before any damage, or once the tar has listed a
+        member, its error is the package's and is raised.
+        """
+        if damage is None:
+            return spans
+        try:
+            first = next(spans)
+        except StopIteration:
+            return iter(())
+        except CorruptionError:
+            return None
+        return itertools.chain((first,), spans)
 
     @staticmethod
     def _found(
