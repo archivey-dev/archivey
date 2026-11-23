@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from types import ModuleType
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from archivey.internal.kernels._select import (
     Kernels,
@@ -23,6 +23,9 @@ from archivey.internal.kernels._select import (
     codec_errors,
     panic_to_corruption,
 )
+
+if TYPE_CHECKING:
+    from archivey.internal.kernels import Crc16, Lzo1xDecompress
 
 _T = TypeVar("_T")
 
@@ -55,9 +58,7 @@ class _Guarded:
 # ── CRC-16/ARC ────────────────────────────────────────────────────────────────────────
 
 
-def crc16_arc(
-    module: ModuleType,
-) -> Callable[[bytes | bytearray | memoryview, int], int]:
+def crc16_arc(module: ModuleType) -> Crc16:
     """The package's ``crc16_arc(data, value=0)``."""
     kernel = module.crc16_arc
 
@@ -144,7 +145,7 @@ class RiscvDecoder(BranchDecoder):
 # ── LZO1X ─────────────────────────────────────────────────────────────────────────────
 
 
-def lzo1x_decompress(module: Kernels) -> Callable[..., bytes]:
+def lzo1x_decompress(module: Kernels) -> Lzo1xDecompress:
     """The package's ``lzo1x.decompress(block, *, out_size= | max_size=)``."""
     kernel = module.lzo1x.decompress
 

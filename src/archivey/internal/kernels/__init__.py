@@ -22,9 +22,10 @@ Design: openspec change ``rust-codecs-package``, D4 and D5.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, overload
 
 from archivey.internal.kernels._select import (
     caused_by_panic,
@@ -37,16 +38,23 @@ from archivey.types import OptionalLibrary
 __all__ = [
     "Bcj2",
     "Bcj2Decompressor",
+    "Bcj2Factory",
     "BranchDecoder",
+    "BranchFactory",
     "Crc16",
     "Filters",
     "Lzo1x",
+    "Lzo1xDecompress",
     "Lzw",
     "LzwDecompressor",
+    "LzwFactory",
     "Lzx",
     "LzxDecompressor",
+    "LzxFactory",
+    "Readable",
     "ZipCrypto",
     "ZipCryptoDecryptor",
+    "ZipCryptoFactory",
     "bcj2",
     "caused_by_panic",
     "crc16_arc",
@@ -66,8 +74,16 @@ _CODECS = OptionalLibrary.ARCHIVEY_CODECS
 # ── The API ───────────────────────────────────────────────────────────────────────────
 
 
-Crc16 = Callable[[Buffer, int], int]
-"""``crc16_arc(data, value=0)``: CRC-16/ARC of ``data`` going on from ``value``."""
+class Crc16(Protocol):
+    """``crc16_arc(data, value=0)``: CRC-16/ARC of ``data`` going on from ``value``."""
+
+    def __call__(self, data: Buffer, value: int = 0, /) -> int: ...
+
+
+class Readable(Protocol):
+    """An input stream of BCJ2: ``read(n)`` returns at most ``n`` bytes."""
+
+    def read(self, n: int, /) -> Buffer: ...
 
 
 class ZipCryptoDecryptor(Protocol):
@@ -181,11 +197,69 @@ class Bcj2Decompressor(Protocol):
     def total_out(self) -> int: ...
 
 
+# The constructors, with the package's signatures.
+
+
+class ZipCryptoFactory(Protocol):
+    def __call__(self, password: bytes, /) -> ZipCryptoDecryptor: ...
+
+
+class BranchFactory(Protocol):
+    def __call__(self, start_offset: int = 0) -> BranchDecoder: ...
+
+
+class Lzo1xDecompress(Protocol):
+    """Exactly one of ``out_size=`` and ``max_size=``."""
+
+    @overload
+    def __call__(self, block: Buffer, /, *, out_size: int) -> bytes: ...
+
+    @overload
+    def __call__(self, block: Buffer, /, *, max_size: int) -> bytes: ...
+
+    def __call__(
+        self,
+        block: Buffer,
+        /,
+        *,
+        out_size: int | None = None,
+        max_size: int | None = None,
+    ) -> bytes: ...
+
+
+class LzwFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        max_width: int | None = None,
+        block_mode: bool | None = None,
+        nine_bit_widens: bool | None = None,
+    ) -> LzwDecompressor: ...
+
+
+class LzxFactory(Protocol):
+    def __call__(
+        self, window_bits: int, *, output_size: int | None = None
+    ) -> LzxDecompressor: ...
+
+
+class Bcj2Factory(Protocol):
+    def __call__(
+        self,
+        main: Readable,
+        call: Readable,
+        jump: Readable,
+        rc: Readable,
+        *,
+        out_size: int,
+    ) -> Bcj2Decompressor: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ZipCrypto:
     """``archivey_codecs.zipcrypto``."""
 
-    Decryptor: Callable[[bytes], ZipCryptoDecryptor]
+    Decryptor: ZipCryptoFactory
     library: OptionalLibrary | None
 
 
@@ -193,8 +267,8 @@ class ZipCrypto:
 class Filters:
     """``archivey_codecs.filters``."""
 
-    Arm64Decoder: Callable[[int], BranchDecoder]
-    RiscvDecoder: Callable[[int], BranchDecoder]
+    Arm64Decoder: BranchFactory
+    RiscvDecoder: BranchFactory
     # Each filter is its own kernel, so each has its own ``library``.
     arm64_library: OptionalLibrary | None
     riscv_library: OptionalLibrary | None
@@ -204,7 +278,7 @@ class Filters:
 class Lzo1x:
     """``archivey_codecs.lzo1x``."""
 
-    decompress: Callable[..., bytes]
+    decompress: Lzo1xDecompress
     library: OptionalLibrary | None
 
 
@@ -212,7 +286,7 @@ class Lzo1x:
 class Lzw:
     """``archivey_codecs.lzw``."""
 
-    Decompressor: Callable[..., LzwDecompressor]
+    Decompressor: LzwFactory
     library: OptionalLibrary | None
 
 
@@ -220,7 +294,7 @@ class Lzw:
 class Lzx:
     """``archivey_codecs.lzx``."""
 
-    Decompressor: Callable[..., LzxDecompressor]
+    Decompressor: LzxFactory
     library: OptionalLibrary | None
 
 
@@ -228,20 +302,18 @@ class Lzx:
 class Bcj2:
     """``archivey_codecs.bcj2``."""
 
-    Decompressor: Callable[..., Bcj2Decompressor]
+    Decompressor: Bcj2Factory
     library: OptionalLibrary | None
 
 
 # ── The switch ────────────────────────────────────────────────────────────────────────
 
 
-def _bind(cls: Callable[..., Any], module: object) -> Callable[..., Any]:
-    """``cls`` with the package module (or its stand-in) as its first argument."""
-
-    def new(*args: Any, **kwargs: Any) -> Any:
-        return cls(module, *args, **kwargs)
-
-    return new
+def _bind(cls: Callable[..., Any], module: object) -> Any:
+    """``cls`` with the package module (or its stand-in) as its first argument. Its
+    signature, for the reader and ``inspect``, is the rest of ``cls``'s: the
+    namespace field's type gives it to the type checker."""
+    return functools.partial(cls, module)
 
 
 def crc16_arc(excluded: frozenset[OptionalLibrary]) -> Crc16:

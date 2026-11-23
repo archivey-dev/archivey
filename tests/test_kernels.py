@@ -7,6 +7,7 @@ installed. The read tests use the real package and skip without it.
 from __future__ import annotations
 
 import gc
+import inspect
 import io
 import logging
 import random
@@ -886,6 +887,32 @@ def test_a_zero_byte_bcj2_read_reads_no_input(twin: bool) -> None:
         d.read()
     with pytest.raises(CorruptionError, match="BCJ2 main stream has bytes past"):
         d.read(0)
+
+
+def _params(fn: Callable[..., object]) -> list[tuple[str, object, object]]:
+    return [
+        (p.name, p.kind, p.default)
+        for p in inspect.signature(fn).parameters.values()
+    ]
+
+
+def test_the_switch_gives_the_same_signature_on_both_sides() -> None:
+    """A constructor from the switch has its parameters, names, kinds and defaults,
+    whichever side it is: a wrong keyword fails on both."""
+    if not deps.archivey_codecs.available():
+        pytest.skip("needs archivey-codecs")
+    for build in (
+        lambda e: kernels.zipcrypto(e).Decryptor,
+        lambda e: kernels.filters(e, isolated=False).Arm64Decoder,
+        lambda e: kernels.filters(e, isolated=False).RiscvDecoder,
+        lambda e: kernels.lzw(e, isolated=False).Decompressor,
+        lambda e: kernels.lzx(e, isolated=False).Decompressor,
+        lambda e: kernels.bcj2(e, isolated=False).Decompressor,
+        lambda e: kernels.lzo1x(e, isolated=False).decompress,
+    ):
+        assert _params(build(frozenset())) == _params(build(EXCLUDED))
+    with pytest.raises(TypeError):
+        kernels.lzx(frozenset(), isolated=False).Decompressor(15, out_size=3)
 
 
 def _z_with_a_bad_last_code() -> tuple[bytes, bytes]:
