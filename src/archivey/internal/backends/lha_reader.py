@@ -36,6 +36,7 @@ PMarc's methods and any other are listed and refused when read. The handbook pag
 from __future__ import annotations
 
 import calendar
+import functools
 import io
 import stat
 import struct
@@ -65,6 +66,7 @@ from archivey.formats import (
     ReaderContext,
     ReaderSource,
 )
+from archivey.internal import native
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
 from archivey.internal.sfx import (
@@ -98,6 +100,7 @@ from archivey.types import (
     CreateSystem,
     MagicSignature,
     MemberType,
+    OptionalLibrary,
 )
 
 if TYPE_CHECKING:
@@ -196,14 +199,24 @@ def crc16(data: bytes | bytearray | memoryview, crc: int = 0) -> int:
     return crc
 
 
+Crc16 = Callable[[bytes | bytearray | memoryview, int], int]
+
+
+def crc16_for(excluded: frozenset[OptionalLibrary]) -> Crc16:
+    """archivey-codecs' CRC-16 when it is installed and ``excluded`` leaves it on,
+    else :func:`crc16`. Both give the same value."""
+    return native.crc16_arc(excluded) or crc16
+
+
 class _Crc16:
     """A running CRC-16, for :class:`~archivey.formats.MemberDigest`."""
 
-    def __init__(self) -> None:
+    def __init__(self, crc: Crc16 = crc16) -> None:
         self._crc = 0
+        self._update = crc
 
     def update(self, data: bytes, /) -> None:
-        self._crc = crc16(data, self._crc)
+        self._crc = self._update(data, self._crc)
 
     def digest(self) -> bytes:
         return self._crc.to_bytes(2, "big")
@@ -309,8 +322,11 @@ class _HeaderSource(Protocol):
 class _Headers:
     """Reads member headers, checking each as it is read."""
 
-    def __init__(self, source: _HeaderSource, *, probe_cut: bool = True) -> None:
+    def __init__(
+        self, source: _HeaderSource, *, probe_cut: bool = True, crc: Crc16 = crc16
+    ) -> None:
         self._source = source
+        self._crc16 = crc
         # Whether a source of unknown size is asked for a member's last byte. The
         # self-extracting scan's peek does not: a byte past the peek says nothing.
         self._probe_cut = probe_cut
@@ -573,7 +589,7 @@ class _Headers:
 
     def _check_header_crc(self, header: _Header, raw: bytes, at: int) -> None:
         stored = int.from_bytes(raw[at : at + 2], "little")
-        if crc16(raw[:at] + b"\0\0" + raw[at + 2 :]) != stored:
+        if self._crc16(raw[:at] + b"\0\0" + raw[at + 2 :], 0) != stored:
             raise CorruptionError(
                 f"the member header at offset {self._at(header.offset)} fails its CRC"
             )
@@ -587,7 +603,7 @@ class LhaReader(_Headers, IndexedReader[_Location]):
 
     def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         source = _payload(source)
-        super().__init__(source)
+        super().__init__(source, crc=crc16_for(context.config.formats._libraries_off))
         # The same source, for the member views the header protocol does not offer.
         self._payload = source
         self._context = context
@@ -811,9 +827,15 @@ class LhaReader(_Headers, IndexedReader[_Location]):
         if locator.fork is not None:
             self._check_hidden_ratio(member, locator)
             # The CRC covers the whole wrapper, so the stream checks it itself.
-            unwrapped = _MacBinaryStream(stream, locator)
+            unwrapped = _MacBinaryStream(stream, locator, self._crc16)
             return MemberData(unwrapped, checked=True, bounded=True, ranges=span)
-        digests = (MemberDigest("crc16", locator.crc.to_bytes(2, "big"), new=_Crc16),)
+        digests = (
+            MemberDigest(
+                "crc16",
+                locator.crc.to_bytes(2, "big"),
+                new=functools.partial(_Crc16, self._crc16),
+            ),
+        )
         if method in _STORED:
             return MemberData(stream, digests=digests)
         return MemberData(stream, digests=digests, bounded=True, ranges=span)
@@ -962,10 +984,12 @@ class _MacBinaryStream(io.RawIOBase):
     # close() reads it, even after a failed __init__
     _inner: BinaryIO | _LzhStream | None = None
 
-    def __init__(self, inner: BinaryIO | _LzhStream, locator: _Location) -> None:
+    def __init__(
+        self, inner: BinaryIO | _LzhStream, locator: _Location, crc: Crc16 = crc16
+    ) -> None:
         assert locator.fork is not None
         self._inner = inner
-        self._crc = _Crc16()
+        self._crc = _Crc16(crc)
         self._expected = locator.crc
         self._skip = _MACBINARY_SIZE
         self._left = locator.fork

@@ -8,14 +8,24 @@ printed on its own. Last, everything missing or slower is grouped by the command
 installs it, each command once, in the form that fits how the CLI was installed
 (:func:`install_command`). A command run from an environment made for the library
 alone (``uvx archivey``) is pointed at ``archivey-cli``.
+
+``format_availability`` finds optional packages without importing them, so it counts a
+package that is installed but fails to import as present, where a read treats it as
+absent. This short-lived report imports each package it finds
+(:func:`unimportable_packages`) and reports the ones that fail as absent, with the
+error in place of the install advice.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import importlib
+import importlib.util
 import os
 import sys
 import textwrap
-from collections.abc import Iterable, Sequence
+import warnings
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
@@ -23,10 +33,13 @@ from typing import Literal, TextIO
 
 from archivey import (
     ArchiveFormat,
+    ArchiveyConfig,
     ContainerFormat,
     FormatAvailability,
+    FormatPolicy,
     FormatSupport,
     MissingComponent,
+    OptionalLibrary,
     StreamFormat,
     format_availability,
     list_known_formats,
@@ -42,6 +55,18 @@ Installer = Literal["uvx", "uv-tool", "pipx", "pip"]
 _CLI_DISTRIBUTION = "archivey-cli"
 _LIBRARY_DISTRIBUTION = "archivey"
 _PIP_INSTALL = "pip install "
+
+#: The PyPI name of each optional package whose import name differs from it.
+_DISTRIBUTIONS: dict[str, str] = {
+    OptionalLibrary.BZIP3: "bzip3",
+    OptionalLibrary.COMPRESS_UTILS: "compress-utils",
+    OptionalLibrary.GOOGLE_CRC32C: "google-crc32c",
+}
+
+
+def distribution_name(name: str) -> str:
+    """The name ``pip install`` takes for the package or program ``name``."""
+    return _DISTRIBUTIONS.get(name, name)
 
 
 @dataclass(frozen=True)
@@ -102,13 +127,16 @@ def install_command(advice: str, install: Install) -> str:
 
     ``pip install archivey[bzip3]`` adds a package to the environment pip runs in,
     which is not the one ``uvx`` or ``pipx`` made for the CLI. Other advice (an
-    external program, a reason the package is not used) is returned unchanged.
+    external program, a reason the package is not used) is returned unchanged. A
+    requirement with an extra is quoted in every form, as zsh would expand the brackets.
     """
-    if install.installer == "pip" or not advice.startswith(_PIP_INSTALL):
+    if not advice.startswith(_PIP_INSTALL):
         return advice
     requirement = advice.removeprefix(_PIP_INSTALL).strip()
     if "[" in requirement:
         requirement = f'"{requirement}"'
+    if install.installer == "pip":
+        return _PIP_INSTALL + requirement
     tool = install.distribution
     if install.installer == "uvx":
         return f"uvx --with {requirement} {tool}"
@@ -146,7 +174,7 @@ class _Group:
     def note(self, bucket: list[str], label: str, component: MissingComponent) -> None:
         if label not in bucket:
             bucket.append(label)
-        name = str(component.name)
+        name = distribution_name(str(component.name))
         if name not in self.names:
             self.names.append(name)
 
@@ -230,7 +258,9 @@ def _format_line(fmt: ArchiveFormat, availability: FormatAvailability) -> list[s
     text = f"{format_format_label(fmt)}: {availability.support.value}"
     if availability.missing:
         text += (
-            " (missing " + ", ".join(str(m.name) for m in availability.missing) + ")"
+            " (missing "
+            + ", ".join(distribution_name(str(m.name)) for m in availability.missing)
+            + ")"
         )
     elif availability.support is FormatSupport.NONE:
         text += " (recognised, not readable)"
@@ -291,13 +321,95 @@ def _pairs_sentence(
     )
 
 
+def unimportable_packages(skip: Collection[str] = ()) -> dict[OptionalLibrary, str]:
+    """The optional packages that are installed but fail to import, with the error.
+
+    Each package that is found is imported, so this is for a short-lived process such
+    as this report: ``format_availability`` must not import them (``packaging-and-
+    extras``). The packages in ``skip`` are not imported. Any exception counts as a
+    failure, as it does when a codec imports the package.
+    """
+    broken: dict[OptionalLibrary, str] = {}
+    for library in OptionalLibrary:
+        # pycdlib is deprecated and nothing uses it (ISO needs no package), and
+        # naming it in exclude_libraries= warns, so it is never reported broken.
+        if library is OptionalLibrary.PYCDLIB or library in skip:
+            continue
+        try:
+            if importlib.util.find_spec(library) is None:
+                continue
+        except (ImportError, ValueError):
+            continue
+        try:
+            # On a free-threaded build CPython warns that importing an extension
+            # without free-thread support turns the GIL on. That is expected in this
+            # short-lived process, and under -W error it would read as a broken
+            # package.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                importlib.import_module(library)
+        except Exception as exc:  # noqa: BLE001 - any import failure means absent
+            first = (str(exc).splitlines() or [""])[0]
+            broken[library] = f"{type(exc).__name__}: {first}".removesuffix(": ")
+    return broken
+
+
+def _broken_advice(
+    component: MissingComponent, broken: dict[str, str]
+) -> MissingComponent:
+    """``component`` with an import failure in place of its policy reason, when the
+    report turned it off because it fails to import."""
+    error = broken.get(str(component.name))
+    if error is None:
+        return component
+    return dataclasses.replace(
+        component,
+        install_hint=(
+            f"{distribution_name(str(component.name))} is installed but fails to "
+            f"import ({error}); reinstalling it may fix this"
+        ),
+        reason="",
+    )
+
+
+def _availability(
+    known: Sequence[ArchiveFormat],
+) -> dict[ArchiveFormat, FormatAvailability]:
+    """Each format's availability, with the packages that fail to import as absent.
+
+    A package already reported with a ``reason`` (one archivey does not use on this
+    interpreter, such as lz4 under PyPy) is not imported: it is absent already, and
+    its reason says why.
+    """
+    avail = {fmt: format_availability(fmt) for fmt in known}
+    with_reason = {
+        str(m.name)
+        for a in avail.values()
+        for m in (*a.missing, *a.faster_with)
+        if m.reason
+    }
+    broken = unimportable_packages(with_reason)
+    if not broken:
+        return avail
+    config = ArchiveyConfig(formats=FormatPolicy(exclude_libraries=set(broken)))
+    errors = {str(library): error for library, error in broken.items()}
+    for fmt in known:
+        found = format_availability(fmt, config=config)
+        avail[fmt] = dataclasses.replace(
+            found,
+            missing=tuple(_broken_advice(m, errors) for m in found.missing),
+            faster_with=tuple(_broken_advice(m, errors) for m in found.faster_with),
+        )
+    return avail
+
+
 def print_version_report(*, version: str, verbose: bool, out: TextIO) -> None:
     """``--version`` (one line) and ``--version -v`` (the whole report)."""
     print(f"archivey {version}", file=out)
     if not verbose:
         return
     known = list_known_formats()
-    avail = {fmt: format_availability(fmt) for fmt in known}
+    avail = _availability(known)
     containers = _by_label(f for f in known if _is_container(f))
     streams = _by_label(f for f in known if _is_stream(f))
     pairs = [f for f in known if not _is_container(f) and not _is_stream(f)]

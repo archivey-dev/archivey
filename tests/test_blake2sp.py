@@ -12,6 +12,7 @@ import pytest
 
 from archivey.internal.hashing.blake2sp import Blake2sp, blake2sp
 from archivey.types import HashAlgorithm
+from tests.memory_util import traced_peak
 
 # (input_length, expected_hex). Input bytes are ``bytes(range(n))`` as in the
 # official KATs (``in`` is 000102… for length n).
@@ -104,21 +105,17 @@ def test_blake2sp_matches_rar5_fixture_payload() -> None:
 def test_blake2sp_large_update_does_not_copy_its_input(kind: type) -> None:
     """One large update() walks its input in place, so it stays linear in the size.
 
-    The peak allocation during the call shows any copy of the input.
+    The peak allocation during the call shows any copy of the input: a copy, or a
+    slice of the rest at each stride, allocates at least the 4 MiB input. The bound
+    sits well below that and well above the update's own few KB, because tracemalloc
+    counts every thread: on the free-threaded CI jobs, threads earlier tests left in
+    the same xdist worker added about 80 KB to the peak.
     """
-    import tracemalloc
-
     size = 4 << 20
     data = kind(bytes(range(256)) * (size // 256 + 1))[: size + 100]
     hasher = Blake2sp()
     hasher.update(b"x" * 7)  # start with a partial stride in the buffer
-    tracemalloc.start()
-    try:
-        hasher.update(data)
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-    assert peak < 64 * 1024
+    assert traced_peak(lambda: hasher.update(data)) < 1 << 20
     reference = Blake2sp()
     reference.update(b"x" * 7)
     for i in range(0, len(data), 65536):
