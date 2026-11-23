@@ -62,8 +62,8 @@ class Decryptor:
     __slots__ = ("k0", "k1", "k2", "total_in")
 
     def __init__(self, password: bytes) -> None:
-        # APPNOTE §6.1.5 update_keys, run over the password bytes (plain, not decrypted).
-        # No 32-bit masks on k0/k2: see the width note in decrypt().
+        # APPNOTE §6.1.5 update_keys, run over the password bytes (plain, not
+        # decrypted). No 32-bit masks on k0/k2: see the width note in decrypt().
         k0, k1, k2 = 0x12345678, 0x23456789, 0x34567890
         table = _CRC_TABLE
         for b in password:

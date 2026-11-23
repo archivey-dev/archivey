@@ -4,8 +4,8 @@
 process, so under it the decoding kernels (ARM64, RISC-V, LZW, LZO1X, LZX) run in
 archivey's decoder child, as zlib and lzma do (openspec change ``rust-codecs-package``,
 question 13). :func:`open_kernels` gives a stand-in for the ``archivey_codecs`` module
-whose kernel objects each live in a child of their own (``decoder_worker._Codecs``):
-the wrappers in :mod:`archivey.internal.kernels.rust` use it as they use the module, so the
+whose kernel objects each live in a child of their own (``decoder_worker._Codecs``): the
+wrappers in :mod:`archivey.internal.kernels.rust` use it as they use the module, so the
 bytes and errors are the same as in-process. The package is never imported here.
 
 A panic in the child comes back as :class:`ChildPanic`, which

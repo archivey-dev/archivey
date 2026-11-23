@@ -10,7 +10,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from archivey.internal.kernels._select import codec_errors, is_panic, kernels
+from archivey.internal.kernels._select import (
+    caused_by_panic,
+    codec_errors,
+    is_panic,
+    kernels,
+)
 from archivey.types import OptionalLibrary
 
 
@@ -46,3 +51,6 @@ def apple_lz(
             return decompress(data, max_size=max_length)
 
     return decode
+
+
+__all__ = ["apple_lz", "caused_by_panic", "kernels", "panic_of"]

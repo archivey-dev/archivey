@@ -35,7 +35,7 @@ from archivey import (
     open_archive,
     open_stream,
 )
-from archivey.internal import kernels
+from archivey.internal import kernels, native
 from archivey.internal.backends import lha_reader, zipcrypto
 from archivey.internal.kernels import _select, child as kernel_child, rust
 from archivey.internal.kernels.python import (
