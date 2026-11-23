@@ -4,8 +4,8 @@
 CAB's LZX, Unix `compress` (`.Z`), LZO, 7z's BCJ2 and its ARM64 and RISC-V branch
 filters, ZIP's traditional encryption (ZipCrypto) and LHA's CRC-16. The optional
 `archivey-codecs` package has Rust versions of the same eight kernels. Each Python
-decoder has a *twin* with the package's exact API, and one switch per kernel picks the
-Rust kernel or the twin. A call site builds its decoder through the switch and does not
+decoder has a *twin* with the package's exact API, and a switch picks the Rust kernel
+or the twin: one switch per package module, so the two branch filters share one. A call site builds its decoder through the switch and does not
 know which one it got: both give the same bytes and raise the same errors, so the
 package changes speed only. This page covers the switch, the two sides, what happens
 under `NATIVE_DECODERS`, and the rules for changing a kernel. The guide's
@@ -31,7 +31,7 @@ links them rather than repeating them:
 
 ## At a glance
 
-- **Eight kernels, one switch each.** `kernels.crc16_arc`, `kernels.zipcrypto`,
+- **Eight kernels, seven switches.** `kernels.crc16_arc`, `kernels.zipcrypto`,
   `kernels.filters` (ARM64 and RISC-V, two kernels), `kernels.lzo1x`, `kernels.lzw`,
   `kernels.lzx` and `kernels.bcj2`. Each takes the call's excluded libraries (and, for a
   decoding kernel, whether the call is isolated) and returns a namespace with the
@@ -123,12 +123,13 @@ decoded the block.
 
 ### 2.2 The Python twins (`kernels/python/`)
 
-One module per package module. Most are thin adapters: the decoder itself stays where it
+One module per package module, except the CRC: `crc16_arc` is a function in
+`python/__init__.py`. Most are thin adapters: the decoder itself stays where it
 was, and the twin gives it the package's API.
 
 | Twin | Wraps |
 | --- | --- |
-| `python.crc16_arc` | its own table-driven loop |
+| `python.crc16_arc` (in `python/__init__.py`) | its own table-driven loop |
 | `python.zipcrypto` | its own cipher (the key schedule) |
 | `python.filters` | `streams/codecs/arm64_filter.py`, `riscv_filter.py` |
 | `python.lzo1x` | `streams/codecs/lzo_decoder.py` |
