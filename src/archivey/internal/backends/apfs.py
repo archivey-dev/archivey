@@ -111,7 +111,7 @@ READ_PIECE = 1 << 20
 _MAX_VOLUMES = 100
 # What one record keeps beyond its bytes, by kind: (the first record of its object
 # id, each further one), rounded up from tracemalloc on CPython 3.11 (3.12 and 3.13
-# measured the same) over 1,000 to 350,000 records of the worst shape: distinct
+# measured the same) over 1,000 to 350,000 records of the costliest shape: distinct
 # large ids and values, names and values of two bytes (one byte or none would be
 # CPython's cached objects), the fewest bytes the record parses from. The bytes are
 # charged as read; these weights are charged for what ``ApfsVolume._add`` keeps.
@@ -120,6 +120,8 @@ _MAX_VOLUMES = 100
 #   123; the first of a directory also a dict slot and a list, 258 to 288 in all.
 # - extended attribute: an ``Xattr``, its name and its value, measured 152 to
 #   183; the first of an object also a dict slot and a dict, 377 to 415 in all.
+#   That is for an ASCII name; a wider one is charged what its ``str`` keeps
+#   beyond its bytes on top (``_wider_than_read``).
 # - extent: the first of a stream adds a dict slot and an array, measured 134 to
 #   164; each further one 24 bytes of the array, fewer than its 40 bytes read.
 #   The first one with an encryption id adds a set entry, measured 18 to 76 more.
@@ -920,7 +922,7 @@ class ApfsVolume:
         self,
         tree: FsTree,
         records: list[tuple[bytes, bytes]],
-        charge: Callable[[int], None] | None = None,
+        charge: Callable[[int], None],
     ) -> None:
         """One leaf's records into ``tree``. A record that does not parse is damage
         in a node whose checksum passed: the leaf is all or nothing, so it is parsed
@@ -932,6 +934,7 @@ class ApfsVolume:
         xattrs: list[tuple[int, str, Xattr]] = []
         extents: list[tuple[int, int, int, int, int]] = []
         siblings: list[int] = []
+        wide = 0  # what attribute names keep beyond their bytes, past the weight's
         for key, value in records:
             (word,) = struct.unpack_from("<Q", key)
             oid, kind = word & _OID_MASK, word >> 60
@@ -941,7 +944,9 @@ class ApfsVolume:
                 children.append((oid, self._child(key, value)))
             elif kind == XATTR:
                 name, attr = _xattr(key, value)
-                xattrs.append((oid, self.container.context.decode_name(name), attr))
+                text = self.container.context.decode_name(name)
+                xattrs.append((oid, text, attr))
+                wide += _wider_than_read(text, len(name))
             elif kind == SIBLING_LINK:
                 siblings.append(oid)
             elif kind == EXTENT:
@@ -952,16 +957,16 @@ class ApfsVolume:
                 extents.append(
                     (oid, logical, flags_length & ((1 << 56) - 1), block, crypto)
                 )
-        if charge is not None:
-            charge(
-                _kept_weight(INODE, (oid for oid, _ in inodes), tree.inodes)
-                + _kept_weight(DIR_REC, (oid for oid, _ in children), tree.children)
-                + _kept_weight(XATTR, (oid for oid, _, _ in xattrs), tree.xattrs)
-                + _kept_weight(EXTENT, (each[0] for each in extents), tree.extents)
-                + _kept_weight(SIBLING_LINK, siblings, tree.siblings)
-                + _ENCRYPTED_STREAM_WEIGHT
-                * len({e[0] for e in extents if e[4]} - tree.encrypted_streams)
-            )
+        charge(
+            wide
+            + _kept_weight(INODE, (oid for oid, _ in inodes), tree.inodes)
+            + _kept_weight(DIR_REC, (oid for oid, _ in children), tree.children)
+            + _kept_weight(XATTR, (oid for oid, _, _ in xattrs), tree.xattrs)
+            + _kept_weight(EXTENT, (each[0] for each in extents), tree.extents)
+            + _kept_weight(SIBLING_LINK, siblings, tree.siblings)
+            + _ENCRYPTED_STREAM_WEIGHT
+            * len({e[0] for e in extents if e[4]} - tree.encrypted_streams)
+        )
         for oid, inode in inodes:
             tree.inodes[oid] = inode
         for oid, child in children:
@@ -992,6 +997,19 @@ class ApfsVolume:
             raise CorruptionError("an APFS directory record is too short")
         file_id, _, flags = _DREC.unpack_from(value)
         return Child(_name(key[at : at + length]), file_id, flags & 0xF)
+
+
+def _wider_than_read(text: str, read: int) -> int:
+    """What the decoded name ``text`` keeps beyond the ``read`` bytes it came from
+    and the two-byte ASCII name the attribute weights were measured with. CPython
+    keeps a ``str`` at 1, 2 or 4 bytes a character, set by its widest character,
+    and a name that is not ASCII has a header 24 bytes larger: one astral
+    character in a long ASCII name keeps it at 4 bytes a character."""
+    if text.isascii():
+        return 0
+    widest = max(map(ord, text))
+    width = 4 if widest > 0xFFFF else 2 if widest > 0xFF else 1
+    return max(0, 24 + width * len(text) - read)
 
 
 def _kept_weight(kind: int, oids: Iterable[int], held: Container[int]) -> int:

@@ -969,9 +969,9 @@ def _drec_record(i: int, same: int | None) -> tuple[bytes, bytes]:
     return key, struct.pack("<QQH", _HUGE + i, 0, 8)
 
 
-def _xattr_record(i: int, same: int | None) -> tuple[bytes, bytes]:
+def _xattr_record(i: int, same: int | None, wide: bytes = b"") -> tuple[bytes, bytes]:
     oid = _HUGE + i if same is None else same
-    name = b"%07d\0" % i
+    name = b"%07d" % i + wide + b"\0"
     key = _key(oid, apfs.XATTR) + struct.pack("<H", len(name)) + name
     return key, struct.pack("<HH", 0x2, 2) + b"xy"  # embedded
 
@@ -987,8 +987,29 @@ def _sibling_record(i: int, same: int | None) -> tuple[bytes, bytes]:
     return _key(oid, apfs.SIBLING_LINK) + struct.pack("<Q", _HUGE + i), b""
 
 
+# A long ASCII name with one character that makes CPython keep it wider: an astral
+# character (4 bytes a character), or a byte that is not UTF-8 (a lone surrogate
+# after ``surrogateescape``, 2 bytes a character).
+_ASTRAL = b"x" * 3000 + "\U0001f600".encode()
+_NOT_UTF8 = b"x" * 3000 + b"\xff"
+
+_KEPT_CASES: dict[
+    str, tuple[Callable[[int, int | None], tuple[bytes, bytes]], int | None]
+]
 _KEPT_CASES = {
     "inode": (_inode_record, None),
+    "first attribute, astral name": (
+        lambda i, s: _xattr_record(i, s, _ASTRAL),
+        None,
+    ),
+    "further attribute, astral name": (
+        lambda i, s: _xattr_record(i, s, _ASTRAL),
+        _HUGE - 1,
+    ),
+    "first attribute, name not UTF-8": (
+        lambda i, s: _xattr_record(i, s, _NOT_UTF8),
+        None,
+    ),
     "first directory record": (_drec_record, None),
     "further directory record": (_drec_record, _HUGE - 1),
     "first attribute": (_xattr_record, None),
@@ -1015,11 +1036,11 @@ def _within(charged: float, measured: float) -> bool:
 @pytest.mark.parametrize("case", sorted(_KEPT_CASES))
 def test_a_kept_record_is_charged_what_tracemalloc_measures_it_keeps(case: str) -> None:
     make, same = _KEPT_CASES[case]
-    count = 20_000
+    count = 1_000 if "name" in case else 20_000  # the long names hold 3 KB each
     records = [make(i, same) for i in range(count)]
     read = sum(len(k) + len(v) for k, v in records)
     volume = apfs.ApfsVolume.__new__(apfs.ApfsVolume)
-    volume.container = _Context()  # type: ignore[assignment]
+    volume.container = _Context()
     volume.hashed = False
     tree = apfs.FsTree()
     charged: list[int] = []
@@ -1049,29 +1070,62 @@ def test_a_kept_record_is_charged_what_tracemalloc_measures_it_keeps(case: str) 
 )
 def test_an_object_map_entry_is_charged_what_tracemalloc_measures_it_keeps() -> None:
     count = 20_000
-    # What ``_Omap`` keeps per object id, in the shape it keeps it.
+    entry = apfs._OMAP_VALUE
+    leaves = [
+        apfs._Leaf(
+            [
+                (
+                    struct.pack("<QQ", _HUGE + i, _HUGE + i),
+                    entry.pack(1000 + i, 4096, _HUGE + i),
+                )
+                for i in range(at, at + 100)
+            ],
+            None,
+            None,
+            1,
+        )
+        for at in range(0, count, 100)
+    ]
+    charged: list[int] = []
+
+    class _Head:
+        def object(self, *args: object, **kwargs: object) -> bytes:
+            return bytes(64)  # an object map whose tree is at block 0
+
+    def build() -> apfs._Omap:
+        # The real ``_Omap``, its walk yielding the leaves built above.
+        walk = apfs._walk
+        apfs._walk = lambda *args, **kwargs: iter(leaves)
+        try:
+            return apfs._Omap(
+                _Head(),
+                1,
+                1 << 62,
+                "map",
+                lambda n, what: charged.append(n),
+            )
+        finally:
+            apfs._walk = walk
+
     gc.collect()
     gc.disable()
     tracemalloc.start()
     try:
-        entries = {}
-        for i in range(count):
-            entries[_HUGE + i] = (_HUGE + i, 0, _HUGE + i)
+        omap = build()
         kept = tracemalloc.get_traced_memory()[0]
     finally:
         tracemalloc.stop()
         gc.enable()
+    assert len(omap.entries) == count
     measured = kept / count
-    assert _within(apfs._OMAP_ENTRY_WEIGHT, measured), measured
+    assert _within(sum(charged) / count, measured), (sum(charged) / count, measured)
 
 
 class _Context:
     """The volume's container, for ``_add``: it decodes attribute names."""
 
-    context = None
-
     def __init__(self) -> None:
-        self.context = self  # type: ignore[assignment]
+        self.context = self
 
     def decode_name(self, raw: bytes) -> str:
         return raw.decode("utf-8", "surrogateescape")
