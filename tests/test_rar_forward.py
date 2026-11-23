@@ -1188,6 +1188,78 @@ def test_a_late_source_cut_fails_the_member_read(
                     pass
 
 
+class _ExitedProc:
+    """Enough of ``Popen`` for ``_ForwardUnrarStream.close``: a program that already
+    exited, killed by the thread that writes the volumes."""
+
+    returncode = -9
+
+    def __init__(self) -> None:
+        self.stdin = io.BytesIO()
+
+    def poll(self) -> int:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode
+
+
+class _StoppedFeeder:
+    """Enough of ``VolumeFeeder``: a thread that has returned with ``error``."""
+
+    def __init__(self, error: ArchiveyError) -> None:
+        self.error = error
+
+    def close_after(self, cleanup: object, *, timeout: float | None = None) -> None:
+        assert callable(cleanup)
+        cleanup()
+
+
+class _StoppedPass:
+    """Enough of ``_ForwardPass`` for its ``unrar`` stream."""
+
+    source = None
+    cut_stop = None
+
+    def __init__(self) -> None:
+        self.stopping = False
+
+    def stop(self) -> None:
+        self.stopping = True
+
+
+class _Volumes:
+    def close(self) -> None:
+        pass
+
+
+def _stopped_stream(error: ArchiveyError) -> rar_forward_reader._ForwardUnrarStream:
+    return rar_forward_reader._ForwardUnrarStream(
+        _StoppedPass(),  # type: ignore[arg-type]
+        io.BytesIO(b""),
+        _ExitedProc(),  # type: ignore[arg-type]
+        _StoppedFeeder(error),  # type: ignore[arg-type]
+        _Volumes(),  # type: ignore[arg-type]
+        lambda: None,
+    )
+
+
+def test_a_close_that_stops_the_volume_thread_mid_volume_raises_nothing() -> None:
+    """``close`` stops the walk, then terminates ``unrar``. The thread writing a
+    volume can see the stop first, at its next read of the source, and kill
+    ``unrar`` itself with ``_Closed``: the close is all that happened. A late source
+    cut in the test above hit this order on macOS CI, after the member's read had
+    already raised its own error."""
+    _stopped_stream(rar_forward_reader._Closed()).close()
+
+
+def test_a_volume_thread_failure_still_raises_from_close() -> None:
+    """The ``_Closed`` exception above is the only feeder error a close leaves out."""
+    error = TruncatedError("the source ended")
+    with pytest.raises(TruncatedError, match="the source ended"):
+        _stopped_stream(error).close()
+
+
 @pytest.mark.skipif(
     not unrar_reads_from_pipes(), reason="requires RARLAB unrar 7.00 or later"
 )
