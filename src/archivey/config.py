@@ -356,25 +356,21 @@ class ListingLimits:
     against ``max_metadata_bytes`` as it arrives. A ZIP file whose end record sits
     behind more than 64 KiB of trailing bytes is walked the same way at open, which
     charges ``max_members`` on each local header.
-    ISO also counts each path-table entry against ``max_members`` (a table of more than
-    ``max_members + 1`` entries is refused): every entry is a directory, which is a
-    member anyway, so real images never notice. ISO counts the UDF tree it parses
-    against ``max_members`` too, one per UDF name, whether or not ``members()`` lists
-    UDF: an image whose UDF tree has more names than its ISO 9660 tree can be refused
-    for the UDF tree. ISO counts members per tree but weighs bytes as one sum for the
-    whole image, every tree together. ISO also weighs every full path of the UDF tree
-    as it builds it at open, in a separate sum against ``max_metadata_bytes``, whether
-    or not UDF is the listed tree. The listing weighs the same paths as member names,
-    normalized (a ``.`` or empty segment dropped), so a UDF tree whose names that
-    shortens can be refused at open although its listing would fit.
-    RPM refuses a header that lists more files than ``max_members`` at open, before it
-    builds the file list.
-    makeself weighs its shell header against ``max_metadata_bytes`` as it reads it, at
-    open, and refuses a header that lists more payloads than ``max_members``.
-    TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
-    more than is left of ``max_metadata_bytes``, before reading it. While it parses a PAX
-    header, TAR also charges 256 bytes for each distinct keyword, once: a repeated
-    keyword does not count again.
+    ISO counts the UDF tree it parses against ``max_members`` too, one per UDF name,
+    whether or not ``members()`` lists UDF: an image whose UDF tree has more names than
+    its ISO 9660 tree can be refused for the UDF tree. ISO counts members per tree but
+    weighs bytes as one sum for the whole image, every tree together. ISO also weighs
+    every full path of the UDF tree as it builds it at open, in a separate sum against
+    ``max_metadata_bytes``, whether or not UDF is the listed tree. The listing weighs
+    the same paths as member names, normalized (a ``.`` or empty segment dropped), so a
+    UDF tree whose names that shortens can be refused at open although its listing would
+    fit. RPM refuses a header that lists more files than ``max_members`` at open, before
+    it builds the file list. makeself weighs its shell header against
+    ``max_metadata_bytes`` as it reads it, at open, and refuses a header that lists more
+    payloads than ``max_members``. TAR refuses, in every mode, an extended header (PAX
+    or GNU long name) that declares more than is left of ``max_metadata_bytes``, before
+    reading it. While it parses a PAX header, TAR also charges 256 bytes for each
+    distinct keyword, once: a repeated keyword does not count again.
     A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
     ``DEBIAN/md5sums`` whole, and refuses the one whose size takes their sum past
     ``max_metadata_bytes``, before reading it. It also counts against ``max_members``

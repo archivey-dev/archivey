@@ -4448,6 +4448,7 @@ class ZipReader(BaseArchiveReader):
             # for a wrong key's garbage.
             body = stage(password)
             probe: ArchiveStreamImpl | None = None
+            decoded: BinaryIO | None = None
             ended_early: TruncatedError | None = None
             try:
                 try:
@@ -4460,17 +4461,20 @@ class ZipReader(BaseArchiveReader):
                     if not cipher.keyed_settings:
                         raise
                     raise failures.limit_failed(exc) from exc
-                verdict = run_password_confirm_plan(probe, walk)
+                # A trial decode counts and draws like the caller's stream: the
+                # measurement counter, the nest's and the listing's decoded caps.
+                decoded = self._track_decompressed(probe)
+                verdict = run_password_confirm_plan(decoded, walk)
                 if verdict is not PasswordConfirmVerdict.REJECTED and walk_to_hmac:
                     # The read that finds the end is the one that checks the HMAC.
-                    if probe.read(1):
+                    if decoded.read(1):
                         verdict = PasswordConfirmVerdict.REJECTED
                 elif verdict is PasswordConfirmVerdict.REJECTED and cipher.is_aes:
                     # The plan rejects a short read without saying so. For WinZip AES
                     # that is the data ending before its declared size, the damage the
                     # one-password path reports as TruncatedError; say so here too.
                     got = probe.tell()
-                    if got < size and not probe.read(1):
+                    if got < size and not decoded.read(1):
                         ended_early = TruncatedError(
                             f"Decompressed content ended after {got} of {size} "
                             f"expected bytes."
@@ -4482,6 +4486,8 @@ class ZipReader(BaseArchiveReader):
                     raise
                 raise candidate_failed(exc) from exc
             finally:
+                if decoded is not None:
+                    decoded.close()
                 if probe is not None:
                     probe.close()
             if verdict is PasswordConfirmVerdict.REJECTED:

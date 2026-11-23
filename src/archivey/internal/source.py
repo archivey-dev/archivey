@@ -60,11 +60,13 @@ hint survives as :attr:`size_hint` for the questions that want the cheap answer 
 bound no read: detection's cost receipt takes it as the total size, and the reader's
 ``_trusted_source_size`` filters it for extraction's archive-wide ratio, where it is both
 ``compressed_source_size`` (the denominator) and the complement that decides whether a
-live byte counter stands in. ``_trusted_source_size`` does not take a caller's
-non-seekable stream's hint: nothing can check a pipe's claim, and an inflated one would
-switch off both ratio guards. A member stream's hint is its container's declared length
-(:attr:`seek_is_expensive`) and is taken, seekable or not; that declaration is unchecked
-too until the container's end-of-member check runs, after the payload is decoded.
+live byte counter stands in. ``on_source_read``'s reports show it as the size when there
+is no fact, without taking it for the source's end. ``_trusted_source_size`` does not
+take a caller's non-seekable stream's hint: nothing can check a pipe's claim, and an
+inflated one would switch off both ratio guards. A member stream's hint is its
+container's declared length (:attr:`seek_is_expensive`) and is taken, seekable or not;
+that declaration is unchecked too until the container's end-of-member check runs, after
+the payload is decoded.
 
 What stays outside, as wrappers over this object that keep its guarantees: measurement
 (``SeekCountingStream``), and ZIP's start offset (a ``SlicingStream``). Member-level
@@ -136,7 +138,10 @@ class JoinedVolumes(Protocol):
     @property
     def volume_paths(self) -> list[Path]: ...
     @property
-    def volume_ranges(self) -> list[tuple[int, int]]: ...
+    def volume_ranges(self) -> list[tuple[int, int]]:
+        """``(start, size)`` of each volume in the concatenated byte space."""
+        ...
+
     @property
     def volume_items(self) -> list[Path | BinaryIO]: ...
     @property
@@ -616,7 +621,16 @@ class ArchiveSource(ReadOnlyIOStream):
         if not name and decompressed is not None:
             # fsspec's decompressing file has no name; the object's URL is the file.
             name = decompressed.url
-        reporter = SourceReadReporter(callback, name, self._length, step, nest_level)
+        # A source with no size fact reports its size hint, so a caller can still draw
+        # a percentage: a member stream under a nested reader (the member's declared
+        # size), or a caller's stream with an fsspec-style ``size``. The hint only
+        # fills in ``SourceProgress.size``; the reporter takes the source's end from a
+        # fact alone, so a wrong hint cannot change how often reports come.
+        fact = self._length
+        size = fact if fact is not None else self._size
+        reporter = SourceReadReporter(
+            callback, name, size, step, nest_level, size_is_fact=fact is not None
+        )
         self._reporter = reporter
         if self._remote:
             # In a volume set a range source reads at its own offsets; its reports
@@ -628,10 +642,10 @@ class ArchiveSource(ReadOnlyIOStream):
             joined = self._joined
             if joined is not None:
                 pairs = zip(joined.volume_items, joined.volume_ranges, strict=True)
-                for item, (start, end) in pairs:
+                for item, (start, length) in pairs:
                     bases[id(item)] = start
                     if id(item) not in remote:
-                        local.append((start, end))
+                        local.append((start, start + length))
             for ranged in self._remote:
                 ranged.progress = reporter
                 ranged.progress_base = bases.get(id(ranged), 0)
@@ -759,7 +773,8 @@ class ArchiveSource(ReadOnlyIOStream):
         What ``source_byte_size`` said of the caller's object, measured once: an fsspec
         ``size`` attribute counts here and not in :attr:`size`. Read by detection's total
         size and by ``compressed_source_size`` (which skips it on a caller's non-seekable
-        stream) and its complement, the choice of whether a byte counter stands in;
+        stream) and its complement, the choice of whether a byte counter stands in,
+        and by ``on_source_read``'s reports when there is no fact (``report_reads``);
         never for bounding a read.
         """
         return self._size

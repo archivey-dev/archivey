@@ -792,6 +792,42 @@ def special_file_has_data_report(
     )
 
 
+class ProviderAwareRLock:
+    """A re-entrant lock whose wait first asks whether the caller is inside a password
+    provider call its holder's thread runs (``ReaderState.refuse_wait_on_provider``).
+
+    A provider runs on the thread of the operation that needs the password, which may
+    hold this lock (listing finalization reading a link target). A helper the provider
+    hands work to in its own context would otherwise wait for that operation forever.
+    """
+
+    __slots__ = ("_depth", "_lock", "_owner", "_state")
+
+    def __init__(self, state: ReaderState) -> None:
+        self._lock = threading.RLock()
+        self._state = state
+        self._owner: int | None = None
+        self._depth = 0
+
+    def __enter__(self) -> Self:
+        if not self._lock.acquire(blocking=False):
+            self._state.refuse_wait_on_provider(self._owner)
+            self._lock.acquire()
+        self._owner = threading.get_ident()
+        self._depth += 1
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._depth -= 1
+        if not self._depth:
+            self._owner = None
+        self._lock.release()
+
+    def is_owned(self) -> bool:
+        """Whether the calling thread holds the lock."""
+        return self._owner == threading.get_ident()
+
+
 class BaseArchiveReader(ArchiveReader):
     """Internal helper base for all format readers — the backend contract lives here.
 
@@ -1007,8 +1043,10 @@ class BaseArchiveReader(ArchiveReader):
         # one walk: each reads ``_listed`` at its own position and pulls the next member
         # when it reaches the end. Re-entrant, so a callback that re-enters the walk on
         # the same thread reaches the ``_walk_pulling`` check instead of deadlocking.
-        # It is taken after the materialization election, never before it.
-        self._walk_lock = threading.RLock()
+        # It is taken after the materialization election, never before it. A wait for
+        # it from inside a password provider that its holder is waiting for raises
+        # (``ProviderAwareRLock``).
+        self._walk_lock = ProviderAwareRLock(self._state)
         # A random-access pass's member stream that reads through the walk
         # (``_walk_handoff_locked``); the walk detaches it before its next pull
         # (``_before_pull_locked``). Set only under ``_walk_lock``, so none appears
@@ -2033,6 +2071,7 @@ class BaseArchiveReader(ArchiveReader):
         custom_digests: CustomDigests | None = None,
         bounded: bool = False,
         draw_budget: bool = True,
+        digest_error: Callable[[CorruptionError], ArchiveyError] | None = None,
     ) -> MemberStreamParts:
         """A raw member stream and how to serve it: what ``_open_member`` returns.
 
@@ -2092,7 +2131,7 @@ class BaseArchiveReader(ArchiveReader):
         ):
             seekable = self._seek_declared() and is_seekable(inner)
         # Positional: this runs once per member, and keywords cost more than the
-        # build itself (18 fields: about 0.9 us by keyword, 0.3 us positional, on
+        # build itself (19 fields: about 0.9 us by keyword, 0.3 us positional, on
         # CPython 3.13). The names match the parameters, in order.
         return MemberStreamParts(
             inner,
@@ -2113,6 +2152,7 @@ class BaseArchiveReader(ArchiveReader):
             fill_size,
             custom_digests,
             bounded,
+            digest_error,
         )
 
     def _member_stream(self, parts: MemberStreamParts) -> ArchiveStreamImpl:
@@ -2150,6 +2190,7 @@ class BaseArchiveReader(ArchiveReader):
                 checks_content=parts.checks_content,
                 custom_digests=parts.custom_digests,
                 bounded=parts.bounded,
+                digest_error=parts.digest_error,
             )
         except BaseException:
             with contextlib.suppress(Exception):
@@ -5066,6 +5107,9 @@ class BaseArchiveReader(ArchiveReader):
                         spanning.append(e)
                         retry_next.add(id(m))
                         retry_next.update(id(c) for c in e.covers)
+        # The checks the reader runs itself over bytes no member read reaches: they
+        # pass or fail into ``_spanning_unreachable``, taken below.
+        self._run_spanning_passes(frozenset(id(m) for m, _ in failures))
         for error in self._unraised_spanning.values():
             spanning.append(error)
             retry_next.update(id(c) for c in error.covers)
@@ -5089,6 +5133,13 @@ class BaseArchiveReader(ArchiveReader):
         if spanning:
             failures = self._with_spanning_failures(failures, spanning)
         return tuple(failures)
+
+    def _run_spanning_passes(self, failed: frozenset[int]) -> None:
+        """Run the backend's own checks over several members that no member read
+        reaches (a DMG partition's CRC-32s), after ``verify_all()`` read the members;
+        ``failed`` holds the ids of the members whose read failed. Each check passes
+        (``_spanning_check_ran``) or keeps its failure for every later call
+        (``_spanning_unreachable``). The default has none."""
 
     def _awaiting_spanning_checks(self) -> set[int]:
         """The ids of the members of each check that spans members and has not passed.
