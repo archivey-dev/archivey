@@ -381,12 +381,25 @@ class _Codecs:
         self._kernel = _kernel_call(target, args, kwargs)
 
     def lzo1x(self, block: bytes, out_size: int | None, max_size: int | None) -> bytes:
-        """One LZO1X block: the package's ``lzo1x.decompress``, given ``out_size`` or
-        ``max_size``."""
-        decompress = self._module.lzo1x.decompress
+        """One LZO1X block: the package's ``lzo1x.decompress``."""
+        return self._one_shot("lzo1x", block, out_size, max_size)
+
+    def lzfse(self, data: bytes, out_size: int | None, max_size: int | None) -> bytes:
+        """One LZFSE stream: the package's ``lzfse.decompress``."""
+        return self._one_shot("lzfse", data, out_size, max_size)
+
+    def lzvn(self, data: bytes, out_size: int | None, max_size: int | None) -> bytes:
+        """Raw LZVN: the package's ``lzvn.decompress``."""
+        return self._one_shot("lzvn", data, out_size, max_size)
+
+    def _one_shot(
+        self, kernel: str, data: bytes, out_size: int | None, max_size: int | None
+    ) -> bytes:
+        """``kernel.decompress(data, ...)``, given ``out_size`` or ``max_size``."""
+        decompress = getattr(self._module, kernel).decompress
         sizes = {"out_size": out_size, "max_size": max_size}
         given = {name: size for name, size in sizes.items() if size is not None}
-        return _kernel_call(decompress, (block,), given)
+        return _kernel_call(decompress, (data,), given)
 
     def report(self) -> dict[str, object]:
         report: dict[str, object] = {}

@@ -776,11 +776,19 @@ def test_other_exceptions_pass_unchanged() -> None:
 # ── LZFSE and LZVN ────────────────────────────────────────────────────────────────────
 
 
-def _fake_apple(monkeypatch: pytest.MonkeyPatch, panic: bool = False, **kernels: int):
+def _fake_apple(
+    monkeypatch: pytest.MonkeyPatch,
+    panic: bool = False,
+    child: bool = False,
+    **kernels: int,
+):
     """A fake package whose ``lzfse`` and ``lzvn`` run the Python decoders with the
     kernel's ``max_size`` contract, recording each call as ``(kernel, max_size)``;
-    with ``panic`` set, each raises the fake panic instead."""
+    with ``panic`` set, each raises the fake panic instead. Under ``NATIVE_DECODERS``
+    the fake also stands in for the decoder child's package when ``child`` is set;
+    otherwise no child can run the package."""
     module = _fake(monkeypatch, **kernels)
+    _child_kernels(monkeypatch, module if child else None)
     calls: list[tuple[str, int]] = []
 
     def kernel(name: str, python):
@@ -822,9 +830,15 @@ def test_lzfse_uses_the_kernel_unless_switched_off_or_isolated(
         lzfse(stream, 2)
     with pytest.raises(TruncatedError, match="ends before its end-of-stream block"):
         lzfse(stream[:-1], 3)
+    # Switched off, or isolated with no decoder child that can run the package.
     for excluded, isolated in ((EXCLUDED, False), (frozenset(), True)):
         assert decoder("lzfse", excluded, isolated=isolated) is lzfse_decompress
         assert decoder("lzvn", excluded, isolated=isolated) is lzvn_decompress
+    # Isolated with a decoder child: the child's kernels.
+    calls = _fake_apple(monkeypatch, child=True, lzfse=1, lzvn=1)
+    assert decoder("lzfse", frozenset(), isolated=True)(stream, 3) == b"abc"
+    assert decoder("lzvn", frozenset(), isolated=True)(b"\x06" + bytes(7), 0) == b""
+    assert calls == [("lzfse", 3), ("lzvn", 0)]
     _fake_apple(monkeypatch, lzfse=0, lzvn=1)
     assert decoder("lzfse", frozenset(), isolated=False) is lzfse_decompress
 
@@ -833,8 +847,9 @@ def test_dmg_and_hfs_reads_use_the_kernels_unless_switched_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An ULFO image's runs go through the LZFSE kernel, and its decmpfs file
-    ``compressed.txt`` (type 8) through the LZVN one; with the switch off, or under
-    ``NATIVE_DECODERS``, the Python decoders read the same bytes."""
+    ``compressed.txt`` (type 8) through the LZVN one, in the decoder child under
+    ``NATIVE_DECODERS``; with the switch off, or under ``NATIVE_DECODERS`` with no
+    child that can run the package, the Python decoders read the same bytes."""
     path = DMG_FIXTURES / "hfs-ULFO.dmg"
     expected = _read_all(path, OFF)
     calls = _fake_apple(monkeypatch, lzfse=1, lzvn=1)
@@ -845,6 +860,9 @@ def test_dmg_and_hfs_reads_use_the_kernels_unless_switched_off(
     for config in (OFF, isolated):
         assert _read_all(path, config) == expected
     assert calls == []
+    calls = _fake_apple(monkeypatch, child=True, lzfse=1, lzvn=1)
+    assert _read_all(path, isolated) == expected
+    assert {name for name, _size in calls} == {"lzfse", "lzvn"}
 
 
 @pytest.mark.parametrize(
@@ -873,13 +891,13 @@ def test_opening_a_dmg_without_lzfse_runs_looks_up_no_kernel(
     """The LZFSE decoder is chosen at the first LZFSE run: opening and listing an
     image with none (UDRO) never looks up the LZFSE or LZVN kernel."""
     looked_up: list[str] = []
-    lookup = kernels.kernels
+    lookup = kernels.decoding_kernels
 
-    def spy(name: str, excluded: frozenset[OptionalLibrary]):
+    def spy(name: str, excluded: frozenset[OptionalLibrary], *, isolated: bool):
         looked_up.append(name)
-        return lookup(name, excluded)
+        return lookup(name, excluded, isolated=isolated)
 
-    monkeypatch.setattr(kernels, "kernels", spy)
+    monkeypatch.setattr(kernels, "decoding_kernels", spy)
     with open_archive(DMG_FIXTURES / "hfs-UDRO.dmg") as reader:
         assert reader.members()
     assert not {"lzfse", "lzvn"} & set(looked_up)
@@ -1885,9 +1903,9 @@ ISOLATED_CONFIG = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECOD
 @pytest.fixture
 def child_builds(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """The kernel objects built in a decoder child, by their name in the package
-    (``"lzo1x"`` for each block decoded)."""
+    (``"lzo1x"``, ``"lzfse"`` or ``"lzvn"`` for each one-shot decode)."""
     built: list[str] = []
-    build, lzo1x = kernel_child.ChildCodecs.build, kernel_child.ChildCodecs._lzo1x
+    build, one_shot = kernel_child.ChildCodecs.build, kernel_child.ChildCodecs.one_shot
 
     def spy_build(
         self: kernel_child.ChildCodecs, name: str, *args: object, **kwargs: object
@@ -1895,14 +1913,14 @@ def child_builds(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         built.append(name)
         return build(self, name, *args, **kwargs)
 
-    def spy_lzo1x(
-        self: kernel_child.ChildCodecs, block: bytes, *, max_size: int
+    def spy_one_shot(
+        self: kernel_child.ChildCodecs, kernel: str, block: bytes, **sizes: int
     ) -> bytes:
-        built.append("lzo1x")
-        return lzo1x(self, block, max_size=max_size)
+        built.append(kernel)
+        return one_shot(self, kernel, block, **sizes)
 
     monkeypatch.setattr(kernel_child.ChildCodecs, "build", spy_build)
-    monkeypatch.setattr(kernel_child.ChildCodecs, "_lzo1x", spy_lzo1x)
+    monkeypatch.setattr(kernel_child.ChildCodecs, "one_shot", spy_one_shot)
     return built
 
 
@@ -1998,6 +2016,55 @@ def test_lzop_in_the_child_reads_the_same(
     assert results[0] == results[1]
     assert (results[0] == ("ok", LZOP_DATA)) is (damage is None)
     assert set(child_builds) == {"lzo1x"}
+
+
+@needs_codecs
+@pytest.mark.parametrize("name", ["hfs-ULFO.dmg", "apfs-ULFO.dmg"])
+def test_dmg_in_the_child_reads_the_same(name: str, child_builds: list[str]) -> None:
+    """LZFSE runs and LZVN decmpfs chunks decode in the decoder child, to the same
+    bytes as the Python decoders."""
+    path = DMG_FIXTURES / name
+    assert _read_all(path, ISOLATED_CONFIG) == _read_all(path, OFF)
+    assert "lzfse" in child_builds
+    assert set(child_builds) <= {"lzfse", "lzvn"}
+
+
+@needs_codecs
+def test_damaged_lzfse_runs_in_the_child_fail_the_same_way(
+    child_builds: list[str],
+) -> None:
+    """Damage inside an image's LZFSE runs gives the same error from the decoder
+    child's kernel as from the Python decoder."""
+    from tests.test_lzfse_decoder import _LZFSE, _tables
+
+    path = DMG_FIXTURES / "hfs-ULFO.dmg"
+    raw = path.read_bytes()
+    runs = [
+        (off, length)
+        for _crc, table in _tables(path)
+        for kind, _sectors, off, length in table
+        if kind == _LZFSE
+    ]
+    rng = random.Random(6)
+    differing = 0
+    for _ in range(8):
+        bad = bytearray(raw)
+        off, length = rng.choice(runs)
+        bad[off + rng.randrange(length)] ^= 1 << rng.randrange(8)
+        results = []
+        for config in (ISOLATED_CONFIG, OFF):
+            try:
+                with open_archive(io.BytesIO(bytes(bad)), config=config) as reader:
+                    got = {
+                        m.name: reader.read(m) for m in reader.members() if m.is_file
+                    }
+                results.append(("ok", got))
+            except (CorruptionError, TruncatedError, UnsupportedFeatureError) as exc:
+                results.append((type(exc).__name__, str(exc)))
+        assert results[0] == results[1]
+        differing += results[0][0] != "ok"
+    assert differing
+    assert "lzfse" in child_builds
 
 
 def test_a_panic_in_the_child_is_reported_as_one() -> None:

@@ -18,6 +18,7 @@ gives the same bytes as without the package.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, cast
@@ -227,7 +228,13 @@ class ChildCodecs:
             )
         )
         self.lzx = SimpleNamespace(Decompressor=_ChildLzx(self))
-        self.lzo1x = SimpleNamespace(decompress=self._lzo1x)
+        self.lzo1x = SimpleNamespace(
+            decompress=functools.partial(self.one_shot, "lzo1x")
+        )
+        self.lzfse = SimpleNamespace(
+            decompress=functools.partial(self.one_shot, "lzfse")
+        )
+        self.lzvn = SimpleNamespace(decompress=functools.partial(self.one_shot, "lzvn"))
 
     def build(self, name: str, *args: object, **kwargs: object) -> DecoderChild:
         """A child holding the kernel object ``name`` built from the arguments."""
@@ -239,12 +246,19 @@ class ChildCodecs:
             raise
         return child
 
-    def _lzo1x(
-        self, block: bytes, *, out_size: int | None = None, max_size: int | None = None
+    def one_shot(
+        self,
+        kernel: str,
+        block: bytes,
+        *,
+        out_size: int | None = None,
+        max_size: int | None = None,
     ) -> bytes:
+        """``kernel.decompress(block, ...)`` (``lzo1x``, ``lzfse`` or ``lzvn``) in a
+        child of its own."""
         child = _start()
         try:
-            return child.call("lzo1x", block, (out_size, max_size))
+            return child.call(kernel, block, (out_size, max_size))
         finally:
             child.close()
 
