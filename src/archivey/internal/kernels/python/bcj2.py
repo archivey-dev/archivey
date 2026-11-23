@@ -47,6 +47,7 @@ import struct
 from typing import Protocol
 
 from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.internal.kernels.python._buffers import raw_bytes
 
 # Every input is read in blocks of this size. Output is produced a main block at a
 # time, so a read never holds more than one block's expansion (at most 5x, when every
@@ -156,11 +157,11 @@ class _Counted:
         self.count = 0
 
     def read(self, n: int) -> bytes:
-        data = self._read(n)
+        data = raw_bytes(self._read(n))
         if len(data) > n:
             raise ValueError(f"read({n}) returned {len(data)} bytes")
         self.count += len(data)
-        return bytes(data)
+        return data
 
 
 class _Readable(Protocol):

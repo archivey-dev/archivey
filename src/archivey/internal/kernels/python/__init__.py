@@ -9,6 +9,8 @@ left out. The twins raise archivey's errors, as the package's kernels do through
 
 from __future__ import annotations
 
+from archivey.internal.kernels.python._buffers import raw_bytes
+
 
 def _crc16_table() -> list[int]:
     table: list[int] = []
@@ -28,6 +30,6 @@ def crc16_arc(data: bytes | bytearray | memoryview, value: int = 0, /) -> int:
     the checksum LHA keeps for its data and headers."""
     table = _CRC16_TABLE
     crc = value
-    for byte in data:
+    for byte in raw_bytes(data):
         crc = (crc >> 8) ^ table[(crc ^ byte) & 0xFF]
     return crc

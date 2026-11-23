@@ -221,6 +221,42 @@ def test_riscv_parity() -> None:
 # ── CRC-16 ─────────────────────────────────────────────────────────────────────────
 
 
+def _views(data: bytes) -> list[tuple[str, memoryview, bytes]]:
+    """Views the package takes, and the bytes each holds: one of 4-byte items and
+    one with a stride."""
+    doubled = bytes(b for pair in zip(data, data[::-1], strict=True) for b in pair)
+    return [
+        ("wide", memoryview(data).cast("I"), data),
+        ("strided", memoryview(doubled)[::2], data),
+    ]
+
+
+@BOTH
+@pytest.mark.parametrize("kind", ["wide", "strided"])
+def test_a_view_is_read_as_its_bytes(codecs: object, kind: str) -> None:
+    """Every kernel takes a view as its bytes, never its items: a view of 4-byte
+    items or with a stride gives the result of the same bytes, and counts them."""
+    rng = random.Random(3)
+    data = sample_data(rng, 4096)
+    view, same = next((v, b) for k, v, b in _views(data) if k == kind)
+    k = codecs  # type: ignore[assignment]
+    assert k.crc16_arc(view, 7) == k.crc16_arc(same, 7)
+    a, b = k.zipcrypto.Decryptor(b"pw"), k.zipcrypto.Decryptor(b"pw")
+    assert (a.decrypt(view), a.total_in) == (b.decrypt(same), len(same))
+    for make in (k.filters.Arm64Decoder, k.filters.RiscvDecoder):
+        # A first feed of odd length leaves bytes held back, to join to the view.
+        a, b = make(), make()
+        head = data[:5]
+        got = a.decode(head) + a.decode(view) + a.flush()
+        want = b.decode(head) + b.decode(same) + b.flush()
+        assert (got, a.total_in) == (want, len(head) + len(same))
+    z = pack_lzw(rng, 12, True, False, 2000)
+    z = z[: len(z) // 4 * 4]
+    zv = next(v for k2, v, _ in _views(z) if k2 == kind)
+    a, b = k.lzw.Decompressor(), k.lzw.Decompressor()
+    assert (a.decompress(zv), a.total_in) == (b.decompress(z), b.total_in)
+
+
 def test_crc16_parity() -> None:
     rng = random.Random(7)
     for _ in range(SEEDS // 3):

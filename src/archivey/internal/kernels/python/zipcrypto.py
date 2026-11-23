@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import functools
 
+from archivey.internal.kernels.python._buffers import raw_bytes
+
 
 def _make_crc_table() -> list[int]:
     table = []
@@ -99,6 +101,7 @@ class Decryptor:
         through ``(x >> 8) ^ entry`` and ``k0_high`` stays 24-bit, which is why the
         reassembly needs no mask either. Removing the ``k1`` mask would break both.
         """
+        data = raw_bytes(data)
         crc, crc_low, crc_high = _CRC_TABLE, _CRC_TABLE_LOW_BYTE, _CRC_TABLE_HIGH_BITS
         keystream = _keystream_table()
         k1, k2 = self.k1, self.k2

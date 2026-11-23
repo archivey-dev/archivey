@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from archivey.internal.kernels.python._buffers import raw_bytes
 from archivey.internal.streams.codecs.arm64_filter import arm64_decode
 from archivey.internal.streams.codecs.riscv_filter import riscv_decode
 
@@ -31,8 +32,10 @@ class _BranchDecoder:
         self.total_out = 0
 
     def decode(self, data: bytes | bytearray | memoryview) -> bytes:
+        data = raw_bytes(data)
         self.total_in += len(data)
-        data = self._raw + data if self._raw else bytes(data)
+        if self._raw:
+            data = self._raw + data
         decoded = type(self)._decode(data, self._position)
         self._position += len(decoded)
         self._raw = data[len(decoded) :]

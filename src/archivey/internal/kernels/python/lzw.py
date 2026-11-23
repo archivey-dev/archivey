@@ -8,6 +8,7 @@ gives it the package's API, a port of the package's ``LzwDecompressor`` wrapper.
 from __future__ import annotations
 
 from archivey.exceptions import CorruptionError
+from archivey.internal.kernels.python._buffers import raw_bytes
 
 # Bytes of a ``.Z`` header: the magic and the flags byte.
 _HEADER = 3
@@ -119,6 +120,7 @@ class Decompressor:
             raise EOFError("End of stream already reached")
         if self._flushed:
             raise ValueError("decompress() after flush()")
+        data = raw_bytes(data)
         self._clear_offsets = []
         first: list[tuple[int, int]] = []
         if data:
@@ -127,10 +129,10 @@ class Decompressor:
             if self._held:
                 # Output from an earlier call is still owed: queue the input and
                 # decode no more until it drains.
-                state.queue(bytes(data))
+                state.queue(data)
             else:
                 # A feed with no room decodes at most one entry: mostly it queues.
-                out, units = state.feed(bytes(data), 0)
+                out, units = state.feed(data, 0)
                 self._held = memoryview(out)
                 self._note_units(units)
             first = self._clear_offsets

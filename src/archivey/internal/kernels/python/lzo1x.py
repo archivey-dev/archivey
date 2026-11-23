@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from archivey.exceptions import CorruptionError
+from archivey.internal.kernels.python._buffers import raw_bytes
 
 
 def decompress(
@@ -28,7 +29,7 @@ def decompress(
     limit = out_size if out_size is not None else max_size
     assert limit is not None
     try:
-        out = lzo1x_decompress_python(bytes(block), limit)
+        out = lzo1x_decompress_python(raw_bytes(block), limit)
     except LzoError as exc:
         raise CorruptionError(str(exc)) from None
     if out_size is not None and len(out) != out_size:

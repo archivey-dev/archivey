@@ -9,6 +9,7 @@ mode; this class gives it the package's API, a port of the package's
 from __future__ import annotations
 
 from archivey.exceptions import ArchiveyError
+from archivey.internal.kernels.python._buffers import raw_bytes
 
 
 class Decompressor:
@@ -74,11 +75,7 @@ class Decompressor:
         """The output is complete, but the stream still owes the pad byte of an odd
         uncompressed block and no input holds it yet: the stream does not end until
         it arrives, or until ``flush()`` says it never will."""
-        return (
-            not self._ended
-            and self._d.owes_pad_byte()
-            and not self._d.unread_input
-        )
+        return not self._ended and self._d.owes_pad_byte() and not self._d.unread_input
 
     def _drained(self) -> bool:
         return self._out_pos == len(self._out)
@@ -128,8 +125,9 @@ class Decompressor:
             raise ValueError("decompress() after flush()")
         # After a decode error the input is of no use: the call gives the output
         # before the error, then raises it.
+        data = raw_bytes(data)
         if data and self._failed is None:
-            self._d.feed(bytes(data))
+            self._d.feed(data)
             self._starved = False
         return self._run(max_length)
 
