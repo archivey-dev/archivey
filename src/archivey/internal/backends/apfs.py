@@ -139,12 +139,22 @@ def seal(block: bytearray) -> None:
 
 class Damage(NamedTuple):
     """A node the walk skipped: the range of order keys its parent gave it (``None``
-    for no bound), and its block."""
+    for no bound), and its block, or ``None`` when its virtual id ``node`` did not
+    resolve to one."""
 
     low: tuple[int, ...] | None
     high: tuple[int, ...] | None
-    address: int
+    address: int | None
     reason: str
+    node: int | None = None
+
+    @property
+    def place(self) -> str:
+        """Where the node is, for a message: its block, or its id when the object
+        map gave no block for it."""
+        return (
+            f"block {self.address}" if self.address is not None else f"node {self.node}"
+        )
 
 
 _BELOW: tuple[int, ...] = ()
@@ -212,6 +222,7 @@ class DamageIndex:
                 None if end == _ABOVE else tuple(int(k) for k in end),
                 first.address,
                 first.reason,
+                first.node,
             )
             i += 1
 
@@ -373,10 +384,10 @@ def _walk(
     info: tuple[int, ...] | None = None
     while stack:
         ident, low, high, level = stack.pop()
-        address = ident
+        # A virtual id is not a block: until it resolves, the node has no address.
+        address: int | None = None
         try:
-            if resolve is not None:
-                address = resolve(ident)
+            address = ident if resolve is None else resolve(ident)
             if address in seen:
                 raise CorruptionError(
                     f"the APFS {subtype} tree reaches the node at block {address} twice"
@@ -409,7 +420,8 @@ def _walk(
                     "of order"
                 )
         except (CorruptionError, TruncatedError) as exc:
-            damage.append(Damage(low, high, address, str(exc)))
+            virtual = None if resolve is None else ident
+            damage.append(Damage(low, high, address, str(exc), virtual))
             continue
         if node.leaf:
             yield _Leaf(node.records, low, high, address)
@@ -493,8 +505,8 @@ class _Omap:
         after = found[0] + 1 if found is not None else 0
         for each in self.damage.meeting((oid, after), (oid, self.max_xid)):
             raise CorruptionError(
-                f"APFS object {oid} is mapped by a damaged node of {self.what} (block "
-                f"{each.address}: {each.reason})"
+                f"APFS object {oid} is mapped by a damaged node of {self.what} "
+                f"({each.place}: {each.reason})"
             )
         if found is None or found[1] & _OMAP_DELETED:
             return None
@@ -558,6 +570,53 @@ def _refuse_container(incompatible: int) -> None:
 class RefusedVolume(NamedTuple):
     name: str
     reason: str
+
+
+class _MapRuns:
+    """The checkpoint descriptor ring as runs, so that each candidate superblock's
+    span of checkpoint-map blocks is checked in constant time (one pass over the ring
+    instead of one per candidate). The ring wraps, so a run may too."""
+
+    def __init__(self, seen: list[tuple[int, int, bool, int]]) -> None:
+        ring = len(seen)
+        self._seen = seen
+        # Per ring index, capped at the ring: how many blocks from it on are good
+        # checkpoint-map blocks of its transaction, and how many are not marked last.
+        self._maps = [0] * ring
+        self._unmarked = [0] * ring
+        maps = unmarked = 0
+        for i in range(2 * ring - 1, -1, -1):
+            kind, xid, good, flags = seen[i % ring]
+            if good and kind == _T_CHECKPOINT_MAP:
+                follows = seen[(i + 1) % ring]
+                same = follows[:3] == (_T_CHECKPOINT_MAP, xid, True)
+                maps = min(ring, maps + 1 if same else 1)
+            else:
+                maps = 0
+            unmarked = 0 if flags & _CHECKPOINT_MAP_LAST else min(ring, unmarked + 1)
+            if i < ring:
+                self._maps[i] = maps
+                self._unmarked[i] = unmarked
+
+    def span(self, start: int, count: int, xid: int) -> str | None:
+        """What is wrong with the ``count`` blocks from ``start`` as one checkpoint's
+        maps (good, of transaction ``xid``, only the last marked last), checked block
+        by block in ring order; ``None`` when nothing is."""
+        maps = self._maps[start] if self._seen[start][1] == xid else 0
+        unmarked = self._unmarked[start]
+        # The first block that fails each test, if one of the ``count`` does.
+        missing = maps if maps < count else None
+        if unmarked < count - 1:
+            misplaced: int | None = unmarked
+        elif unmarked >= count:
+            misplaced = count - 1
+        else:
+            misplaced = None
+        if missing is not None and (misplaced is None or missing <= misplaced):
+            return f"checkpoint-map block {missing + 1} is missing or damaged"
+        if misplaced is not None:
+            return "its checkpoint-map blocks are not marked in order"
+        return None
 
 
 class ApfsContainer:
@@ -637,9 +696,10 @@ class ApfsContainer:
             if good and kind == _T_NX and block[32:36] == NX_MAGIC:
                 candidates.append((xid, index, block))
         candidates.sort(reverse=True)
+        runs = _MapRuns(seen)
         for xid, index, block in candidates:
             found = _superblock(block)
-            problem = self._incomplete(found, index, seen)
+            problem = self._incomplete(found, index, runs)
             if problem is None:
                 return found
             self._report(
@@ -652,9 +712,7 @@ class ApfsContainer:
             )
         raise CorruptionError("the APFS container has no complete checkpoint")
 
-    def _incomplete(
-        self, found: _Superblock, index: int, seen: list[tuple[int, int, bool, int]]
-    ) -> str | None:
+    def _incomplete(self, found: _Superblock, index: int, runs: _MapRuns) -> str | None:
         first = self._first
         ring = first.desc_blocks
         if (found.block_size, found.desc_blocks, found.desc_base) != (
@@ -667,13 +725,9 @@ class ApfsContainer:
             return "its descriptor span is outside the ring"
         if (found.desc_index + found.desc_length - 1) % ring != index:
             return "its descriptor span does not end at the superblock"
-        for step in range(found.desc_length - 1):
-            kind, xid, good, flags = seen[(found.desc_index + step) % ring]
-            if not good or kind != _T_CHECKPOINT_MAP or xid != found.xid:
-                return f"checkpoint-map block {step + 1} is missing or damaged"
-            last = step == found.desc_length - 2
-            if bool(flags & _CHECKPOINT_MAP_LAST) != last:
-                return "its checkpoint-map blocks are not marked in order"
+        problem = runs.span(found.desc_index, found.desc_length - 1, found.xid)
+        if problem is not None:
+            return problem
         if found.block_count != first.block_count:
             return "its block count differs from block 0's"
         return None
@@ -1051,7 +1105,7 @@ def stream_reader(
             if low < stop and high > before:
                 raise CorruptionError(
                     f"the extents of {what} from byte {at} are in a damaged node of "
-                    f"the filesystem tree (block {each.address}: {each.reason})"
+                    f"the filesystem tree ({each.place}: {each.reason})"
                 )
 
     source = volume.container.source
