@@ -221,8 +221,8 @@ f.seek(stream_start + point[1])         # feed input from total_in; output resum
   `internal/kernels/rust.py` catches it around every kernel call and raises archivey's
   `CorruptionError` with the panic as `__cause__`, so the caller sees a typed error as
   with the Python twin. The decoder object is then unusable (its state may be half
-  updated): every later method call raises the same error. Its counters still read. Fuzzing and parity treat any panic
-  as a bug to fix.
+  updated): every later method call raises the same error. Its counters still read.
+  Fuzzing and parity treat any panic as a bug to fix.
 - Memory: every allocation is bounded by a constructor argument or by `max_length` /
   `out_size`; input data alone cannot make a kernel allocate much.
 - Threads: one thread at a time per object. A concurrent call into the same object

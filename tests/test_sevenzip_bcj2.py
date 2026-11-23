@@ -436,14 +436,22 @@ def test_the_read_that_ends_the_output_raises_a_left_over_byte(
     index: int, label: str
 ) -> None:
     """The end check runs with the read that returns the last byte, and that read
-    raises its error: a reader that asks for exactly the output size sees it."""
+    raises its error: a reader that asks for exactly the output size sees it. The
+    bytes it decoded are kept: the next read returns them, and a read past them
+    raises the error again."""
     from tests.bcj2_util import bcj2_encode
 
     streams = list(bcj2_encode(random.Random(1), 5000))
+    expected = _bcj2(*map(io.BytesIO, streams), unpack_size=5000).read()
     streams[index] += b"\x00"
     stream = _bcj2(*map(io.BytesIO, streams), unpack_size=5000)
-    with raises_corruption_not_truncation(match=f"BCJ2 {label} stream has bytes past"):
+    match = f"BCJ2 {label} stream has bytes past"
+    with raises_corruption_not_truncation(match=match):
         stream.read(5000)
+    assert stream.tell() == 0
+    assert stream.read(5000) == expected
+    with raises_corruption_not_truncation(match=match):
+        stream.read(1)
 
 
 def test_a_cut_read_keeps_the_bytes_decoded_before_it() -> None:
