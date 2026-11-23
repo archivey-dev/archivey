@@ -251,9 +251,9 @@ class _ExtentLookup:
                 )
             self._tree = _BTree(self._volume, _EXTENTS_FILE, header.extents, "extents")
         tree = self._tree
-        target = (cnid, fork_type, start_block)
+        wanted = (cnid, fork_type, start_block)
         # Each search binds its own key: the predicate runs only during the descent.
-        records = tree.records_from(lambda key, at=target: _extent_key(key) <= at)
+        records = tree.records_from(lambda key, at=wanted: _extent_key(key) <= at)
         searched = True
         while True:
             try:
@@ -264,7 +264,7 @@ class _ExtentLookup:
                 record = None  # a broken leaf chain: searched for below
             if record is not None:
                 key, data = record
-                if _extent_key(key) == target and len(data) >= 64:
+                if _extent_key(key) == wanted and len(data) >= 64:
                     extents = struct.unpack_from(">16I", data)
                     found = [
                         (extents[i], extents[i + 1])
@@ -272,20 +272,20 @@ class _ExtentLookup:
                         if extents[i + 1]
                     ]
                     yield found
-                    target = (cnid, fork_type, target[2] + sum(c for _, c in found))
+                    wanted = (cnid, fork_type, wanted[2] + sum(c for _, c in found))
                     searched = False
                     continue
             if not searched:
                 # The leaf chain did not lead to the next record: search for it from
                 # the root once, as a lookup by key would, before calling it missing.
                 records = tree.records_from(
-                    lambda key, at=target: _extent_key(key) <= at
+                    lambda key, at=wanted: _extent_key(key) <= at
                 )
                 searched = True
                 continue
             raise CorruptionError(
                 f"the extents overflow file has no extents for file {cnid} from block "
-                f"{target[2]}"
+                f"{wanted[2]}"
             )
 
 
