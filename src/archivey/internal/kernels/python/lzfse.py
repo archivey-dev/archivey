@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from archivey.exceptions import CorruptionError
+from archivey.internal.kernels.python._args import u64
 from archivey.internal.kernels.python._buffers import raw_bytes
 
 
@@ -19,6 +20,10 @@ def decompress(
     raises ``CorruptionError`` or ``TruncatedError``."""
     from archivey.internal.streams.codecs.lzfse_decoder import lzfse_decompress
 
+    if out_size is not None:
+        out_size = u64(out_size, "out_size")
+    if max_size is not None:
+        max_size = u64(max_size, "max_size")
     if (out_size is None) == (max_size is None):
         raise TypeError(
             "lzfse.decompress() takes exactly one of out_size= and max_size="

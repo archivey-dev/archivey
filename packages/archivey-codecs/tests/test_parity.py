@@ -1388,6 +1388,12 @@ _BAD_ARGUMENTS: dict[str, Callable[[object], object]] = {
     "lzo1x max_size big": lambda c: c.lzo1x.decompress(b"\x11\0\0", max_size=_BIG),
     "lzo1x out_size negative": lambda c: c.lzo1x.decompress(b"\x11\0\0", out_size=-1),
     "lzo1x out_size float": lambda c: c.lzo1x.decompress(b"\x11\0\0", out_size=1.0),
+    "lzfse data list": lambda c: c.lzfse.decompress([1], max_size=9),
+    "lzfse max_size negative": lambda c: c.lzfse.decompress(b"bvx$", max_size=-1),
+    "lzfse out_size big": lambda c: c.lzfse.decompress(b"bvx$", out_size=_BIG),
+    "lzfse out_size float": lambda c: c.lzfse.decompress(b"bvx$", out_size=0.0),
+    "lzvn max_size big": lambda c: c.lzvn.decompress(b"\x06" + bytes(7), max_size=_BIG),
+    "lzvn out_size negative": lambda c: c.lzvn.decompress(b"\x06", out_size=-1),
     "lzw max_width negative": lambda c: c.lzw.Decompressor(
         max_width=-1, block_mode=True
     ),

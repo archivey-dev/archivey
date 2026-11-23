@@ -409,9 +409,10 @@ fn lzo1x_decompress<'py>(
 
 /// The output limit of a one-shot block function given `out_size` (exact) or
 /// `max_size` (a bound): exactly one of the two.
-fn one_size(name: &str, out_size: Option<usize>, max_size: Option<usize>) -> PyResult<usize> {
-    match (out_size, max_size) {
-        (Some(n), None) | (None, Some(n)) => Ok(n),
+fn one_size(name: &str, out_size: Option<OutSize>, max_size: Option<MaxSize>) -> PyResult<usize> {
+    // On a 64-bit platform, the only kind built, `usize` holds any `u64`.
+    match (out_size.map(|OutSize(n)| n), max_size.map(|MaxSize(n)| n)) {
+        (Some(n), None) | (None, Some(n)) => Ok(usize::try_from(n).unwrap_or(usize::MAX)),
         _ => Err(PyTypeError::new_err(format!(
             "{name}() takes exactly one of out_size= and max_size="
         ))),
@@ -424,14 +425,14 @@ fn one_shot<'py>(
     py: Python<'py>,
     block: &Bound<'py, PyAny>,
     limit: usize,
-    out_size: Option<usize>,
+    out_size: Option<OutSize>,
     kernel: fn(&[u8], usize) -> kernels::error::Result<Vec<u8>>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let data = input(block)?;
     let slice: &[u8] = &data;
     let out = py.detach(|| kernel(slice, limit)).map_err(to_py0)?;
-    if let Some(n) = out_size {
-        if out.len() != n {
+    if let Some(OutSize(n)) = out_size {
+        if out.len() as u64 != n {
             return Err(CorruptDataError::new_err(format!(
                 "the data decodes to {} bytes, not {n}",
                 out.len()
@@ -448,8 +449,8 @@ fn one_shot<'py>(
 fn lzfse_decompress<'py>(
     py: Python<'py>,
     data: &Bound<'py, PyAny>,
-    out_size: Option<usize>,
-    max_size: Option<usize>,
+    out_size: Option<OutSize>,
+    max_size: Option<MaxSize>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let limit = one_size("lzfse.decompress", out_size, max_size)?;
     one_shot(py, data, limit, out_size, lzfse::lzfse_decompress)
@@ -462,8 +463,8 @@ fn lzfse_decompress<'py>(
 fn lzvn_decompress<'py>(
     py: Python<'py>,
     data: &Bound<'py, PyAny>,
-    out_size: Option<usize>,
-    max_size: Option<usize>,
+    out_size: Option<OutSize>,
+    max_size: Option<MaxSize>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let limit = one_size("lzvn.decompress", out_size, max_size)?;
     one_shot(py, data, limit, out_size, lzfse::lzvn_decompress)
