@@ -543,6 +543,11 @@ class _ForwardUnrarStream(_RollingUnrarStream):
             # (``check_cut``, after the read returns), and the listing raises this
             # one after the members before it, so this read has nothing to add.
             return
+        if isinstance(self.feeder.error, _Closed):
+            # Only ``close`` stops the walk. The thread saw that stop while it wrote
+            # a volume and killed ``unrar`` before ``close`` could terminate it, so
+            # the close itself is all that happened: nothing to report.
+            return
         super()._raise_for_returncode(rc)
 
     @override

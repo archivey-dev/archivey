@@ -12,8 +12,10 @@ import hashlib
 import io
 import struct
 import unicodedata
+from array import array
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -22,6 +24,7 @@ from archivey import (
     ArchiveyConfig,
     CorruptionError,
     DiagnosticCode,
+    LinkTargetNotFoundError,
     ListingLimits,
     MemberType,
     ResourceLimitError,
@@ -31,6 +34,7 @@ from archivey import (
 )
 from archivey.formats import ReaderSource
 from archivey.internal.backends import apfs
+from archivey.terminal import escape_control_chars, quoted
 from tests import apfs_build as a, dmg_build as d
 from tests.conftest import requires
 
@@ -300,6 +304,84 @@ def test_an_incomplete_newer_checkpoint_is_reported_and_the_older_one_read() -> 
     assert structures == ["apfs_checkpoint"]
 
 
+def _old_span(seen: list, start: int, count: int, xid: int) -> str | None:
+    """The check of a checkpoint's maps as one loop over the ring per candidate."""
+    for step in range(count):
+        kind, found, good, flags = seen[(start + step) % len(seen)]
+        if not good or kind != apfs._T_CHECKPOINT_MAP or found != xid:
+            return f"checkpoint-map block {step + 1} is missing or damaged"
+        if bool(flags & apfs._CHECKPOINT_MAP_LAST) != (step == count - 1):
+            return "its checkpoint-map blocks are not marked in order"
+    return None
+
+
+def test_checkpoint_map_runs_find_what_a_loop_over_the_ring_finds() -> None:
+    import random
+
+    rng = random.Random(5)
+    kinds = (apfs._T_CHECKPOINT_MAP, apfs._T_CHECKPOINT_MAP, apfs._T_NX, 0)
+    for _ in range(3000):
+        ring = rng.randrange(2, 9)
+        seen = [
+            (
+                rng.choice(kinds),
+                rng.choice((6, 7, 7)),
+                rng.random() < 0.9,
+                apfs._CHECKPOINT_MAP_LAST if rng.random() < 0.3 else 0,
+            )
+            for _ in range(ring)
+        ]
+        runs = apfs._MapRuns(seen)
+        for start in range(ring):
+            for count in range(1, ring):
+                for xid in (6, 7):
+                    expected = _old_span(seen, start, count, xid)
+                    assert runs.span(start, count, xid) == expected, (
+                        seen,
+                        start,
+                        count,
+                    )
+
+
+class _CountedRing(list):
+    """The ring's ``seen`` list, counting how often an entry is read."""
+
+    reads = 0
+
+    def __getitem__(self, index: Any) -> Any:
+        _CountedRing.reads += 1
+        return super().__getitem__(index)
+
+
+def test_checking_every_checkpoint_candidate_is_linear_in_the_ring() -> None:
+    # Half the ring good checkpoint-map blocks of one transaction, half superblocks
+    # of it whose spans start at the maps: each candidate fails only at its end.
+    ring = 2048
+    maps = ring // 2
+    seen = _CountedRing(
+        [(apfs._T_CHECKPOINT_MAP, 7, True, 0)] * maps
+        + [(apfs._T_NX, 7, True, 0)] * maps
+    )
+    first = apfs._Superblock(4096, 1 << 20, 0, ring, 10, 0, 0, 0, (), 7)
+    container = apfs.ApfsContainer.__new__(apfs.ApfsContainer)
+    container._first = first
+    # No block is read: _incomplete reads only the block size.
+    container._blocks = apfs._Blocks(None, 4096, 1 << 20)
+    plain = list(seen)
+    expected = [_old_span(plain, 0, index, 7) for index in range(maps, ring)]
+    _CountedRing.reads = 0
+    runs = apfs._MapRuns(seen)
+    problems = []
+    for index in range(maps, ring):
+        found = first._replace(desc_index=0, desc_length=index + 1)
+        problems.append(container._incomplete(found, index, runs))
+    assert problems == expected
+    assert all(problems)
+    # A loop over each candidate's span reads about 1,000 x 1,000 entries; one pass
+    # over the ring and one read per candidate, a few times the ring.
+    assert _CountedRing.reads <= 6 * ring
+
+
 def _source(data: bytes) -> ReaderSource:
     def view(start: int, length: int | None) -> io.BytesIO:
         end = len(data) if length is None else start + length
@@ -483,6 +565,20 @@ def test_damaged_ranges_count_against_max_metadata_bytes_as_they_are_found() -> 
         reader.members()
 
 
+def test_a_node_id_the_object_map_lacks_is_named_as_a_node_not_a_block() -> None:
+    nodes = [d.Node(f"f{i:03d}.txt", data=b"x") for i in range(20)]
+    written = a.write_apfs(nodes, leaf_records=4, patch=_children_missing)
+    with (
+        _open(a.apfs_dmg(written.container)) as reader,
+        pytest.raises(CorruptionError) as raised,
+    ):
+        reader.members()
+    message = str(raised.value)
+    # 0xFFFF_FFF0 is a virtual id; no block of the container has that number.
+    assert "cannot be used (node 4294967280: " in message
+    assert "block 4294967280" not in message
+
+
 def test_a_damaged_leaf_error_also_names_the_first_other_problem() -> None:
     nodes = [d.Node(f"f{i:03d}.txt", data=b"x") for i in range(60)]
     nodes.append(d.Node("bad", data=b"b", raw_name=b"x/y"))
@@ -554,6 +650,302 @@ def test_a_read_from_a_known_hole_into_a_lost_extent_raises() -> None:
             reader.read(listed["A"])
 
 
+# ── What a data stream costs ─────────────────────────────────────────────────────────
+
+
+class _Stub:
+    """The parts of a volume ``stream_reader`` uses: a container of ``count`` blocks
+    whose every byte is zero."""
+
+    def __init__(self, count: int = 1 << 40) -> None:
+        self.container = self
+        self._blocks = apfs._Blocks(self, 4096, count)  # type: ignore[arg-type]
+        self.source = self
+
+    def read_exact(self, offset: int, n: int) -> bytes:
+        return bytes(n)
+
+
+def _sparse_extents(records: list, stream: int, count: int) -> None:
+    for i in range(1, count + 1):
+        key = struct.pack("<QQ", stream | apfs.EXTENT << 60, i * 4096)
+        value = struct.pack("<QQQ", 4096, 0, 0)
+        records.append(a._Record(stream, apfs.EXTENT, (i * 4096,), key, value))
+
+
+def _share_one_stream(records: list) -> None:
+    """Every file inode names the first one's data stream, which gets 100 sparse
+    extents past its data, as many as fit."""
+    inodes = [r for r in records if r.kind == apfs.INODE and r.path]
+    shared = inodes[0].oid
+    for rec in inodes:
+        value = bytearray(rec.value)
+        struct.pack_into("<Q", value, 8, shared)  # private_id: the stream
+        rec.value = bytes(value)
+    _sparse_extents(records, shared, 100)
+
+
+_ATTR_STREAM = 0x7000
+
+
+def _attribute_as_stream(path: str, name: str) -> Callable[[list], None]:
+    """Store ``path``'s attribute ``name`` as a 16-byte stream of sparse extents."""
+
+    def patch(records: list) -> None:
+        raw = name.encode() + b"\0"
+        rec = next(
+            r
+            for r in records
+            if r.path == path and r.kind == apfs.XATTR and r.secondary == (raw,)
+        )
+        stream = _ATTR_STREAM
+        inner = struct.pack("<Q", stream) + struct.pack("<QQQQQ", 16, 4096, 0, 16, 0)
+        rec.value = struct.pack("<HH", 0x1, len(inner)) + inner  # XATTR_STREAM
+        records.append(a._Record(stream, apfs.EXTENT, (0,),
+                                 struct.pack("<QQ", stream | apfs.EXTENT << 60, 0),
+                                 struct.pack("<QQQ", 4096, 0, 0)))  # fmt: skip
+        _sparse_extents(records, stream, 30)
+
+    return patch
+
+
+def _count_checks(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    checked: list[int] = []
+    check = apfs._check_stream
+
+    def counted(flat, damage, stream, bs, count):  # type: ignore[no-untyped-def]
+        checked.append(stream)
+        return check(flat, damage, stream, bs, count)
+
+    monkeypatch.setattr(apfs, "_check_stream", counted)
+    return checked
+
+
+def test_inodes_sharing_one_data_stream_check_its_extents_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files = 40
+    nodes = [d.Node(f"f{i:02d}", data=b"same") for i in range(files)]
+    checked = _count_checks(monkeypatch)
+    written = a.write_apfs(nodes, patch_records=_share_one_stream)
+    members, data = _read_all(a.apfs_dmg(written.container))
+    assert sorted(data) == [f"f{i:02d}" for i in range(files)]
+    assert set(data.values()) == {b"same"}
+    assert not any(m.is_sparse for m in members.values())
+    # One check of the 101 extents serves the listing and every read.
+    assert len(checked) == 1
+
+
+@pytest.mark.parametrize(
+    ("nodes", "patch"),
+    [
+        (
+            [d.Node(f"f{i:02d}", data=b"same") for i in range(40)],
+            _share_one_stream,
+        ),
+        (
+            [d.Node("link", kind="symlink", target="f"), d.Node("f", data=b"f")],
+            _attribute_as_stream("link", apfs.SYMLINK_XATTR),
+        ),
+        (
+            [d.Node("c", data=b"c" * 100, compression=3)],
+            _attribute_as_stream("c", apfs.DECMPFS_XATTR),
+        ),
+    ],
+    ids=["file data", "symlink target", "decmpfs attribute"],
+)
+def test_a_stream_check_over_max_metadata_bytes_ends_the_listing(
+    monkeypatch: pytest.MonkeyPatch, nodes: list, patch: Callable[[list], None]
+) -> None:
+    # The kept check's charge is what crosses the limit: the listing stops there,
+    # and does not take it as one member's damage and check the stream again.
+    checked = _count_checks(monkeypatch)
+    monkeypatch.setattr(apfs, "_VIEW_COST", 1 << 40)
+    written = a.write_apfs(nodes, patch_records=patch)
+    with (
+        _open(a.apfs_dmg(written.container)) as reader,
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+    ):
+        reader.members()
+    assert len(checked) == len(set(checked))  # no stream checked twice
+
+
+@pytest.mark.parametrize(
+    ("nodes", "patch", "name", "error"),
+    [
+        (
+            [d.Node("link", kind="symlink", target="f"), d.Node("f", data=b"f")],
+            _attribute_as_stream("link", apfs.SYMLINK_XATTR),
+            "link",
+            LinkTargetNotFoundError,
+        ),
+        (
+            [d.Node("c", data=b"c" * 100, compression=3)],
+            _attribute_as_stream("c", apfs.DECMPFS_XATTR),
+            "c",
+            CorruptionError,
+        ),
+    ],
+    ids=["symlink target", "decmpfs attribute"],
+)
+def test_a_limit_met_reading_an_attribute_stream_is_that_members_damage(
+    monkeypatch: pytest.MonkeyPatch,
+    nodes: list,
+    patch: Callable,
+    name: str,
+    error: type[Exception],
+) -> None:
+    # A limit of one run of the image (an inflated compressed run) met while the
+    # attribute's bytes are read: the member is damaged, the listing goes on.
+    real = apfs.stream_reader
+
+    def reader(volume, tree, stream, size, what):  # type: ignore[no-untyped-def]
+        read, sparse = real(volume, tree, stream, size, what)
+        if stream != _ATTR_STREAM:
+            return read, sparse
+
+        def inflated(offset: int, n: int) -> bytes:
+            raise ResourceLimitError("a compressed run stores more than archivey reads")
+
+        return inflated, sparse
+
+    monkeypatch.setattr(apfs, "stream_reader", reader)
+    written = a.write_apfs(nodes, patch_records=patch)
+    with _open(a.apfs_dmg(written.container)) as reader_:
+        member = {m.name: m for m in reader_.members()}[name]
+        # Damaged as on main: no target, or no size, and the read says why.
+        if member.type is MemberType.SYMLINK:
+            assert member.link_target is None
+        else:
+            assert member.size == 0
+        with pytest.raises(error) as raised:
+            reader_.read(member)
+        if member.type is not MemberType.SYMLINK:
+            assert "a compressed run stores more" in str(raised.value)
+
+
+def test_a_stream_check_is_kept_and_charged_only_when_it_is_costly() -> None:
+    charged: list[int] = []
+    tree = apfs.FsTree(charged.append)
+    few = apfs._KEPT_VIEW_MIN // 2
+    many = apfs._KEPT_VIEW_MIN + 1
+    tree.extents[16] = array("Q", [x for i in range(few) for x in (i * 4096, 4096, 7)])
+    tree.extents[17] = array("Q", [x for i in range(many) for x in (i * 4096, 4096, 7)])
+    for _ in range(3):
+        apfs.stream_reader(_Stub(), tree, 16, few * 4096, "few")  # type: ignore[arg-type]
+        apfs.stream_reader(_Stub(), tree, 17, many * 4096, "many")  # type: ignore[arg-type]
+    assert list(tree.stream_views) == [17]
+    assert charged == [apfs._VIEW_COST]
+
+
+def test_a_kept_stream_check_raises_for_every_file_that_opens_the_stream() -> None:
+    tree = apfs.FsTree()
+    flat = [x for i in range(40) for x in (i * 4096, 4096, 7)]
+    flat[-3] = 0  # the last extent starts inside the first: overlapping
+    tree.extents[16] = array("Q", flat)
+    for name in ("one", "two"):
+        with pytest.raises(CorruptionError, match=f"^{name} has overlapping extents"):
+            apfs.stream_reader(_Stub(), tree, 16, 4096, name)  # type: ignore[arg-type]
+    assert 16 in tree.stream_views
+
+
+class _Counted(int):
+    """An offset that counts how often it is compared."""
+
+    compared = 0
+
+    def __lt__(self, other: object) -> bool:
+        _Counted.compared += 1
+        return int(self) < other  # type: ignore[operator]
+
+    def __gt__(self, other: object) -> bool:
+        _Counted.compared += 1
+        return int(self) > other  # type: ignore[operator]
+
+
+def _paired_damage(pairs: int) -> tuple[apfs.FsTree, list[apfs.Damage], int]:
+    """A stream of ``pairs`` pairs of contiguous extents, each pair followed by a gap
+    of two blocks, and a damaged range between the two extents of each pair: no gap
+    is one a lost extent could fill, so every read succeeds."""
+    bs = 4096
+    stream = 16
+    flat: list[int] = []
+    ranges: list[apfs.Damage] = []
+    for k in range(pairs):
+        base = k * 4 * bs
+        flat += [base, bs, 0, base + bs, bs, 0]
+        low = (stream, apfs.EXTENT, _Counted(base + 1))
+        high = (stream, apfs.EXTENT, _Counted(base + bs))
+        ranges.append(apfs.Damage(low, high, 99, "x"))
+    tree = apfs.FsTree()
+    tree.extents[stream] = array("Q", flat)
+    return tree, ranges, pairs * 4 * bs
+
+
+def test_reading_the_holes_of_a_stream_with_damaged_ranges_is_not_quadratic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pairs = 300
+    tree, ranges, size = _paired_damage(pairs)
+    # The ranges as the damage index yields them, with offsets that count compares.
+    monkeypatch.setattr(tree.damage, "holding", lambda prefix: iter(ranges))
+    _Counted.compared = 0
+    read, sparse = apfs.stream_reader(_Stub(), tree, 16, size, "f")  # type: ignore[arg-type]
+    assert sparse
+    assert read(0, size) == bytes(size)
+    # A scan of every range for each of the 300 gaps compares 90,000 times or more;
+    # a bisection, a few times the log of the ranges per gap.
+    assert _Counted.compared < 20 * pairs
+
+
+def test_a_hole_raises_for_the_first_damaged_range_a_scan_finds() -> None:
+    import random
+
+    rng = random.Random(11)
+    bs = 4096
+    for _ in range(300):
+        flat: list[int] = []
+        at = 0
+        for _ in range(rng.randrange(6)):
+            at += bs * rng.randrange(3)
+            flat += [at, bs, 0]
+            at += bs
+        size = at + bs * rng.randrange(3)
+        tree = apfs.FsTree()
+        tree.extents[16] = array("Q", flat)
+        for i in range(rng.randrange(5)):
+            low = rng.randrange(size + 1)
+            high = low + rng.randrange(1, 3 * bs)
+            tree.damage.append(
+                apfs.Damage((16, apfs.EXTENT, low), (16, apfs.EXTENT, high), i, "x")
+            )
+        if rng.random() < 0.2:
+            tree.damage.append(apfs.Damage((16, apfs.EXTENT, size), None, 9, "x"))
+        lost = []
+        for each in tree.damage.holding((16, apfs.EXTENT)):
+            assert each.low is not None
+            low = each.low[2] if each.low[:2] == (16, apfs.EXTENT) else 0
+            high = each.high[2] if each.high is not None else float("inf")
+            lost.append((low, high, each.address))
+        starts = flat[0::3]
+        read, _ = apfs.stream_reader(_Stub(), tree, 16, size, "f")  # type: ignore[arg-type]
+        for offset in range(0, size, bs):
+            # What the scan of every range found before ranges were bisected.
+            index = max(0, len([s for s in starts if s <= offset]) - 1)
+            end = starts[index] + bs if starts and starts[index] <= offset else offset
+            if starts and starts[index] <= offset < end:
+                continue
+            following = next((s for s in starts if s > offset), offset + bs)
+            stop = min(offset + bs, following)
+            before = max((s for s in starts if s <= offset), default=-1)
+            hit = next((w for lo, hi, w in lost if lo < stop and hi > before), None)
+            if hit is None:
+                assert read(offset, stop - offset) == bytes(stop - offset)
+            else:
+                with pytest.raises(CorruptionError, match=rf"\(block {hit}: x\)"):
+                    read(offset, stop - offset)
+
+
 def test_a_damaged_object_map_leaf_fails_the_lookups_it_held() -> None:
     nodes = [d.Node(f"f{i:03d}.txt", data=b"x") for i in range(40)]
     options = {"leaf_records": 6, "omap_leaf_entries": 2}
@@ -622,9 +1014,11 @@ def test_an_entry_naming_a_missing_inode_is_corruption_after_the_others() -> Non
     assert sorted(seen) == ["a.txt", "sub/", "z.txt"]
 
 
-def test_a_name_with_a_slash_is_corruption_after_the_others() -> None:
-    nodes = [d.Node("a.txt", data=b"a"), d.Node("bad", data=b"b", raw_name=b"x/y")]
-    seen = _listed_until_error(_patched(lambda r: None, nodes), CorruptionError, "x/y")
+@pytest.mark.parametrize("raw", [b"x/y", b"x\0y"], ids=["slash", "nul"])
+def test_a_name_with_a_slash_or_nul_is_corruption_after_the_others(raw: bytes) -> None:
+    nodes = [d.Node("a.txt", data=b"a"), d.Node("bad", data=b"b", raw_name=raw)]
+    match = "a directory record names 'x"
+    seen = _listed_until_error(_patched(lambda r: None, nodes), CorruptionError, match)
     assert seen == ["a.txt"]
 
 
@@ -742,6 +1136,56 @@ def test_overlapping_extents_fail_that_file_only() -> None:
         assert reader.read("z.txt") == b"z"
         with pytest.raises(CorruptionError, match="overlapping"):
             reader.read("a.txt")
+
+
+def test_a_refusal_found_at_listing_keeps_its_message_on_read() -> None:
+    """The listing kept ``str(exc)`` and rebuilt the error from it at read, so the
+    name's escape was escaped a second time (two backslashes before ``x1b``)."""
+    name = "e\x1bx.txt"
+
+    def overlap(records: list) -> None:
+        rec = _record(records, name, apfs.EXTENT)
+        key = bytearray(rec.key)
+        struct.pack_into("<Q", key, 8, 4096)
+        records.append(
+            a._Record(rec.oid, apfs.EXTENT, (4096,), bytes(key), rec.value, name)
+        )
+
+    nodes = [d.Node(name, data=b"a" * 5000), d.Node("z.txt", data=b"z")]
+    with (
+        _open(_patched(overlap, nodes)) as reader,
+        pytest.raises(CorruptionError) as caught,
+    ):
+        reader.read(name)
+    assert caught.value.raw_message == (
+        f"the APFS file {quoted(name)} has overlapping extents at byte 4096"
+    )
+
+
+def test_a_caught_error_in_a_new_message_keeps_one_escape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caught archivey error put into a new message is its raw text: ``{exc}`` gave
+    the escaped text, which the new message escaped again."""
+    name = "l\x1bk"
+
+    def unreadable(*args: object) -> bytes:
+        raise CorruptionError(f"the target of {quoted(name)} is damaged")
+
+    monkeypatch.setattr(apfs, "xattr_value", unreadable)
+    image = a.apfs_dmg(
+        a.write_apfs([d.Node(name, kind="symlink", target="t")]).container
+    )
+    with _open(image) as reader:
+        reader.members()
+        found = [
+            diag
+            for diag in reader.diagnostics.retained
+            if diag.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+    assert found
+    inner = escape_control_chars(f"the target of {quoted(name)} is damaged")
+    assert f"cannot be read: {inner}" in found[0].message
 
 
 def test_a_compressed_file_without_its_attribute_raises_on_read() -> None:
@@ -873,6 +1317,26 @@ def test_an_encrypted_mapping_in_a_plain_volume_does_not_stop_the_other_volumes(
         a.apfs_dmg(container.container), CorruptionError, "marks node"
     )
     assert "Fine/b.txt" in seen
+
+
+def test_a_damage_reason_naming_the_volume_is_escaped_once() -> None:
+    """The filesystem tree kept ``str(exc)`` as the reason a node is damaged, and the
+    listing's error escaped that text a second time."""
+    name = "Br\x1boken"
+    container = a.write_apfs(
+        [d.Node("a.txt", data=b"a")],
+        name=name,
+        more_volumes=[("Fine", [d.Node("b.txt", data=b"b")])],
+        patch=_mark_first_volume_nodes_encrypted,
+    )
+    with (
+        _open(a.apfs_dmg(container.container)) as reader,
+        pytest.raises(CorruptionError, match="marks node") as caught,
+    ):
+        reader.members()
+    assert f"the object map of APFS volume {quoted(name)} marks node" in (
+        caught.value.raw_message
+    )
 
 
 def _encrypt_second_volume(container: bytearray, info: a.Apfs) -> None:

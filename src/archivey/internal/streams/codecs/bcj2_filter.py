@@ -45,15 +45,19 @@ import io
 import operator
 import struct
 from collections.abc import Sequence
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.internal import native
 from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_seekable,
     resolve_seek,
 )
+
+if TYPE_CHECKING:
+    from archivey.types import OptionalLibrary
 
 # Every input is read in blocks of this size. Output is produced a main block at a
 # time, so a read never holds more than one block's expansion (at most 5x, when every
@@ -170,9 +174,14 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         rc: BinaryIO,
         *,
         unpack_size: int,
+        excluded: frozenset[OptionalLibrary],
+        isolated: bool,
         owns_inputs: Sequence[bool] = (True, True, True, True),
     ) -> None:
         super().__init__()
+        # archivey-codecs' kernel when :mod:`archivey.internal.native` allows it.
+        self._make_kernel = native.bcj2(excluded, isolated=isolated)
+        self._kernel: native.NativeBcj2 | None = None
         self._owned = [
             stream
             for stream, owned in zip((main, call, jump, rc), owns_inputs, strict=True)
@@ -191,7 +200,9 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
 
     def _start_decoding(self) -> None:
         """Set every piece of decode state to the start of the output."""
-        _, call, jump, rc = self._inputs
+        main, call, jump, rc = self._inputs
+        if self._make_kernel is not None:
+            self._kernel = self._make_kernel((main, call, jump, rc), self._size)
         self._main = b""
         self._mpos = 0
         self._call = _Targets(call, "call")
@@ -205,6 +216,7 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         self._range = 0xFFFFFFFF
         self._code: int | None = None  # read lazily: an empty output needs no rc bytes
         self._checked_end = False
+        self._failure: Exception | None = None
         # A position at or past the end that seek() reached without decoding to it.
         self._past_end: int | None = None
 
@@ -216,6 +228,8 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
             return self.readall()
         if self._past_end is not None:
             return b""
+        if self._kernel is not None and len(self._pending) < n and self._left:
+            self._take(n - len(self._pending))
         while len(self._pending) < n and self._left:
             self._decode_block()
         if not self._left and not self._checked_end:
@@ -227,6 +241,22 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
 
     def _decode_block(self) -> None:
         """Decode to the end of the current ``main`` block, or to the end of the output."""
+        if self._kernel is not None:
+            self._take(_BLOCK)
+            return
+        if self._failure is not None:
+            # Decoding stopped there: later reads raise the same error, as the
+            # kernel's do, not one the half-updated state would give.
+            raise self._failure
+        try:
+            self._decode_python_block()
+        except Exception as exc:
+            # Every error, an input's OSError too: the kernel latches them all.
+            self._failure = exc
+            raise
+
+    def _decode_python_block(self) -> None:
+        """:meth:`_decode_block` in Python."""
         if self._code is None:
             code = 0
             for _ in range(5):
@@ -329,6 +359,20 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
             self._produced += self._left - left
             self._left = left
 
+    def _take(self, n: int) -> None:
+        """Up to ``n`` more bytes from the kernel into ``_pending``. An error found on
+        the way raises after them, as the Python decoder raises from the read that
+        decodes its block and keeps the bytes before it."""
+        assert self._kernel is not None
+        # The kernel checks the end itself, in the read that reaches it.
+        self._checked_end = True
+        out, error = self._kernel.read(n)
+        self._pending += out
+        self._produced += len(out)
+        self._left -= len(out)
+        if error is not None:
+            raise error
+
     def _check_inputs_finished(self) -> None:
         """Refuse bytes left in ``main``, ``call`` or ``jump`` after the last output byte.
 
@@ -384,7 +428,12 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         # Decode and discard up to ``target``, one main block at a time at most.
         while (skip := target - self.tell()) > 0:
             if not self._pending:
-                self._decode_block()
+                if self._kernel is not None:
+                    # One block at a time, as the Python path: a long skip must not
+                    # hold the whole gap in memory.
+                    self._take(min(skip, _BLOCK))
+                else:
+                    self._decode_block()
             del self._pending[:skip]
         return target
 
