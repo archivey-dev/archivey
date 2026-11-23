@@ -738,8 +738,12 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         # search would sort the whole directory again.
         self._sorted: dict[int, list[IsoEntry]] = {}
         # The primary tree's first directory at each extent, for Rock Ridge ``CL``
-        # relocation; built on the first ``CL`` entry met (``_relocated``).
+        # relocation; built on the first ``CL`` entry met (``_relocation_index``).
         self._entry_at_extent: dict[int, IsoEntry] | None = None
+        # The directories, by ``id()``, whose ``..`` carries ``PL`` but that no ``CL``
+        # the listing reaches points at, so they list where they are stored; built on
+        # the first ``PL`` entry met (``_unrelinked``).
+        self._orphans: set[int] | None = None
         # The reader's own view of the source, for the trailing-data scan; closed by
         # ``_release_archive_handles``.
         self._iso_fp = source.view(0)
@@ -1208,11 +1212,11 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         ISO 9660 caps depth at eight, so a Rock Ridge writer parks each deeper
         directory under a root-level ``rr_moved`` directory (its ``..`` carries a
         ``PL`` entry) and leaves a ``CL`` placeholder, a file record, where it belongs.
-        With ``use_rr`` a parked directory is skipped where it is stored, and a
-        placeholder gives way to the directory it points at (:meth:`_relocated`) for
-        its contents and attributes, and keeps its own name, as Linux's ``readdir``
-        names it from the placeholder's ``NM``. A placeholder that points at nothing
-        is listed as the file record it is.
+        With ``use_rr`` a parked directory is skipped where it is stored
+        (:meth:`_is_parked`), and a placeholder gives way to the directory it points
+        at (:meth:`_relocated`) for its contents and attributes, and keeps its own
+        name, as Linux's ``readdir`` names it from the placeholder's ``NM``. A
+        placeholder that points at nothing is listed as the file record it is.
         """
         key = id(directory)
         ordered = self._sorted.get(key)
@@ -1221,7 +1225,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         for child in ordered:
             named = child
             if use_rr and child.rr is not None:
-                if child.is_dir and child.parent_linked:
+                if self._is_parked(child):
                     continue
                 if child.rr.child_link is not None:
                     child = self._relocated(child, child.rr.child_link)
@@ -1239,6 +1243,74 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         into ``rr_moved``, so a name match would list the first ``x`` in both places
         and lose the second one's files.
         """
+        return self._relocation_index().get(extent, placeholder)
+
+    def _is_parked(self, entry: IsoEntry) -> bool:
+        """Whether a directory is a relocated one, listed where a ``CL`` points at it
+        rather than where it is stored: its ``..`` carries a ``PL`` entry, and a ``CL``
+        entry that the listing reaches points at its extent (:meth:`_unrelinked`).
+
+        A ``PL`` that no reachable ``CL`` points back at relinks nothing, so that
+        directory is listed where it is stored rather than lost with its files.
+        Linux hides an entry by its own ``RE`` entry instead, which this reader does
+        not use.
+        """
+        if not (entry.is_dir and entry.parent_linked and entry.rr is not None):
+            return False
+        return id(entry) not in self._unrelinked()
+
+    def _unrelinked(self) -> set[int]:
+        """The ``PL`` directories, by ``id()``, that no ``CL`` the listing reaches
+        points at.
+
+        The primary tree is walked as :meth:`_children` lists it: a ``CL`` is followed
+        to its directory and a ``PL`` directory is not entered where it is stored. A
+        ``CL`` counts only once the walk reaches it, so one that the listing reaches
+        only through the directory it would relink does not hide that directory. Each
+        ``PL`` directory whose extent no reached ``CL`` points at, in the order the walk
+        met them, is then listed where it is stored and walked in turn, since the ``CL``
+        entries under it may relink others. Each extent is walked once.
+        """
+        if self._orphans is None:
+            assert self._volume is not None
+            index = self._relocation_index()
+            orphans: set[int] = set()
+            reached: set[int] = set()
+            walked: set[int] = set()
+            parked: list[IsoEntry] = []
+
+            def walk(start: IsoEntry) -> None:
+                queue = [start]
+                for directory in queue:
+                    if directory.extent in walked:
+                        continue
+                    walked.add(directory.extent)
+                    for child in directory.children or ():
+                        rr = child.rr
+                        if rr is not None and child.is_dir and child.parent_linked:
+                            parked.append(child)
+                        elif rr is not None and rr.child_link is not None:
+                            reached.add(rr.child_link)
+                            target = index.get(rr.child_link)
+                            if target is not None:
+                                queue.append(target)
+                        elif child.is_dir and child.children is not None:
+                            queue.append(child)
+
+            walk(self._volume.primary.root)
+            position = 0
+            while position < len(parked):
+                directory = parked[position]
+                position += 1
+                if directory.extent not in reached:
+                    orphans.add(id(directory))
+                    walk(directory)
+            self._orphans = orphans
+        return self._orphans
+
+    def _relocation_index(self) -> dict[int, IsoEntry]:
+        """The primary tree's first directory at each extent, breadth first, leaving
+        out placeholders and symlinks, as Linux follows a ``CL``; built once."""
         if self._entry_at_extent is None:
             assert self._volume is not None
             index: dict[int, IsoEntry] = {}
@@ -1253,20 +1325,20 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
                         if child.children is not None:
                             queue.append(child)
             self._entry_at_extent = index
-        return self._entry_at_extent.get(extent, placeholder)
+        return self._entry_at_extent
 
     def _is_rr_moved(self, entry: IsoEntry) -> bool:
         """Whether a root-level directory is Rock Ridge's ``rr_moved`` relocation parent.
 
         That directory is the relocation's scaffolding, not part of the tree anyone
         archived. It is known by its contents rather than its name: every child is a
-        relocated directory (its ``..`` carries a ``PL`` entry), the same test
-        :meth:`_children` uses to hide those children from their parking place.
+        relocated directory (:meth:`_is_parked`), the same test :meth:`_children` uses
+        to hide those children from their parking place.
         """
         children = entry.children
         if not children:
             return False
-        return all(child.is_dir and child.parent_linked for child in children)
+        return all(self._is_parked(child) for child in children)
 
     def _tree_root(self) -> IsoEntry:
         volume = self._volume
