@@ -1437,7 +1437,9 @@ _BAD_ARGUMENTS: dict[str, Callable[[object], object]] = {
         max_width=-1, block_mode=True
     ),
     "lzw max_width big": lambda c: c.lzw.Decompressor(max_width=_BIG, block_mode=True),
-    "lzw max_width huge": lambda c: c.lzw.Decompressor(max_width=_HUGE, block_mode=True),
+    "lzw max_width huge": lambda c: c.lzw.Decompressor(
+        max_width=_HUGE, block_mode=True
+    ),
     "lzw max_width float": lambda c: c.lzw.Decompressor(
         max_width=12.0, block_mode=True
     ),
@@ -1476,9 +1478,7 @@ _BAD_ARGUMENTS: dict[str, Callable[[object], object]] = {
     "lzfse both sizes negative": lambda c: c.lzfse.decompress(
         b"bvx$", out_size=-1, max_size=-1
     ),
-    "bcj2 out_size float and a list stream": lambda c: _bcj2(
-        c, out_size=1.0, main=[0]
-    ),
+    "bcj2 out_size float and a list stream": lambda c: _bcj2(c, out_size=1.0, main=[0]),
     "lzx window_bits float": lambda c: c.lzx.Decompressor(15.0),
     "lzx output_size negative": lambda c: c.lzx.Decompressor(15, output_size=-1),
     "lzx output_size big": lambda c: c.lzx.Decompressor(15, output_size=_BIG),
