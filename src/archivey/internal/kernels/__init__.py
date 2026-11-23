@@ -290,7 +290,9 @@ def filters(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> Filters:
 
 
 def lzo1x(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> Lzo1x:
-    """``lzo1x``. Under ``isolated`` each block decodes in a decoder child."""
+    """``lzo1x``. Under ``isolated`` each block decodes in a decoder child. LZO's call
+    site takes only the package from here: compress-utils comes between it and the
+    Python decoder (design question 11), which the call site calls directly."""
     module = decoding_kernels("lzo1x", excluded, isolated=isolated)
     if module is None:
         from archivey.internal.kernels.python import lzo1x as twin
