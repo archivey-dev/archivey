@@ -824,6 +824,38 @@ def test_z_seeks_back_through_clear_points_with_the_kernel() -> None:
                 assert stream.read(1000) == data[at : at + 1000]
 
 
+@requires("ncompress")
+@pytest.mark.parametrize("twin", [False, True], ids=["kernel", "twin"])
+def test_a_finished_z_decoder_is_not_fed_again(twin: bool) -> None:
+    """The decoder contract: ``needs_input`` false means ``feed(b"")`` may be called.
+    At its end the kernel takes no more calls (``decompress`` raises ``EOFError``), so
+    a finished ``.Z`` decoder reports ``needs_input``; and a stream read past the end
+    returns ``b""``."""
+    if not twin and not deps.archivey_codecs.available():
+        pytest.skip("needs archivey-codecs")
+    data = b"read me to the end " * 3000
+    raw = make_unix_compress(data)
+    make = (
+        lzw_twin.Decompressor
+        if twin
+        else kernels.lzw(frozenset(), isolated=False).Decompressor
+    )
+    decoder = UnixCompressDecoder(make, comp_cursor=0, decomp_cursor=0)
+    out = decoder.feed(raw).data
+    while not decoder.needs_input:
+        out += decoder.feed(b"").data
+    out += decoder.flush().data
+    assert out == data
+    assert decoder.finished
+    assert decoder.needs_input
+    config = OFF if twin else None
+    with open_stream(
+        io.BytesIO(raw), format=StreamFormat.UNIX_COMPRESS, config=config
+    ) as stream:
+        assert stream.read() == data
+        assert stream.read() == b""
+
+
 def _z_points(make: Callable[..., object], raw: bytes) -> tuple[bytes, list]:
     decoder = UnixCompressDecoder(
         make,  # type: ignore[arg-type]

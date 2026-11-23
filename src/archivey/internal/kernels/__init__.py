@@ -8,8 +8,9 @@ and allowed (:mod:`~archivey.internal.kernels._select`), wrapped to raise archiv
 errors (:mod:`~archivey.internal.kernels.rust`), and otherwise the Python twins
 (:mod:`~archivey.internal.kernels.python`), which have the same API. The two give the
 same bytes and raise the same errors (the package's parity tests compare them), so a
-call site does not know which runs: the choice changes speed only. ``library`` says
-which, for the record of the backends a read used.
+call site does not know which runs: the choice changes speed only. ``library`` is
+archivey-codecs when the package decodes, else ``None``, for a call site that records
+its backend (LZO does).
 
 Under ``ProcessIsolation.NATIVE_DECODERS`` (``isolated``) a decoding kernel runs in a
 decoder child, or as its Python twin when no child can run it; BCJ2 is not run there
@@ -194,7 +195,9 @@ class Filters:
 
     Arm64Decoder: Callable[[int], BranchDecoder]
     RiscvDecoder: Callable[[int], BranchDecoder]
-    library: OptionalLibrary | None
+    # Each filter is its own kernel, so each has its own ``library``.
+    arm64_library: OptionalLibrary | None
+    riscv_library: OptionalLibrary | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,7 +284,8 @@ def filters(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> Filters:
         RiscvDecoder=twin.RiscvDecoder
         if riscv is None
         else _bind(rust.RiscvDecoder, riscv),
-        library=None if arm64 is None and riscv is None else _CODECS,
+        arm64_library=None if arm64 is None else _CODECS,
+        riscv_library=None if riscv is None else _CODECS,
     )
 
 

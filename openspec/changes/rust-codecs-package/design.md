@@ -272,8 +272,9 @@ the two. `src/archivey/internal/kernels/` holds it:
   `lzw.Decompressor`, `lzx.Decompressor`, `bcj2.Decompressor`, and `crc16_arc`), with
   the package's classes, arguments, attributes and errors (archivey's, as the wrappers
   raise them). They leave out the state methods (`getstate`, `from_state`, and `copy`
-  except ZipCrypto's), and LZX leaves out `unused_data` and `total_in`: its pull decoder
-  reads ahead of the output, and no call site needs either.
+  except ZipCrypto's), and LZX leaves out `unused_data` and `total_in`: the Python
+  decoder's bit buffer reads its input ahead of the output, and no call site needs
+  either.
 - `kernels/rust.py`: the package's objects wrapped to raise archivey's errors and latch
   panics, with the same API.
 - `kernels/__init__.py`: the switch. `kernels.lzx(excluded, isolated=...)` (and one
@@ -282,8 +283,11 @@ the two. `src/archivey/internal/kernels/` holds it:
   `kernels/_select.py` holds the revision table and error mapping, and
   `kernels/child.py` the stand-in module whose objects live in a decoder child.
 
-Each call site builds through the switch and then uses one API. The package's parity
-tests run the same driver code over the twins and the package.
+Each call site builds through the switch and then uses one API. LZO is the exception:
+compress-utils sits between the package and Python (question 11), so its call site
+takes only the package from the switch and falls back to compress-utils, then to the
+Python decoder the twin wraps. The package's parity tests run the same driver code over
+the twins and the package.
 
 ## D5. How archivey installs and turns it off
 

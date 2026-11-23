@@ -185,11 +185,3 @@ class Latch:
             if caused_by_panic(exc):
                 self._failure = exc
             raise
-
-
-def _close_kernel(kernel: object) -> None:
-    """Give back the decoder child a kernel object holds, if it is one
-    (:mod:`~archivey.internal.kernels.child`): what ``release_decoder`` asks of a wrapper below."""
-    close = getattr(kernel, "close", None)
-    if close is not None:
-        close()

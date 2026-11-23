@@ -188,9 +188,6 @@ class Decompressor:
                 break
             if decoded is None:
                 self._starved = True
-                if self._ended:
-                    # The decoder pads past the end, so it never waits once ended.
-                    break
                 break
             self._out, self._out_pos = decoded, 0
             self._starved = False

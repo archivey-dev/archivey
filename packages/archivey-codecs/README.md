@@ -21,8 +21,8 @@ This is a pre-release. Every kernel has its final, standard-library-shaped API
 
 Each twin (in `archivey.internal.kernels.python`) has the same classes, arguments and
 attributes, less the state methods (`getstate`, `from_state`, `copy` other than
-ZipCrypto's) and LZX's `unused_data` and `total_in`; archivey's call sites cannot tell
-which one runs.
+ZipCrypto's) and LZX's `unused_data` and `total_in`. archivey's call sites cannot tell
+which one runs, except LZO's, which tries compress-utils between the two.
 
 ```python
 import archivey_codecs

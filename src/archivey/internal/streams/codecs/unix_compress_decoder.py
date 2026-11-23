@@ -766,6 +766,9 @@ class UnixCompressDecoder(BaseDecoder):
     @property
     @override
     def needs_input(self) -> bool:
+        # At its end the decoder takes no more calls (``decompress`` raises
+        # ``EOFError``), so the stream must not feed it ``b""``: it counts as needing
+        # input, and the stream reads its own end and finishes.
         return self._d.eof or self._d.needs_input
 
     def _points(self) -> list[SeekPoint]:
