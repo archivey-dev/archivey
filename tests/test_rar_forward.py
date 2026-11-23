@@ -1247,14 +1247,15 @@ def _stopped_stream(error: ArchiveyError) -> rar_forward_reader._ForwardUnrarStr
 def test_a_close_that_stops_the_volume_thread_mid_volume_raises_nothing() -> None:
     """``close`` stops the walk, then terminates ``unrar``. The thread writing a
     volume can see the stop first, at its next read of the source, and kill
-    ``unrar`` itself with ``_Closed``: the close is all that happened. A late source
-    cut in the test above hit this order on macOS CI, after the member's read had
-    already raised its own error."""
+    ``unrar`` itself with ``_Closed``: the close is all that happened.
+    ``test_a_late_source_cut_fails_the_member_read`` can reach this order: the
+    member's read has already raised, and the thread is still padding the cut
+    volume when the pass closes."""
     _stopped_stream(rar_forward_reader._Closed()).close()
 
 
 def test_a_volume_thread_failure_still_raises_from_close() -> None:
-    """The ``_Closed`` exception above is the only feeder error a close leaves out."""
+    """A ``_Closed`` feeder error is the only one a close leaves out."""
     error = TruncatedError("the source ended")
     with pytest.raises(TruncatedError, match="the source ended"):
         _stopped_stream(error).close()
