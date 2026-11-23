@@ -14,6 +14,7 @@ import gc
 import io
 import os
 import random
+import struct
 import sys
 import types
 import weakref
@@ -33,6 +34,7 @@ from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
+    raw_message_of,
 )
 from archivey.internal.kernels import python as twins
 from archivey.internal.kernels.python import (
@@ -43,9 +45,15 @@ from archivey.internal.kernels.python import (
     lzx as lzx_twin,
     zipcrypto as zipcrypto_twin,
 )
+from archivey.internal.streams.codecs.lzfse_decoder import (
+    lzfse_decompress,
+    lzvn_decompress,
+)
 from archivey.internal.streams.codecs.lzx_decoder import LzxDecoder
 
 SEEDS = int(os.environ.get("CODECS_PARITY_CASES", "300"))
+# The DMG plan's A0 fuzz run had 200,000 cases; the default replays its first ones.
+LZFSE_FUZZ_CASES = int(os.environ.get("CODECS_LZFSE_FUZZ_CASES", str(SEEDS * 20)))
 
 # The two sides, each with the ``archivey_codecs`` API.
 PYTHON = types.SimpleNamespace(
@@ -70,12 +78,14 @@ def outcome(fn: Callable[[], object]) -> tuple[str, object]:
     """What ``fn`` returned, or the kind and message of what it raised."""
     try:
         return ("ok", fn())
+    # raw_message_of: the text as the decoder wrote it, before archivey's exceptions
+    # escape it (a backslash in an LZFSE block magic's repr, for one).
     except (TruncatedError, archivey_codecs.TruncatedDataError) as exc:
-        return ("truncated", str(exc))
+        return ("truncated", raw_message_of(exc))
     except (CorruptionError, archivey_codecs.CorruptDataError) as exc:
-        return ("corrupt", str(exc))
+        return ("corrupt", raw_message_of(exc))
     except (UnsupportedFeatureError, archivey_codecs.UnsupportedDataError) as exc:
-        return ("unsupported", str(exc))
+        return ("unsupported", raw_message_of(exc))
     except (IndexError, ValueError, EOFError) as exc:
         return (type(exc).__name__, str(exc))
 
@@ -895,6 +905,201 @@ def test_lzw_width_is_checked(codecs: object) -> None:
     d = codecs.lzw.Decompressor(block_mode=False)
     d.decompress(b"\x1f\x9d\x90")  # 16 bits, block mode
     assert d.header_params == (16, True)
+
+
+# ── LZFSE and LZVN ─────────────────────────────────────────────────────────────────
+
+
+def _dmg_helpers():
+    """archivey's LZFSE test helpers: the fixture runs, the block walk, the ``bvx1``
+    rewrite and the ``lzfse`` package as encoder, run in a subprocess."""
+    import test_lzfse_decoder
+
+    return test_lzfse_decoder
+
+
+def lzfse_both(
+    data: bytes, limit: int
+) -> tuple[tuple[str, object], tuple[str, object]]:
+    """The Python twin and the kernel (``max_size``, the Python contract) on one input."""
+    return (
+        outcome(lambda: lzfse_decompress(data, limit)),
+        outcome(lambda: archivey_codecs.lzfse.decompress(data, max_size=limit)),
+    )
+
+
+def lzvn_both(data: bytes, limit: int) -> tuple[tuple[str, object], tuple[str, object]]:
+    return (
+        outcome(lambda: lzvn_decompress(data, limit)),
+        outcome(lambda: archivey_codecs.lzvn.decompress(data, max_size=limit)),
+    )
+
+
+def test_lzfse_fixture_runs_parity() -> None:
+    """Every LZFSE run of the hdiutil fixtures, whole, at each limit around its size,
+    cut at many points and damaged."""
+    helpers = _dmg_helpers()
+    runs = helpers._lzfse_runs()
+    assert runs
+    rng = random.Random(11)
+    for stream, size in runs:
+        for limit in (size, size - 1, size + 1, 0):
+            python, rust = lzfse_both(stream, limit)
+            assert python == rust, limit
+        assert lzfse_both(stream, size)[1][0] == "ok"
+        cuts = sorted({rng.randrange(len(stream)) for _ in range(40)} | {0, 4, 11, 31})
+        for cut in cuts:
+            python, rust = lzfse_both(stream[:cut], size)
+            assert python == rust, cut
+        for case in range(SEEDS // 10 + 1):
+            bad = damage(rng, stream)
+            python, rust = lzfse_both(bad, size)
+            assert python == rust, case
+
+
+def _a0_seeds(helpers) -> list[tuple[bytes, bytes]]:
+    """The A0 fuzz seeds (``scripts/investigations/lzfse_package/fuzz.py``): the
+    ``lzfse`` package's encoder output for text, random, mixed and zero inputs from 0
+    to 64 KiB, plus one stream of two blocks, in ``fuzz.py``'s order."""
+    rnd = random.Random(7)
+    words = [
+        bytes(rnd.choice(b"abcdefghijklmnop \n") for _ in range(rnd.randint(1, 9)))
+        for _ in range(80)
+    ]
+    items = []
+    for n in (0, 1, 7, 100, 1000, 3000, 4095, 4096, 5000, 20000, 65536):
+        text = b"".join(rnd.choice(words) for _ in range(n))[:n]
+        rand = rnd.randbytes(n)
+        mixed = bytes(b if i % 7 else 0 for i, b in enumerate(text))
+        items += [text, rand, mixed, bytes(n)]
+    streams = helpers._oracle("compress", items)
+    seeds = list(zip(items, streams, strict=True))
+    (a, za), (b, zb) = seeds[-4], seeds[-3]
+    seeds.append((a + b, za[:-4] + zb))
+    return seeds
+
+
+def _a0_mutate(
+    rnd: random.Random, seeds: list[tuple[bytes, bytes]], *, v1: bool = False
+) -> tuple[bytes, int]:
+    """One fuzz case: bit flips, byte overwrites, truncation, trailing bytes, splices,
+    header size fields and packed ``bvx2`` fields, with the seed's size as the limit
+    or near it. Without ``v1`` it is the case ``fuzz.py``'s ``mutate`` makes from the
+    same generator; ``v1`` adds a flip in the ``bvx1`` fields."""
+    data, z = rnd.choice(seeds)
+    z = bytearray(z)
+    op = rnd.randrange(9 if v1 else 8)
+    if op == 0 and z:
+        for _ in range(rnd.randint(1, 4)):
+            z[rnd.randrange(len(z))] ^= 1 << rnd.randrange(8)
+    elif op == 1 and z:
+        for _ in range(rnd.randint(1, 4)):
+            z[rnd.randrange(len(z))] = rnd.randrange(256)
+    elif op == 2:
+        z = z[: rnd.randrange(len(z) + 1)]
+    elif op == 3:
+        z += rnd.randbytes(rnd.randint(1, 64))
+    elif op == 4:
+        other = rnd.choice(seeds)[1]
+        i, j = rnd.randrange(len(z) + 1), rnd.randrange(len(other) + 1)
+        z = z[:i] + other[j:]
+    elif op == 5 and len(z) >= 8:
+        off = rnd.choice((4, 8)) if len(z) >= 12 else 4
+        (v,) = struct.unpack_from("<I", z, off)
+        step = rnd.choice((-1, 1, -16, 16, 1 << 20, -(1 << 20), 1 << 31))
+        struct.pack_into("<I", z, off, max(0, min(0xFFFFFFFF, v + step)))
+    elif op == 6 and len(z) >= 32 and z[:4] == b"bvx2":
+        z[12 + rnd.randrange(24)] ^= 1 << rnd.randrange(8)
+    elif v1 and op == 7 and len(z) >= 772 and z[:4] == b"bvx1":
+        # one bit of the v1 fields before the frequencies (counts, bits, states)
+        z[4 + rnd.randrange(46)] ^= 1 << rnd.randrange(8)
+    else:
+        for _ in range(rnd.randint(5, 40)):
+            z[rnd.randrange(len(z))] = rnd.randrange(256) if z else 0
+    limit = (
+        len(data)
+        if rnd.random() < 0.9
+        else max(0, len(data) + rnd.choice((-1, 1, 4096)))
+    )
+    return bytes(z), limit
+
+
+def _fuzz_parity(seeds: list[tuple[bytes, bytes]], seed: str, *, v1: bool) -> None:
+    """``LZFSE_FUZZ_CASES`` cases from ``seeds``, case ``k`` generated from
+    ``random.Random(f"{seed}:{k}")``: the same bytes or the same error, case by case."""
+    verdicts: dict[str, int] = {}
+    for k in range(LZFSE_FUZZ_CASES):
+        src, limit = _a0_mutate(random.Random(f"{seed}:{k}"), seeds, v1=v1)
+        python, rust = lzfse_both(src, limit)
+        assert python == rust, (k, src[:64].hex(), limit)
+        verdicts[python[0]] = verdicts.get(python[0], 0) + 1
+    if LZFSE_FUZZ_CASES >= 1000:
+        assert set(verdicts) == {"ok", "corrupt", "truncated"}, verdicts
+
+
+def test_lzfse_a0_fuzz_parity() -> None:
+    """The A0 fuzz cases themselves: ``fuzz.py``'s seeds, generator and run seed
+    ``a0``, so case ``k`` is the A0 run's case ``k``. ``CODECS_LZFSE_FUZZ_CASES=200000``
+    replays the whole A0 run."""
+    helpers = _dmg_helpers()
+    if not helpers._have_lzfse():
+        pytest.skip("the lzfse package (the seeds' encoder) is not installed")
+    seeds = _a0_seeds(helpers)
+    assert {z[:4] for _data, z in seeds} >= {b"bvx-", b"bvxn", b"bvx2"}
+    _fuzz_parity(seeds, "a0", v1=False)
+
+
+def test_lzfse_v1_fuzz_parity() -> None:
+    """Fuzz cases the A0 run had none of: the A0 seeds plus each with its ``bvx2``
+    blocks rewritten as ``bvx1``, and a flip in the ``bvx1`` fields."""
+    helpers = _dmg_helpers()
+    if not helpers._have_lzfse():
+        pytest.skip("the lzfse package (the seeds' encoder) is not installed")
+    seeds = _a0_seeds(helpers)
+    seeds += [(data, helpers._to_v1(z)) for data, z in seeds if b"bvx2" in z]
+    assert b"bvx1" in {z[:4] for _data, z in seeds}
+    _fuzz_parity(seeds, "v1", v1=True)
+
+
+def test_lzvn_parity() -> None:
+    """Raw LZVN, as decmpfs stores it: each ``bvxn`` payload of the fixtures and of
+    random data, clean, cut and damaged, and random opcodes."""
+    helpers = _dmg_helpers()
+    payloads = []
+    for stream, _size in helpers._lzfse_runs():
+        for magic, pos, length in helpers._blocks(stream):
+            if magic == b"bvxn":
+                (n_raw,) = struct.unpack_from("<I", stream, pos + 4)
+                payloads.append((stream[pos + 12 : pos + length], n_raw))
+    assert len(payloads) >= 4
+    rng = random.Random(12)
+    for payload, n_raw in payloads:
+        for limit in (n_raw, n_raw - 1, n_raw + 1):
+            python, rust = lzvn_both(payload, limit)
+            assert python == rust, limit
+        assert lzvn_both(payload, n_raw)[0][0] == "ok"
+        for case in range(SEEDS // 4 + 1):
+            bad = damage(rng, payload)
+            python, rust = lzvn_both(bad, n_raw)
+            assert python == rust, case
+    for case in range(SEEDS * 4):
+        ops = rng.randbytes(rng.randint(0, 40))
+        if rng.random() < 0.5:
+            ops += bytes([0x06]) + bytes(7)
+        python, rust = lzvn_both(ops, rng.choice((0, 50, 4096)))
+        assert python == rust, (case, ops.hex())
+
+
+def test_lzfse_random_blocks_parity() -> None:
+    """Random bytes behind each block magic: the header checks and the table builds."""
+    rng = random.Random(13)
+    for case in range(SEEDS * 4):
+        magic = rng.choice((b"bvx-", b"bvxn", b"bvx1", b"bvx2", b"bvx$", b"bvxx"))
+        size = rng.choice((rng.randint(0, 40), rng.randint(0, 900)))
+        data = magic + rng.randbytes(size) + (b"bvx$" if rng.random() < 0.5 else b"")
+        python, rust = lzfse_both(data, rng.choice((0, 100, 1 << 20)))
+        assert python == rust, (case, data[:64].hex())
+
 
 
 @BOTH
