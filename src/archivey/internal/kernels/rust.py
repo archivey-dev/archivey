@@ -54,7 +54,9 @@ class _Guarded:
 # ── CRC-16/ARC ────────────────────────────────────────────────────────────────────────
 
 
-def crc16_arc(module: ModuleType) -> Callable[[bytes | bytearray | memoryview, int], int]:
+def crc16_arc(
+    module: ModuleType,
+) -> Callable[[bytes | bytearray | memoryview, int], int]:
     """The package's ``crc16_arc(data, value=0)``."""
     kernel = module.crc16_arc
 
