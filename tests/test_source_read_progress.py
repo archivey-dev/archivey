@@ -709,6 +709,43 @@ def test_a_read_after_a_stop_does_not_touch_the_caller_s_source() -> None:
     assert source.after == 0
 
 
+def test_a_stop_holds_after_a_seek_to_a_seek_point(tmp_path: Path) -> None:
+    # A seek restarts the decoder at a seek point, fed from below this stream; the
+    # stop must survive the restart.
+    import gzip
+    import random
+
+    block = random.Random(0).randbytes(1 << 20) + b"a" * (1 << 20)
+    path = tmp_path / "points.gz"
+    path.write_bytes(gzip.compress(block * 2, 1))
+    config = ArchiveyConfig(source_read_step=0, use_rapidgzip="off")
+    recorder = _Recorder()
+    _read_stream(path, replace(config, on_source_read=recorder))
+    stopped = 0
+    for n in range(1, len(recorder.calls) + 1):
+        try:
+            stream = open_stream(
+                path,
+                seekable=True,
+                config=replace(config, on_source_read=_stop_on(n, _StopValue)),
+            )
+        except _StopValue:
+            continue
+        with stream:
+            try:
+                while stream.read(1 << 20):
+                    pass
+            except _StopValue:
+                stopped += 1
+            else:
+                continue
+            for target in (stream.tell(), 0, 3 << 20):
+                stream.seek(target)
+                with pytest.raises(_StopValue):
+                    stream.read(1)
+    assert stopped
+
+
 @pytest.mark.parametrize("stop_type", [_StopValue, KeyboardInterrupt])
 def test_a_stop_holds_through_a_streaming_tar_gz_buffer(
     tmp_path: Path, stop_type: type[BaseException]

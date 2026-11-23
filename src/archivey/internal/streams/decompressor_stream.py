@@ -1635,7 +1635,12 @@ class DecompressorStream(ReadOnlyIOStream):
         self._fresh_index_point = point if point.from_index else None
         self._decoder_pos = point.decompressed_offset
         self._decoder.clear_pending_error()
-        self._spent = None
+        # A stop from ``on_source_read`` survives the restart: it holds for the whole
+        # file, and the restarted decoder may be fed from a buffer below this stream
+        # without a source read that would raise it again. Any other kept error is
+        # this decode's, and a seek clears it.
+        if self._spent is not None and not self._spent.source_callback:
+            self._spent = None
         self._surplus = None
         self._buffer.clear()
         self._eof = False
