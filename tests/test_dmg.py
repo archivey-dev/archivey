@@ -2154,20 +2154,22 @@ def _runs_image(
     extra: list[d.Node] | None = None,
     *,
     blocks: int = 1,
+    run_sectors: int = _RUN_SECTORS,
 ) -> tuple[bytes, dict[str, bytes]]:
     """An image of files of extents of ``blocks`` blocks, file ``name``'s extent
-    ``j`` in run ``layout[name][j]`` of 32 KiB runs, each at its run's next free blocks.
-    Returns the image and each file's data (incompressible, so the archive-wide
-    ratio on the output stays near 1:1)."""
+    ``j`` in run ``layout[name][j]`` of ``run_sectors`` sectors (32 KiB by default),
+    each at its run's next free blocks. Returns the image and each file's data
+    (incompressible, so the archive-wide ratio on the output stays near 1:1)."""
+    per_run = run_sectors * d.SECTOR // 4096
     used: dict[int, int] = {}
     placed: dict[str, list[tuple[int, int]]] = {}
     for name, runs in layout.items():
         extents = []
         for run in runs:
             slot = used.get(run, 0)
-            assert slot + blocks <= _BLOCKS_PER_RUN
+            assert slot + blocks <= per_run
             used[run] = slot + blocks
-            extents.append((_BASE + run * _BLOCKS_PER_RUN + slot, blocks))
+            extents.append((_BASE + run * per_run + slot, blocks))
         placed[name] = extents
     data = {
         name: random.Random(name).randbytes(4096 * blocks * len(runs))
@@ -2179,13 +2181,13 @@ def _runs_image(
     ]
     hfs = d.write_hfsplus(
         [*nodes, *(extra or [])],
-        spare_blocks=_BASE + (max(used) + 1) * _BLOCKS_PER_RUN + 16,
+        spare_blocks=_BASE + (max(used) + 1) * per_run + 16,
         move_extents=lambda path, extents: placed.get(path, extents),
     )
     volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
     disk = d.write_gpt([d.Partition(volume)])
     image = d.write_udif(
-        disk.segments, tables=disk.tables, codec=d.ZLIB, run_sectors=_RUN_SECTORS
+        disk.segments, tables=disk.tables, codec=d.ZLIB, run_sectors=run_sectors
     ).image
     return image, data
 
@@ -2290,6 +2292,28 @@ def test_a_listing_in_data_order_keeps_its_order() -> None:
     with _open(image) as reader:
         files = [m.name for m in reader.members() if m.is_file]
     assert files == sorted(layout)
+
+
+def test_many_files_out_of_order_within_the_cache_keep_their_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1,200 one-block files whose data is shuffled over 8 runs of 1 MiB: listing
+    # order jumps between runs at almost every file, but the 8 runs fit the cache,
+    # so each run decodes once and the listing is not sorted. More files than the
+    # replay's budget once counted.
+    slots = [run for run in range(8) for _ in range(150)]
+    random.Random(5).shuffle(slots)
+    layout = {f"f{k:04d}": [run] for k, run in enumerate(slots)}
+    image, data = _runs_image(layout, run_sectors=2048)
+    decodes = _count_decodes(monkeypatch)
+    with _open(image, config=_TIGHT) as reader:
+        files = [m.name for m in reader.members() if m.is_file]
+        assert files == sorted(layout)
+        before = len(decodes)
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            assert stream.read() == data[member.name]
+        assert len(set(decodes[before:])) == len(decodes[before:])
 
 
 def _crossing_layout() -> dict[str, list[int]]:

@@ -808,10 +808,10 @@ class UdifImage:
         """Count a run a member read decodes again, and hold the image's total to
         ``DecoderLimits.max_ratio`` times the image file's size (one total per image,
         for all streams and passes; past ``ratio_activation_threshold``), as the
-        checksum pass holds its runs. Against the input, not the output: a run is up to
-        16 MiB, so a file of extents of 21 KiB or more each costing a whole run would
-        stay under any
-        multiple of what it returns."""
+        checksum pass holds its runs. Against the input, not the output: a run is up
+        to 16 MiB, so extents of 21 KiB or more (16 MiB / the default ``max_ratio`` of
+        800), each costing a whole run, would stay under any multiple of what they
+        return."""
         self._again += decoded
         # Imported here, as the checksum pass imports it: the bomb tracker is only
         # needed once a run is decoded again.
@@ -828,8 +828,14 @@ class UdifImage:
     def decodes_twice(self, reads: Iterable[Iterable[tuple[int, int]]]) -> bool:
         """Whether reading the disk ranges ``(start, end)`` of each member in turn
         would decode a compressed run a second time, with the run cache replayed
-        over the run indexes alone (nothing is read). Past ``4 *`` the run count of
-        touched runs, some run is touched twice and the answer is yes."""
+        over the run indexes alone (nothing is read).
+
+        The step a range takes into its first run is free, so the work is the number
+        of ranges plus a budget of ``4 *`` the run count ``+ 1024`` steps across run
+        boundaries. Disjoint ranges cross each boundary at most once, so an honest
+        layout never runs out of budget, whatever its file count or order. Ranges
+        that overlap over many runs do (only a crafted image has them), and the answer
+        is then yes: the listing is sorted, which costs nothing more."""
         starts = self._start
         kinds = self._kind
         cache: OrderedDict[int, None] = OrderedDict()
@@ -841,9 +847,10 @@ class UdifImage:
                 for index in range(first, len(kinds)):
                     if starts[index] * SECTOR >= end:
                         break
-                    budget -= 1
-                    if budget < 0:
-                        return True
+                    if index != first:
+                        budget -= 1
+                        if budget < 0:
+                            return True
                     if kinds[index] not in _COMPRESSED:
                         continue
                     if index in cache:

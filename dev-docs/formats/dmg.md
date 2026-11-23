@@ -266,14 +266,17 @@ reads the virtual disk through `UdifSource`, which decodes the runs it covers (e
 decoded runs are cached).
 
 **Member order.** Members come in listing order (§2.2), one volume after another. The
-one exception: when reading a volume's files in that order would decode a compressed
-run a second time, its members come in data order. The check replays the eight-run
-cache over each file's disk ranges (an HFS+ fork's eight extents in its record, an APFS
-stream's extents), with nothing decoded (`UdifImage.decodes_twice`). Then the order
-is: directories and the other members with no data ranges, in listing order (a
-directory still comes before its contents); the files, by the disk offset of their
-first byte; the hard links, in listing order (each after the member it names). Every
-fixture and every builder image in the tests keeps listing order: `hdiutil` lays
+one exception: when reading a volume's files in that order would decode a compressed run
+a second time, its members come in data order. The check replays the eight-run cache
+over each file's disk ranges (an HFS+ fork's eight extents in its record, an APFS
+stream's extents), with nothing decoded (`UdifImage.decodes_twice`). The replay's work
+is one step per range plus a budget of steps across run boundaries (4 × the run count +
+1024). Disjoint ranges cross each boundary once at most, so an honest image never runs
+out, whatever its file count; ranges that overlap over many runs do, and are sorted.
+Then the order is: directories and the other members with no data ranges, in listing
+order (a directory still comes before its contents); the files, by the disk offset of
+their first byte; the hard links, in listing order (each after the member it names).
+Every fixture and every builder image in the tests keeps listing order: `hdiutil` lays
 files out as it copies them. A crafted layout, where each file would decode a whole run
 again, is sorted (§4). The volume's walk is held whole to sort it, while it fits
 `max_members` and `max_metadata_bytes`; past either, it comes in listing order and the
@@ -283,9 +286,10 @@ listing stops at the limit.
 run that a member read already decoded adds its decoded size to one total per image,
 held to `DecoderLimits.max_ratio` times the image file's size, past
 `ratio_activation_threshold`, with the error the checksum pass raises
-(`AlwaysStopResourceLimitError`, which stops an extraction). Against the input, not
-the output: a run is up to 16 MiB, so extents of 24 KiB, each costing a whole run,
-would stay under any multiple of what they return. A run counts as decoded again when:
+(`AlwaysStopResourceLimitError`, which stops an extraction). Against the input, not the
+output: a run is up to 16 MiB, so extents of 21 KiB or more (16 MiB / 800), each costing
+a whole run, would stay under any multiple of what they return. A run counts as decoded
+again when:
 
 - the same member stream decoded it before (a file whose extents cycle over more runs
   than the cache holds, or a read that seeks back over them);
