@@ -88,9 +88,9 @@ Atheris writes the crashing input as an artifact of the run.
 ## The benchmark went red
 
 `benchmark-wall.yml` fails when a case is slower than on the commit the last run
-measured, or a case exceeds the 13x sanity ceiling. Both commits run on the same
-runner in the same job, three times each, so a runner's speed does not move the
-comparison; the job summary has the table.
+measured, or a case exceeds the 13x sanity ceiling by at least 1 ms. Both commits run
+on the same runner in the same job, three times each, so a runner's speed does not
+move the comparison; the job summary has the table.
 
 1. Compare the failing case against the merges between the two commits named in the
    summary. If nothing in that code path changed, rerun the job once: the two commits
