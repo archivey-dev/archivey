@@ -489,9 +489,12 @@ Each member is compressed on its own and read directly.
 
 - **Supported:** methods 0 (stored) to 4. Self-extracting programs: ARJ's DOS `.EXE` modules and
   ARJ for Unix's ELF programs ([Self-extracting archives](#self-extracting-archives)).
-- **Not supported:** garbled (password-protected) members are listed with `is_encrypted`, and
-  reading one raises `UnsupportedFeatureError`, as does reading a member split across the volumes
-  of a multi-volume set.
+- **Passwords:** garbled (password-protected) members read with `password=`. ARJ's garble has no
+  password check of its own, so with more than one password, or a password callback, archivey
+  decodes each candidate to the member's checksum before the read. One password is decoded once,
+  and a wrong one fails the read with `EncryptionError`.
+- **Not supported:** members encrypted with ARJ's later GOST cipher, and members split across the
+  volumes of a multi-volume set, raise `UnsupportedFeatureError` when read.
 - **Checksums:** each member stores a CRC-32 of its data, checked when you read it to its end.
 - **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. DOS archives are usually
   `encoding="cp437"`, or `"cp866"` from Russian systems.

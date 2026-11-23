@@ -404,6 +404,10 @@ class MemberPass(Iterator[_T_co]):
             for member, stream in members:
                 if member.is_file and stream is not None:
                     process(member, stream.read())
+
+    At ``recover_partial_data=PartialDataRecovery.ALL``, that single ``stream.read()``
+    returns a damaged member's bytes without raising: read until ``b""`` to hear
+    the error.
     """
 
     __slots__ = ()

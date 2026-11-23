@@ -120,6 +120,7 @@ one's file.
 |---|---|
 | `"stop"` (default) | The first failure raises, and extraction stops there |
 | `"continue"` | The failure is recorded in the report, and extraction goes on |
+| `"keep_partial"` | As `"continue"`, and a file whose data fails partway keeps the bytes written before the failure |
 
 A refused member isn't a failure, so `"stop"` doesn't stop there. The rest of the archive is
 extracted, and `on_blocked` decides what the call does at the end:
@@ -295,17 +296,31 @@ raises there, and its error has no report.
 
 ## Damaged members
 
-A member that fails partway leaves nothing behind. Archivey writes each file under a temporary
-name and renames it only once it's complete. The files written before the failure stay on disk,
-even with `on_error="stop"`. Going over the total size or entry count in `limits`, or the whole
+By default, a member that fails partway leaves nothing behind. Archivey writes each file under a
+temporary name and renames it only once it's complete. The files written before the failure stay on
+disk, even with `on_error="stop"`.
+
+To keep what a damaged file holds, as `unrar x -kb`, 7-Zip and GNU tar do, pass
+`on_error="keep_partial"`. The file gets the bytes written before the failure, and its result in the
+report is `FAILED`, with the error and the file's `path`. A file whose only damage is a wrong CRC or
+size keeps every byte, except where the decoder checks the CRC itself, as gzip does, and can lose
+its last few bytes: extraction reads such a member as `recover_partial_data=PartialDataRecovery.ALL`
+does (see [Errors and diagnostics](errors-and-diagnostics.md)), whatever the config says. The file
+gets a modification time of now and archivey's own file mode, not the ones the archive stores, so it
+doesn't pass for the real one. Under `overwrite="replace"`, the partial file replaces an entry
+already at its name, as a complete one would. A member that fails before any byte is written leaves
+nothing, and so does one that goes over a limit.
+
+Going over the total size or entry count in `limits`, or the whole
 archive expanding too much, stops the extraction even with `on_error="continue"`, since it's a sign
 that the whole archive is hostile. A single member that expands too much fails like any other
 member.
 
 If the damage is in the list of members itself, such as a TAR, RAR or ZIP cut short, the members
-before it are written and the call then raises, with either `on_error`, and returns no report. If a
-ZIP's central directory is damaged, archivey also finds the members after the damage from the header
-in front of each one's data, and writes those too before it raises. A damaged 7z index fails
+before it are written and the call then raises, whatever `on_error` says, and returns no report.
+Under `on_error="keep_partial"`, a note on that error names each partial file the run kept. If
+a ZIP's central directory is damaged, archivey also finds the members after the damage from the
+header in front of each one's data, and writes those too before it raises. A damaged 7z index fails
 `open_archive` before anything is written.
 
 A process killed during an extraction can leave a file or folder named `.archivey-tmp-` followed by

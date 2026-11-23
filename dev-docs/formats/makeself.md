@@ -110,7 +110,10 @@ with a stated digest, `cover()`s each member before yielding it, and calls `pass
 or raises `failed()` at the payload's end. Covered files have `verifiable=CHECKSUM` from
 listing; a pass raises them all; a failure is kept in `_spanning_unreachable` under the
 payload's key, so every later `verify_all()` returns each covered file with it until a
-walk passes the check. The POSIX `cksum` CRC is CRC-32 MSB first, computed with
+walk passes the check. An encrypted payload's files are covered with
+`proves_data=False`: the digests are over the ciphertext, and the key is only
+`INCONCLUSIVE`, so a mismatch still makes them failures, but a pass sets no
+`CHECKSUM` level. The POSIX `cksum` CRC is CRC-32 MSB first, computed with
 `binascii.crc32` over bit-reversed bytes (`_Cksum`).
 
 ## 4. Sharp edges

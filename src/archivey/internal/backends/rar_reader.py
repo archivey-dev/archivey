@@ -4518,6 +4518,7 @@ class RarReader(BaseArchiveReader):
                 previous = self._lazy_member_stream(
                     member, batched_open, register=False
                 )
+                self._apply_recovery_level(previous)
                 yield member, previous
         finally:
             try:

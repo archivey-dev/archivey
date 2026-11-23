@@ -512,11 +512,11 @@ def test_confirmed_winner_is_reopened_fresh(monkeypatch: pytest.MonkeyPatch) -> 
     tried: list[bytes] = []
 
     def tracking_keys(
-        password: bytes, header: bytes
-    ) -> tuple[zipcrypto.ZipCryptoKeys, int]:
+        password: bytes, header: bytes, *args: Any
+    ) -> tuple[zipcrypto.CipherState, int]:
         # One call per decrypt stage the reader opens.
         tried.append(password)
-        return original(password, header)
+        return original(password, header, *args)
 
     monkeypatch.setattr(zip_reader, "keys_after_header", tracking_keys)
     with open_archive(io.BytesIO(blob), password=[collider, RIGHT]) as ar:
@@ -600,12 +600,11 @@ def test_stored_zipcrypto_provider_repeat_terminates(
         passwords: list[bytes],
         header_ciphertext: bytes,
         body: BinaryIO,
-        *,
-        chunk_size: int = 64 * 1024,
+        **kwargs: Any,
     ) -> list[tuple[bytes, int]]:
         nonlocal crc_calls
         crc_calls += 1
-        return original(passwords, header_ciphertext, body, chunk_size=chunk_size)
+        return original(passwords, header_ciphertext, body, **kwargs)
 
     monkeypatch.setattr(zip_reader, "parallel_plaintext_crc32", counting_crc)
 

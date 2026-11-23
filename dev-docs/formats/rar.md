@@ -327,7 +327,13 @@ the next position from the damaged header's data offset and data size (RAR 1.5-4
 packed size, as `unrar` reads it). It goes there only when the header there passes its
 CRC and may follow MAIN (FILE, SERVICE, ENDARC). In RAR5 that one CRC32 is the
 confirmation (2⁻³² odds of a false match). In RAR 1.5-4 the header CRC is 16 bits, so
-the header after it must pass too, or be the clean end of the volume (2⁻³²). A second
+the header after it must pass too, or be the clean end of the volume (2⁻³²). The clean
+end is exactly the end of the file, or an intact end block with only zeros after it. A
+position past the end of the file does not count, although the read there is empty too:
+a landing that passes its CRC16 by chance holds a random packed size, which points past
+the end of almost any file, so counting it would make the odds 2⁻¹⁶. The cost is that
+a damaged header followed by an intact last member that the file cuts short is not
+followed, and that member is not listed (`_Rar3Walk._probe`). A second
 header that is itself damaged confirms once its own sizes are confirmed, so damage two
 headers apart is followed in both versions. A run of damaged headers is followed the
 same way, up to `_MAX_DAMAGED_HEADER_CHAIN` (8) damaged headers per check, and the

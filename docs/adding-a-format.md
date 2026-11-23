@@ -670,6 +670,150 @@ wrote, change one field (a block size, a fragment index, a directory entry's typ
 check that each change raises `CorruptionError`, `TruncatedError` or
 `UnsupportedFeatureError`.
 
+## Encrypted archives
+
+A reader never reads the caller's `password=` itself. Where a part of the archive needs
+a password, it hands archivey a `NeedsPassword` request that says how to test one, and
+archivey tries the caller's passwords on it and gives back what the winning one
+unlocked. archivey tries them in the same order, and raises the same errors, as for a
+ZIP or 7z archive: the password that last unlocked a part of this archive first, then
+the passwords given, then the caller's password callback, one answer at a time.
+
+Three things make a format ready for passwords:
+
+- Set `supports_password = True` on the handler. Without it, archivey reports a
+  `password=` given for the format as unused, and treats a request from its reader as a
+  plugin bug.
+- Mark what needs a password. An encrypted member gets `is_encrypted=True` on its
+  `ArchiveMember`. When the member list itself is encrypted, as in a 7z archive with
+  encrypted headers, set `is_encrypted=True` on the reader's `ReaderArchiveInfo` too.
+- Hand over a `NeedsPassword` where the reader needs the key.
+
+### A request from `open_member`
+
+Say TOYA encrypts a member with a key derived from the password, and its index entry
+stores one check byte of that key, as ZipCrypto does. `open_member` returns a request
+in place of the `MemberData`, and archivey calls its `then` with the key that won:
+
+```python
+import hashlib
+import zlib
+
+from archivey.formats import NeedsPassword, PasswordConfirmVerdict
+
+ROUNDS = 10_000
+
+
+class ToyReader(IndexedReader[Locator]):
+    ...
+
+    def _key(self, password: bytes, salt: bytes) -> bytes:
+        # Counted against the caller's key-derivation limit before the work.
+        self._context.charge_key_derivation(ROUNDS)
+        return hashlib.pbkdf2_hmac("sha256", password, salt, ROUNDS)
+
+    def open_member(
+        self, member: ArchiveMember, locator: Locator
+    ) -> MemberData | NeedsPassword[bytes, MemberData]:
+        offset, size, crc32, salt, check_byte = locator
+        if not member.is_encrypted:
+            return MemberData(self._source.view(offset, size))
+
+        def check(password: bytes) -> tuple[bytes | None, PasswordConfirmVerdict]:
+            key = self._key(password, salt)
+            if key[0] != check_byte:
+                return None, PasswordConfirmVerdict.REJECTED
+            # One byte in 256 matches by chance: not enough to be sure.
+            return key, PasswordConfirmVerdict.INCONCLUSIVE
+
+        def full_check(
+            password: bytes,
+        ) -> tuple[bytes | None, PasswordConfirmVerdict]:
+            key = self._key(password, salt)
+            crc = 0
+            with somelib.decrypting_reader(self._source.view(offset, size), key) as data:
+                while chunk := data.read(1 << 16):
+                    crc = zlib.crc32(chunk, crc)
+            if crc != crc32:
+                return None, PasswordConfirmVerdict.REJECTED
+            return key, PasswordConfirmVerdict.CONFIRMED
+
+        def then(key: bytes, verdict: PasswordConfirmVerdict) -> MemberData:
+            data = somelib.decrypting_reader(self._source.view(offset, size), key)
+            return MemberData(data, unlocked=verdict)
+
+        return NeedsPassword(
+            member.name, check, full_check=full_check, member=member, then=then
+        )
+```
+
+`check` tests one password and returns what it unlocked with a verdict:
+
+- `CONFIRMED` when the archive proves the password right. That takes a check at least
+  as strong as a CRC-32 over 4 bytes or more, or a cryptographic one: an HMAC, an AES
+  key-wrap check, a key-check value of 4 bytes or more.
+- `INCONCLUSIVE` when the password passes a weaker test, such as a check byte or a
+  file magic in the first decrypted block.
+- `REJECTED`, with `None` in place of the data, when the password is wrong.
+
+A `CONFIRMED` password wins at once. An `INCONCLUSIVE` one is set aside while archivey
+tries the other passwords given. archivey then runs `full_check`, if the request has
+one, when more than one password passed, when one passed while the callback could still
+be asked for another, and on each answer the callback gives. Give a `full_check` only
+where the reader can read the part again, and make it read in bounded chunks, as above,
+rather than hold the part in memory.
+
+Pass the verdict on, as `MemberData(unlocked=verdict)`. Under an `INCONCLUSIVE`
+password, a checksum that fails at the end of the member raises an `EncryptionError`
+that says the password is wrong or the data damaged, rather than a plain
+`CorruptionError`.
+
+archivey writes every password error for you, all `EncryptionError`, with `what`
+naming the part:
+
+- "{what} is encrypted: pass password= to read it" when no password was given;
+- "Wrong password for {what}" when `check` rejected every one;
+- "Wrong password for {what}, or its data is damaged" when `full_check` rejected one,
+  since a checksum also fails under the right password when the data is damaged.
+
+An exception that `check`, `full_check` or `then` raises ends the search, and goes
+through `translate_exception()` like any other.
+
+### Where else a request can come from
+
+- **The handler's `open`**, for an archive encrypted as a whole: return a request
+  whose `then` builds the reader. Leave `member` at `None`, and the password callback
+  is shown no member.
+- **`iter_members` or `walk`**, when the listing itself needs the key, or a sequential
+  format reaches an encrypted part: yield the request, with no `then`, and take the
+  result from the `yield`:
+
+  ```python
+  key, verdict = yield NeedsPassword("payload 2", check)
+  ```
+
+  A sequential walk cannot read a part twice, so its request has no `full_check`, and
+  archivey decides on `check` alone.
+- **A `then`** may return a further request, for a format that needs two keys.
+
+### What archivey takes care of
+
+- **Each part is unlocked once.** archivey keeps the password that won each request
+  for the life of the reader. When the same member is opened again, or a seek takes
+  its stream back to the start, the saved password is tried first, and the caller's
+  password callback is never asked twice for the same part.
+- **The callback runs outside your code.** `check`, `full_check` and `then` run under
+  the same locks as the call that handed over the request, so they may read the
+  archive as that call could. The caller's callback runs between them, never inside
+  them.
+- **Limits.** Call `charge_key_derivation()` before each key derivation with the
+  number of rounds the archive asks for, as `_key` does above. A malicious archive can
+  ask for a billion rounds, and the call raises `ResourceLimitError` before the work
+  when the caller's limit would be passed.
+- **Opening the member again.** When archivey opens a member again, the new
+  `MemberData` must state the same `digests`, `checked` and `bounded` as the first: a
+  change is a plugin bug.
+
 ## Errors
 
 When the archive is damaged, raise archivey's own exceptions from the reader:
@@ -854,9 +998,9 @@ archive behind a prefix (a self-extracting stub or other leading bytes) with
 cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO,
 since its bytes are not an ISO 9660 image (the built-in reader strips the sectors as it reads). The format's own config options, such as
 `zip_unflagged_fallback_encoding` or `rar_decompressor`, reach the plugin through
-`ReaderContext.config`; honouring them is the plugin's job. `password=` does not reach a
-replacement, as it reaches no plugin, so a replaced ZIP, 7z or RAR cannot read an encrypted
-member; `encoding=` reaches it when the plugin sets `uses_encoding`. A missing module in
+`ReaderContext.config`; honouring them is the plugin's job. `password=` reaches a
+replacement that sets `supports_password` and asks for passwords with `NeedsPassword`, as
+any plugin does; `encoding=` reaches it when the plugin sets `uses_encoding`. A missing module in
 `requires` raises `PackageNotInstalledError` naming the plugin, without falling back to
 the built-in reader.
 
@@ -985,6 +1129,6 @@ turn it off: a replacement runs only in a call whose config names it in `replace
 
 - A format with an index inside an outer compressor. Only a format read in one pass can
   be.
-- Self-extracting archives, multi-volume sets and passwords.
+- Self-extracting archives and multi-volume sets.
 - New diagnostic codes. A plugin reports with archivey's existing codes.
 - Writing archives.

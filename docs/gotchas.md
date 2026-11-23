@@ -115,7 +115,8 @@ except archivey.ArchiveyError:
 
 A damaged member raises `CorruptionError`, and by default the extraction stops there. The files
 written before it stay in the destination, but the damaged member doesn't leave a partial file.
-`on_error="continue"` extracts the rest and records the failures in the report instead.
+`on_error="continue"` extracts the rest and records the failures in the report instead, and
+`on_error="keep_partial"` also keeps what each damaged file holds.
 [Damaged members](extracting.md#damaged-members)
 
 ## Errors

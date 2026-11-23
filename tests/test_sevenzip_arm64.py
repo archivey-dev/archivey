@@ -1,4 +1,4 @@
-"""The 7z ARM64 branch filter (method ``0x0A``), decoded in Python.
+"""The 7z ARM64 branch filter (method ``0x0A``), decoded by archivey-codecs or in Python.
 
 The oracles are 7-Zip itself (archives it writes, and with ``-m1=Copy`` the filtered
 bytes it stores) and ``_reference``, a word-by-word port of liblzma's ``arm64_code``
@@ -21,12 +21,41 @@ from archivey.exceptions import TruncatedError, UnsupportedFeatureError
 from archivey.internal.backends import sevenzip_parser, sevenzip_pipeline
 from archivey.internal.backends.sevenzip_parser import SevenZipCoder
 from archivey.internal.backends.sevenzip_pipeline import plan_folder
+from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
+from archivey.internal.streams.codecs.isolated import IN_PROCESS
 from archivey.internal.streams.codecs.lzma_filter_decoder import (
+    BranchFilterDecoder,
     FilterStream,
-    PythonBranchFilterDecoder,
+    PythonBranch,
+    branch_maker,
 )
+from archivey.types import OptionalLibrary
 from tests.conftest import requires_binary, sevenzip_lists_arm64
+
+
+@pytest.fixture(params=["python", "codecs"])
+def excluded(request: pytest.FixtureRequest) -> frozenset[OptionalLibrary]:
+    """The excluded libraries for a run with the Python filter, or with
+    archivey-codecs' kernel (skipped when the package is not installed)."""
+    if request.param == "python":
+        return frozenset({OptionalLibrary.ARCHIVEY_CODECS})
+    if not deps.archivey_codecs.available():
+        pytest.skip("archivey-codecs is not installed")
+    return frozenset()
+
+
+def _decoder(
+    excluded: frozenset[OptionalLibrary], start_offset: int, unpack_size: int
+) -> BranchFilterDecoder:
+    make_branch = branch_maker(
+        FILTER_ARM64, start_offset, excluded=excluded, natives=IN_PROCESS
+    )
+    assert make_branch is not None
+    python = OptionalLibrary.ARCHIVEY_CODECS in excluded
+    assert isinstance(make_branch(), PythonBranch) is python
+    return BranchFilterDecoder(make_branch=make_branch, unpack_size=unpack_size)
+
 
 _ARM64 = b"\x0a"
 _LZMA2 = b"\x21"
@@ -126,16 +155,16 @@ def test_decode_matches_reference(pc: int) -> None:
 
 
 @pytest.mark.parametrize("tail_length", [0, 1, 2, 3])
-def test_unaligned_tail_is_passed_through(tail_length: int) -> None:
+def test_unaligned_tail_is_passed_through(
+    tail_length: int, excluded: frozenset[OptionalLibrary]
+) -> None:
     # A tail whose last byte is a BL opcode byte: it is not a whole word, so it is
     # never converted, whether alone or behind whole words.
     tail = b"\x94\x94\x94"[:tail_length]
     for words in (0, 1, 7):
         data = _payload(words, tail=tail, seed=words)
         encoded = _reference(data, 0, encode=True)
-        decoder = PythonBranchFilterDecoder(
-            decode=arm64_decode, start_offset=0, unpack_size=len(data)
-        )
+        decoder = _decoder(excluded, 0, len(data))
         out = decoder.feed(encoded).data + decoder.flush().data
         assert out == data
         assert out[len(out) - tail_length :] == tail
@@ -144,13 +173,13 @@ def test_unaligned_tail_is_passed_through(tail_length: int) -> None:
 
 @pytest.mark.parametrize("piece", [1, 2, 3, 5, 4097, 65537])
 @pytest.mark.parametrize("max_length", [-1, 3, 4096])
-def test_chunk_boundaries(piece: int, max_length: int) -> None:
+def test_chunk_boundaries(
+    piece: int, max_length: int, excluded: frozenset[OptionalLibrary]
+) -> None:
     pc = 0x1000
     data = _PAYLOAD[: 3 * 4097 + 2] if piece < 4 else _PAYLOAD
     encoded = _reference(data, pc, encode=True)
-    decoder = PythonBranchFilterDecoder(
-        decode=arm64_decode, start_offset=pc, unpack_size=len(data)
-    )
+    decoder = _decoder(excluded, pc, len(data))
     out = bytearray()
     for start in range(0, len(encoded), piece):
         out += decoder.feed(encoded[start : start + piece], max_length).data
@@ -162,12 +191,15 @@ def test_chunk_boundaries(piece: int, max_length: int) -> None:
     assert decoder.pending_error is None
 
 
-def test_filter_stream_reads_in_small_pieces_and_seeks_back() -> None:
+def test_filter_stream_reads_in_small_pieces_and_seeks_back(
+    excluded: frozenset[OptionalLibrary],
+) -> None:
     encoded = _reference(_PAYLOAD, 0, encode=True)
     stream = FilterStream(
         io.BytesIO(encoded),
         lzma_filter={"id": FILTER_ARM64},
         unpack_size=len(_PAYLOAD),
+        excluded=excluded,
         seekable=True,
     )
     try:
@@ -181,10 +213,13 @@ def test_filter_stream_reads_in_small_pieces_and_seeks_back() -> None:
         stream.close()
 
 
-def test_truncated_input_is_reported() -> None:
+def test_truncated_input_is_reported(excluded: frozenset[OptionalLibrary]) -> None:
     encoded = _reference(_PAYLOAD[:4096], 0, encode=True)
     stream = FilterStream(
-        io.BytesIO(encoded[:-5]), lzma_filter={"id": FILTER_ARM64}, unpack_size=4096
+        io.BytesIO(encoded[:-5]),
+        lzma_filter={"id": FILTER_ARM64},
+        unpack_size=4096,
+        excluded=excluded,
     )
     try:
         with pytest.raises(TruncatedError):
