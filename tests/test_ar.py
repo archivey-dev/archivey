@@ -540,6 +540,14 @@ def test_the_name_table_is_charged_to_max_metadata_bytes(tmp_path: Path) -> None
 
     with pytest.raises(ResourceLimitError, match="max_metadata_bytes=10"):
         open_archive(path, config=config(10))
+    # The table fits a limit of its own size, but the listed name is charged to the
+    # same total, so the walk that lists the member is refused.
+    table = len(b"a-long-member-name.txt/\n")
+    with (
+        pytest.raises(ResourceLimitError, match=f"max_metadata_bytes={table}"),
+        open_archive(path, config=config(table)) as reader,
+    ):
+        reader.members()
     for limit in (None, 1024):
         with open_archive(path, config=config(limit)) as reader:
             assert reader.read("a-long-member-name.txt") == b"data"
