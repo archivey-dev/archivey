@@ -1283,6 +1283,55 @@ def test_a_relocated_directory_lists_under_its_placeholders_name() -> None:
         assert ar.read(deep) == b"deep"
 
 
+def test_a_parked_directory_no_cl_points_at_lists_where_it_is_stored() -> None:
+    """A directory whose ``..`` carries ``PL`` is hidden from its parking place only
+    when a ``CL`` relinks it. With no ``CL`` pointing back, hiding it would lose it
+    and its files, so it lists where it is stored, under ``rr_moved``."""
+
+    def populate(iso: Any) -> None:
+        path = ""
+        for name in [f"L{i}" for i in range(1, 9)]:
+            path += f"/{name}"
+            iso.add_directory(path, rr_name=name.lower())
+        iso.add_fp(io.BytesIO(b"deep"), 4, path + "/F.;1", rr_name="f.txt")
+
+    data = _build_rr_iso(populate)
+    assert data.count(b"CL\x0c\x01") == 1
+    # The placeholder keeps its record, now a plain empty file with no ``CL``.
+    data = data.replace(b"CL\x0c\x01", b"XX\x0c\x01")
+    with open_archive(io.BytesIO(data)) as ar:
+        names = {m.name for m in ar.members()}
+        assert "rr_moved/l8/f.txt" in names
+        assert "l1/l2/l3/l4/l5/l6/l7/l8" in names
+        assert ar.read("rr_moved/l8/f.txt") == b"deep"
+
+
+def test_a_cl_inside_the_directory_it_relinks_does_not_hide_it() -> None:
+    """A ``CL`` counts only once the listing reaches it. With the two ``CL`` extents
+    of a twice-relocated tree swapped, the one pointing at ``l8`` sits under ``l8``
+    itself, so ``l8`` lists where it is stored and none of its files is lost."""
+
+    def populate(iso: Any) -> None:
+        path = ""
+        for depth in range(1, 17):
+            path += f"/L{depth}"
+            iso.add_directory(path, rr_name=f"l{depth}")
+        iso.add_fp(io.BytesIO(b"deep"), 4, path + "/F.;1", rr_name="f.txt")
+        nine = "".join(f"/L{depth}" for depth in range(1, 10))
+        iso.add_fp(io.BytesIO(b"mid"), 3, nine + "/M.;1", rr_name="m.txt")
+
+    data = bytearray(_build_rr_iso(populate))
+    first = data.index(b"CL\x0c\x01")
+    second = data.index(b"CL\x0c\x01", first + 1)
+    assert data.find(b"CL\x0c\x01", second + 1) < 0
+    a, b = data[first + 4 : first + 12], data[second + 4 : second + 12]
+    data[first + 4 : first + 12], data[second + 4 : second + 12] = b, a
+    with open_archive(io.BytesIO(bytes(data))) as ar:
+        files = [m for m in ar.members() if m.type is MemberType.FILE]
+        contents = sorted(ar.read(m) for m in files)
+    assert contents == [b"deep", b"mid"], [m.name for m in files]
+
+
 def test_a_rock_ridge_record_without_entries_lists_under_its_iso_name() -> None:
     """An RR image whose one record has no System Use entries keeps that member,
     names it from the ISO 9660 identifier, and says what was lost."""

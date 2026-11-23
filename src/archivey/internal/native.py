@@ -14,9 +14,12 @@ A kernel is used when all of these hold:
 - its ``KERNELS`` revision for that kernel is at least :data:`MIN_REVISIONS`' (an older
   one may differ from this archivey's Python twin, so it is skipped, logged once at
   DEBUG);
-- for a decoding kernel (ARM64, RISC-V, LZW, LZO1X), the call's ``process_isolation``
-  is not ``NATIVE_DECODERS``: until the decoder child runs these kernels, the Python
-  twin keeps that setting's promise that no native decoder runs in this process.
+- under ``ProcessIsolation.NATIVE_DECODERS``, which promises that no native decoder
+  runs in this process, a decoding kernel (ARM64, RISC-V, LZW, LZO1X, LZX) runs in the
+  decoder child (:mod:`archivey.internal.native_child`), and the Python twin decodes
+  when no child can run it. BCJ2 is not run there yet, so the Python twin decodes it.
+  CRC-16/ARC and ZipCrypto run in this process under every setting, as checksums and
+  AES do.
 
 A missed check in a kernel panics, and PyO3 raises ``pyo3_runtime.PanicException``, a
 ``BaseException`` that passes ``except Exception``. :func:`panic_to_corruption` turns it
@@ -26,24 +29,27 @@ into archivey's ``CorruptionError`` with the panic as its cause.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from types import ModuleType
-from typing import Protocol
+from typing import BinaryIO, Protocol
 
 from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal import logs
+from archivey.internal import logs, native_child
+from archivey.internal.native_child import ChildCodecs, ChildPanic
 from archivey.internal.streams.codecs import deps
 from archivey.types import OptionalLibrary
 
 MIN_REVISIONS: dict[str, int] = {
     "arm64": 1,
+    "bcj2": 1,
     "crc16_arc": 1,
     "lzo1x": 1,
     "lzw": 1,
+    "lzx": 2,
     "riscv": 1,
     "zipcrypto": 1,
 }
@@ -54,33 +60,62 @@ errors match its Python twin. A kernel not named here is not used."""
 _too_old_logged: set[str] = set()
 
 
+Kernels = ModuleType | ChildCodecs
+"""The ``archivey_codecs`` module, or its stand-in whose kernels run in a decoder
+child."""
+
+
 def kernels(name: str, excluded: frozenset[OptionalLibrary]) -> ModuleType | None:
-    """The ``archivey_codecs`` module when its ``name`` kernel is to be used for a
-    call whose policy turns off ``excluded``, else ``None``."""
+    """The ``archivey_codecs`` module when its ``name`` kernel is to be used in this
+    process for a call whose policy turns off ``excluded``, else ``None``."""
     if OptionalLibrary.ARCHIVEY_CODECS in excluded:
         return None
     module = deps.archivey_codecs.load()
-    if module is None:
-        return None
-    table = getattr(module, "KERNELS", None)
-    have = table.get(name) if table is not None else None
-    need = MIN_REVISIONS[name]
-    if not isinstance(have, int) or have < need:
-        if name not in _too_old_logged:
-            _too_old_logged.add(name)
-            logs.streams.debug(
-                "archivey-codecs has %r kernel revision %r; archivey needs %d or "
-                "newer, so it uses its Python decoder for it",
-                name,
-                have,
-                need,
-            )
+    if module is None or not _current(name, getattr(module, "KERNELS", None)):
         return None
     return module
 
 
+def decoding_kernels(
+    name: str, excluded: frozenset[OptionalLibrary], *, isolated: bool
+) -> Kernels | None:
+    """:func:`kernels` for a decoding kernel. ``isolated``: the call's
+    ``process_isolation`` is ``NATIVE_DECODERS``, and the module's stand-in that runs
+    each kernel in a decoder child is returned instead
+    (:func:`native_child.open_kernels`)."""
+    if not isolated:
+        return kernels(name, excluded)
+    if OptionalLibrary.ARCHIVEY_CODECS in excluded:
+        return None
+    module = native_child.open_kernels(excluded)
+    if module is None or not _current(name, module.KERNELS):
+        return None
+    return module
+
+
+def _current(name: str, table: Mapping[str, object] | None) -> bool:
+    """Whether ``table`` (``KERNELS``) has a revision of ``name`` this archivey uses;
+    an older one is logged once at DEBUG."""
+    have = table.get(name) if table is not None else None
+    need = MIN_REVISIONS[name]
+    if isinstance(have, int) and have >= need:
+        return True
+    if name not in _too_old_logged:
+        _too_old_logged.add(name)
+        logs.streams.debug(
+            "archivey-codecs has %r kernel revision %r; archivey needs %d or "
+            "newer, so it uses its Python decoder for it",
+            name,
+            have,
+            need,
+        )
+    return False
+
+
 def is_panic(exc: BaseException) -> bool:
-    """Whether ``exc`` is a Rust panic raised by PyO3."""
+    """Whether ``exc`` is a Rust panic raised by PyO3, here or in a decoder child."""
+    if isinstance(exc, ChildPanic):
+        return True
     kind = type(exc)
     return kind.__name__ == "PanicException" and kind.__module__ == "pyo3_runtime"
 
@@ -112,7 +147,7 @@ def panic_to_corruption(kernel: str) -> Generator[None]:
 
 
 @contextlib.contextmanager
-def codec_errors(module: ModuleType, kernel: str) -> Generator[None]:
+def codec_errors(module: Kernels, kernel: str) -> Generator[None]:
     """Raise the package's errors as archivey's, with the same message, and a panic
     as ``CorruptionError``. The kernels raise with their Python twin's message, so the
     error a caller sees is the one the twin raises."""
@@ -151,6 +186,14 @@ class Latch:
             if caused_by_panic(exc):
                 self._failure = exc
             raise
+
+
+def _close_kernel(kernel: object) -> None:
+    """Give back the decoder child a kernel object holds, if it is one
+    (``native_child``): what ``release_decoder`` asks of a wrapper below."""
+    close = getattr(kernel, "close", None)
+    if close is not None:
+        close()
 
 
 # ── CRC-16/ARC ────────────────────────────────────────────────────────────────────────
@@ -256,6 +299,9 @@ class NativeBranch:
 
     __slots__ = ("_decoder", "_latch")
 
+    # Its kernel object may be in a decoder child (``release_decoder``).
+    holds_decoder_child = True
+
     def __init__(self, decoder: _BranchDecoder, kernel: str) -> None:
         self._decoder = decoder
         self._latch = Latch(kernel)
@@ -267,6 +313,9 @@ class NativeBranch:
     def flush(self) -> bytes:
         with self._latch.guard():
             return self._decoder.flush()
+
+    def close(self) -> None:
+        _close_kernel(self._decoder)
 
 
 _BRANCH_CLASSES = {
@@ -282,12 +331,10 @@ def branch_filter(
     ``None`` to use the Python filter. ``kernel`` is ``"arm64"`` or ``"riscv"``.
 
     ``isolated`` is ``ProcessIsolation.NATIVE_DECODERS``, which promises that no native
-    decoder runs in this process. Until the decoder child can run these kernels, the
-    Python filter keeps that promise: it gives the same bytes, only slower.
+    decoder runs in this process: the kernel then runs in a decoder child, and the
+    Python filter decodes when no child can run it (:mod:`native_child`).
     """
-    if isolated:
-        return None
-    module = kernels(kernel, excluded)
+    module = decoding_kernels(kernel, excluded, isolated=isolated)
     if module is None:
         return None
     class_name, label = _BRANCH_CLASSES[kernel]
@@ -345,8 +392,11 @@ class NativeLzw:
 
     __slots__ = ("_at", "_d", "_finished", "_flushed", "_latch", "_module")
 
+    # Its kernel object may be in a decoder child (``release_decoder``).
+    holds_decoder_child = True
+
     def __init__(
-        self, module: ModuleType, decoder: _LzwDecompressor, *, header_in_stream: bool
+        self, module: Kernels, decoder: _LzwDecompressor, *, header_in_stream: bool
     ) -> None:
         self._module = module
         self._d = decoder
@@ -413,15 +463,16 @@ class NativeLzw:
     def needs_input(self) -> bool:
         return self._finished or self._d.needs_input
 
+    def close(self) -> None:
+        _close_kernel(self._d)
+
 
 def lzw(
     excluded: frozenset[OptionalLibrary], *, isolated: bool
 ) -> Callable[..., NativeLzw] | None:
     """A constructor of :class:`NativeLzw` taking ``LzwState``'s keyword arguments,
     or ``None`` to use ``LzwState``. ``isolated`` as for :func:`branch_filter`."""
-    if isolated:
-        return None
-    module = kernels("lzw", excluded)
+    module = decoding_kernels("lzw", excluded, isolated=isolated)
     if module is None:
         return None
     decompressor = module.lzw.Decompressor
@@ -439,5 +490,178 @@ def lzw(
                 nine_bit_widens=nine_bit_widens,
             )
         return NativeLzw(module, d, header_in_stream=max_width is None)
+
+    return new
+
+
+# ── LZX ───────────────────────────────────────────────────────────────────────────────
+
+
+class NativeLzx:
+    """archivey-codecs' LZX decoder in the shape of the Python ``LzxDecoder``:
+    :meth:`decode_frame` returns the next frame, pulling input through ``more`` (the
+    next data block, or ``None`` after the last) and pushing it into the kernel.
+
+    The kernel keeps its place when its input runs out inside a frame, so it asks
+    for the next block exactly where the Python decoder pulls it. ``more`` raises
+    for a damaged block (its checksum fails), so its error comes from the same frame
+    as there.
+    """
+
+    __slots__ = ("_d", "_decoded", "_ended", "_latch", "_module", "_more", "_sized")
+
+    # Its kernel object may be in a decoder child (``release_decoder``).
+    holds_decoder_child = True
+
+    def __init__(
+        self,
+        module: Kernels,
+        window_bits: int,
+        more: Callable[[], bytes | None],
+        output_size: int | None,
+    ) -> None:
+        self._module = module
+        self._latch = Latch("LZX")
+        with codec_errors(module, "LZX"):
+            self._d = module.lzx.Decompressor(window_bits, output_size=output_size)
+        self._more = more
+        self._ended = False  # ``more`` returned ``None`` and the kernel was flushed
+        self._sized = output_size is not None
+        self._decoded = 0  # the frames returned, each one whole
+
+    def decode_frame(self, frame_size: int) -> bytes:
+        """The next frame: ``frame_size`` bytes, 32 KiB except the last, as the
+        kernel's ``output_size`` sets them."""
+        with self._latch.guard(), codec_errors(self._module, "LZX"):
+            d = self._d
+            if not self._sized:
+                # Without an output size the kernel ends the stream where its input
+                # does, at a frame boundary. The Python decoder decodes the frame it
+                # is asked for from the zero padding instead (and fails on it), so
+                # the kernel is told this frame is wanted.
+                d.set_output_size(self._decoded + frame_size)
+            while True:
+                out = (
+                    d.flush(frame_size)
+                    if self._ended
+                    else d.decompress(b"", frame_size)
+                )
+                if out:
+                    self._decoded += len(out)
+                    return out
+                if self._ended or d.eof:
+                    # The Python decoder's refusal of a frame past its input's end.
+                    raise TruncatedError("LZX stream ends before its output")
+                data = self._more()
+                if data is None:
+                    self._ended = True
+                    continue
+                out = d.decompress(data, frame_size)
+                if out:
+                    self._decoded += len(out)
+                    return out
+
+    def close(self) -> None:
+        _close_kernel(self._d)
+
+
+def lzx(
+    excluded: frozenset[OptionalLibrary], *, isolated: bool
+) -> Callable[[int, Callable[[], bytes | None], int | None], NativeLzx] | None:
+    """A constructor of :class:`NativeLzx` taking ``(window_bits, more,
+    output_size)``, or ``None`` to use the Python ``LzxDecoder``. ``isolated`` as
+    for :func:`branch_filter`."""
+    module = decoding_kernels("lzx", excluded, isolated=isolated)
+    if module is None:
+        return None
+
+    def new(
+        window_bits: int, more: Callable[[], bytes | None], output_size: int | None
+    ) -> NativeLzx:
+        return NativeLzx(module, window_bits, more, output_size)
+
+    return new
+
+
+# ── BCJ2 ──────────────────────────────────────────────────────────────────────────────
+
+
+class NativeBcj2:
+    """archivey-codecs' BCJ2 decoder over four input streams, for
+    ``Bcj2DecoderStream``.
+
+    The kernel returns the bytes decoded before an error and raises the error from
+    its next call. The Python decoder decodes whole ``main`` blocks and raises an
+    error from the read that decodes its block, keeping the bytes decoded before it
+    for later reads. :meth:`read` therefore returns every byte decoded so far
+    together with the error found on the way, for the caller to keep and raise.
+    """
+
+    __slots__ = ("_d", "_latch", "_module", "_size")
+
+    def __init__(
+        self,
+        module: ModuleType,
+        streams: tuple[BinaryIO, BinaryIO, BinaryIO, BinaryIO],
+        out_size: int,
+    ) -> None:
+        self._module = module
+        self._latch = Latch("BCJ2")
+        self._size = out_size
+        with codec_errors(module, "BCJ2"):
+            self._d = module.bcj2.Decompressor(*streams, out_size=out_size)
+
+    def read(self, n: int) -> tuple[bytes, Exception | None]:
+        """At least ``n`` bytes unless the output ends or an error stops it, and the
+        error a block decoded on the way found, if any.
+
+        Past ``n`` come the rest of the bytes decoded: when the blocks decoded reach
+        the end of the output (the Python decoder runs the end check as soon as it
+        has decoded the last byte, the kernel only once it returns it), and when an
+        error waits. An error waits when the read came back short, or returned the
+        last byte without passing the end check, or decoded a block (its inputs
+        moved) and ``getstate()`` refuses: it refuses only while an error waits, and
+        otherwise copies at most one block's output, once a block."""
+        with self._latch.guard(), codec_errors(self._module, "BCJ2"):
+            d = self._d
+            before = d.total_in
+            out = d.read(n)
+            if not d.eof and d.decoded == self._size and d.total_out < self._size:
+                out += d.read(-1)
+            if d.eof:
+                return out, None
+            waits = len(out) < n or d.total_out == self._size
+            if not waits and d.total_in != before:
+                try:
+                    d.getstate()
+                except ValueError:
+                    waits = True
+            if not waits:
+                return out, None
+        try:
+            with self._latch.guard(), codec_errors(self._module, "BCJ2"):
+                out += d.read(-1)  # the bytes before the error, if any are left
+                d.read(1)  # raises the error that waits
+        except Exception as exc:  # noqa: BLE001 - a stream's own error too
+            return out, exc
+        raise AssertionError("the BCJ2 kernel had no error waiting")
+
+
+def bcj2(
+    excluded: frozenset[OptionalLibrary], *, isolated: bool
+) -> Callable[[tuple[BinaryIO, BinaryIO, BinaryIO, BinaryIO], int], NativeBcj2] | None:
+    """A constructor of :class:`NativeBcj2` taking ``(streams, out_size)``, or
+    ``None`` to use the Python decoder. ``isolated``: under ``NATIVE_DECODERS`` the
+    Python decoder is used, until the decoder child can carry BCJ2's four inputs."""
+    if isolated:
+        return None
+    module = kernels("bcj2", excluded)
+    if module is None:
+        return None
+
+    def new(
+        streams: tuple[BinaryIO, BinaryIO, BinaryIO, BinaryIO], out_size: int
+    ) -> NativeBcj2:
+        return NativeBcj2(module, streams, out_size)
 
     return new
