@@ -41,7 +41,7 @@ def _drain(data: bytes, **kwargs: object) -> list[bytes]:
     read = []
     with archivey.open_archive(
         NonSeekableBytesIO(data),
-        streaming=True,
+        pipe=True,
         **kwargs,  # type: ignore[arg-type]
     ) as archive:
         for _, stream in archive.stream_members():
@@ -99,7 +99,7 @@ def test_a_method_the_two_headers_disagree_on_does_not_fail_a_member_its_crc_che
     raw = _zip(b"hello world" * 20, zipfile.ZIP_DEFLATED)
     struct.pack_into("<H", raw, 8, 9)  # Deflate64 decodes this Deflate stream too
     code = archivey.DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS
-    with archivey.open_archive(NonSeekableBytesIO(bytes(raw)), streaming=True) as pipe:
+    with archivey.open_archive(NonSeekableBytesIO(bytes(raw)), pipe=True) as pipe:
         read = [stream.read() for _, stream in pipe.stream_members() if stream]
         assert read == [b"hello world" * 20]
         assert pipe.diagnostics.counts[code] == 1
@@ -143,9 +143,7 @@ def test_a_local_name_the_utf8_flag_mislabels_reads_by_the_directory_name() -> N
     with archivey.open_archive(io.BytesIO(bytes(raw))) as archive:
         assert archive.read("a.txt") == b"hello world"
     read: list[bytes] = []
-    with archivey.open_archive(
-        NonSeekableBytesIO(bytes(raw)), streaming=True
-    ) as archive:
+    with archivey.open_archive(NonSeekableBytesIO(bytes(raw)), pipe=True) as archive:
         for _, stream in archive.stream_members():
             assert stream is not None
             read.append(stream.read())
@@ -253,7 +251,7 @@ def _pass_calls(data: bytes) -> int:
         if event == "call":
             calls += 1
 
-    with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as archive:
+    with archivey.open_archive(NonSeekableBytesIO(data), pipe=True) as archive:
         sys.setprofile(count)
         try:
             with pytest.raises(CorruptionError, match="no local header"):

@@ -194,6 +194,12 @@ impl LzwState {
         self.buf.len()
     }
 
+    /// Padding bytes still to skip: a CLEAR or width change counted them into its
+    /// segment before they arrived.
+    pub fn pending_skip(&self) -> u64 {
+        self.pending_skip as u64
+    }
+
     /// An error is waiting to be raised again.
     pub fn failed(&self) -> bool {
         self.raise_after.is_some()
@@ -350,8 +356,10 @@ impl LzwState {
         Ok(d)
     }
 
+    /// The final pass may hand back bytes and hold the error it met after them: the
+    /// stream is not finished until that error has raised.
     pub fn is_finished(&self) -> bool {
-        self.finished
+        self.finished && self.raise_after.is_none()
     }
 
     pub fn needs_input(&self) -> bool {

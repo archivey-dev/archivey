@@ -570,8 +570,8 @@ class _ForwardUnrarStream(_RollingUnrarStream):
 class RarForwardReader(RarReader):
     """Reads a single-volume RAR front to back from a source that cannot seek.
 
-    Only ``streaming=True`` reaches it (``open_archive`` refuses random access on such a
-    source). The module docstring describes the pass.
+    Only ``pipe=True`` reaches it (``open_archive`` refuses such a source in every other
+    mode). The module docstring describes the pass.
     """
 
     # The member list exists only once the walk has passed every member.
@@ -665,8 +665,9 @@ class RarForwardReader(RarReader):
         self._archive, self._unrar_password = self._open_walk()
         if self._archive.is_volume:
             raise StreamNotSeekableError(
-                "A RAR volume set cannot be read from a non-seekable source: its other "
-                "volumes are separate files. Open the volumes as files.",
+                "A RAR volume set cannot be read as a pipe: a pipe carries one "
+                "stream, and the set's other volumes are separate files. Open the "
+                "first volume by its path, without pipe=True.",
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.RAR,
             )

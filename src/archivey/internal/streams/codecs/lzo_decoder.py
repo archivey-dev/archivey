@@ -17,7 +17,7 @@ length other than 3, which no writer produces. liblzo2, and so ``lzop``, accepts
 length there; the Linux kernel and all three decoders archivey uses refuse it.
 compress-utils and the Python decoder agree on every block measured
 (``dev-docs/investigations/lzo-compress-utils-vs-python-lzo.md``); archivey-codecs
-gives the Python decoder's bytes and messages (``tests/test_native_kernels.py``).
+gives the Python decoder's bytes and messages (``tests/test_kernels.py``).
 
 The lzop format (``lzop`` 1.04, ``header.c`` and ``lzop.c``): a 9-byte magic, a header
 with the method, flags, mode, mtime and stored name, closed by a checksum, then blocks.
@@ -40,7 +40,7 @@ from archivey.exceptions import (
     ResourceUnavailableError,
     UnsupportedFeatureError,
 )
-from archivey.internal import native
+from archivey.internal import kernels
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.decoder_child import DecoderChildImportError
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
@@ -149,25 +149,25 @@ def _archivey_codecs(
     natives: Natives,
     usage: ResourceUsageRecorder | None,
 ) -> Callable[[bytes, int], bytes] | None:
-    """archivey-codecs' LZO1X kernel when :mod:`archivey.internal.native` allows it,
-    with :func:`lzo1x_decompress_python`'s contract: at most ``limit`` bytes, and
-    :class:`LzoError` with the same message on damage. Under ``NATIVE_DECODERS`` each
-    block decodes in a decoder child (:mod:`archivey.internal.native_child`)."""
-    module = native.decoding_kernels("lzo1x", excluded, isolated=natives.isolated)
-    if module is None:
+    """archivey-codecs' LZO1X kernel when :func:`archivey.internal.kernels.lzo1x`
+    picks it, with :func:`lzo1x_decompress_python`'s contract: at most ``limit``
+    bytes, and :class:`LzoError` with the same message on damage. Under
+    ``NATIVE_DECODERS`` each block decodes in a decoder child."""
+    kernel = kernels.lzo1x(excluded, isolated=natives.isolated)
+    if kernel.library is None:
         return None
-    kernel = module.lzo1x.decompress
-    errors = (module.CodecError,)
+    decode = kernel.decompress
     if usage is not None:
-        usage.note_backend("library", OptionalLibrary.ARCHIVEY_CODECS.value, "lzo")
+        usage.note_backend("library", kernel.library.value, "lzo")
 
     def decompress(data: bytes, limit: int) -> bytes:
         # ``max_size``: a SquashFS block gives only the most it may decode to.
-        with native.panic_to_corruption("LZO1X"):
-            try:
-                return kernel(data, max_size=limit)
-            except errors as exc:
-                raise LzoError(str(exc)) from None
+        try:
+            return decode(data, max_size=limit)
+        except CorruptionError as exc:
+            if kernels.caused_by_panic(exc):
+                raise
+            raise LzoError(str(exc)) from None
 
     return decompress
 

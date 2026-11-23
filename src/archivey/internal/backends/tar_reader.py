@@ -15,9 +15,10 @@ same layout in a stream codec and behave as **solid** for random member opens.
 
 Random-access reading (``streaming=False``) needs a seekable source (decompressing
 first for a compressed tar) and opens any member on demand: a member's stream is a
-view over its data area. Forward-only (``streaming=True``) walks one progressive pass,
-including on a non-seekable source, via ``_iter_with_data()`` / ``stream_members()``;
-a member's data is read through the walker, which skips what the consumer left.
+view over its data area. Forward-only (``streaming=True``, or ``pipe=True`` for a
+non-seekable source) walks one progressive pass, via ``_iter_with_data()`` /
+``stream_members()``; a member's data is read through the walker, which skips what the
+consumer left.
 
 After a full walk, :meth:`TarReader._verify_tar_eof` checks the end, from the
 :class:`~archivey.internal.backends.tar_parser.TarEnd` the walk stopped on:
@@ -2308,7 +2309,7 @@ class TarReadBackend(ReadBackend):
     HEADER_CHECKS: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = (
         (ArchiveFormat.TAR, starts_with_header),
     )
-    # TAR is walkable front-to-back, so streaming=True works on a non-seekable source
+    # TAR is walkable front-to-back, so pipe=True works on a non-seekable source
     # (random access always needs a seekable one — that side is format-independent).
     SUPPORTS_STREAMING_NON_SEEKABLE = True
     USES_ENCODING = True  # the fallback codec for names that are not valid UTF-8

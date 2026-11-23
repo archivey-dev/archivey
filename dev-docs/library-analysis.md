@@ -320,7 +320,9 @@ only filter is a branch filter, a separately-staged BCJ frames its input as LZMA
 *uncompressed* chunks (3 bytes per 64 KiB, no compression work) so the chain becomes
 `[<branch filter>, FILTER_LZMA2]`. Output is byte-identical to `pybcj`'s wherever `pybcj`
 is correct, verified across all six filters; see `investigations/pybcj-upstream-report.md`. BCJ2 is not a
-liblzma filter; archivey decodes it in pure Python (`internal/streams/codecs/bcj2_filter.py`).
+liblzma filter; archivey decodes it in pure Python (the stream in
+`internal/streams/codecs/bcj2_filter.py`, the decoder in `internal/kernels/python/bcj2.py`),
+or with archivey-codecs.
 
 ### raw Deflate / zlib — stdlib `zlib`, accelerated by `rapidgzip`
 

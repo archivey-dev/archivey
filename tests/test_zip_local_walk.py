@@ -1068,7 +1068,7 @@ def test_an_unheld_local_size_reads_by_file() -> None:
         assert reader.read("a.txt") == b"hello " * 10
     with (
         pytest.raises(CorruptionError, match="uncompressed size"),
-        archivey.open_archive(_Unseekable(data), streaming=True) as reader,
+        archivey.open_archive(_Unseekable(data), pipe=True) as reader,
     ):
         for _ in reader.stream_members():
             pass

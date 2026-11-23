@@ -32,7 +32,7 @@ from archivey.exceptions import (
     raw_message_of,
 )
 from tests.conftest import importorskip, requires
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, open_mode
 from tests.zip_descriptors import without_descriptor_signatures
 from tests.zipcrypto import (
     build_zipcrypto_zip,
@@ -426,7 +426,7 @@ def _pipe_read(data: bytes, password: object) -> dict[str, object]:
     out: dict[str, object] = {}
     with archivey.open_archive(
         NonSeekableBytesIO(data),
-        streaming=True,
+        pipe=True,
         password=password,  # type: ignore[arg-type]
     ) as reader:
         try:
@@ -489,7 +489,7 @@ def test_damage_in_an_unread_bit3_codec_member_does_not_end_the_pass() -> None:
     kind, _message = _file_read(data, _PASSWORD)["a.txt"]  # type: ignore[misc]
     assert kind is EncryptionError
     with archivey.open_archive(
-        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+        NonSeekableBytesIO(data), pipe=True, password=_PASSWORD
     ) as reader:
         read = {
             member.name: stream.read()
@@ -531,7 +531,7 @@ def test_an_unread_bit3_codec_member_is_passed_without_its_key(
     if not signed:
         data = without_descriptor_signatures(data)
     with archivey.open_archive(
-        NonSeekableBytesIO(data), streaming=True, password=password
+        NonSeekableBytesIO(data), pipe=True, password=password
     ) as reader:
         read = {
             member.name: stream.read()
@@ -547,7 +547,7 @@ def test_an_unread_bit3_codec_member_is_passed_without_its_key(
 def test_an_unread_bit3_member_is_passed_with_its_password(compression: int) -> None:
     data = _with_plain_member(_bit3_zipcrypto(compression))
     with archivey.open_archive(
-        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+        NonSeekableBytesIO(data), pipe=True, password=_PASSWORD
     ) as reader:
         names = [member.name for member, _ in reader.stream_members()]
     assert names == ["a.txt", "plain.txt"]
@@ -569,7 +569,7 @@ def test_a_bit3_codec_member_cut_inside_its_header_is_truncated(build) -> None:
     name_len, extra_len = struct.unpack_from("<HH", data, 26)
     cut = data[: 30 + name_len + extra_len + 5]
     with archivey.open_archive(
-        NonSeekableBytesIO(cut), streaming=True, password=_PASSWORD
+        NonSeekableBytesIO(cut), pipe=True, password=_PASSWORD
     ) as reader:
         passes = reader.stream_members()
         _, stream = next(passes)
@@ -657,7 +657,7 @@ def test_a_password_that_only_passes_the_check_byte_fails_as_unverified() -> Non
     ):
         reader.read(next(m for m in reader.members() if m.name == "stored.txt"))
     with archivey.open_archive(
-        NonSeekableBytesIO(data), streaming=True, password="wrong896"
+        NonSeekableBytesIO(data), pipe=True, password="wrong896"
     ) as reader:
         passes = reader.stream_members()
         _, stream = next(passes)
@@ -779,7 +779,7 @@ def test_a_wrong_password_past_the_check_byte_is_rejected_as_from_a_file(
     expected = _file_read(data, passwords)
     assert not isinstance(expected["a.txt"], tuple)
     with archivey.open_archive(
-        NonSeekableBytesIO(data), streaming=True, password=passwords
+        NonSeekableBytesIO(data), pipe=True, password=passwords
     ) as reader:
         read = {
             member.name: stream.read()
@@ -916,7 +916,7 @@ def test_an_inconclusive_password_closed_early_is_reported_as_such() -> None:
     )
     passwords = [_check_byte_collision(data), _PASSWORD]
     with archivey.open_archive(
-        NonSeekableBytesIO(data), streaming=True, password=passwords[::-1]
+        NonSeekableBytesIO(data), pipe=True, password=passwords[::-1]
     ) as reader:
         for member, stream in reader.stream_members():
             if member.name == "a.txt":
@@ -939,7 +939,7 @@ def test_a_bit3_aes_codec_member_in_the_kept_bytes_is_confirmed(
     reports = []
     for source in (io.BytesIO(data), NonSeekableBytesIO(data)):
         with archivey.open_archive(
-            source, streaming=True, password=passwords
+            source, **open_mode(source, streaming=True), password=passwords
         ) as reader:
             for _member, stream in reader.stream_members():
                 assert stream is not None
@@ -982,7 +982,7 @@ def test_a_long_ciphertext_is_decoded_only_under_read_link_targets(
     calls = _counted_decrypts(monkeypatch)
     with archivey.open_archive(
         NonSeekableBytesIO(data),
-        streaming=True,
+        pipe=True,
         password=password,  # type: ignore[arg-type]
         config=archivey.ArchiveyConfig(read_link_targets=read_link_targets),
     ) as reader:
@@ -1024,7 +1024,7 @@ def test_a_partial_read_is_reported_as_unverified(read_all: bool) -> None:
         build_zipcrypto_zip(_PASSWORD, b"a.txt", _TEXT, compression=zipfile.ZIP_STORED)
     )
     with archivey.open_archive(
-        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+        NonSeekableBytesIO(data), pipe=True, password=_PASSWORD
     ) as reader:
         for member, stream in reader.stream_members():
             assert stream is not None
@@ -1048,7 +1048,7 @@ def test_a_partial_read_is_reported_as_unverified(read_all: bool) -> None:
 
 def _link_targets(data: bytes, password: object, *, pipe: bool) -> list[object]:
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
-    with archivey.open_archive(source, streaming=pipe, password=password) as reader:  # type: ignore[arg-type]
+    with archivey.open_archive(source, pipe=pipe, password=password) as reader:  # type: ignore[arg-type]
         members = reader.members_report().members
         reasons = [
             getattr(d.context, "reason", None)
@@ -1289,7 +1289,7 @@ def _link_target_report(
 ) -> tuple[list[object], list[object], list[str]]:
     """The listing, and the reason and message of each ``SYMLINK_TARGET_UNAVAILABLE``."""
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
-    with archivey.open_archive(source, streaming=pipe, password=_PASSWORD) as reader:  # type: ignore[arg-type]
+    with archivey.open_archive(source, pipe=pipe, password=_PASSWORD) as reader:  # type: ignore[arg-type]
         if pipe:
             for _ in reader.stream_members():
                 pass
@@ -1319,7 +1319,7 @@ def test_a_failed_open_is_not_retried_on_the_data_past_the_header(
     ):
         reader.read(reader.members()[0])
     with archivey.open_archive(
-        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+        NonSeekableBytesIO(data), pipe=True, password=_PASSWORD
     ) as reader:
         passes = reader.stream_members()
         _, stream = next(passes)
@@ -1358,7 +1358,7 @@ def test_no_key_is_derived_for_a_member_nobody_reads(
     )
     calls = _counted_decrypts(monkeypatch)
     with archivey.open_archive(
-        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+        NonSeekableBytesIO(data), pipe=True, password=_PASSWORD
     ) as reader:
         for _ in reader.stream_members():
             pass
@@ -1395,7 +1395,7 @@ def test_no_key_is_derived_for_a_bit3_member_nobody_reads(
     data = _with_plain_member(build())
     calls = _counted_decrypts(monkeypatch)
     with archivey.open_archive(
-        NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
+        NonSeekableBytesIO(data), pipe=True, password=_PASSWORD
     ) as reader:
         for _ in reader.stream_members():
             pass

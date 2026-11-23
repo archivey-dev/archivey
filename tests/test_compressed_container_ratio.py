@@ -63,9 +63,7 @@ def test_a_piped_compressed_tar_is_refused_past_the_live_floor() -> None:
     limits = DecoderLimits(live_ratio_activation_threshold=8 * 2**20)
     config = ArchiveyConfig(decoder_limits=limits)
     with (
-        open_archive(
-            NonSeekableBytesIO(_bomb()), streaming=True, config=config
-        ) as reader,
+        open_archive(NonSeekableBytesIO(_bomb()), pipe=True, config=config) as reader,
         pytest.raises(ResourceLimitError, match="Live decompression ratio"),
     ):
         for _member, stream in reader.stream_members():

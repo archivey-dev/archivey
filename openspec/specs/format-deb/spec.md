@@ -22,7 +22,7 @@ through the nested-archive hook (`ReaderContext.open_nested`). The format handbo
 ### Requirement: Read a Debian package as the files it installs
 
 The deb backend SHALL read an ar archive whose first member is `debian-binary` in one
-forward pass, from a file, a seekable stream or a pipe (`streaming=True`), reading its
+forward pass, from a file, a seekable stream or a pipe (`pipe=True`), reading its
 control and data tars through `ReaderContext.open_nested`. It SHALL list the data tar's
 members under their own names and the control tar's under `DEBIAN/`, as `dpkg-deb -R`
 unpacks them, and SHALL NOT list `debian-binary`. `format=ArchiveFormat.AR` SHALL read

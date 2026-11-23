@@ -270,7 +270,7 @@ class _ShortReads(io.RawIOBase):
 @pytest.mark.parametrize("step", [1, 5, 33])
 def test_a_read_boundary_inside_the_marker_reads_through_the_api(step: int) -> None:
     source = cast(Any, _ShortReads(_marker_stream(), step))
-    with open_archive(source, format="lzma", streaming=True) as archive:
+    with open_archive(source, format="lzma", pipe=True) as archive:
         read = []
         for _member, stream in archive.stream_members():
             assert stream is not None

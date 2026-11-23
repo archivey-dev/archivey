@@ -54,7 +54,7 @@ def _names(
     data: bytes, fmt: ArchiveFormat | None = None, *, pipe: bool = False
 ) -> list[str]:
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
-    with open_archive(source, format=fmt, streaming=pipe) as reader:
+    with open_archive(source, format=fmt, pipe=pipe) as reader:
         if pipe:
             return [member.name for member, _ in reader.stream_members()]
         return [member.name for member in reader.members()]
@@ -93,7 +93,7 @@ def test_a_short_prefix_budget_still_judges_the_overlay_start_first(
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
     assert detect_format(source, config=config).payload_offset == _OVERLAY
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
-    with open_archive(source, config=config, streaming=pipe) as reader:
+    with open_archive(source, config=config, pipe=pipe) as reader:
         if pipe:
             names = [member.name for member, _ in reader.stream_members()]
         else:

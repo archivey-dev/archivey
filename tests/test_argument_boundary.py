@@ -665,6 +665,7 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
     for bad in ("false", 0, 1, None):
         for flag in (
             "streaming",
+            "pipe",
             "seekable_members",
             "concurrent_operations",
             "salvage",
@@ -1228,8 +1229,18 @@ _BUILTIN_CASES: list[tuple[str, Callable[[Path, Path], Any], type[Exception]]] =
         ValueError,
     ),
     (
+        "open_archive(pipe=True, concurrent_operations=True)",
+        lambda a, t: open_archive(a, pipe=True, concurrent_operations=True),
+        ValueError,
+    ),
+    (
         "open_archive(streaming=True, salvage=True)",
         lambda a, t: open_archive(a, streaming=True, salvage=True),
+        ValueError,
+    ),
+    (
+        "open_archive(pipe=True, salvage=True)",
+        lambda a, t: open_archive(a, pipe=True, salvage=True),
         ValueError,
     ),
     (

@@ -529,6 +529,9 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # A raw view of the source for a plain tar's streaming buffer: below every
         # seek-point table, like the source it reads.
         source_mod._ArrivedView,
+        # pipe=True's forward-only view of the caller's object, below the archive
+        # source and so below every seek-point table.
+        source_mod.PipeView,
         # Decrypt stages below the codec: compressed-side offsets, no table.
         zip_aes.WinZipAesDecryptStream,
         zip_aes.WinZipAesForwardStream,

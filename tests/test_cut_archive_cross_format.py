@@ -129,7 +129,7 @@ def _open_pipe(cut: Path, data: bytes, pw: list[str] | None) -> ArchiveReader:
     # byte 257 has no magic either, so the caller names the format.
     source = NonSeekableBytesIO(data)
     fmt = _PIPE_FORMAT[cut.suffix]
-    return open_archive(source, password=pw, streaming=True, format=fmt)
+    return open_archive(source, password=pw, pipe=True, format=fmt)
 
 
 def _mode_pipe(cut: Path, data: bytes, scratch: Path, pw: list[str] | None) -> bool:

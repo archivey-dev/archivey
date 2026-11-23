@@ -680,17 +680,17 @@ filter runs before a link target is read (PR 404). The same field decides whethe
 7z link targets are read at listing (2026-10-06). Checksum checks run on possibly
 encrypted stored members before any byte is served. A seekable ZIP opened with
 `streaming=True` reads the central directory first, so every member is complete when
-yielded; only a non-seekable source walks local headers and completes members at the end
-of the pass (davi, 2026-10-10, native ZIP reader design). The reasons given with the
-question: the tail read costs one seek, and a member that is complete when yielded needs
-no fixing later. Reopen if a seekable source where the tail read is expensive (a remote
-object) turns out to matter more than complete members. A member that archivey will
-still update in place says so on the member itself, with a field (working name
-`member_state_final`), not on the cost receipt, which describes cost; it covers
-data-stored link targets not yet read, `is_current` in any forward-only pass, and a ZIP
-read from a pipe (davi, 2026-10-10). Reopen if callers need to know which fields are
-still provisional rather than only that some are, or if a format turns up where the
-field would be false for most members of an ordinary read.
+yielded; only pipe mode (`pipe=True`, ruled 2026-11-21) walks local headers and
+completes members at the end of the pass (davi, 2026-10-10, native ZIP reader design).
+The reasons given with the question: the tail read costs one seek, and a member that is
+complete when yielded needs no fixing later. Reopen if a seekable source where the tail
+read is expensive (a remote object) turns out to matter more than complete members. A
+member that archivey will still update in place says so on the member itself, with a
+field (working name `member_state_final`), not on the cost receipt, which describes
+cost; it covers data-stored link targets not yet read, `is_current` in any forward-only
+pass, and a ZIP read from a pipe (davi, 2026-10-10). Reopen if callers need to know
+which fields are still provisional rather than only that some are, or if a format turns
+up where the field would be false for most members of an ordinary read.
 
 **Do not** recommend "lazy by default, complete on request".
 

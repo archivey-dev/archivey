@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import random
 import struct
 import sys
 import time
@@ -39,7 +40,7 @@ from archivey import (
     detect_format,
     open_archive,
 )
-from archivey.internal.backends import dmg_encrypted
+from archivey.internal.backends import dmg_encrypted, udif
 from archivey.internal.backends.dmg_reader import volume_names
 from tests import dmg_build as d
 from tests.conftest import requires
@@ -1622,6 +1623,20 @@ def test_max_metadata_bytes_applies_to_folder_paths_in_a_hidden_folder() -> None
         reader.members()
 
 
+def test_non_ascii_folder_paths_are_weighed_like_listed_names() -> None:
+    """A built folder path is weighed by the listing's rule for a name: four bytes a
+    character once it is not ASCII. Counted by characters, these paths came to under
+    a third of that and passed this cap."""
+    path = ".HFS+ Private Directory Data\r/" + "/".join(["\u00e9" * 100] * 60)
+    image = _image([d.Node(path, kind="dir")], hfs_options={"node_size": 32768})
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=500_000))
+    with (
+        pytest.raises(ResourceLimitError, match="HFS\\+ folder paths"),
+        _open(image, config=config) as reader,
+    ):
+        reader.members()
+
+
 def test_a_property_list_over_its_cap_is_refused_before_it_is_read() -> None:
     def huge(koly: bytearray) -> None:
         struct.pack_into(">Q", koly, 224, 65 << 20)
@@ -2139,3 +2154,217 @@ def test_raw_runs_that_share_stored_bytes_count_toward_the_pass_ratio() -> None:
         assert member.name == "a.txt"
         assert "did not run" in str(error)
         assert isinstance(error.__cause__, ResourceLimitError)
+
+
+# ── Runs decoded again, and the data order ───────────────────────────────────────────
+
+_RUN_SECTORS = 64  # 32 KiB runs: eight 4 KiB blocks each
+_BLOCKS_PER_RUN = _RUN_SECTORS * d.SECTOR // 4096
+_BASE = 4096  # a block past those the builder allocates
+
+
+def _runs_image(
+    layout: dict[str, list[int]],
+    extra: list[d.Node] | None = None,
+    *,
+    blocks: int = 1,
+    run_sectors: int = _RUN_SECTORS,
+) -> tuple[bytes, dict[str, bytes]]:
+    """An image of files of extents of ``blocks`` blocks, file ``name``'s extent
+    ``j`` in run ``layout[name][j]`` of ``run_sectors`` sectors (32 KiB by default),
+    each at its run's next free blocks. Returns the image and each file's data
+    (incompressible, so the archive-wide ratio on the output stays near 1:1)."""
+    per_run = run_sectors * d.SECTOR // 4096
+    used: dict[int, int] = {}
+    placed: dict[str, list[tuple[int, int]]] = {}
+    for name, runs in layout.items():
+        extents = []
+        for run in runs:
+            slot = used.get(run, 0)
+            assert slot + blocks <= per_run
+            used[run] = slot + blocks
+            extents.append((_BASE + run * per_run + slot, blocks))
+        placed[name] = extents
+    data = {
+        name: random.Random(name).randbytes(4096 * blocks * len(runs))
+        for name, runs in layout.items()
+    }
+    nodes = [
+        d.Node(name, data=data[name], fragment=len(runs))
+        for name, runs in layout.items()
+    ]
+    hfs = d.write_hfsplus(
+        [*nodes, *(extra or [])],
+        spare_blocks=_BASE + (max(used) + 1) * per_run + 16,
+        move_extents=lambda path, extents: placed.get(path, extents),
+    )
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+    disk = d.write_gpt([d.Partition(volume)])
+    image = d.write_udif(
+        disk.segments, tables=disk.tables, codec=d.ZLIB, run_sectors=run_sectors
+    ).image
+    return image, data
+
+
+def _cycling_image(extents: int, runs: int, blocks: int = 1) -> tuple[bytes, bytes]:
+    """One file of ``extents`` extents of ``blocks`` blocks, extent ``j`` in run
+    ``j % runs``: with more runs than the cache holds, each extent misses on a run
+    the read decoded before."""
+    layout = {"f": [j % runs for j in range(extents)]}
+    image, data = _runs_image(layout, blocks=blocks)
+    return image, data["f"]
+
+
+_TIGHT = ArchiveyConfig(
+    decoder_limits=DecoderLimits(max_ratio=4.0, ratio_activation_threshold=0)
+)
+
+
+@pytest.mark.parametrize("blocks", [1, 2], ids=["4k", "8k"])
+def test_a_member_read_that_decodes_its_runs_again_is_held_to_the_ratio(
+    blocks: int,
+) -> None:
+    """Extents over 9 runs, one more than the cache holds: each decodes a run again.
+    The charge is against the image's size: with 8 KiB extents each 32 KiB run
+    costs 4 times the bytes it returns, so a charge against the member's size at
+    4:1 would never refuse it."""
+    image, data = _cycling_image(9 * _BLOCKS_PER_RUN // blocks, 9, blocks)
+    with _open(image) as reader:
+        assert reader.read("f") == data
+    # 63 (4 KiB) or 27 (8 KiB) runs of 32 KiB decoded again, from an image of about
+    # 300 KiB: past twice its size.
+    config = ArchiveyConfig(
+        decoder_limits=DecoderLimits(max_ratio=2.0, ratio_activation_threshold=0)
+    )
+    with (
+        pytest.raises(ResourceLimitError, match="decoded again"),
+        _open(image, config=config) as reader,
+    ):
+        reader.read("f")
+
+
+def test_runs_read_once_per_member_are_not_charged() -> None:
+    # The same extents over 8 runs fit the cache, so no run is decoded again.
+    image, data = _cycling_image(64, 8)
+    with _open(image, config=_TIGHT) as reader:
+        assert reader.read("f") == data
+
+
+def test_small_files_read_in_any_order_are_not_charged() -> None:
+    """Many small files read in a random order miss the cache on almost every read,
+    but each read decodes each of its runs once: nothing is charged."""
+
+    nodes = [d.Node(f"f{k:04d}", data=bytes([k % 251 + 1]) * 200) for k in range(600)]
+    image = _image(nodes, codec=d.ZLIB, run_sectors=_RUN_SECTORS)
+    with _open(image, config=_TIGHT) as reader:
+        files = [m for m in reader.members() if m.is_file]
+        random.Random(1).shuffle(files)
+        for member in files:
+            assert reader.read(member) == bytes([int(member.name[1:]) % 251 + 1]) * 200
+
+
+def _count_decodes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The run indexes each cache miss decodes, from here on."""
+    decoded: list[int] = []
+    real = udif.UdifImage._decode_run
+
+    def counting(self: udif.UdifImage, index: int, *, keep: bool = True) -> bytes:
+        if index not in self._cache:
+            decoded.append(index)
+        return real(self, index, keep=keep)
+
+    monkeypatch.setattr(udif.UdifImage, "_decode_run", counting)
+    return decoded
+
+
+def test_a_listing_that_would_decode_a_run_twice_comes_in_data_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two files in each of 9 runs, listed run by run twice over: in listing order
+    the second round decodes every run again. The files come sorted by where their
+    data starts; the directory before them and the hard link after its target."""
+    layout = {f"d/f{k:02d}": [k % 9] for k in range(18)}
+    extra = [d.Node("d/link", kind="hardlink", target="d/f03")]
+    image, data = _runs_image(layout, extra)
+    decoded = _count_decodes(monkeypatch)
+    with _open(image) as reader:
+        names = [m.name for m in reader.members()]
+        decoded.clear()
+        for member, stream in reader.stream_members():
+            if stream is not None:
+                assert stream.read() == data.get(member.name, data["d/f03"])
+    files = [n for n in names if n.startswith("d/f")]
+    assert files == [f"d/f{k:02d}" for r in range(9) for k in (r, r + 9)]
+    assert names.index("d/") < names.index(files[0])
+    assert names.index("d/link") > names.index("d/f03")
+    assert len(decoded) == len(set(decoded))  # each run once
+
+
+def test_a_listing_in_data_order_keeps_its_order() -> None:
+    layout = {f"f{k:02d}": [k // 2] for k in range(18)}
+    image, _ = _runs_image(layout)
+    with _open(image) as reader:
+        files = [m.name for m in reader.members() if m.is_file]
+    assert files == sorted(layout)
+
+
+def test_many_files_out_of_order_within_the_cache_keep_their_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1,200 one-block files whose data is shuffled over 8 runs of 1 MiB: listing
+    # order jumps between runs at almost every file, but the 8 runs fit the cache,
+    # so each run decodes once and the listing is not sorted. More files than the
+    # replay's budget once counted.
+    slots = [run for run in range(8) for _ in range(150)]
+    random.Random(5).shuffle(slots)
+    layout = {f"f{k:04d}": [run] for k, run in enumerate(slots)}
+    image, data = _runs_image(layout, run_sectors=2048)
+    decodes = _count_decodes(monkeypatch)
+    with _open(image, config=_TIGHT) as reader:
+        files = [m.name for m in reader.members() if m.is_file]
+        assert files == sorted(layout)
+        before = len(decodes)
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            assert stream.read() == data[member.name]
+        assert len(set(decodes[before:])) == len(decodes[before:])
+
+
+def _crossing_layout() -> dict[str, list[int]]:
+    """Eight files whose first extents share run 0 and whose other seven each take a
+    different window of runs 1 to 9: sorted, they still share runs out of order,
+    but no file reads a run twice itself."""
+    return {f"f{k}": [0, *(1 + (k * 7 + j) % 9 for j in range(7))] for k in range(8)}
+
+
+@pytest.mark.parametrize("how", ["stream_members", "extract_all", "read in order"])
+def test_runs_a_pass_decodes_again_are_held_to_the_ratio(
+    how: str, tmp_path: Path
+) -> None:
+    image, data = _runs_image(_crossing_layout())
+    with _open(image) as reader:
+        assert {m.name: reader.read(m) for m in reader.members() if m.is_file} == data
+    with (
+        pytest.raises(ResourceLimitError, match="decoded again"),
+        _open(image, config=_TIGHT) as reader,
+    ):
+        if how == "stream_members":
+            for _, stream in reader.stream_members():
+                if stream is not None:
+                    stream.read()
+        elif how == "extract_all":
+            reader.extract_all(tmp_path)
+        else:
+            for member in reader.members():
+                if member.is_file:
+                    reader.read(member)
+
+
+def test_runs_shared_by_files_read_out_of_listing_order_are_not_charged() -> None:
+    """The same image read in reverse: each read is its own, and no file reads a
+    run twice, so nothing is charged (the caller chose the order)."""
+    image, data = _runs_image(_crossing_layout())
+    with _open(image, config=_TIGHT) as reader:
+        files = [m for m in reader.members() if m.is_file]
+        for member in reversed(files):
+            assert reader.read(member) == data[member.name]

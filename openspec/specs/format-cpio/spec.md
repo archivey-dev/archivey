@@ -24,7 +24,7 @@ variant in one forward pass. The format handbook is `dev-docs/formats/cpio.md`.
 
 The CPIO backend SHALL read binary (either byte order), odc, newc and crc archives, and
 afio's large header inside an odc archive, in one forward pass from a file, a seekable
-stream, a pipe (`streaming=True`) or inside any single-file compression stream, up to
+stream, a pipe (`pipe=True`) or inside any single-file compression stream, up to
 the `TRAILER!!!` member. It SHALL name the variant in `ArchiveInfo.extra["cpio.variant"]`
 as GNU cpio's `-H` option does (`bin`, `bin-be`, `odc`, `newc`, `crc`).
 `ArchiveInfo.format_version` SHALL be `None`: a header variant is not a version. A

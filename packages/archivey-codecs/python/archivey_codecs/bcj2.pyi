@@ -15,7 +15,10 @@ class Decompressor:
         *,
         out_size: int,
     ) -> None: ...
-    def read(self, max_length: int = -1) -> bytes: ...
+    def read(self, max_length: int = -1) -> bytes:
+        """Up to ``max_length`` bytes (all when negative). The bytes before an error
+        come first, and the error raises from the next call. ``read(0)`` decodes
+        nothing and reads no input: it raises an error the decoder holds."""
     def getstate(self) -> bytes: ...
     @classmethod
     def from_state(
