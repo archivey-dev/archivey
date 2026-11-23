@@ -150,6 +150,10 @@ OPEN_BUDGET = 64 << 20
 CHECK_SLICE = 1 << 20
 # What a run costs in the packed arrays: a u32 type and four u64 fields.
 _RUN_BYTES = 36
+# What a kept table costs beyond its name's characters: its ``UdifTable``, the ints
+# in it, the name's string header and its ``plist_checksums`` entry (about 230 bytes
+# measured with ``sys.getsizeof``).
+_TABLE_BYTES = 256
 # Offsets must stay below 2^63 (``ReaderSource`` takes Python ints, but a disk of more
 # sectors than this names offsets no file system can).
 _MAX_SECTORS = (1 << 63) // SECTOR
@@ -481,6 +485,8 @@ class UdifImage:
         """Parse every ``mish`` table and keep its runs, sorted by sector."""
         parsed: list[tuple[str, int, int, int | None, bytes, int]] = []
         total_runs = 0
+        # The tables and their names are kept for the life of the reader too.
+        kept = 0
         for index, entry in enumerate(blkx):
             if not isinstance(entry, dict) or not isinstance(entry.get("Data"), bytes):
                 raise CorruptionError(f"blkx entry {index} holds no mish table")
@@ -510,6 +516,7 @@ class UdifImage:
                     f"{first + count}, past the disk's {self.sector_count}"
                 )
             total_runs += runs
+            kept += _TABLE_BYTES + len(name)
             parsed.append(
                 (
                     name,
@@ -521,10 +528,12 @@ class UdifImage:
                 )
             )
         budget = self._context.config.listing_limits.max_metadata_bytes
-        if budget is not None and total_runs * _RUN_BYTES > budget:
+        kept += total_runs * _RUN_BYTES
+        if budget is not None and kept > budget:
             raise ResourceLimitError(
                 f"Listing limit reached: max_metadata_bytes={budget} (the UDIF run "
-                f"tables hold {total_runs} runs, {total_runs * _RUN_BYTES} bytes kept)"
+                f"tables hold {len(parsed)} tables and {total_runs} runs, {kept} "
+                "bytes kept)"
             )
         # The master checksum in the koly block is a CRC-32 of these, in this order.
         self.plist_checksums = [table[3] for table in parsed]
@@ -705,7 +714,8 @@ class UdifImage:
             draw(decoded)
         try:
             if in_house is not None:
-                data = in_house[1](raw, decoded + 1)
+                # Both refuse output past the limit themselves.
+                data = in_house[1](raw, decoded)
             else:
                 data = self._through_archivey(raw, _THROUGH_ARCHIVEY[kind], decoded)
         except (CorruptionError, TruncatedError) as exc:

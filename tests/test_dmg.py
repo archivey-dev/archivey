@@ -1730,3 +1730,50 @@ def test_raw_runs_that_share_stored_bytes_count_toward_the_pass_ratio() -> None:
         assert member.name == "a.txt"
         assert "did not run" in str(error)
         assert isinstance(error.__cause__, ResourceLimitError)
+
+
+def test_kept_tables_and_their_names_count_toward_max_metadata_bytes() -> None:
+    """Empty tables (no sectors, no runs) with long names: only the runs were
+    charged, so any number of them loaded."""
+    hfs = d.write_hfsplus([d.Node("a.txt", data=b"hello")])
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+    disk = d.write_gpt([d.Partition(volume)])
+
+    def empty_tables(plist: dict) -> None:
+        blkx = plist["resource-fork"]["blkx"]
+        mish = bytearray(blkx[0]["Data"][: d.MISH.size])
+        struct.pack_into(">Q", mish, 16, 0)  # no sectors
+        struct.pack_into(">I", mish, d.MISH.size - 4, 0)  # no runs
+        blkx.extend(
+            {"CFName": f"t{i:04d}" + "n" * 200, "Data": bytes(mish)}
+            for i in range(2000)
+        )
+
+    image = d.write_udif(
+        disk.segments, tables=disk.tables, patch_plist=empty_tables
+    ).image
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=256 << 10))
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes.*tables"):
+        _open(image, config=config)
+    with _open(image) as reader:
+        assert [m.name for m in reader.members() if m.is_file] == ["a.txt"]
+
+
+def test_an_adc_run_that_decodes_past_its_sectors_names_their_size() -> None:
+    hfs = d.write_hfsplus([d.Node("a.txt", data=bytes(range(256)) * 64)])
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+    disk = d.write_gpt([d.Partition(volume)])
+
+    def encode(kind: int, data: bytes) -> bytes:
+        if kind == d.ADC:
+            return d.adc_literals(data + b"extra bytes!" * 20)
+        return d.encode_run(kind, data)
+
+    image = d.write_udif(
+        disk.segments, tables=disk.tables, codec=d.ADC, run_sectors=2, encode=encode
+    ).image
+    with (
+        pytest.raises(CorruptionError, match="disk sector 1 .*more than 512 bytes"),
+        _open(image) as reader,
+    ):
+        reader.members()

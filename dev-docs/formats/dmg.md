@@ -140,7 +140,8 @@ open stay within 64 MiB (`udif.OPEN_BUDGET`), else `ResourceLimitError`.
    checked (signature, version, run count against the `Data` length, every run inside
    the table and the data fork, a compressed run's stored length at most twice its
    decoded size plus 64 KiB, a decoded size at most 16 MiB) before its runs are kept,
-   as packed arrays charged against `max_metadata_bytes`. Overlapping tables are
+   as packed arrays charged against `max_metadata_bytes`, together with each kept
+   table and its name (an empty table counts too). Overlapping tables are
    `CorruptionError`.
 3. Partitions: a GPT whose header and entry array pass their CRCs and whose geometry is
    sound (primary, else the backup at the last sector), else an Apple partition map
