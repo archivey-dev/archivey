@@ -90,12 +90,12 @@ flight then.
 
 ## 4. The flag
 
-Recommended: **keep `concurrent_operations`**, with the narrower meaning. The lookup calls
+**Keep `concurrent_operations`**, with the narrower meaning (maintainer, 2026-11-24). The lookup calls
 it still covers are operations, not only member streams, and a rename makes every caller
 edit code for no change in what their code does. The **Breaking:** line names the
 narrowing.
 
-The alternative, for the maintainer to pick: rename to `concurrent_members`, the name it
+The alternative, not taken: rename to `concurrent_members`, the name it
 had until 2026-10-17, when it was widened to cover passes. That undoes the widening by
 name too, and is one more breaking change in 0.6.0.
 
@@ -210,5 +210,6 @@ Measured in the PR: lines removed from `src/` and `tests/`.
 - Cut first, separately, as a plan-only OpenSpec change (maintainer, 2026-11-24).
 - Keep several open member streams and thread-safe `open()`; drop passes beside other
   calls and the waiting close; no format gating (maintainer, 2026-11-24).
-- Open: the flag's name (§4). Recommended: keep `concurrent_operations`.
+- Keep the flag's name, `concurrent_operations`, with the narrower meaning (§4;
+  maintainer, 2026-11-24).
 - Open: rule 2 of the plugin contract (§5). Recommended: the wording above.

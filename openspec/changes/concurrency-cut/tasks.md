@@ -1,7 +1,7 @@
 ## 1. Plan
 
-- [ ] 1.1 The maintainer picks the flag's name (design.md §4) and agrees rule 2 of the
-  plugin contract (design.md §5)
+- [x] 1.1 The flag keeps its name (design.md §4; maintainer, 2026-11-24)
+- [ ] 1.2 The maintainer agrees rule 2 of the plugin contract (design.md §5)
 
 ## 2. The cut (one implementation PR, deep tier)
 

@@ -44,8 +44,7 @@ change.
   at a time. `open()`, `read()`, `get()`, `members()`, `members_report()`,
   `members_report_if_available()` and iteration from several threads at once; the first
   that needs the member list builds it and the others wait.
-- **Kept.** The flag and its name, `concurrent_operations`, unless the maintainer picks a
-  rename (design.md §4). Its refusal with `streaming=True` and `pipe=True`.
+- **Kept.** The flag and its name, `concurrent_operations` (maintainer, 2026-11-24). Its refusal with `streaming=True` and `pipe=True`.
 - **Removed code.** Side passes, the draining close, the drain's hand-off sleep, and the
   walk hand-off if nothing else needs it (design.md §6).
 - **Plugin contract.** The thread rules in `archivey.formats` and

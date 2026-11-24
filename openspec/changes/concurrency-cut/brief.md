@@ -26,7 +26,7 @@ once, and `open()` from several threads.
   itself, and a call beside it raises `ArchiveyUsageError`.
 - Drops: the waiting `close()`. A `close()` while another thread is inside a reader call
   raises `ArchiveyUsageError` and leaves the reader open, with or without the flag.
-- Keeps the flag's name, `concurrent_operations` (recommended; see design.md §4).
+- Keeps the flag's name, `concurrent_operations` (maintainer, 2026-11-24).
 - No format gating: the rules are the same for every format.
 
 **After it lands:** the flag means "several streams, and the lookup calls from several
