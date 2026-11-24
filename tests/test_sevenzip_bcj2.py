@@ -893,6 +893,50 @@ def test_the_read_after_a_stop_raises_it_again() -> None:
                 stream.read(10)
 
 
+class _ZeroRcStoppingAt(io.RawIOBase):
+    """An ``rc`` stream of zero bytes, one a read, whose ``stop_at``-th read raises a
+    stop from ``on_source_read``: zeros decode every branch as not converted."""
+
+    def __init__(self, stop_at: int) -> None:
+        self._stop_at = stop_at
+        self._reads = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        from archivey.internal.streams.callers_source import mark_source_callback
+
+        self._reads += 1
+        if self._reads == self._stop_at:
+            stop = _Stop("stop")
+            mark_source_callback(stop)
+            raise stop
+        return b"\x00"
+
+
+@pytest.mark.parametrize("stop_at", [6, 50])
+def test_a_stop_in_the_middle_of_a_block_drops_the_decoded_bytes(stop_at: int) -> None:
+    """The bytes the decoder decoded before a mid-block stop are not returned after it."""
+    rng = random.Random(5)
+    main = bytes(rng.choice(b"\xe8ABC") for _ in range(200_000))
+    stream = _bcj2(
+        io.BytesIO(main),
+        io.BytesIO(),
+        io.BytesIO(),
+        _ZeroRcStoppingAt(stop_at),
+        unpack_size=len(main),
+    )
+    got = b""
+    with pytest.raises(_Stop):
+        while chunk := stream.read(10):
+            got += chunk
+    assert main.startswith(got)
+    for _ in range(3):
+        with pytest.raises(_Stop):
+            stream.read(10)
+
+
 def test_encrypted_folder_with_a_cycle_is_corruption_not_a_password_error() -> None:
     """Planning runs before the password check's error mapping (D1)."""
     from tests.test_sevenzip_parser_hardening import (
