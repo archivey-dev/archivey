@@ -588,6 +588,10 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   before the destination exists. On a DMG with partition checks, a `verify_all()` held
   on an event in its spanning-pass phase: `open()` and a second pass from another thread
   both raise.
+- New, §2, upfront drain, on CAB and SquashFS or an indexed plugin, with and without a
+  peek before the pass: an early `break`, an index damaged at its end, and a listing
+  limit each give the same members before the stop and the same peek answer in both
+  cases.
 - New, §2, publication: a peek from another thread while a TAR pass reaches its end
   returns `None` until the pass has ended, then the full report; a peek while a damaged
   TAR pass publishes its error never returns a report without the error.
@@ -652,6 +656,9 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   "Without `concurrent_operations=True` the reader belongs to one thread"; the
   `stream_members` paragraph loses "With `concurrent_operations=True` they work".
 - `docs/adding-a-format.md` §"Walking again": §5.
+- `docs/reading.md`, the streaming paragraph: on a format with an upfront index, a
+  streaming `stream_members()` reads the whole index before its first member, as
+  `members()` would; a `break` after the first member still paid for it (§2).
 - `dev-docs/design-rules.md`: the "When and where a call is made" rule keeps its point
   (a call beside a pass raises on every format, every time, so it shows during
   development), loses "handed to several threads that each do what they need, whatever
@@ -682,9 +689,11 @@ Measured in the PR: lines removed from `src/` and `tests/`.
 - `members_report_if_available()` gives the same answer before a pass and during it,
   and reads nothing inside a pass; a pass converts an index already in memory when it
   starts, through one call a later optimization can move into the peek (§2;
-  maintainer, 2026-11-24). Whether a reader that must read its index from the source
-  for this (ISO, SquashFS, CAB, DMG, plugins) also drains at pass start is open:
-  Codex round 5, C5, on PR 1830.
+  maintainer, 2026-11-24). A reader that must read its index from the source for this
+  (ISO, SquashFS, CAB, DMG, plugins) drains at pass start too, so the answer matches on
+  every format; the cost, about 0.65 s per 20,000 ISO members before the first member
+  and no change to a full pass, is stated in the docs (maintainer, 2026-11-24, on the
+  Codex round 5 C5 question, PR 1830).
 - `extract_all()` takes its progress totals inside its pass through an owner-only
   helper, and `verify_all()` is one pass lease from start to end (§2; Codex round 5,
   C3).
