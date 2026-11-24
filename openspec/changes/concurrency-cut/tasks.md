@@ -9,14 +9,18 @@
 
 - [ ] 2.1 `ReaderState`: one pass at a time in both modes; no side passes; `close()`
   marks closed and returns, the draining close removed, teardown by the last call out,
-  an internal released event, member streams with a running-call count so no inner
+  an internal released event, `bind_live_stream()`
+  re-checks the lifecycle, `read()` in checked chunks, checks in `verify()`'s loop and
+  spanning passes, stream leases and pass wind-down held until a running stream call
+  ends, member streams with a running-call count so no inner
   `close()` runs beside a `read()` (design.md §3); the checkpoints of §3; `acquire_peek`
   removed; a data pass refused when it starts beside a live `open()` stream, in both
   modes, and `admit_pass_streams` removed
 - [ ] 2.2 `members_report_if_available()` inside a pass: built report or `None`, no
-  token, no reads; outside a pass a worker token. `_INDEX_IN_MEMORY` (7z, RAR) and one
-  `_convert_index_in_memory()` call at pass start; `extract_all()` takes its progress
-  totals before its pass (design.md §2)
+  token, no reads; outside a pass a worker token. every streaming pass over an
+  upfront-list reader drains at its start (`_walk_ahead()` in `_begin_forward_pass()`);
+  `_INDEX_IN_MEMORY` marks the readers that read nothing to do so; `extract_all()` takes
+  its progress totals before its pass (design.md §2)
 - [ ] 2.3 Remove what only the overlap needed (design.md §6): `_drain_walk`'s sleep, the
   mid-stream walk hand-off (`MemberDataView` and the at-open `reopen(0)` fallback stay)
   and the 7z pass-link thread check, each after checking that nothing else needs it

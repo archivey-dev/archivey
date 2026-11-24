@@ -46,9 +46,10 @@ change.
   any call. A `close()` from a callback of the reader's own call stops raising and
   cancels that call.
 - **Changed, not breaking.** `members_report_if_available()` inside a pass returns what
-  is already built and never reads the archive; a streaming 7z or RAR pass converts its
-  in-memory index when it starts, so the answer matches a call before the loop
-  (design.md §2). `extract_all()` takes its progress totals before its pass.
+  is already built and never reads the archive; every streaming pass over a reader with
+  an upfront list (ZIP already does) builds the list when it starts, so the answer
+  matches a call before the loop (design.md §2). `extract_all()` takes its progress
+  totals before its pass.
 - **Kept.** Any number of member streams from `open()` at once, each used by one thread
   at a time. `open()`, `read()`, `get()`, `members()`, `members_report()`,
   `members_report_if_available()` and iteration from several threads at once; the first
@@ -76,7 +77,10 @@ change.
   touch streams the caller holds" with its matrix row "caller stream open at position
   100": it now raises `ArchiveyUsageError` and leaves that stream untouched. The
   callback rule (`:1421-1424`, "Starting another operation on the same emitting
-  reader/stream SHALL be rejected") exempts `close()`, which stops the call.
+  reader/stream SHALL be rejected") exempts `close()`, which stops the call. The close
+  paragraph's claim that a member stream not outliving its reader "matches
+  `zipfile.ZipFile.close()`" (`:1034`, and `:902`) is corrected: `tarfile` matches,
+  `zipfile` keeps member handles readable (design.md §3).
 - `access-mode-and-cost`: the matrix row "RA `stream_members` active + `open()` or
   another `stream_members`" loses "unless `concurrent_operations=True`".
 - `format-tar`: the paragraph on another caller moving the walk under a `CONCURRENT`
