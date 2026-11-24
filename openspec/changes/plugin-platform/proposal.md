@@ -26,8 +26,9 @@ that other formats use, and solve the import cost with the same mechanism.
 
 - **Manifest.** One entry per format or codec, core's included: a data file that core
   reads without running the package. Reader modules are imported on first use.
-- **Open names. Breaking.** `ContainerFormat`, `StreamFormat`, `CompressionAlgorithm`
-  and `OptionalLibrary` become open string types with constants for core's own names.
+- **Open names. Breaking.** `ContainerFormat`, `StreamFormat` and `OptionalLibrary`
+  become open string types, and `CompressionAlgorithm` an open value type that is not a
+  string, as today. All four keep constants for core's own names.
   `PluginContainer`, `PluginStream`, the `Literal` spelling lists and
   `FormatInfo.from_plugin` are removed; `FormatInfo.provider` is added.
 - **Discovery.** Installed packages announce a manifest through the `archivey.plugins`
@@ -39,12 +40,15 @@ that other formats use, and solve the import cost with the same mechanism.
   reads each.
 - **Codec registry.** Codecs by name, method bindings per container, and a second
   implementation of a name only where its owner or the caller approves it.
+  `archivey-codecs` stays a library that archivey imports; readers in any package reach
+  its kernels through one public helper (proposed).
 - **Reader API.** Public helpers replace each `archivey.internal` import of the moved
   readers. `API_VERSION` replaces the exact version pin. The thread rules are the short ones
   that the concurrency cut, a separate change that lands first, leaves.
 - **Packages.** `archivey-disk-images`, `archivey-package-formats` and
-  `archivey-legacy-formats` under `packages/`, with extras of the same names;
-  `[recommended]`, `[all]` and `archivey-cli` include all three.
+  `archivey-legacy-formats` under `packages/`. `[recommended]`, `[all]`,
+  `[free-threaded]` and `archivey-cli` include all three. No extra is named after a
+  package.
 
 ## Capabilities
 
@@ -60,7 +64,7 @@ Deltas are written with each implementation step, not in this plan.
 - `backend-registry`: lazy loading, providers, refusals.
 - `format-detection`: detection from manifest data, `refines`.
 - `compressed-streams`: codecs by name, method bindings, second implementations.
-- `packaging-and-extras`: the three packages and their extras.
+- `packaging-and-extras`: the three packages and the extras that include them.
 - `archive-data-model`: open name types.
 - The format specs of the formats that move: where they live, nothing else.
 
@@ -68,15 +72,19 @@ Deltas are written with each implementation step, not in this plan.
 
 - **Callers.** `ContainerFormat.ZIP` and string comparisons keep working.
   `list(ContainerFormat)`, exhaustive `match` on the enums and the `Literal` types stop
-  working. The 13 moved constants warn for one release, then go.
+  working. The moved constants (13 containers, their `ArchiveFormat` constants,
+  `StreamFormat.PBZX` and 11 methods) warn for one release, then go. The typed
+  `extra` keys of the moved formats leave core (proposed).
 - **Installs.** Bare `archivey` stops reading the moved formats and says which package
   to install. `archivey[recommended]` and `archivey-cli` read everything as before.
 - **Same archive, same contents.** Extended to installs: an archive reads the same way
   or is refused with a hint. Installing a package never changes how a file that already
   opened is read.
 - **Servers that read uploads.** An allow-list policy (`FormatPolicy.COMMON`, `only=`)
-  is not affected by installed packages. `plugins=False` keeps its meaning: only code
-  in the `archivey` distribution runs.
+  is not affected by installed packages. `plugins=False` allows less after the split,
+  because the moved formats are no longer core's: `providers=` replaces it (proposed),
+  and the narrowing is a **Breaking:** line. Under `NATIVE_DECODERS`, a codec from a
+  package runs in the caller's process.
 - **Plugin authors.** The interface changes shape once more (it is experimental), then
   gets a version number.
 - **Releases.** Three more distributions published with each archivey release, in the

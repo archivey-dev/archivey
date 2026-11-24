@@ -21,14 +21,18 @@
   attributes, the `Literal` aliases and persisted values in `src/`, `tests/`, `docs/`
   and the CLI; which names get a deprecation window under DR-12a (the stable ones) and
   which go at once (the experimental ones)
-- [ ] 2.1 `ContainerFormat`, `StreamFormat`, `CompressionAlgorithm`, `OptionalLibrary`
-  as open string types with core's constants; construction checks spelling only and
-  touches no registry; membership is checked when a call resolves the name, before I/O
+- [ ] 2.1 `ContainerFormat`, `StreamFormat`, `OptionalLibrary` as open string types and
+  `CompressionAlgorithm` as an open non-string type, with core's constants;
+  construction checks spelling only and touches no registry; membership is checked
+  when a call resolves the name, before I/O
+- [ ] 2.1b `FormatPolicy` stores containers, streams and methods by role;
+  `only_libraries` by membership; a test that `exclude={StreamFormat("xz")}` still
+  reads an xz member of a ZIP
 - [ ] 2.1a Tests: a known name whose package is missing, a typo at resolution, and a
   value built from a stored string before any discovery
 - [ ] 2.2 Remove `PluginContainer`, `PluginStream` and the `Literal` spelling lists
-- [ ] 2.3 `FormatInfo.provider` replaces `from_plugin`; `FormatPolicy(plugins=False)`
-  means the `archivey` distribution only
+- [ ] 2.3 `FormatInfo.provider` replaces `from_plugin`; `FormatPolicy(providers=...)`,
+  with `plugins=False` as a deprecated spelling of `providers={"archivey"}` (P2)
 - [ ] 2.4 `register_format` and `register_builtin_format` become one function that
   takes an entry
 - [ ] 2.5 `CHANGELOG.md` **Breaking:** lines; `dev-docs/api-surface.txt` updated
@@ -44,12 +48,18 @@
 - [ ] 3.3 The recorder test: a wheel whose `__init__` records that it ran; discovery,
   opening a core ZIP and `format_availability()` under the default policy,
   `plugins=False` and `FormatPolicy.COMMON`, in both orders
-- [ ] 3.4 Ownership: one owner per name, extension and signature; `refines` and
-  `preempts` only with the owner's consent; refusals reported; a bad manifest skipped
-  and reported
+- [ ] 3.4 Ownership: one owner per name and signature, longest signature first, a
+  clashing extension dropped alone; `refines` and `preempts` only with the owner's
+  consent or the caller's choice; a bad manifest skipped
+- [ ] 3.4a The provider query and `archivey --version -v`: found, refused, unparsable
+  and incompatible providers, each with its reason
 - [ ] 3.5 The off switch (environment variable and function)
 - [ ] 3.6 The hint table, and the test that keeps it equal to the packages' manifests
-- [ ] 3.7 `packages/archivey-package-formats` with ar, cpio and rpm; its extra
+- [ ] 3.7 `packages/archivey-package-formats` with ar, cpio and rpm, added to
+  `[recommended]`, `[all]` and `[free-threaded]`; type checkers, fuzz targets and
+  `test.sh --all-configs` extended to `packages/`
+- [ ] 3.7a The public-names test: no `archivey.internal` import and no private
+  attribute of an archivey object
 - [ ] 3.8 CI: build the wheel, install it beside a core wheel in a fresh environment,
   run the public-imports test and the pilot checks (discovery, plain and compressed
   CPIO, limits, cleanup); wheel, editable and zipped installs
@@ -73,15 +83,27 @@
 - [ ] 4.3 Tests: a vacant slot with and without its provider; an unrelated
   distribution claiming a higher priority for a stock method; an approved
   `archivey-codecs` decoder and its fallback; an allow-list keeps its decoder set
-- [ ] 4.4 ZIP legacy methods through `("zip", n)`; the ZIP reader's legacy table gone
-- [ ] 4.5 `archivey-codecs` decoders as approved second implementations;
-  `kernels/_select.py` reduced to that rule
-- [ ] 4.6 `ReaderContext.decompress` by name; the block call (SquashFS, DMG)
+- [ ] 4.4 ZIP legacy methods through `("zip", n)`; the ZIP reader's legacy table gone;
+  `CodecCall` carries the method id, the container flags and whether the input runs
+  on; the entry says whether the decoder rejects random input; Implode with both
+  window sizes, Reduce at each factor, and a password list on an encrypted legacy
+  member stay as fast as before
+- [ ] 4.4a `format_availability(ZIP)` counts core's and the hint table's methods
+- [ ] 4.5 The public kernel helper (revision check, panic guard, child), used by core
+  and by the moved readers; `archivey-codecs` unchanged (P1)
+- [ ] 4.6 `ReaderContext.decompress` by name, with the single-stream option (xar); the
+  block call (SquashFS, DMG)
+- [ ] 4.6a The process-isolation limit for package codecs, stated in `docs/security.md`
+  and the threat model (P4)
 - [ ] 4.7 Public listing-limit, timestamp and Unix-mode helpers (ISO, xar, CAB, DMG,
   LHA, ARJ)
 - [ ] 4.8 SFX stub scan declared on the entry (LHA, ARJ)
 - [ ] 4.9 Crypto facade (makeself, DMG, ARJ)
-- [ ] 4.10 Nested-archive helpers folded into `ReaderContext.open_nested` (deb, pkg)
+- [ ] 4.10 Nested-archive helpers folded into `ReaderContext.open_nested`; the path
+  helpers public (deb, pkg)
+- [ ] 4.10a Public calls for each private attribute listed in design.md §5 (spanning
+  checks, decoded-byte and decoder-use accounting, listing budgets, source origin,
+  range hints and progress), each with the reader that needs it
 - [ ] 4.11 `ReaderSource` source helpers (ISO, DMG)
 - [ ] 4.12 Spec deltas: `compressed-streams`, `format-plugins`
 
@@ -93,9 +115,14 @@
 - [ ] 5.4 For each pack: the pilot checks, the public-imports test, and a corpus run on
   a core-only install (refused with the hint) and a full install (same results as
   before the move)
-- [ ] 5.5 Extras; `[recommended]`, `[all]` and `archivey-cli` include the three;
-  publish matrix rows
-- [ ] 5.6 The 13 moved constants as deprecated aliases
+- [ ] 5.5 `[recommended]`, `[all]`, `[free-threaded]` and `archivey-cli` include the
+  three; no extra named after a package; publish matrix rows; type checkers, fuzz
+  targets and `--all-configs` cover each moved package
+- [ ] 5.6 The moved constants as deprecated aliases (13 containers, their
+  `ArchiveFormat` constants, `StreamFormat.PBZX`, 11 methods), clean under both type
+  checkers; importing archivey warns nothing
+- [ ] 5.6a The typed `extra` overloads of the moved formats leave core; typed
+  accessors in each package (P3)
 - [ ] 5.7 Spec deltas: `packaging-and-extras`, the moved format specs
 - [ ] 5.8 Remove `openspec/changes/plugin-api`, which this change replaces
 
@@ -104,3 +131,5 @@
 - [ ] 6.1 Remove the aliases one release later
 - [ ] 6.2 Rewrite `docs/adding-a-format.md` against the settled contract
 - [ ] 6.3 `openspec validate --strict plugin-platform`
+- [ ] 6.4 Archive the change (`openspec archive plugin-platform --yes`) in the pull
+  request that ticks the last box

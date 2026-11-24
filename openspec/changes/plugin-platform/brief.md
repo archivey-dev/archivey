@@ -28,9 +28,9 @@ anyone else's.
   not affected; one switch turns discovery off.
 - Core keeps a hint table of formats it does not ship, so a missing package is named in
   the error and an archive is never read as another format.
-- Codecs register by name and bind to a container's method number. A second
-  implementation (the Rust package) runs only where the owner of the name approves it,
-  under the accelerator rule.
+- Codecs register by name and bind to a container's method number. The Rust package
+  stays a library that archivey imports, reached by any reader through one public
+  helper (proposed after review).
 - `archivey.formats` grows until our own packages import no private name, gets a
   version number, and takes the shorter thread rules of the concurrency cut, a separate
   change that lands first.
