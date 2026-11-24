@@ -2,16 +2,17 @@
 
 - [x] 1.1 The flag keeps its name (design.md §4; maintainer, 2026-11-24)
 - [ ] 1.2 The maintainer agrees rule 2 of the plugin contract (design.md §5)
+- [ ] 1.3 The maintainer picks what `close()` waits for (design.md §3: A or B)
 
 ## 2. The cut (one implementation PR, deep tier)
 
 - [ ] 2.1 `ReaderState`: one pass at a time in both modes; no side passes; `close()`
-  raises for a worker in flight in both modes and never waits for one; a pass's first
-  stream refused beside a live `open()` stream in both modes
+  never waits for a pass, and for workers as §3 decides; a data pass refused when it
+  starts beside a live `open()` stream, in both modes, and `admit_pass_streams` removed
 - [ ] 2.2 `members_report_if_available()` takes the peek token in both modes
 - [ ] 2.3 Remove what only the overlap needed (design.md §6): `_drain_walk`'s sleep, the
-  walk hand-off and the 7z pass-link thread check, each after checking that nothing else
-  needs it
+  mid-stream walk hand-off (`MemberDataView` and the at-open `reopen(0)` fallback stay)
+  and the 7z pass-link thread check, each after checking that nothing else needs it
 - [ ] 2.4 Docstrings: `open_archive`, `ArchiveReader.open`, `stream_members`,
   `extract_all`, `verify_all`, `close`, `ArchiveyUsageError`, `reader_state` module
 - [ ] 2.5 Plugin contract in `archivey.formats` and `docs/adding-a-format.md`
@@ -20,8 +21,10 @@
 ## 3. Tests
 
 - [ ] 3.1 Pass refusals on a `CONCURRENT` reader, per format family (design.md §7)
-- [ ] 3.2 `close()` with a worker in flight on another thread raises; the reader stays
-  open
+- [ ] 3.2 `close()` beside a pass executing on another thread raises and the reader
+  stays open; beside a worker in flight, as §3 decides; a held stream makes
+  `extract_all()` raise before the destination exists, and a directory-only
+  `stream_members()` raise at its first `next()`
 - [ ] 3.3 `archivey.fsspec`: threads read several member streams at once, then the file
   system closes cleanly; a close under open streams makes their later reads raise
   `ValueError`
@@ -35,7 +38,6 @@
 - [ ] 4.1 `reader-concurrency`, `archive-reading`, `access-mode-and-cost`, `format-tar`,
   `fsspec-integration` edited in place
 - [ ] 4.2 `docs/reading.md`, `dev-docs/design-rules.md`, `dev-docs/threat-model.md`,
-  ADR 0003 amendment, the guide
-  pages (design.md §8)
+  ADR 0003 amendment, the guide pages (design.md §8)
 - [ ] 4.3 `CHANGELOG.md` **Breaking:** line (design.md §4)
 - [ ] 4.4 `openspec validate --strict concurrency-cut`, then archive the change

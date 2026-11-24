@@ -1,4 +1,4 @@
-# concurrency-cut — a pass has the reader to itself, and close() does not wait
+# concurrency-cut — a pass has the reader to itself
 
 **Status:** Plan only. No spec deltas: the implementation PR edits
 `openspec/specs/reader-concurrency/spec.md` and `archive-reading/spec.md` in place. The
@@ -24,8 +24,10 @@ at once, and `open()` from several threads.
 - Drops: passes beside other calls. `stream_members()`, `extract_all()` and
   `verify_all()` behave the same with or without the flag: a pass has the reader to
   itself, and a call beside it raises `ArchiveyUsageError`.
-- Drops: the waiting `close()`. A `close()` while another thread is inside a reader call
-  raises `ArchiveyUsageError` and leaves the reader open, with or without the flag.
+- `close()` never waits for a pass: beside one executing on another thread it raises
+  and the reader stays open. Whether it still waits for lookup calls in flight is open
+  (design.md §3); recommended: it does, so a `with` block around a thread pool closes
+  cleanly when its body raises.
 - Keeps the flag's name, `concurrent_operations` (maintainer, 2026-11-24).
 - No format gating: the rules are the same for every format.
 
