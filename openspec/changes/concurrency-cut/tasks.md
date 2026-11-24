@@ -12,8 +12,10 @@
   re-check after the wait (design.md §3); `acquire_peek` removed; a data pass refused
   when it starts beside a live `open()` stream, in both modes, and `admit_pass_streams`
   removed
-- [ ] 2.2 `members_report_if_available()` is a lookup call (worker token, raises inside
-  a pass); `extract_all()` takes its progress totals before its pass (design.md §2)
+- [ ] 2.2 `members_report_if_available()` inside a pass: built report or `None`, no
+  token, no reads; outside a pass a worker token. `_INDEX_IN_MEMORY` (7z) and one
+  `_convert_index_in_memory()` call at pass start; `extract_all()` takes its progress
+  totals before its pass (design.md §2)
 - [ ] 2.3 Remove what only the overlap needed (design.md §6): `_drain_walk`'s sleep, the
   mid-stream walk hand-off (`MemberDataView` and the at-open `reopen(0)` fallback stay)
   and the 7z pass-link thread check, each after checking that nothing else needs it
@@ -27,9 +29,9 @@
 - [ ] 3.1 Pass refusals on a `CONCURRENT` reader, per format family (design.md §7)
 - [ ] 3.2 `close()` beside a pass executing on another thread raises and the reader
   stays open; beside a worker in flight it waits; `members_report_if_available()` in a
-  `stream_members()` loop body raises; a held stream makes
-  `extract_all()` raise before the destination exists, and a directory-only
-  `stream_members()` raise at its first `next()`
+  `stream_members()` loop body gives the answer a call before the loop gives and reads
+  nothing; a held stream makes `extract_all()` raise before the destination exists, and
+  a directory-only `stream_members()` raise at its first `next()`
 - [ ] 3.3 `archivey.fsspec`: threads read several member streams at once, then the file
   system closes cleanly; a close under open streams makes their later reads raise
   `ValueError`

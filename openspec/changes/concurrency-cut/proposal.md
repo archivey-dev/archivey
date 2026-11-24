@@ -39,11 +39,12 @@ change.
   thread or a stream from `open()` is still open, in both modes (`extract_all()` beside
   an open stream raises on a default reader too, which it does not today).
 - **Breaking.** `close()` never waits for a pass: while a pass executes on another
-  thread, or while a pass is open and a call is still running, it raises
-  `ArchiveyUsageError` and the reader stays open. Under the flag, with no pass open, it
+  thread, it raises `ArchiveyUsageError` and the reader stays open. Under the flag it
   still waits for lookup calls in flight (design.md §3; maintainer, 2026-11-24).
-- **Breaking.** `members_report_if_available()` raises inside a pass, like `members()`;
-  call it before the loop. `extract_all()` takes its progress totals before its pass.
+- **Changed, not breaking.** `members_report_if_available()` inside a pass returns
+  what is already built and never reads the archive; a streaming 7z pass converts its
+  in-memory index when it starts, so the answer matches a call before the loop
+  (design.md §2). `extract_all()` takes its progress totals before its pass.
 - **Kept.** Any number of member streams from `open()` at once, each used by one thread
   at a time. `open()`, `read()`, `get()`, `members()`, `members_report()`,
   `members_report_if_available()` and iteration from several threads at once; the first
@@ -68,9 +69,7 @@ change.
 - `archive-reading`: the `concurrent_operations` bullet, the `stream_members()` overlap
   paragraph and its matrix row, the close paragraph, and `verify_all()`'s "SHALL NOT
   touch streams the caller holds" with its matrix row "caller stream open at position
-  100": it now raises `ArchiveyUsageError` and leaves that stream untouched. The
-  pass-finalization row "Streaming ZIP: peek inside the `stream_members()` loop, then
-  `break`" becomes a peek before the loop.
+  100": it now raises `ArchiveyUsageError` and leaves that stream untouched. 
 - `access-mode-and-cost`: the matrix row "RA `stream_members` active + `open()` or
   another `stream_members`" loses "unless `concurrent_operations=True`".
 - `format-tar`: the paragraph on another caller moving the walk under a `CONCURRENT`

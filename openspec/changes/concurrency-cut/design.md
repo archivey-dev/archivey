@@ -32,8 +32,9 @@ The implementation PR writes this table into `reader-concurrency` and the substa
 it into `docs/reading.md`. "Lookup calls" are `open()`, `read()`, `get()`, `members()`,
 `members_report()`, `members_report_if_available()` and iteration of a random-access
 reader. "Passes" are `stream_members()`, `extract_all()` and `verify_all()`.
-`members_report_if_available()` stops being a peek admitted beside a pass: it is an
-ordinary lookup call (below, "The peek becomes a lookup call").
+`members_report_if_available()` is a lookup call outside a pass; while a pass is open it
+answers from what is already built and never reads the archive (below, "The peek while
+a pass is open").
 
 | | Default reader | `concurrent_operations=True` |
 | --- | --- | --- |
@@ -42,7 +43,7 @@ ordinary lookup call (below, "The peek becomes a lookup call").
 | Different streams read from different threads at once | — | Yes, also while a lookup call runs |
 | Lookup call while another lookup call runs on another thread | Not supported: a second list build or a second stream raises | Yes; the list is built once, the others wait for it |
 | Lookup call while a pass runs (loop body or another thread) | Raises | **Raises** (today: admitted) |
-| `members_report_if_available()` while a pass runs | **Raises** (today: admitted) | **Raises** (today: admitted) |
+| `members_report_if_available()` while a pass runs | Yes: what is built, or `None`; reads nothing | Yes: the same |
 | Pass while a lookup call runs on another thread | Raises | **Raises** (today: admitted) |
 | Pass while another pass runs | Raises | **Raises** (today: admitted) |
 | Pass while a stream from `open()` is open | **Raises when the pass starts** (today: at its first stream, and `extract_all()` not at all) | **Raises when the pass starts** (today: admitted) |
@@ -51,26 +52,57 @@ In words, for the docstring of `open_archive` and `docs/reading.md`:
 
 > With `concurrent_operations=True`, any number of member streams may be open at once,
 > and `open()`, `read()`, `get()`, `members()`, `members_report()`,
-> `members_report_if_available()` and iteration may run
-> at the same time from several threads. Each member stream belongs to one thread at a
-> time. `stream_members()`, `extract_all()` and `verify_all()` behave as they do without
-> the flag: a pass has the reader to itself, so while one runs, any other call on the
-> reader raises `ArchiveyUsageError`, and a pass raises when it starts if another call
-> is running or a stream from `open()` is still open. Without the flag, the reader and
-> its open stream belong to one thread at a time. `close()` is described in §3.
+> `members_report_if_available()` and iteration may run at the same time from several
+> threads. Each member stream belongs to one thread at a time. `stream_members()`,
+> `extract_all()` and `verify_all()` behave as they do without the flag: a pass has the
+> reader to itself, so while one runs, any other call on the reader raises
+> `ArchiveyUsageError`, except `members_report_if_available()`, which returns the member
+> list if it is already built and `None` if not. A pass raises when it starts if another
+> call is running or a stream from `open()` is still open. Without the flag, the reader
+> and its open stream belong to one thread at a time. `close()` is described in §3.
 
-**The peek becomes a lookup call** (maintainer, 2026-11-24). Today
-`members_report_if_available()` is admitted inside a pass, from the loop body, and
-`extract_all()` calls it first thing inside its own pass for its progress totals
-(`extraction.py:1119`, under the pass taken at `base_reader.py:5581`). A call inside the
-loop learns nothing a call before the loop does not: with an upfront index the report
-is the same before and during the pass, and without one it stays `None` until a pass
-ends. So `extract_all()` takes its totals just before it takes its pass, and the method
-raises inside a pass like `members()` does. Then no call of any kind runs while a pass
-is open, which is what lets `close()` drop its re-check (§3), and `acquire_peek`, a
-token kind of its own, goes. Callers that peek inside a loop move the call before the
-loop. The CLI calls it before its passes already (`extract_cmd.py`, `cat_cmd.py`,
-`test_cmd.py`).
+**The peek while a pass is open** (maintainer, 2026-11-24). Today
+`members_report_if_available()` is admitted inside a pass with a token of its own
+(`acquire_peek`) and may drain the member walk there. That token is the one call that
+runs beside a pass, and it is why `close()` re-checks for a pass after its wait. After
+the cut, while a pass is open (from the loop body or, under the flag, another thread),
+the method returns the report if the member list is already built (a published report,
+or a walk that has ended: the report is then made from the listed members), `None` if
+not, and reads nothing from the archive. It takes no token then, so `close()` has
+nothing beside a pass to wait for (§3). Outside a pass it is a lookup call with a worker
+token, and on an upfront index it builds the list as today.
+
+So that the answer does not depend on when the loop calls it, every pass builds the list
+first when it can do so without reading:
+
+- Random access: `stream_members()` already builds the whole list before its first
+  member (`_materialize_members()`, `base_reader.py:1543`), except for readers whose
+  pass reads through the walk (TAR, sequential plugins), which have no upfront list and
+  answer `None` before the loop too.
+- Streaming: ZIP already reads its central directory before the first member
+  (`_walk_ahead()`, `zip_reader.py:2382`). A backend whose whole index is in memory
+  after open (7z: header parsed at open) converts it to members when the pass starts.
+  A backend states this with one class attribute, `_INDEX_IN_MEMORY`; the default is
+  `False`, and such a pass builds as it goes, as today.
+- `extract_all()` asks for its progress totals just before it takes its pass instead of
+  just after (the call moves out of `ExtractionCoordinator.run()`, which receives the
+  report), so it may still read an upfront index for them.
+
+The seam for a later optimization: converting at pass start is one call,
+`_convert_index_in_memory()` (drain the walk when `_INDEX_IN_MEMORY`), made in one
+place, `_begin_forward_pass()`, which every streaming pass goes through (the base
+`_iter_with_data` and 7z's own pass, through `_listed_members()`). The optimization
+keeps the index unconverted until needed and moves that call into the peek, which may
+then finish the conversion while a pass is open, still reading nothing.
+`_ProgressivePassIterator` already hands a pass a walk that a peek drained ahead of it,
+so the pass needs no change.
+
+Not in this cut: RAR has no full directory, only an optional quick-open record that may
+not list every member, yet `RarReader` walks every header inside `open_archive`
+(`_MEMBER_LIST_UPFRONT = True`), probably a leftover from before synthetic archives.
+Making it build as it goes is a change of its own; until then its table is built at
+open, so its peek answers inside a loop as before the loop. It does not set
+`_INDEX_IN_MEMORY`.
 
 **Why passes refuse open streams too, and when.** A pass with the reader to itself gives
 the plugin contract its rule 2 (§5): while a pass runs, no other member stream reads the
@@ -128,10 +160,11 @@ exception to a chained `ArchiveyUsageError` and leaves the reader open, with no
 finalizer to close it. With the wait, the close finishes once the in-flight calls
 return. A lookup call that never returns blocks `close()`, as today.
 
-The wait needs no re-check after it. Once no call runs beside a pass (§2, the peek
-included), a lookup call in flight means no pass is open, and none can start or resume
-while `_closing` is set. Today's re-check after the wait (`reader_state.py:831-841`)
-exists for a pass that resumed while the close waited for a call beside it; it goes.
+The wait needs no re-check after it. Once no call with a token runs beside a pass (§2:
+the peek takes none while a pass is open), a lookup call in flight means no pass is
+open, and none can start or resume while `_closing` is set. Today's re-check after the
+wait (`reader_state.py:831-841`) exists for a pass that resumed while the close waited
+for a call beside it; it goes.
 
 Not taken: a `close()` that never waits, which would have made pool users put the pool's
 `with` inside the reader's.
@@ -166,8 +199,7 @@ CHANGELOG line (under `### Changed` in `[Unreleased]`):
 >   pass runs, or a pass started while a call runs or a member stream is open, raises
 >   `ArchiveyUsageError`, as without the flag, and `close()` while a pass runs on
 >   another thread raises instead of waiting. Without the flag, `extract_all()` beside
->   an open member stream now raises too, as `stream_members()` did, and
->   `members_report_if_available()` inside a pass raises like `members()`. Several open
+>   an open member stream now raises too, as `stream_members()` did. Several open
 >   member streams, and `open()`, `read()`, `get()` and `members()` from several
 >   threads, work as before.
 
@@ -230,8 +262,8 @@ In `internal/reader_state.py`:
   time, `_root` only. `_passes_locked`, `_executing_pass_locked`, `release_pass` and the
   `mark_reader_closed` loop over passes shrink to the root.
 - The draining close: the wait stays, for workers; the re-check after it goes (§3).
-- `acquire_peek` goes: `members_report_if_available()` takes a worker token like the
-  other lookup calls.
+- `acquire_peek` goes: outside a pass `members_report_if_available()` takes a worker
+  token like the other lookup calls; while a pass is open it takes none (§2).
 - `_owner_pass_locked`: the `CONCURRENT` branch goes; with one pass, a scope goes under
   `_root` in both modes.
 - `admit_pass_streams` goes. `acquire_pass` for a data pass refuses a live stream or
@@ -243,9 +275,10 @@ In `internal/reader_state.py`:
 
 In `internal/base_reader.py`:
 
-- `members_report_if_available()` takes a worker token in both modes and raises inside
-  a pass. `extract_all()` asks for its progress totals before it takes its pass (the
-  call moves out of `ExtractionCoordinator.run()`, which receives the report).
+- `members_report_if_available()`: while a pass is open, the built report or `None`,
+  reading nothing; outside a pass, a worker token. `_INDEX_IN_MEMORY` and
+  `_convert_index_in_memory()` added, set on 7z. `extract_all()` asks for its progress
+  totals before it takes its pass (§2).
 - `_drain_walk`'s sleep between batches: it exists so a pass on another thread can take
   the walk lock. With no pass beside a listing, it goes, if no other waiter remains;
   the implementation checks.
@@ -280,9 +313,9 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   shrinks in place): on a `CONCURRENT` reader of each format family, each lookup call
   from the loop body and from another thread raises `ArchiveyUsageError` and leaves the
   pass usable; a pass beside a worker in flight, beside another pass, and beside an open
-  stream raises; `members_report_if_available()` inside the loop raises like the
-  other lookup calls. Tests that peek inside a loop today move the call before the
-  loop.
+  stream raises. `members_report_if_available()` inside the loop returns the same
+  answer as before the loop, per format family (ZIP and 7z in both modes, TAR `None`),
+  and reads nothing from the archive (a counting source).
 - `test_concurrent_multithread.py`: `test_close_drains_in_flight_workers_then_closes`
   stays. A new case: close() while a pass executes on another thread raises and the
   reader stays open. `test_multithread_reads_beside_stream_members` goes.
@@ -353,6 +386,8 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   while an earlier walk is open (maintainer, 2026-11-24).
 - `close()` waits for lookup calls in flight under the flag, never for a pass (§3;
   maintainer, 2026-11-24).
-- `members_report_if_available()` becomes a lookup call that raises inside a pass, and
-  `extract_all()` takes its totals before its pass, so `close()` needs no re-check
-  after its wait (§2, §3; maintainer, 2026-11-24).
+- `members_report_if_available()` inside a pass returns what is built and reads
+  nothing; a pass converts an index already in memory when it starts, through one call
+  a later optimization can move into the peek; `extract_all()` takes its totals before
+  its pass; so `close()` needs no re-check after its wait (§2, §3; maintainer,
+  2026-11-24).
