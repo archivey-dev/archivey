@@ -680,8 +680,8 @@ For the next rounds of this plan. None blocks step 1.
    package formats (it is still written by Windows Update and driver packages). And
    whether ISO, ar or cpio stay in core: once step 1 makes loading lazy, moving a
    format saves wheel size (review A12 estimates 250 KB for all 13) and not import
-   time, and a bare install loses `.iso` on upgrade. Decision 6 stands until the maintainer reopens it;
-   nothing before step 5 depends on it.
+   time, and a bare install loses `.iso` on upgrade. Decision 6 stands until the
+   maintainer reopens it; nothing before step 5 depends on it.
 3. Whether a known name with no installed package may be detected by signature, or by
    extension only, when the signature needs a probe.
 4. The exact spelling of the off switch and of the provider query.
