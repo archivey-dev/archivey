@@ -8,9 +8,9 @@
 ## 2. The cut (one implementation PR, deep tier)
 
 - [ ] 2.1 `ReaderState`: one pass at a time in both modes; no side passes; `close()`
-  never waits for a pass, and for workers in flight under the flag (design.md §3); a
-  data pass refused when it starts beside a live `open()` stream, in both modes, and
-  `admit_pass_streams` removed
+  never waits for a pass; under the flag it waits for workers in flight, and keeps the
+  re-check after the wait (design.md §3); a data pass refused when it starts beside a
+  live `open()` stream, in both modes, and `admit_pass_streams` removed
 - [ ] 2.2 `members_report_if_available()` takes the peek token in both modes
 - [ ] 2.3 Remove what only the overlap needed (design.md §6): `_drain_walk`'s sleep, the
   mid-stream walk hand-off (`MemberDataView` and the at-open `reopen(0)` fallback stay)
@@ -30,7 +30,7 @@
 - [ ] 3.3 `archivey.fsspec`: threads read several member streams at once, then the file
   system closes cleanly; a close under open streams makes their later reads raise
   `ValueError`
-- [ ] 3.4 Remove or rewrite the tests of passes beside calls and of the draining close;
+- [ ] 3.4 Remove or rewrite the tests of passes beside calls (the drain tests stay);
   keep the held-stream mirror test of `verify_all` by rewriting it (design.md §7)
 - [ ] 3.5 `ArchiveyFileSystem.close()` calls `reader.close()` itself and detaches the
   finalizer after it returns; a red-green test for a close that raised (design.md §3)

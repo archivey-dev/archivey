@@ -8,12 +8,11 @@ the other breaking trims.
 
 **Why it matters:** `concurrent_operations=True` promises that every call works beside
 every other call, from any thread: `stream_members()` and `extract_all()` passes beside
-`open()`, beside `members()`, beside each other, and a `close()` that waits for calls in
-flight on other threads. That promise costs a shared member walk with a hand-off between
-callers, a second kind of pass bookkeeping, a draining close, and about a thousand lines
-of tests. Every format reader, and every plugin, has to survive it. The users who need
-the flag (`archivey.fsspec`, thread pools) need much less: several member streams open
-at once, and `open()` from several threads.
+`open()`, beside `members()`, beside each other. That promise costs a shared member walk
+with a hand-off between callers, a second kind of pass bookkeeping, and about a thousand
+lines of tests. Every format reader, and every plugin, has to survive it. The users who
+need the flag (`archivey.fsspec`, thread pools) need much less: several member streams
+open at once, and `open()` from several threads.
 
 **What it does:**
 

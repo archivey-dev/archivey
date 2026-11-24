@@ -47,9 +47,9 @@ change.
   that needs the member list builds it and the others wait.
 - **Kept.** The flag and its name, `concurrent_operations` (maintainer, 2026-11-24). Its
   refusal with `streaming=True` and `pipe=True`.
-- **Removed code.** Side passes, the close's re-check for a resumed pass, the drain's
-  hand-off sleep, the mid-stream walk hand-off, and the check of a pass at its first
-  stream (design.md §6).
+- **Removed code.** Side passes (the close's re-check after its wait stays, for the root
+  pass), the drain's hand-off sleep, the mid-stream walk hand-off, and the check of a
+  pass at its first stream (design.md §6).
 - **Plugin contract.** The thread rules in `archivey.formats` and
   `docs/adding-a-format.md` become three sentences (design.md §5).
 - `CHANGELOG.md`: one **Breaking:** line.
