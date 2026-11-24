@@ -32,7 +32,8 @@ anyone else's.
   implementation (the Rust package) runs only where the owner of the name approves it,
   under the accelerator rule.
 - `archivey.formats` grows until our own packages import no private name, gets a
-  version number, and its thread rules shrink to three sentences.
+  version number, and takes the shorter thread rules of the concurrency cut, a separate
+  change that lands first.
 - Three packages under `packages/`, released with core: `archivey-disk-images`,
   `archivey-package-formats`, `archivey-legacy-formats`.
 

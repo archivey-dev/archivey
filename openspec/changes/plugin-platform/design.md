@@ -318,19 +318,19 @@ Each new public helper lands in the pull request of the reader that needs it. No
 is added on speculation.
 
 **Threads.** The concurrency cut is a separate change that lands before this one
-(decision 9). This change builds on its result: the contract a reader author sees is
-three sentences:
+(decision 9), and it owns the thread contract a reader author sees
+(`openspec/changes/concurrency-cut`). This change takes that contract as it stands and
+does not restate it, so the two cannot drift apart. What the plugin work needs from it:
 
-1. archivey calls the methods of one reader from one thread at a time.
-2. A walk has the reader to itself from its first member to its end. A second walk
-   never starts while one runs.
-3. A stream that `open_member` returned may be read while other streams of the same
-   reader are open, each by one thread at a time.
+- archivey calls the methods of one reader from one thread at a time;
+- a pass over the archive runs with nothing else reading the archive beside it;
+- several member streams of one reader may be open at once, each read by one thread
+  at a time, which is what `archivey.fsspec` needs.
 
-Rule 2 removes today's warning that `walk()` may run more than once at the same time,
-and with it the cases a plugin's tests would have to cover: a pass beside random
-access, two passes at once, a close that waits for other threads. Rule 3 is what
-`archivey.fsspec` needs. The rules are the same for every format.
+A sequential reader may still see `walk()` start again while an earlier walk is open,
+because each open member stream that reads its data through a walk has a walk of its
+own. A reader keeps a walk's state in the generator. The rules are the same for every
+format.
 
 **Version.** `archivey.formats.API_VERSION` is a pair, `(major, minor)`, with its own
 numbering, apart from archivey's version.
@@ -456,7 +456,7 @@ All ten were put to the maintainer and agreed on 2026-11-24.
 7. **`[recommended]` and `archivey-cli` install all three.**
 8. **One repository, released together**, each package depending on one minor of core.
 9. **The concurrency cut comes first, as a separate change** (maintainer, 2026-11-24).
-   This plan states the contract it leaves (§5) and carries none of its tasks.
+   This plan builds on the contract it leaves (§5) and carries none of its tasks.
 10. **Timing.** Steps 1 and 2 with the breaking trims of 0.6.0; the split in 0.7.0.
 
 Earlier rulings kept: the composition interface with `BaseArchiveReader` private
