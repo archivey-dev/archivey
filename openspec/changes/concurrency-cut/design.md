@@ -166,9 +166,10 @@ CHANGELOG line (under `### Changed` in `[Unreleased]`):
 >   pass runs, or a pass started while a call runs or a member stream is open, raises
 >   `ArchiveyUsageError`, as without the flag, and `close()` while a pass runs on
 >   another thread raises instead of waiting. Without the flag, `extract_all()` beside
->   an open member stream now raises too, as `stream_members()` did. Several open member
->   streams, and `open()`, `read()`, `get()` and `members()` from several threads, work
->   as before.
+>   an open member stream now raises too, as `stream_members()` did, and
+>   `members_report_if_available()` inside a pass raises like `members()`. Several open
+>   member streams, and `open()`, `read()`, `get()` and `members()` from several
+>   threads, work as before.
 
 ## 5. The plugin contract
 
