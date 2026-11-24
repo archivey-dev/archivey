@@ -216,10 +216,11 @@ class Placements:
         """The live claim on the directory entry at ``path``, which ``st`` describes:
         the claim of its file made in the same directory under a name that folds to
         this one (case, Unicode normalization, a trailing dot or space), the one
-        spelled exactly so where several are, or else the file's only claim. A file
-        with several claims and no such name (an 8.3 short name of one of its hard
-        links) has no answer here: its file cannot tell which entry the name reaches,
-        and a wrong answer would send a write to another one."""
+        spelled exactly so where several are, or else the file's only claim when the
+        file has one directory entry. A file with several entries and no such name (an
+        8.3 short name of one of its hard links, claimed or not) has no answer here:
+        its file cannot tell which entry the name reaches, and a wrong answer would
+        send a write to another one."""
         if st.st_ino == 0:
             return None
         self._index_new_claims()
@@ -236,8 +237,11 @@ class Placements:
                     (claim,) = spellings.values()
                 if claim is not None and self.is_live(claim) and _is_file_of(claim, st):
                     return claim
-        # The file's only claim: one folded entry key, spelled one way.
-        if len(entries) == 1:
+        # The file's only claim: one folded entry key, spelled one way, on a file with
+        # one directory entry. A file with more (such as a hard-link member whose
+        # claim was taken back, its entry still on disk) cannot tell which entry the
+        # name reaches, and the claim of another entry would take the write.
+        if len(entries) == 1 and _entry_count(st) == 1:
             (spellings,) = entries.values()
             if len(spellings) == 1:
                 (claim,) = spellings.values()
@@ -279,6 +283,14 @@ def _dir_id(path: Path) -> tuple[int, int] | None:
     except OSError:
         return None
     return st.st_dev, st.st_ino
+
+
+def _entry_count(st: os.stat_result) -> int:
+    """How many directory entries the file ``st`` describes has (its link count).
+
+    A function of its own so the tests, which stand a hard link in for a short name or
+    a case variant, can leave that link out of the count."""
+    return st.st_nlink
 
 
 def _is_file_of(claim: Claim, st: os.stat_result) -> bool:
