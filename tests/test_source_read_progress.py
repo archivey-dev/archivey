@@ -8,7 +8,7 @@ import os
 import threading
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, cast
 
 import pytest
 
@@ -842,3 +842,71 @@ def test_bytes_of_a_finished_request_count_once() -> None:
     reporter.request_ended(0, 2 << 20, 2 << 20)
     reporter.request_started(2 << 20, 3 << 20)
     assert seen == [0, 1 << 20, 2 << 20, 2 << 20]
+
+
+class _StopsOnRead(io.RawIOBase):
+    """A seekable inner stream whose ``fail_at``-th read raises a callback stop."""
+
+    def __init__(self, data: bytes, fail_at: int) -> None:
+        self._data = io.BytesIO(data)
+        self._fail_at = fail_at
+        self._reads = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self._data.tell()
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        return self._data.seek(offset, whence)
+
+    def read(self, n: int | None = -1) -> bytes:
+        from archivey.internal.streams.callers_source import mark_source_callback
+
+        self._reads += 1
+        if self._reads == self._fail_at:
+            stop = _StopValue("stop")
+            mark_source_callback(stop)
+            raise stop
+        return self._data.read(n)
+
+    def readinto(self, b: Any) -> int:
+        data = self.read(len(b))
+        b[: len(data)] = data
+        return len(data)
+
+
+def test_a_ratio_guard_raises_a_stop_on_the_read_that_met_it() -> None:
+    # A large read goes to the decoder in steps. A stop on a later step raises from
+    # that read; it is not held behind the steps already gathered, as a decoder
+    # error is.
+    from archivey import DecoderLimits
+    from archivey.internal.bomb_tracker import DecodeRatioGuard
+
+    guard = DecodeRatioGuard(
+        cast("BinaryIO", _StopsOnRead(b"x" * (16 << 20), 3)),
+        limits=DecoderLimits(),
+        static_size=1 << 20,
+        consumed=None,
+    )
+    with pytest.raises(_StopValue):
+        guard.read(8 << 20)
+
+
+def test_a_sparse_stream_raises_a_stop_on_the_read_that_met_it() -> None:
+    # A read across chunks gathers each chunk's bytes. A stop on a later chunk raises
+    # from that read; it is not held behind the bytes already gathered, as a cut is.
+    from archivey.internal.streams.streamtools.sparse import SparseStream
+
+    sparse = SparseStream(
+        cast("BinaryIO", _StopsOnRead(b"y" * (4 << 20), 2)),
+        [0, 2 << 20],
+        [1 << 20, 1 << 20],
+        4 << 20,
+    )
+    with pytest.raises(_StopValue):
+        sparse.read(4 << 20)

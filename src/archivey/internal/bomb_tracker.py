@@ -30,6 +30,7 @@ from archivey.config import (
 )
 from archivey.exceptions import ResourceLimitError
 from archivey.internal.overrides import override
+from archivey.internal.streams.callers_source import from_callers_source
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
@@ -482,7 +483,10 @@ class _RatioCheck:
             try:
                 data = read_blocking(self._inner, step)
             except Exception as e:
-                if not parts or not self._holds_errors:
+                # A stop from ``on_source_read`` (or the caller's source failing)
+                # raises from this read: it is the caller's, not a decoder error that
+                # waits behind the bytes gathered before it.
+                if not parts or not self._holds_errors or from_callers_source(e):
                     raise
                 self._held = e
                 break

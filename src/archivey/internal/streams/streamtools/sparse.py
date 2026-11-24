@@ -39,6 +39,7 @@ from collections.abc import Callable, Sequence
 from typing import BinaryIO
 
 from archivey.internal.overrides import override
+from archivey.internal.streams.callers_source import from_callers_source
 from archivey.internal.streams.streamtools.base import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
     check_read_size,
@@ -155,8 +156,10 @@ class SparseStream(DelegatingStream):
                 # inner read gets nothing. A sized read that already holds bytes,
                 # holes included, returns them first (ADR 0014) and raises this same
                 # error on the next read. The position is still at the failed chunk.
-                # Nothing is converted here, only delayed by one read.
-                if whole or not parts:
+                # Nothing is converted here, only delayed by one read. A stop from
+                # ``on_source_read`` (or the caller's source failing) is not delayed:
+                # it is the caller's, and raises from this read.
+                if whole or not parts or from_callers_source(exc):
                     raise
                 self._pending = exc
                 break
