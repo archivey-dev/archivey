@@ -349,11 +349,11 @@ would deadlock on it. So physical cleanup is deferred reader-wide:
   `reader.close()` only. The rule is the same for every member stream, built-in or
   plugin (maintainer, 2026-11-24): where a reader's streams share a handle lock, the
   close takes it, so closing one stream waits for at most one read call of a sibling,
-  never for that sibling to finish, and changes nothing else. Streams with no shared
-  handle lock (ZIP, 7z and RAR views over `SharedSource`) close at once, as today.
-  Plugins keep "you need no lock of your own"; CAB's own `_lock` around its parked
-  decoder (`cab_reader.py:660-673`) is then redundant, and the implementation removes it
-  if nothing else needs it.
+  never for that sibling to finish, and changes nothing else. Streams that no
+  `LockedStream` wraps (ZIP, 7z, RAR, and TAR outside streaming) close at once, as
+  today. Plugins keep "you need no lock of your own"; CAB's own `_lock` around its
+  parked decoder (`cab_reader.py:660-673`) is then redundant, and the implementation
+  removes it if nothing else needs it.
 - No plugin code and no cleanup step runs under the lifecycle lock.
 
 Entry points that can touch a live resource. Each public entry point is either a
