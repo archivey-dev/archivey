@@ -30,10 +30,10 @@ Checked on main `4210bbf` (2026-11-24).
 
 The implementation PR writes this table into `reader-concurrency` and the substance of
 it into `docs/reading.md`. "Lookup calls" are `open()`, `read()`, `get()`, `members()`,
-`members_report()` and iteration of a random-access reader. "Passes" are
-`stream_members()`, `extract_all()` and `verify_all()`. `members_report_if_available()`
-is neither: it is the peek, which overlaps lookup calls under the flag and is admitted
-beside a pass in both modes.
+`members_report()`, `members_report_if_available()` and iteration of a random-access
+reader. "Passes" are `stream_members()`, `extract_all()` and `verify_all()`.
+`members_report_if_available()` stops being a peek admitted beside a pass: it is an
+ordinary lookup call (below, "The peek becomes a lookup call").
 
 | | Default reader | `concurrent_operations=True` |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ beside a pass in both modes.
 | Different streams read from different threads at once | — | Yes, also while a lookup call runs |
 | Lookup call while another lookup call runs on another thread | Not supported: a second list build or a second stream raises | Yes; the list is built once, the others wait for it |
 | Lookup call while a pass runs (loop body or another thread) | Raises | **Raises** (today: admitted) |
-| `members_report_if_available()` (the peek) while a pass runs | Yes | Yes |
+| `members_report_if_available()` while a pass runs | **Raises** (today: admitted) | **Raises** (today: admitted) |
 | Pass while a lookup call runs on another thread | Raises | **Raises** (today: admitted) |
 | Pass while another pass runs | Raises | **Raises** (today: admitted) |
 | Pass while a stream from `open()` is open | **Raises when the pass starts** (today: at its first stream, and `extract_all()` not at all) | **Raises when the pass starts** (today: admitted) |
@@ -50,13 +50,27 @@ beside a pass in both modes.
 In words, for the docstring of `open_archive` and `docs/reading.md`:
 
 > With `concurrent_operations=True`, any number of member streams may be open at once,
-> and `open()`, `read()`, `get()`, `members()`, `members_report()` and iteration may run
+> and `open()`, `read()`, `get()`, `members()`, `members_report()`,
+> `members_report_if_available()` and iteration may run
 > at the same time from several threads. Each member stream belongs to one thread at a
 > time. `stream_members()`, `extract_all()` and `verify_all()` behave as they do without
 > the flag: a pass has the reader to itself, so while one runs, any other call on the
 > reader raises `ArchiveyUsageError`, and a pass raises when it starts if another call
 > is running or a stream from `open()` is still open. Without the flag, the reader and
 > its open stream belong to one thread at a time. `close()` is described in §3.
+
+**The peek becomes a lookup call** (maintainer, 2026-11-24). Today
+`members_report_if_available()` is admitted inside a pass, from the loop body, and
+`extract_all()` calls it first thing inside its own pass for its progress totals
+(`extraction.py:1119`, under the pass taken at `base_reader.py:5581`). A call inside the
+loop learns nothing a call before the loop does not: with an upfront index the report
+is the same before and during the pass, and without one it stays `None` until a pass
+ends. So `extract_all()` takes its totals just before it takes its pass, and the method
+raises inside a pass like `members()` does. Then no call of any kind runs while a pass
+is open, which is what lets `close()` drop its re-check (§3), and `acquire_peek`, a
+token kind of its own, goes. Callers that peek inside a loop move the call before the
+loop. The CLI calls it before its passes already (`extract_cmd.py`, `cat_cmd.py`,
+`test_cmd.py`).
 
 **Why passes refuse open streams too, and when.** A pass with the reader to itself gives
 the plugin contract its rule 2 (§5): while a pass runs, no other member stream reads the
@@ -97,11 +111,10 @@ close that never waits).
 
 > With `concurrent_operations=True`, `close()` waits for `open()`, `read()`, `get()`,
 > `members()`, `members_report()`, `members_report_if_available()` calls and iteration
-> running on other threads, then closes. It never waits while a pass is open: if a pass
-> is executing a step (a selector or a decode inside `next()`), or a pass is open and
-> any of those calls is still running, `close()` raises `ArchiveyUsageError` and the
-> reader stays open, as without the flag. A pass suspended at a yield with nothing else
-> running is wound down, and resuming it raises `ArchiveyUsageError`. Every member
+> running on other threads, then closes. It never waits for a pass: if a pass is
+> executing a step (a selector or a decode inside `next()`), `close()` raises
+> `ArchiveyUsageError` and the reader stays open, as without the flag. A pass suspended
+> at a yield is wound down, and resuming it raises `ArchiveyUsageError`. Every member
 > stream still open is closed: a read running on another thread returns what it already
 > had or raises `ValueError`, as a closed file does. The archive is torn down once,
 > after the last stream is closed. A second `close()` returns without doing anything,
@@ -115,15 +128,10 @@ exception to a chained `ArchiveyUsageError` and leaves the reader open, with no
 finalizer to close it. With the wait, the close finishes once the in-flight calls
 return. A lookup call that never returns blocks `close()`, as today.
 
-The wait happens only when no pass is open (this plan's proposal for the simpler model,
-awaiting the maintainer's confirmation). The peek (`members_report_if_available()`) is
-the one call still admitted beside a pass. If `close()` waited for it, the pass could
-unwind and run its cleanup during the wait, and the close would need today's re-check
-after the wait (`reader_state.py:831-841`). Refusing instead keeps one invariant:
-`close()` never lets go of the state lock while a pass exists, so nothing needs checking
-after the wait, because no pass can start once `_closing` is set. The re-check goes. The
-cost is one more raise: a close beside a pass suspended at a yield while another thread
-runs the peek or, before the pass started, a lookup call.
+The wait needs no re-check after it. Once no call runs beside a pass (§2, the peek
+included), a lookup call in flight means no pass is open, and none can start or resume
+while `_closing` is set. Today's re-check after the wait (`reader_state.py:831-841`)
+exists for a pass that resumed while the close waited for a call beside it; it goes.
 
 Not taken: a `close()` that never waits, which would have made pool users put the pool's
 `with` inside the reader's.
@@ -220,9 +228,9 @@ In `internal/reader_state.py`:
 - `_OVERLAPPING_PASSES`, `_pass_admits_overlap_locked`, `_side_passes`: one pass at a
   time, `_root` only. `_passes_locked`, `_executing_pass_locked`, `release_pass` and the
   `mark_reader_closed` loop over passes shrink to the root.
-- The draining close: the wait stays, for workers, and runs only when no pass is open
-  (§3); a close with a pass open and a worker in flight raises. The re-check after the
-  wait goes.
+- The draining close: the wait stays, for workers; the re-check after it goes (§3).
+- `acquire_peek` goes: `members_report_if_available()` takes a worker token like the
+  other lookup calls.
 - `_owner_pass_locked`: the `CONCURRENT` branch goes; with one pass, a scope goes under
   `_root` in both modes.
 - `admit_pass_streams` goes. `acquire_pass` for a data pass refuses a live stream or
@@ -234,7 +242,9 @@ In `internal/reader_state.py`:
 
 In `internal/base_reader.py`:
 
-- `members_report_if_available()` takes the peek token in both modes.
+- `members_report_if_available()` takes a worker token in both modes and raises inside
+  a pass. `extract_all()` asks for its progress totals before it takes its pass (the
+  call moves out of `ExtractionCoordinator.run()`, which receives the report).
 - `_drain_walk`'s sleep between batches: it exists so a pass on another thread can take
   the walk lock. With no pass beside a listing, it goes, if no other waiter remains;
   the implementation checks.
@@ -269,7 +279,9 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   shrinks in place): on a `CONCURRENT` reader of each format family, each lookup call
   from the loop body and from another thread raises `ArchiveyUsageError` and leaves the
   pass usable; a pass beside a worker in flight, beside another pass, and beside an open
-  stream raises; `members_report_if_available()` inside the loop works.
+  stream raises; `members_report_if_available()` inside the loop raises like the
+  other lookup calls. Tests that peek inside a loop today move the call before the
+  loop.
 - `test_concurrent_multithread.py`: `test_close_drains_in_flight_workers_then_closes`
   stays. A new case: close() while a pass executes on another thread raises and the
   reader stays open. `test_multithread_reads_beside_stream_members` goes.
@@ -340,3 +352,6 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   while an earlier walk is open (maintainer, 2026-11-24).
 - `close()` waits for lookup calls in flight under the flag, never for a pass (§3;
   maintainer, 2026-11-24).
+- `members_report_if_available()` becomes a lookup call that raises inside a pass, and
+  `extract_all()` takes its totals before its pass, so `close()` needs no re-check
+  after its wait (§2, §3; maintainer, 2026-11-24).

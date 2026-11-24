@@ -42,14 +42,16 @@ change.
   thread, or while a pass is open and a call is still running, it raises
   `ArchiveyUsageError` and the reader stays open. Under the flag, with no pass open, it
   still waits for lookup calls in flight (design.md §3; maintainer, 2026-11-24).
+- **Breaking.** `members_report_if_available()` raises inside a pass, like `members()`;
+  call it before the loop. `extract_all()` takes its progress totals before its pass.
 - **Kept.** Any number of member streams from `open()` at once, each used by one thread
   at a time. `open()`, `read()`, `get()`, `members()`, `members_report()`,
   `members_report_if_available()` and iteration from several threads at once; the first
   that needs the member list builds it and the others wait.
 - **Kept.** The flag and its name, `concurrent_operations` (maintainer, 2026-11-24). Its
   refusal with `streaming=True` and `pipe=True`.
-- **Removed code.** Side passes, the close's re-check after its wait (the wait runs only
-  when no pass is open), the drain's hand-off sleep, the mid-stream walk hand-off, and
+- **Removed code.** Side passes, the close's re-check after its wait, the peek token
+  (`acquire_peek`), the drain's hand-off sleep, the mid-stream walk hand-off, and
   the check of a pass at its first stream (design.md §6).
 - **Plugin contract.** The thread rules in `archivey.formats` and
   `docs/adding-a-format.md` become three sentences (design.md §5).
@@ -59,13 +61,16 @@ change.
 
 ### Modified capabilities
 
-- `reader-concurrency`: "Random-access calls beside a pass" and "Draining reader close"
-  are removed; "Multiple concurrently-open member streams" and "Distinct passes and
-  shared streams remain single-owner" are rewritten to the rules of design.md §2 and §3.
+- `reader-concurrency`: "Random-access calls beside a pass" is removed; "Draining reader
+  close" loses its re-check for a resumed pass; "Multiple concurrently-open member
+  streams" and "Distinct passes and shared streams remain single-owner" are rewritten to
+  the rules of design.md §2 and §3.
 - `archive-reading`: the `concurrent_operations` bullet, the `stream_members()` overlap
   paragraph and its matrix row, the close paragraph, and `verify_all()`'s "SHALL NOT
   touch streams the caller holds" with its matrix row "caller stream open at position
-  100": it now raises `ArchiveyUsageError` and leaves that stream untouched.
+  100": it now raises `ArchiveyUsageError` and leaves that stream untouched. The
+  pass-finalization row "Streaming ZIP: peek inside the `stream_members()` loop, then
+  `break`" becomes a peek before the loop.
 - `access-mode-and-cost`: the matrix row "RA `stream_members` active + `open()` or
   another `stream_members`" loses "unless `concurrent_operations=True`".
 - `format-tar`: the paragraph on another caller moving the walk under a `CONCURRENT`
