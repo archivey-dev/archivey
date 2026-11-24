@@ -97,10 +97,11 @@ close that never waits).
 
 > With `concurrent_operations=True`, `close()` waits for `open()`, `read()`, `get()`,
 > `members()`, `members_report()`, `members_report_if_available()` calls and iteration
-> running on other threads, then closes. It never waits for a pass: if a pass is
-> executing a step (a selector or a decode inside `next()`), `close()` raises
-> `ArchiveyUsageError` and the reader stays open, as without the flag. A pass suspended
-> at a yield is wound down, and resuming it raises `ArchiveyUsageError`. Every member
+> running on other threads, then closes. It never waits while a pass is open: if a pass
+> is executing a step (a selector or a decode inside `next()`), or a pass is open and
+> any of those calls is still running, `close()` raises `ArchiveyUsageError` and the
+> reader stays open, as without the flag. A pass suspended at a yield with nothing else
+> running is wound down, and resuming it raises `ArchiveyUsageError`. Every member
 > stream still open is closed: a read running on another thread returns what it already
 > had or raises `ValueError`, as a closed file does. The archive is torn down once,
 > after the last stream is closed. A second `close()` returns without doing anything,
@@ -112,12 +113,17 @@ whose `reader.read()` calls are still in flight when the body raises (a failed f
 timeout, `KeyboardInterrupt`). With a close that raises, `__exit__` loses the body's
 exception to a chained `ArchiveyUsageError` and leaves the reader open, with no
 finalizer to close it. With the wait, the close finishes once the in-flight calls
-return. `mark_reader_closed` keeps today's wait and its re-check after the wait for a
-pass that is executing again (`reader_state.py:831-841`): the peek
-(`members_report_if_available()`) holds a worker token and is still admitted beside a
-pass, so a pass suspended at a yield can unwind and execute its cleanup while the close
-waits for the peek. Only the side-pass part of that check goes. A lookup call that never
-returns blocks `close()`, as today.
+return. A lookup call that never returns blocks `close()`, as today.
+
+The wait happens only when no pass is open (this plan's proposal for the simpler model,
+awaiting the maintainer's confirmation). The peek (`members_report_if_available()`) is
+the one call still admitted beside a pass. If `close()` waited for it, the pass could
+unwind and run its cleanup during the wait, and the close would need today's re-check
+after the wait (`reader_state.py:831-841`). Refusing instead keeps one invariant:
+`close()` never lets go of the state lock while a pass exists, so nothing needs checking
+after the wait, because no pass can start once `_closing` is set. The re-check goes. The
+cost is one more raise: a close beside a pass suspended at a yield while another thread
+runs the peek or, before the pass started, a lookup call.
 
 Not taken: a `close()` that never waits, which would have made pool users put the pool's
 `with` inside the reader's.
@@ -214,8 +220,9 @@ In `internal/reader_state.py`:
 - `_OVERLAPPING_PASSES`, `_pass_admits_overlap_locked`, `_side_passes`: one pass at a
   time, `_root` only. `_passes_locked`, `_executing_pass_locked`, `release_pass` and the
   `mark_reader_closed` loop over passes shrink to the root.
-- The draining close stays, with its re-check after the wait (§3: the peek is a worker
-  beside a pass); the re-check looks at `_root` only.
+- The draining close: the wait stays, for workers, and runs only when no pass is open
+  (§3); a close with a pass open and a worker in flight raises. The re-check after the
+  wait goes.
 - `_owner_pass_locked`: the `CONCURRENT` branch goes; with one pass, a scope goes under
   `_root` in both modes.
 - `admit_pass_streams` goes. `acquire_pass` for a data pass refuses a live stream or

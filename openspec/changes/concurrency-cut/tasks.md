@@ -8,7 +8,8 @@
 ## 2. The cut (one implementation PR, deep tier)
 
 - [ ] 2.1 `ReaderState`: one pass at a time in both modes; no side passes; `close()`
-  never waits for a pass; under the flag it waits for workers in flight, and keeps the
+  never waits while a pass is open (it raises if the pass executes or a worker is in
+  flight); with no pass open, under the flag it waits for workers in flight, with no
   re-check after the wait (design.md §3); a data pass refused when it starts beside a
   live `open()` stream, in both modes, and `admit_pass_streams` removed
 - [ ] 2.2 `members_report_if_available()` takes the peek token in both modes
@@ -24,7 +25,8 @@
 
 - [ ] 3.1 Pass refusals on a `CONCURRENT` reader, per format family (design.md §7)
 - [ ] 3.2 `close()` beside a pass executing on another thread raises and the reader
-  stays open; beside a worker in flight it waits; a held stream makes
+  stays open; beside a worker in flight it waits; beside a suspended pass and a peek
+  running on another thread it raises; a held stream makes
   `extract_all()` raise before the destination exists, and a directory-only
   `stream_members()` raise at its first `next()`
 - [ ] 3.3 `archivey.fsspec`: threads read several member streams at once, then the file
