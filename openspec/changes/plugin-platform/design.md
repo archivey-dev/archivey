@@ -694,3 +694,9 @@ For the next rounds of this plan. None blocks step 1.
    pure-Python ones never pay for a process.
 9. The exact shape of the kernel helper, and whether a package may bring a kernel of
    its own or only use those of `archivey-codecs`.
+10. Parallel decoding for readers on `IndexedReader`. Today every stream such a reader
+    returns is read under the per-reader lock. A stream that archivey itself builds
+    over the shared source (a slice, or a decoder over one) touches no reader state
+    and could skip the lock, so SquashFS, xar, CAB, LHA, ARJ and DMG would decode
+    members in parallel as ZIP does. A speed-up, not a contract change: it comes after
+    the concurrency cut and after the moves.
