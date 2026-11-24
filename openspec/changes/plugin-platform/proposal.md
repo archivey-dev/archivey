@@ -24,19 +24,21 @@ that other formats use, and solve the import cost with the same mechanism.
 
 ## What Changes
 
-- **Manifest.** One `FormatEntry` or `CodecEntry` per format or codec, core's included.
-  Detection runs on manifest data. Reader modules are imported on first use.
+- **Manifest.** One entry per format or codec, core's included: a data file that core
+  reads without running the package. Reader modules are imported on first use.
 - **Open names. Breaking.** `ContainerFormat`, `StreamFormat`, `CompressionAlgorithm`
   and `OptionalLibrary` become open string types with constants for core's own names.
   `PluginContainer`, `PluginStream`, the `Literal` spelling lists and
   `FormatInfo.from_plugin` are removed; `FormatInfo.provider` is added.
 - **Discovery.** Installed packages announce a manifest through the `archivey.plugins`
-  entry point group. `register_format()` and `register_codec()` stay and take the same
-  entries. This replaces the 2026-10-25 explicit-only rule.
+  entry point group. Core reads it without importing the package, and applies a call's
+  policy before it imports any code of an installed package. `register_format()` and
+  `register_codec()` stay and take the same entries. This replaces the 2026-10-25
+  explicit-only rule.
 - **Hint table.** Core lists formats it knows and does not ship, with the package that
   reads each.
-- **Codec registry.** Codecs by name, method bindings per container, more than one
-  implementation per name.
+- **Codec registry.** Codecs by name, method bindings per container, and a second
+  implementation of a name only where its owner or the caller approves it.
 - **Reader API.** Public helpers replace each `archivey.internal` import of the moved
   readers. `API_VERSION` replaces the exact version pin. The thread rules shrink with
   the concurrency cut (tracked internally).

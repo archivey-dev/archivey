@@ -17,9 +17,10 @@ anyone else's.
 
 **What it does:**
 
-- Every format and codec, core's own included, is described by a manifest entry: plain
-  data with its name, extensions, signatures and the dotted path of its reader. Core
-  imports a reader only when an archive needs it.
+- Every format and codec, core's own included, is described by a manifest entry: a
+  data file with its name, extensions, signatures and the dotted path of its reader.
+  Core reads it without running the package and imports a reader only when an archive
+  needs it and the caller's policy allows it.
 - Format, stream, method and library names become open strings. Core keeps constants for
   what it ships. `PluginContainer`, `PluginStream` and `FormatInfo.from_plugin` go.
 - Installed packages are found through an entry point, behind guardrails: a plugin adds
@@ -27,8 +28,9 @@ anyone else's.
   not affected; one switch turns discovery off.
 - Core keeps a hint table of formats it does not ship, so a missing package is named in
   the error and an archive is never read as another format.
-- Codecs register by name, bind to a container's method number, and may have a second
-  implementation (the Rust package) under the accelerator rule.
+- Codecs register by name and bind to a container's method number. A second
+  implementation (the Rust package) runs only where the owner of the name approves it,
+  under the accelerator rule.
 - `archivey.formats` grows until our own packages import no private name, gets a
   version number, and its thread rules shrink to three sentences.
 - Three packages under `packages/`, released with core: `archivey-disk-images`,
