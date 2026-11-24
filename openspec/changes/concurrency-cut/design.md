@@ -68,9 +68,9 @@ runs beside a pass, and it is why `close()` re-checks for a pass after its wait.
 the cut, while a pass is open (from the loop body or, under the flag, another thread),
 the method returns the report if the member list is already built (a published report,
 or a walk that has ended: the report is then made from the listed members), `None` if
-not, and reads nothing from the archive. It takes no token then, so `close()` has
-nothing beside a pass to wait for (§3). Outside a pass it is a lookup call with a worker
-token, and on an upfront index it builds the list as today.
+not, and reads nothing from the archive. It takes no token then: it reads only in-memory
+state, so it holds nothing a close must wait to release (§3). Outside a pass it is a
+lookup call with a worker token, and on an upfront index it builds the list as today.
 
 The rule this gives, for the `archive-reading` spec (maintainer, 2026-11-24):
 
@@ -153,7 +153,7 @@ run on the calling thread; password resolution lock-free for providers.
 
 **`close()` marks the reader closed and returns; the last call out tears down**
 (maintainer, 2026-11-24, after an independent evaluation:
-`/mnt/project-files/investigations/close-under-concurrency-2026-11-24/README.md`). It
+`dev-docs/investigations/close-under-concurrency/README.md`). It
 replaces the earlier ruling of the same day (wait for lookup calls, raise beside an
 executing pass). The same rule holds with and without the flag, for lookup calls and
 passes alike.
@@ -193,10 +193,13 @@ What it costs:
   join its threads first. `zipfile.ZipFile.close()` with a member file still open
   behaves the same way, as do sockets, SQLite's `sqlite3_close_v2()`, HDF5's default
   close, Go's `os.File` and .NET's `SafeHandle` (the report's survey).
-- Teardown runs on the thread that leaves last. If it fails there, that thread is
-  already raising "the reader is closed", so it raises that with the teardown error as
-  its `__cause__`. A teardown error during a `close()` with nothing running still
-  raises from `close()`, as today.
+- Teardown runs on whoever leaves last, and a teardown error goes to that caller: a
+  call that is raising the closed error raises it with the teardown error as its
+  `__cause__`; a call that would have returned normally (a `get()` that finished, an
+  `open()` that had bound its stream) raises the teardown error instead; a member
+  stream's `close()` raises it, as today (`archive_stream.py:1582-1591`); under
+  `IOBase.__del__` Python prints it as unraisable, as today. A `close()` with nothing
+  running raises it from `close()`, as today.
 
 Checkpoints. Reader methods already check the lifecycle on entry, a generator pass on
 every resume, and `open()` reserves and binds so a close cannot slip in between. The
@@ -206,8 +209,15 @@ Without them the rule stays safe (teardown still waits for the last call), but a
 `extract_all()` would run to its end after `close()`. The implementer confirms the
 sites. Member streams: `ArchiveStream._close()` closes the inner stream while a `read()`
 may run on another thread, relying on each inner layer to tolerate it (report, "Two
-things noticed"). The implementation checks the layers, or gives the stream the same
-flag-and-count, so that no teardown runs under a running read.
+things noticed"). Under this rule that becomes reachable in both modes,
+and without the flag a plugin's stream has no lock around it (`_handle_lock` exists only
+under the flag or in streaming, `format_adapter.py:289-290`, `:3469-3470`), and archivey
+cannot check a third-party stream's layers. So every member stream gets the same
+flag-and-count, required: the stream counts its running `read`/`seek`, a `close()` from
+another thread marks it closed (new calls raise `ValueError`) and leaves the inner
+close to the running call, which runs it when it returns. No inner `close()` ever runs
+beside an inner `read()`, in either mode, for archivey's own decoders and for plugin
+streams.
 
 `close()` from a callback of the reader's own call. Today `mark_reader_closed` refuses
 it first thing (`reader_state.py:781-787`), because a close let through would tear the
@@ -294,7 +304,9 @@ without the lock, but archivey cannot tell it apart, so it takes the lock too. T
 contract text adds one sentence:
 
 > archivey serializes your reader's methods and the reads of the streams it returns with
-> one lock per reader; you need no lock of your own. `translate_exception()` is the one
+> one lock per reader; you need no lock of your own. In both modes archivey never calls
+> a stream's `close()` while one of its reads runs, and never tears your reader down
+> while one of its methods runs. `translate_exception()` is the one
 > method called without that lock: map the exception you are given, and read no state
 > of the reader or its library there.
 
@@ -331,6 +343,9 @@ In `internal/reader_state.py`:
   left. Its same-thread refusal of a close from a callback goes too (§3: the running
   call holds teardown); `release_worker` and `release_pass` tear down when they are the
   last out after a close. Teardown sets the internal released event (§3).
+- Member streams (`internal/streams/archive_stream.py`): a count of running
+  `read`/`seek`; a close from another thread marks the stream closed and leaves the
+  inner close to the running call (§3).
 - `acquire_peek` goes: outside a pass `members_report_if_available()` takes a worker
   token like the other lookup calls; while a pass is open it takes none (§2).
 - `_owner_pass_locked`: the `CONCURRENT` branch goes; with one pass, a scope goes under
@@ -390,6 +405,9 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   is rewritten: `close()` returns while the worker is in flight, the worker's call
   raises "the reader is closed", and teardown runs once, after it returns (the released
   event). `test_multithread_reads_beside_stream_members` goes.
+- New, §3, both modes: a plugin reader (default mode and under the flag) whose stream's
+  `read()` blocks on an event; `close()` from another thread returns, and the plugin
+  stream's `close()` runs only after that `read()` returns.
 - New, §3, both modes: `close()` while another thread is blocked in a password provider
   returns at once; when the provider answers, that call raises and teardown runs.
   `close()` while `extract_all()` runs on another thread returns at once, and the

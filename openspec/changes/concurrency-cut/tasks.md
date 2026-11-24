@@ -9,7 +9,8 @@
 
 - [ ] 2.1 `ReaderState`: one pass at a time in both modes; no side passes; `close()`
   marks closed and returns, the draining close removed, teardown by the last call out,
-  an internal released event (design.md §3); the checkpoints of §3; `acquire_peek`
+  an internal released event, member streams with a running-call count so no inner
+  `close()` runs beside a `read()` (design.md §3); the checkpoints of §3; `acquire_peek`
   removed; a data pass refused when it starts beside a live `open()` stream, in both
   modes, and `admit_pass_streams` removed
 - [ ] 2.2 `members_report_if_available()` inside a pass: built report or `None`, no
