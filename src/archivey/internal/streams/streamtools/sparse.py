@@ -158,7 +158,10 @@ class SparseStream(DelegatingStream):
                 # error on the next read. The position is still at the failed chunk.
                 # Nothing is converted here, only delayed by one read. A stop from
                 # ``on_source_read`` (or the caller's source failing) is not delayed:
-                # it is the caller's, and raises from this read.
+                # it is the caller's, and raises from this read. The bytes gathered
+                # are dropped, and the position stays past them: safe for a stop,
+                # which every later read raises again; an error from the caller's
+                # source that does not repeat lets a retry skip them.
                 if whole or not parts or from_callers_source(exc):
                     raise
                 self._pending = exc

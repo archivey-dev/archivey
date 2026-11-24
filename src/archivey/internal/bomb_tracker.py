@@ -485,7 +485,10 @@ class _RatioCheck:
             except Exception as e:
                 # A stop from ``on_source_read`` (or the caller's source failing)
                 # raises from this read: it is the caller's, not a decoder error that
-                # waits behind the bytes gathered before it.
+                # waits behind the bytes gathered before it. Those bytes are dropped,
+                # and the position stays past them. That is safe for a stop, which
+                # every later read raises again; an error from the caller's source
+                # that does not repeat lets a retry skip them.
                 if not parts or not self._holds_errors or from_callers_source(e):
                     raise
                 self._held = e
