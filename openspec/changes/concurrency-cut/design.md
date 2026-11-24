@@ -134,6 +134,24 @@ several walks are open at once. Refusing that would be format gating. Proposed w
 3. A stream that `open_member` returned may be read while other streams of the same
    reader are open, each by one thread at a time.
 
+**The lock that makes rules 1 and 3 hold.** Under the flag, archivey holds one lock per
+reader (`_handle_lock` in `format_adapter.py`) around every call into the reader and
+around every `read`, `seek` and `close` of a stream the reader's own code returned. That
+lock stays. So rule 3 means "may be open at once", not "read at the same instant": two
+threads reading two such streams take turns, and a read never runs beside an
+`open_member` or another call of the same reader. A reader whose streams call back into
+its own state (a block cache, a shared decoder, a library handle) needs no lock of its
+own, on a free-threaded build too. Streams over `ReaderSource` views are archivey's own,
+safe without the lock, and do not take it. The contract text adds one sentence:
+
+> archivey serializes your reader's methods and the reads of the streams it returns with
+> one lock per reader; you need no lock of your own.
+
+For callers of `ArchiveReader` the cut changes three things, in §2 and §3: a pass refuses
+other calls and open streams with or without the flag, `close()` raises instead of
+waiting, and the flag no longer lets passes overlap. Several open streams and lookup calls
+from several threads stay.
+
 What goes from the contract: a walk stepped for another caller while a pass reads
 through it, a pass beside random access, two passes at once, a close that waits for
 other threads. What stays: several walks open at once outside a pass, which `walk()` as
