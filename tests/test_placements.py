@@ -16,6 +16,7 @@ from typing import cast
 
 import pytest
 
+from archivey.internal import placements as placements_module
 from archivey.internal.placements import Placements
 
 posix_inodes = pytest.mark.skipif(
@@ -33,6 +34,12 @@ def _alias(existing: Path, alias: Path) -> None:
     insensitive filesystem (macOS) has made it one already."""
     if not os.path.lexists(alias):
         os.link(existing, alias)
+
+
+def _one_stand_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The test's one stand-in hard link is a name, not an entry: a short name or a
+    case variant adds no link to its file, so the file's entry count leaves it out."""
+    monkeypatch.setattr(placements_module, "_entry_count", lambda st: st.st_nlink - 1)
 
 
 @posix_inodes
@@ -107,8 +114,9 @@ def test_the_key_decides_between_hard_links_of_one_file(tmp_path: Path) -> None:
 
 @posix_inodes
 def test_a_name_that_folds_to_no_claim_finds_its_file_s_only_claim(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _one_stand_in(monkeypatch)
     placements = Placements()
     only = placements.claim(_file(tmp_path / "LongFileName"), "L", tmp_path / "L", 0)
     # ``LONGFI~1`` names the one entry the file has a claim for.
@@ -117,15 +125,22 @@ def test_a_name_that_folds_to_no_claim_finds_its_file_s_only_claim(
 
 
 @posix_inodes
-def test_a_retired_claim_leaves_the_identity_index(tmp_path: Path) -> None:
+def test_a_retired_claim_leaves_the_identity_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _one_stand_in(monkeypatch)
     placements = Placements()
     first = placements.claim(_file(tmp_path / "A"), "A", tmp_path / "A", 0)
     _alias(tmp_path / "A", tmp_path / "b")
     link = placements.claim(tmp_path / "b", "b", tmp_path / "b", 1)
     _alias(tmp_path / "A", tmp_path / "c")
     assert placements.owner(tmp_path / "c", "c", occupied=True) is None
-    # With ``A``'s claim retired, ``b``'s is the file's only one.
+    # With ``A``'s claim retired, ``b``'s is the file's only one, but ``A`` is still
+    # one of its entries, which ``c`` may name: no answer.
     assert placements.retire(first)
+    assert placements.owner(tmp_path / "c", "c", occupied=True) is None
+    # With ``A`` gone, ``c`` can only name ``b``'s entry.
+    os.unlink(tmp_path / "A")
     assert placements.owner(tmp_path / "c", "c", occupied=True) is link
     assert (
         sum(
@@ -135,6 +150,21 @@ def test_a_retired_claim_leaves_the_identity_index(tmp_path: Path) -> None:
         )
         == 1
     )
+
+
+@posix_inodes
+def test_an_unclaimed_hard_link_does_not_take_its_file_s_only_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A hard link ``a`` to ``src`` whose claim was taken back stays on disk; ``A``, a
+    # case variant of it, reaches ``a``'s entry, not ``src``'s. The macOS link parity
+    # soak wrote a member over ``src`` before the file's entry count was checked.
+    _one_stand_in(monkeypatch)
+    placements = Placements()
+    placements.claim(_file(tmp_path / "src"), "src", tmp_path / "src", 0)
+    os.link(tmp_path / "src", tmp_path / "a")
+    _alias(tmp_path / "a", tmp_path / "A")
+    assert placements.owner(tmp_path / "A", "a", occupied=True) is None
 
 
 def _win(path: str) -> Path:
@@ -197,8 +227,9 @@ def test_a_name_folds_unicode_normalization_too(tmp_path: Path) -> None:
 
 @posix_inodes
 def test_hard_links_whose_names_fold_together_keep_their_own_claims(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _one_stand_in(monkeypatch)
     # Under TRUSTED on a case-sensitive filesystem, ``A`` and ``a`` are two
     # entries; here they are hard links of one file.
     _file(tmp_path / "A")
