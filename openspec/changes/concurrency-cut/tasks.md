@@ -12,14 +12,19 @@
   count over reader calls and member-stream calls, with all physical cleanup (inner
   stream closes, backend iterator close, teardown) by the last call out, in one order;
   `_teardown_attempted` with its outcome; `bind_live_stream()` re-checks the lifecycle
-  and is the publication point; one claim flag for suspended-pass wind-down; `cost`
-  computed once at open, `info` counted without a worker token; counted stream calls
-  including `nearest_resume_offset()`, `verified`, `verifiable` and `verify()`;
-  `_internal_member_opens()` suspended across user callbacks; `_index_report` kept
-  apart from `_materialized`; failure precedence; the checkpoints of §3 (`read()` in
-  checked chunks, `verify()`'s loop, spanning passes, skip loops, before success);
-  `acquire_peek` removed; a data pass refused when it starts beside a live `open()`
-  stream, in both modes, and `admit_pass_streams` removed (design.md §3)
+  and is the publication point; one claim with pending and attempted steps for
+  suspended-pass wind-down and the reader-wide cleanup, resumed after an interrupt; an
+  explicit stream `close()` kept synchronous under a reader lease, refused from a
+  callback inside a sibling's read; `info` from a callback served from the published
+  snapshot; the pass lease taken before startup, the report pinned before the first
+  member, list-only passes included; `cost` computed once at open, `info` counted
+  without a worker token; counted stream calls including `nearest_resume_offset()`,
+  `verified`, `verifiable` and `verify()`; `_internal_member_opens()` suspended across
+  user callbacks; `_index_report` kept apart from `_materialized`; failure precedence;
+  the checkpoints of §3 (`read()` in checked chunks, `verify()`'s loop, spanning passes,
+  skip loops, before success); `acquire_peek` removed; a data pass refused when it
+  starts beside a live `open()` stream, in both modes, and `admit_pass_streams` removed
+  (design.md §3)
 - [ ] 2.2 `members_report_if_available()` inside a pass: the report published when the
   pass started, or `None`; no token, no reads; outside a pass a worker token. Every
   streaming pass over an upfront-list reader drains at its start (`_walk_ahead()` in
