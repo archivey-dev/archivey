@@ -143,7 +143,8 @@ listing beside a held stream stays valid. On a default reader `extract_all()` be
 held stream now raises: part of the **Breaking:** line.
 
 **Unchanged.** The refusal for a callback's re-entry (on the thread of the call, before
-any overlap check); the garbage-collection retry before an overlap refusal stands
+any overlap check), for every call except `close()`, which a callback may now make to
+cancel (§3); the garbage-collection retry before an overlap refusal stands
 (`_retry_after_collecting`, 2026-10-20); a pass's own child scopes (an extraction's
 member opens, link reads); the materialization election and its failure path; callbacks
 run on the calling thread; password resolution lock-free for providers.
@@ -208,6 +209,17 @@ may run on another thread, relying on each inner layer to tolerate it (report, "
 things noticed"). The implementation checks the layers, or gives the stream the same
 flag-and-count, so that no teardown runs under a running read.
 
+`close()` from a callback of the reader's own call. Today `mark_reader_closed` refuses
+it first thing (`reader_state.py:781-787`), because a close let through would tear the
+walk down under the call that ran the callback (the peek test's docstring: "an
+AssertionError in the next pull"). Under this rule that hazard is gone: the call that
+ran the callback is still running, so it holds teardown, and it stops at the checkpoint
+after the callback returns. A member stream closed from inside its own `read()` (a
+callback during a decode) is marked closed at once and torn down when that read
+returns. So the refusal goes, and `close()` from a callback is the supported way to
+cancel the call. The `archive-reading` rule that a callback must not start another
+operation on its reader keeps holding for every call but `close()`.
+
 Teardown on another thread is not new: the lease count in `reader_state.py` already
 gives teardown to whoever drops the last lease, and a member stream closed on another
 thread can be that one. A running call becomes one more lease holder.
@@ -246,7 +258,9 @@ CHANGELOG line (under `### Changed` in `[Unreleased]`):
 >   `ArchiveyUsageError`, as without the flag. `close()` never waits for another thread
 >   and never raises because of one: it marks the reader closed and returns, calls
 >   running on other threads stop at their next read with `ArchiveyUsageError`, and the
->   archive is released when the last of them returns. Without the flag, `extract_all()`
+>   archive is released when the last of them returns. `close()` from a callback of the
+>   reader's own call (progress, diagnostics, a password provider) no longer raises: it
+>   stops that call. Without the flag, `extract_all()`
 >   beside an open member stream now raises too, as `stream_members()` did. Several open
 >   member streams, and `open()`, `read()`, `get()` and `members()` from several
 >   threads, work as before.
@@ -314,8 +328,9 @@ In `internal/reader_state.py`:
   close's call to `refuse_wait_on_provider` (the materialization election keeps its
   own), and the two "Cannot close the archive reader while" errors. `mark_reader_closed`
   sets the lifecycle, closes the streams, and tears down if no lease or running call is
-  left; `release_worker` and `release_pass` tear down when they are the last out after
-  a close. Teardown sets the internal released event (§3).
+  left. Its same-thread refusal of a close from a callback goes too (§3: the running
+  call holds teardown); `release_worker` and `release_pass` tear down when they are the
+  last out after a close. Teardown sets the internal released event (§3).
 - `acquire_peek` goes: outside a pass `members_report_if_available()` takes a worker
   token like the other lookup calls; while a pass is open it takes none (§2).
 - `_owner_pass_locked`: the `CONCURRENT` branch goes; with one pass, a scope goes under
@@ -399,6 +414,19 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   held stream's `verified` and `verifiable` mirror its member, `compressed-streams`):
   rewrite it to hold one stream, raise the member's level through a second stream of
   the same member (`ArchiveStream.verify()`), and check the held stream. Not deleted.
+- The close-refusal tests change with §3. `test_reader_state.py`:
+  `test_close_inside_own_pass_names_the_callback` and
+  `test_close_inside_own_worker_names_the_callback` (both modes) become the cancellation
+  tests: the close returns, the call raises the closed error after the callback, and
+  teardown runs once after it.
+  `test_default_reader_callback_close_during_members_names_the_callback` and
+  `test_default_reader_callback_close_during_index_peek_names_the_callback` become
+  regression tests for the hazard they guarded: the listing stops with the closed error
+  and no `AssertionError`, and teardown runs after the drain returns.
+  `test_another_threads_pass_keeps_the_generic_message` goes (no cross-thread refusal).
+  `test_format_api_passwords.py::test_copied_context_close_from_provider_raises` becomes
+  a close from the provider's helper thread that returns, with the call raising the
+  closed error once the provider returns.
 - `test_reader_state.py::test_interrupted_drain_hands_close_to_the_waiting_closer` and
   `test_format_api_passwords.py::test_copied_context_close_raises_while_another_close_drains`
   go with the drain.

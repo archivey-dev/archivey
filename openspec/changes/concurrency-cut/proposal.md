@@ -43,7 +43,8 @@ change.
   threads stop at their next checkpoint with `ArchiveyUsageError`, and the last one out
   releases the archive (design.md §3; maintainer, 2026-11-24). Today it waits for lookup
   calls under the flag and raises beside a running pass or, without the flag, beside
-  any call.
+  any call. A `close()` from a callback of the reader's own call stops raising and
+  cancels that call.
 - **Changed, not breaking.** `members_report_if_available()` inside a pass returns what
   is already built and never reads the archive; a streaming 7z or RAR pass converts its
   in-memory index when it starts, so the answer matches a call before the loop
@@ -73,7 +74,9 @@ change.
 - `archive-reading`: the `concurrent_operations` bullet, the `stream_members()` overlap
   paragraph and its matrix row, the close paragraph, and `verify_all()`'s "SHALL NOT
   touch streams the caller holds" with its matrix row "caller stream open at position
-  100": it now raises `ArchiveyUsageError` and leaves that stream untouched. 
+  100": it now raises `ArchiveyUsageError` and leaves that stream untouched. The
+  callback rule (`:1421-1424`, "Starting another operation on the same emitting
+  reader/stream SHALL be rejected") exempts `close()`, which stops the call.
 - `access-mode-and-cost`: the matrix row "RA `stream_members` active + `open()` or
   another `stream_members`" loses "unless `concurrent_operations=True`".
 - `format-tar`: the paragraph on another caller moving the walk under a `CONCURRENT`
