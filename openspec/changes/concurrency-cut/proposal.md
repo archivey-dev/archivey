@@ -61,22 +61,34 @@ change.
   shared streams remain single-owner" are rewritten to the rules of design.md §2 and §3.
 - `archive-reading`: the `concurrent_operations` bullet, the `stream_members()` overlap
   paragraph and its matrix row, and the close paragraph.
+- `access-mode-and-cost`: the matrix row "RA `stream_members` active + `open()` or
+  another `stream_members`" loses "unless `concurrent_operations=True`".
+- `format-tar`: the paragraph on another caller moving the walk under a `CONCURRENT`
+  pass, and its scenario row.
 - `fsspec-integration`: a scenario for threads reading several streams and a clean
   close.
+
+Checked with a grep of `openspec/specs/` for `CONCURRENT` and `concurrent_operations`
+(2026-11-24): `archive-data-model`, `error-handling`, `format-directory`, `format-iso`,
+`packaging-and-extras` and `testing-contract` mention the flag only for the second-stream
+refusal, thread-safe streams, or a pointer to `reader-concurrency`, none of which
+changes.
 
 No spec deltas in this change (`skip_specs: true`): the implementation PR edits the
 specs above directly.
 
 ## Impact
 
-- Code: `internal/reader_state.py`, `internal/base_reader.py`,
+- Code: `fsspec.py` (`ArchiveyFileSystem.close()`, design.md §3),
+  `internal/reader_state.py`, `internal/base_reader.py`,
   `internal/walk_handoff.py`, `internal/format_adapter.py`, `core.py` and `reader.py`
   docstrings, `formats.py`.
 - Tests: `test_concurrent_pass_workers.py` becomes refusal tests; parts of
   `test_concurrent_multithread.py`, `test_concurrent_independence.py`,
   `test_concurrent_cooperative.py`, `test_format_api_sequential.py`; a new fsspec test.
 - Docs: `docs/reading.md` §"Several members at once" and the `stream_members` paragraph,
-  `docs/adding-a-format.md` §"Walking again", `dev-docs/design-rules.md` (the ruling of
+  `docs/adding-a-format.md` §"Walking again", `dev-docs/threat-model.md` (a defended
+  property cut down), `dev-docs/design-rules.md` (the ruling of
   2026-10-13 and its 2026-10-17 extension), ADR 0003 (an amendment),
   `dev-docs/guide/04-readers-and-members.md`, `07-pipes-and-files.md`.
 - Callers: code that calls `open()` or `members()` inside a `stream_members()` loop on a

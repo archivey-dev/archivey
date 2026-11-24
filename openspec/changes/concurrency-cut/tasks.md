@@ -25,12 +25,17 @@
 - [ ] 3.3 `archivey.fsspec`: threads read several member streams at once, then the file
   system closes cleanly; a close under open streams makes their later reads raise
   `ValueError`
-- [ ] 3.4 Remove or rewrite the tests of passes beside calls and of the draining close
+- [ ] 3.4 Remove or rewrite the tests of passes beside calls and of the draining close;
+  keep the held-stream mirror test of `verify_all` by rewriting it (design.md §7)
+- [ ] 3.5 `ArchiveyFileSystem.close()` calls `reader.close()` itself and detaches the
+  finalizer after it returns; a red-green test for a close that raised (design.md §3)
 
 ## 4. Specs and docs
 
-- [ ] 4.1 `reader-concurrency`, `archive-reading`, `fsspec-integration` edited in place
-- [ ] 4.2 `docs/reading.md`, `dev-docs/design-rules.md`, ADR 0003 amendment, the guide
+- [ ] 4.1 `reader-concurrency`, `archive-reading`, `access-mode-and-cost`, `format-tar`,
+  `fsspec-integration` edited in place
+- [ ] 4.2 `docs/reading.md`, `dev-docs/design-rules.md`, `dev-docs/threat-model.md`,
+  ADR 0003 amendment, the guide
   pages (design.md §8)
 - [ ] 4.3 `CHANGELOG.md` **Breaking:** line (design.md §4)
 - [ ] 4.4 `openspec validate --strict concurrency-cut`, then archive the change

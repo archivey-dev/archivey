@@ -30,8 +30,10 @@ Checked on main `4210bbf` (2026-11-24).
 
 The implementation PR writes this table into `reader-concurrency` and the substance of
 it into `docs/reading.md`. "Lookup calls" are `open()`, `read()`, `get()`, `members()`,
-`members_report()`, `members_report_if_available()` and iteration of a random-access
-reader. "Passes" are `stream_members()`, `extract_all()` and `verify_all()`.
+`members_report()` and iteration of a random-access reader. "Passes" are
+`stream_members()`, `extract_all()` and `verify_all()`. `members_report_if_available()`
+is neither: it is the peek, which overlaps lookup calls under the flag and is admitted
+beside a pass in both modes.
 
 | | Default reader | `concurrent_operations=True` |
 | --- | --- | --- |
@@ -40,7 +42,7 @@ reader. "Passes" are `stream_members()`, `extract_all()` and `verify_all()`.
 | Different streams read from different threads at once | — | Yes, also while a lookup call runs |
 | Lookup call while another lookup call runs on another thread | Not supported: a second list build or a second stream raises | Yes; the list is built once, the others wait for it |
 | Lookup call while a pass runs (loop body or another thread) | Raises | **Raises** (today: admitted) |
-| `members_report_if_available()` while a pass runs | Yes | Yes |
+| `members_report_if_available()` (the peek) while a pass runs | Yes | Yes |
 | Pass while a lookup call runs on another thread | Raises | **Raises** (today: admitted) |
 | Pass while another pass runs | Raises | **Raises** (today: admitted) |
 | Pass while a stream from `open()` is open | Raises at the pass's first stream | **Raises at the pass's first stream** (today: admitted) |
@@ -82,11 +84,15 @@ The same rule with and without the flag; today's default behaviour:
 Two closers at once is not a wait for another call: the state lock decides which one
 makes the transition, and the stream-shutdown and teardown claims stay as they are.
 
-`fsspec`: `ArchiveyFileSystem.close()` and its finalizer call `reader.close()`. A
-`close()` from one thread while another lists or opens now raises instead of waiting;
-the instance and its reader stay usable and the caller closes again later. The
-finalizer runs only when nothing references the instance, so no call of its own is in
-flight then.
+`fsspec`: a `close()` from one thread while another lists or opens now raises instead
+of waiting. Today `ArchiveyFileSystem.close()` runs its `weakref.finalize`, which marks
+itself spent before it calls `reader.close()`, so after a raise a second `fs.close()`
+does nothing, the reader stays open for the life of the process, and listing still
+works. The implementation changes `ArchiveyFileSystem.close()` to call
+`self.reader.close()` itself and detach the finalizer only after that call returns. Then
+a `fs.close()` that raised leaves the instance usable, and a later `fs.close()` closes
+it. The finalizer runs only when nothing references the instance, so no call of its own
+is in flight then.
 
 ## 4. The flag
 
@@ -165,6 +171,10 @@ In `internal/base_reader.py`:
   whose pass reads through the walk (a plugin with `member_list_upfront=True`) first.
 - The `close()` docstring, and `stream_members()` / `open()` docstrings in `reader.py`.
 
+In `fsspec.py`: `ArchiveyFileSystem.close()` calls `reader.close()` itself and detaches
+the finalizer only once that returns (§3). Not removed code, but the one change outside
+the reader that the cut forces.
+
 In `internal/backends/sevenzip_reader.py`: the rule that a pass offers its folder
 decoder for a link's bytes only to the thread that ran the pass step (`_pass_link`).
 With no call beside a pass, only the pass's own thread can ask, so the thread check goes
@@ -190,7 +200,17 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   other's reads, and check the bytes; then `fs.close()` with no call in flight closes
   the reader, every stream is closed, and teardown ran once. A second case closes with
   streams still open on other threads that read afterwards: each read raises
-  `ValueError`.
+  `ValueError`. A third: `fs.close()` while another thread is inside `fs.open()` raises
+  `ArchiveyUsageError`; a second `fs.close()` after that thread returns closes the
+  reader, and a listing after it raises `ArchiveyUsageError`. It fails on main's
+  `ArchiveyFileSystem.close()` once the reader's close raises.
+- `test_verify_all.py::test_a_held_stream_mirrors_what_verify_all_proved` holds an
+  `open()` stream across `verify_all()`, which now raises. The rule it proves stays (a
+  held stream's `verified` and `verifiable` mirror its member, `compressed-streams`):
+  rewrite it to hold one stream, raise the member's level through a second stream of
+  the same member (`ArchiveStream.verify()`), and check the held stream. Not deleted.
+- `test_reader_state.py::test_interrupted_drain_hands_close_to_the_waiting_closer` goes
+  with `_workers_cv`; the interrupted-close cases that do not drain stay.
 - The free-threaded (`3.13t`) CI job runs the same files.
 
 ## 8. Docs
@@ -204,6 +224,9 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   the others are doing"; the 2026-10-13 ruling and its 2026-10-17 extension are marked
   superseded by the 2026-11-24 ruling.
 - ADR 0003: an amendment of 2026-11-24.
+- `dev-docs/threat-model.md` §"Concurrent member streams are race-free where declared":
+  the sentences on passes beside calls and the walk hand-off go. A defended property
+  cut down, so the implementation PR names it for the maintainer.
 - `dev-docs/guide/01-vocabulary.md`, `04-readers-and-members.md`,
   `07-pipes-and-files.md`.
 
