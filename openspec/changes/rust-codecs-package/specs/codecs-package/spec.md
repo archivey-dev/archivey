@@ -7,7 +7,9 @@ which archivey ships a pure-Python version that stays the reference. It SHALL NO
 contain archive parsers, archive types, I/O, or policy, and SHALL NOT depend on any
 package other than its build-time binding layer. It SHALL NOT import archivey. Its API
 SHALL hold only what archivey calls or a planned archivey feature needs. An int
-argument outside its parameter's range SHALL raise `ValueError` with a fixed message.
+argument outside its parameter's range SHALL raise `ValueError` with a fixed message
+(LZX's `window_bits` raises `CorruptDataError`, as for any window the kernel does not
+know).
 
 #### Scenario: package contents
 
@@ -17,7 +19,7 @@ argument outside its parameter's range SHALL raise `ValueError` with a fixed mes
 | A kernel with no archivey Python twin | Not added |
 | A wrapper of zlib, bz2 or LZMA | Not added |
 | A name that no archivey call site uses and no planned archivey feature needs | Not added |
-| An int argument outside its parameter's range | `ValueError` with a fixed message, the same on every platform |
+| An int argument outside its parameter's range | `ValueError` with a fixed message, the same on every platform (`CorruptDataError` for LZX's `window_bits`) |
 
 ### Requirement: A CRC is a function like zlib.crc32
 

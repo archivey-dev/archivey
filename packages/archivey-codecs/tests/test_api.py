@@ -486,6 +486,30 @@ def test_lzx_state_whose_frame_disagrees_with_its_output_size() -> None:
             lzx.Decompressor.from_state(bad)
 
 
+def test_lzx_state_of_a_frame_with_all_its_bytes_decoded_is_refused() -> None:
+    """A frame stalls only before its last byte, so a saved frame in progress has
+    fewer bytes decoded than its size."""
+    r_regs = (1).to_bytes(4, "little") * 3
+    first = bytes.fromhex("0030a000") + r_regs + b"0123456789"
+    second = bytes.fromhex("00604001") + r_regs + b"abcdefghij"
+    d = lzx.Decompressor(15, output_size=20)
+    assert d.decompress(first + second[:-5]) == b""
+    state = d.getstate()
+    # From the end: total_in, eof, the output size and its flag, the pending output
+    # (empty), the padding counts, then the frame's size and bytes decoded.
+    at = len(state) - 32
+    assert state[at : at + 8] == (20).to_bytes(4, "little") + (10).to_bytes(4, "little")
+    for done, ok in ((19, True), (20, False), (21, False)):
+        bad = state[: at + 4] + done.to_bytes(4, "little") + state[at + 8 :]
+        if ok:
+            lzx.Decompressor.from_state(bad)
+            continue
+        with pytest.raises(
+            archivey_codecs.CorruptDataError, match=f"a frame of 20 bytes with {done}"
+        ):
+            lzx.Decompressor.from_state(bad)
+
+
 def test_lzx_after_an_error_raises_again_and_refuses_getstate() -> None:
     d = lzx.Decompressor(15, output_size=len(_HELLO))
     d.decompress(_LZX_HELLO[:-10])
@@ -979,9 +1003,10 @@ def test_an_int_outside_its_parameter_raises_a_fixed_value_error() -> None:
         )
     with pytest.raises(ValueError, match="^output_size is outside"):
         lzx.Decompressor(15).set_output_size(-1)
-    for n in (-1, 2**32):
+    for n in (-1, 8, 17, 2**32):
         with pytest.raises(ValueError, match="^max_width is outside 9 to 16$"):
             archivey_codecs.lzw.Decompressor(max_width=n, block_mode=True)
+    for n in (-1, 2**32):
         with pytest.raises(
             archivey_codecs.CorruptDataError, match="^LZX window bits outside"
         ):
@@ -993,6 +1018,17 @@ def test_any_int_is_a_max_length() -> None:
     assert d.decompress(_LZX_HELLO, 2**70) == _HELLO
     d = lzx.Decompressor(15, output_size=len(_HELLO))
     assert d.decompress(_LZX_HELLO, -(2**70)) == _HELLO
+
+    class Index:
+        def __init__(self, n: int) -> None:
+            self.n = n
+
+        def __index__(self) -> int:
+            return self.n
+
+    for n in (2**80, -(2**80)):
+        d = lzx.Decompressor(15, output_size=len(_HELLO))
+        assert d.decompress(_LZX_HELLO, Index(n)) == _HELLO  # type: ignore[arg-type]
 
 
 def test_a_non_int_still_raises_type_error() -> None:

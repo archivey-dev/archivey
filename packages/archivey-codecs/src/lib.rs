@@ -206,7 +206,10 @@ impl<'a, 'py> FromPyObject<'a, 'py> for MaxLength {
         match obj.extract::<i64>() {
             Ok(n) => Ok(MaxLength(n)),
             Err(e) if e.is_instance_of::<PyOverflowError>(obj.py()) => {
-                Ok(MaxLength(if obj.gt(0)? { i64::MAX } else { -1 }))
+                // The sign of the int, not of the object: an `__index__` object does
+                // not compare with 0.
+                let int = obj.call_method0("__index__")?;
+                Ok(MaxLength(if int.gt(0)? { i64::MAX } else { -1 }))
             }
             Err(e) => Err(e),
         }
@@ -841,9 +844,7 @@ impl LzwDecompressor {
         }
         if let Some(w) = max_width {
             if !(9..=16).contains(&w) {
-                return Err(PyValueError::new_err(format!(
-                    "max_width {w} is outside 9 to 16"
-                )));
+                return Err(PyValueError::new_err("max_width is outside 9 to 16"));
             }
         }
         Ok(LzwDecompressor {

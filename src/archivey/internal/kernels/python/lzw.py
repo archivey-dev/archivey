@@ -52,7 +52,7 @@ class Decompressor:
                 "give block_mode with max_width (a stream without its header)"
             )
         if max_width is not None and not 9 <= max_width <= 16:
-            raise ValueError(f"max_width {max_width} is outside 9 to 16")
+            raise ValueError("max_width is outside 9 to 16")
         self._state = LzwState(
             max_width=max_width,
             block_mode=block_mode if max_width is not None else None,
