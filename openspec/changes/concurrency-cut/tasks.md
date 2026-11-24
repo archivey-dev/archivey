@@ -8,19 +8,24 @@
 ## 2. The cut (one implementation PR, deep tier)
 
 - [ ] 2.1 `ReaderState`: one pass at a time in both modes; no side passes; `close()`
-  marks closed and returns, the draining close removed, teardown by the last call out,
-  an internal released event, `bind_live_stream()`
-  re-checks the lifecycle, `read()` in checked chunks, checks in `verify()`'s loop and
-  spanning passes, stream leases and pass wind-down held until a running stream call
-  ends, member streams with a running-call count so no inner
-  `close()` runs beside a `read()` (design.md §3); the checkpoints of §3; `acquire_peek`
-  removed; a data pass refused when it starts beside a live `open()` stream, in both
-  modes, and `admit_pass_streams` removed
-- [ ] 2.2 `members_report_if_available()` inside a pass: built report or `None`, no
-  token, no reads; outside a pass a worker token. every streaming pass over an
-  upfront-list reader drains at its start (`_walk_ahead()` in `_begin_forward_pass()`);
-  `_INDEX_IN_MEMORY` marks the readers that read nothing to do so; `extract_all()` takes
-  its progress totals before its pass (design.md §2)
+  marks closed and returns, the draining close removed; one reader-wide running-call
+  count over reader calls and member-stream calls, with all physical cleanup (inner
+  stream closes, backend iterator close, teardown) by the last call out, in one order;
+  `_teardown_attempted` with its outcome; `bind_live_stream()` re-checks the lifecycle
+  and is the publication point; one claim flag for suspended-pass wind-down; worker
+  tokens for `info` and `cost`; counted stream calls including `verified`,
+  `verifiable` and `verify()`; failure precedence; the checkpoints of §3 (`read()` in
+  checked chunks, `verify()`'s loop, spanning passes, skip loops, before success);
+  `acquire_peek` removed; a data pass refused when it starts beside a live `open()`
+  stream, in both modes, and `admit_pass_streams` removed (design.md §3)
+- [ ] 2.2 `members_report_if_available()` inside a pass: the report published when the
+  pass started, or `None`; no token, no reads; outside a pass a worker token. Every
+  streaming pass over an upfront-list reader drains at its start (`_walk_ahead()` in
+  `_begin_forward_pass()`); `_INDEX_IN_MEMORY` marks the readers that read nothing to
+  do so; the report and walk outcome published together, a pass keeping the reference
+  it was admitted with; `extract_all()` takes its progress totals inside its pass
+  through an owner-only helper; `verify_all()` one pass lease over its spanning passes
+  and report (design.md §2)
 - [ ] 2.3 Remove what only the overlap needed (design.md §6): `_drain_walk`'s sleep, the
   mid-stream walk hand-off (`MemberDataView` and the at-open `reopen(0)` fallback stay)
   and the 7z pass-link thread check, each after checking that nothing else needs it
@@ -47,6 +52,10 @@
 - [ ] 3.5 `archivey.fsspec`: `fs.close()` beside a pass executing on another thread
   returns at once and the reader is released after that thread returns (red on main,
   design.md §7)
+- [ ] 3.6 The §7 cases for the shared handle, entry points, wind-down owner, publication
+  at the bind, cancellation precedence, pass admission and report publication
+- [ ] 3.7 `archivey.fsspec`: `fs.close()` beside a cold `fs.ls()` returns at once
+  (`close()` no longer takes `_tree_lock`)
 
 ## 4. Specs and docs
 

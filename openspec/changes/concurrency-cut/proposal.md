@@ -45,11 +45,12 @@ change.
   calls under the flag and raises beside a running pass or, without the flag, beside
   any call. A `close()` from a callback of the reader's own call stops raising and
   cancels that call.
-- **Changed, not breaking.** `members_report_if_available()` inside a pass returns what
-  is already built and never reads the archive; every streaming pass over a reader with
-  an upfront list (ZIP already does) builds the list when it starts, so the answer
-  matches a call before the loop (design.md §2). `extract_all()` takes its progress
-  totals before its pass.
+- **Changed, not breaking.** `members_report_if_available()` inside a pass returns the
+  report published when the pass started (or `None`) and never reads the archive; every
+  streaming pass over a reader with an upfront list (ZIP already does) builds the list
+  when it starts, so the answer matches a call before the loop (design.md §2).
+  `extract_all()` takes its progress totals inside its pass, and `verify_all()` is one
+  pass from start to end.
 - **Kept.** Any number of member streams from `open()` at once, each used by one thread
   at a time. `open()`, `read()`, `get()`, `members()`, `members_report()`,
   `members_report_if_available()` and iteration from several threads at once; the first
@@ -100,8 +101,9 @@ specs above directly.
 ## Impact
 
 - Code: `internal/reader_state.py`, `internal/base_reader.py`,
-  `internal/walk_handoff.py`, `internal/format_adapter.py`, `core.py` and `reader.py`
-  docstrings, `formats.py`.
+  `internal/streams/archive_stream.py`, `fsspec.py` (`close()` stops waiting for a first
+  listing), `internal/walk_handoff.py`, `internal/format_adapter.py`, `core.py` and
+  `reader.py` docstrings, `formats.py`.
 - Tests: `test_concurrent_pass_workers.py` becomes refusal tests; parts of
   `test_concurrent_multithread.py`, `test_concurrent_independence.py`,
   `test_concurrent_cooperative.py`, `test_format_api_sequential.py`; a new fsspec test.
