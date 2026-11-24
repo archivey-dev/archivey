@@ -324,9 +324,10 @@ in fsspec.
 
 Tests for this section, before any reader moves: a UDBZ and a ULMO image, a
 `.cpio.gz`, a real pkg and a plain xar, a real deb and a plain ar, each with a correct,
-a missing and a misleading suffix, on a core-only and a full install; `detect_format()` and `open_archive()` must agree; read
-budgets are measured on seekable and forward-only sources. Success is the same format
-and contents where the reader is available, and a truthful refusal where it is not.
+a missing and a misleading suffix, on a core-only and a full install;
+`detect_format()` and `open_archive()` must agree; read budgets are measured on
+seekable and forward-only sources. Success is the same format and contents where the
+reader is available, and a truthful refusal where it is not.
 
 ### 5. The reader API
 
