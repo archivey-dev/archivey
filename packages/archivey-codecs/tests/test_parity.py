@@ -1358,6 +1358,32 @@ def test_lzx_late_output_size_after_a_padding_error_raises_it(codecs: object) ->
 
 
 @BOTH
+@pytest.mark.parametrize("size", [32768, 100, 0])
+def test_lzx_late_output_size_after_a_frame_end_error_raises_it(
+    codecs: object, size: int
+) -> None:
+    """A full frame cut one byte short: ``flush()`` decodes the frame's last byte and
+    then fails, because the frame's end does not line up with its bits. No frame is
+    in progress then, and the frame decoded all of its bytes, so every late output
+    size raises the error again on both sides, the start of the failed frame (0)
+    included."""
+    from cab_util import LzxEncoder
+
+    stream = b"".join(
+        LzxEncoder(window_bits=15, blocks=("verbatim",)).encode(b"A" * 32768)
+    )[:-1]
+    d = codecs.lzx.Decompressor(15)
+    with pytest.raises((archivey_codecs.TruncatedDataError, TruncatedError)):
+        d.decompress(stream) + d.flush()
+    with pytest.raises(
+        (archivey_codecs.TruncatedDataError, TruncatedError),
+        match="ends before its output",
+    ):
+        d.set_output_size(size)
+    assert not d.eof
+
+
+@BOTH
 def test_lzx_late_output_size_at_a_trimmed_failed_frame_drops_the_error(
     codecs: object,
 ) -> None:

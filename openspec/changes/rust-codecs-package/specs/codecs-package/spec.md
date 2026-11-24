@@ -113,8 +113,8 @@ output a straight decode produces from offset `total_out` (for ZipCrypto, from o
 revision with `UnsupportedDataError`. A decoder that holds a decode error (LZW, LZX,
 BCJ2) SHALL refuse `getstate()` with `ValueError`: while it holds the error, every later
 decoding call raises it, and it has no state to resume from. (An LZX `set_output_size()`
-that gives back the input the error was met in drops it.) Block functions have no state;
-a seek point is the block's offset.
+that ends the output where the failed frame starts, with nothing of it decoded, drops it.)
+Block functions have no state; a seek point is the block's offset.
 
 #### Scenario: resume from a saved state
 

@@ -1298,6 +1298,11 @@ impl LzxDecompressor {
                 "an output size of {output_size}, below the {decoded} bytes already decoded"
             )));
         }
+        if let (None, Some(err)) = (self.inner.frame_in_progress(), &self.failed) {
+            // The error came after a frame's last byte was decoded (its end did not
+            // line up), so no output size moves it into input after the stream.
+            return Err(lzx_error_again(err));
+        }
         // Only the last frame is short: a stream that ended with one has no more.
         if output_size > decoded
             && !decoded.is_multiple_of(lzx::FRAME_SIZE as u64)
@@ -1320,8 +1325,9 @@ impl LzxDecompressor {
                 self.failed = None;
                 self.inner.resize_frame(0);
             } else if let Some(err) = &self.failed {
-                // The output ends inside the failed frame: the error stays, as the
-                // Python decoder, which cannot go back inside a frame, keeps it.
+                // The failed frame decoded some bytes, or the output does not end
+                // where it starts: the error stays, as in the Python decoder, which
+                // cannot go back inside a frame.
                 return Err(lzx_error_again(err));
             } else if frame > 0 && frame == done && self.inner.rewind_block(frame) {
                 // The output ends where a block header started: what was read from
