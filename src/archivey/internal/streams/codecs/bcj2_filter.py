@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.internal import kernels
 from archivey.internal.overrides import override
+from archivey.internal.streams.callers_source import from_callers_source
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
     is_seekable,
@@ -124,7 +125,17 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
                 # or the check failed. A read past the end runs it, or raises its
                 # error again.
                 out += self._d.read(1)
-        except BaseException:  # an interrupt too: the decoder keeps it as its failure
+        except (
+            BaseException
+        ) as exc:  # an interrupt too: the decoder keeps it as its failure
+            if from_callers_source(exc):
+                # A stop from ``on_source_read`` (or the caller's source failing) is
+                # the caller's, not a decode error that waits behind the bytes
+                # decoded before it. Those bytes are dropped, and the position stays
+                # past them; the decoder keeps the error, so every later read raises
+                # it again.
+                self._held = b""
+                raise
             # Keep every byte decoded before the error, those the decoder still
             # holds too: they are returned before the error raises again.
             ahead = self._d.decoded - self._d.total_out
