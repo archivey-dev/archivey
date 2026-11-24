@@ -2,16 +2,16 @@
 
 - [x] 1.1 The flag keeps its name (design.md §4; maintainer, 2026-11-24)
 - [x] 1.2 Rule 2 of the plugin contract agreed (design.md §5; maintainer, 2026-11-24)
-- [x] 1.3 `close()` waits for lookup calls, never for a pass (design.md §3; maintainer,
-  2026-11-24)
+- [x] 1.3 `close()` marks the reader closed and returns; the last call out tears down
+  (design.md §3; maintainer, 2026-11-24)
 
 ## 2. The cut (one implementation PR, deep tier)
 
 - [ ] 2.1 `ReaderState`: one pass at a time in both modes; no side passes; `close()`
-  never waits for a pass; under the flag it waits for workers in flight, with no
-  re-check after the wait (design.md §3); `acquire_peek` removed; a data pass refused
-  when it starts beside a live `open()` stream, in both modes, and `admit_pass_streams`
-  removed
+  marks closed and returns, the draining close removed, teardown by the last call out,
+  an internal released event (design.md §3); the checkpoints of §3; `acquire_peek`
+  removed; a data pass refused when it starts beside a live `open()` stream, in both
+  modes, and `admit_pass_streams` removed
 - [ ] 2.2 `members_report_if_available()` inside a pass: built report or `None`, no
   token, no reads; outside a pass a worker token. `_INDEX_IN_MEMORY` (7z, RAR) and one
   `_convert_index_in_memory()` call at pass start; `extract_all()` takes its progress
@@ -27,18 +27,21 @@
 ## 3. Tests
 
 - [ ] 3.1 Pass refusals on a `CONCURRENT` reader, per format family (design.md §7)
-- [ ] 3.2 `close()` beside a pass executing on another thread raises and the reader
-  stays open; beside a worker in flight it waits; `members_report_if_available()` in a
+- [ ] 3.2 `close()` beside a call running on another thread (a lookup call, a pass, a
+  blocked password provider) returns at once, that call raises the closed error at its
+  next checkpoint, and teardown runs once after it; a teardown error reaches that call
+  as `__cause__`; `members_report_if_available()` in a
   `stream_members()` loop body gives the answer a call before the loop gives and reads
   nothing; a held stream makes `extract_all()` raise before the destination exists, and
   a directory-only `stream_members()` raise at its first `next()`
 - [ ] 3.3 `archivey.fsspec`: threads read several member streams at once, then the file
   system closes cleanly; a close under open streams makes their later reads raise
   `ValueError`
-- [ ] 3.4 Remove or rewrite the tests of passes beside calls (the drain tests stay);
+- [ ] 3.4 Remove or rewrite the tests of passes beside calls and of the draining close;
   keep the held-stream mirror test of `verify_all` by rewriting it (design.md §7)
-- [ ] 3.5 `ArchiveyFileSystem.close()` calls `reader.close()` itself and detaches the
-  finalizer after it returns; a red-green test for a close that raised (design.md §3)
+- [ ] 3.5 `archivey.fsspec`: `fs.close()` beside a pass executing on another thread
+  returns at once and the reader is released after that thread returns (red on main,
+  design.md §7)
 
 ## 4. Specs and docs
 

@@ -23,10 +23,10 @@ open at once, and `open()` from several threads.
 - Drops: passes beside other calls. `stream_members()`, `extract_all()` and
   `verify_all()` behave the same with or without the flag: a pass has the reader to
   itself, and a call beside it raises `ArchiveyUsageError`.
-- `close()` never waits for a pass: beside one executing on another thread it raises
-  and the reader stays open. Under the flag it still waits for lookup calls in flight
-  (maintainer, 2026-11-24), so a `with` block around a thread pool closes cleanly when
-  its body raises.
+- `close()` marks the reader closed and returns, in both modes; calls running on other
+  threads stop at their next read and the last one out releases the archive
+  (maintainer, 2026-11-24), so a `with` block around a thread pool exits at once with
+  its body's exception, and nothing hangs on a password prompt.
 - Keeps the flag's name, `concurrent_operations` (maintainer, 2026-11-24).
 - No format gating: the rules are the same for every format.
 

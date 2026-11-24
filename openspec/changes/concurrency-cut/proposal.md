@@ -38,9 +38,12 @@ change.
   other thread. A pass raises when it starts while one of those calls runs on another
   thread or a stream from `open()` is still open, in both modes (`extract_all()` beside
   an open stream raises on a default reader too, which it does not today).
-- **Breaking.** `close()` never waits for a pass: while a pass executes on another
-  thread, it raises `ArchiveyUsageError` and the reader stays open. Under the flag it
-  still waits for lookup calls in flight (design.md §3; maintainer, 2026-11-24).
+- **Breaking.** `close()` never waits for another thread and never raises because of
+  one, in both modes: it marks the reader closed and returns; calls running on other
+  threads stop at their next checkpoint with `ArchiveyUsageError`, and the last one out
+  releases the archive (design.md §3; maintainer, 2026-11-24). Today it waits for lookup
+  calls under the flag and raises beside a running pass or, without the flag, beside
+  any call.
 - **Changed, not breaking.** `members_report_if_available()` inside a pass returns what
   is already built and never reads the archive; a streaming 7z or RAR pass converts its
   in-memory index when it starts, so the answer matches a call before the loop
@@ -51,7 +54,8 @@ change.
   that needs the member list builds it and the others wait.
 - **Kept.** The flag and its name, `concurrent_operations` (maintainer, 2026-11-24). Its
   refusal with `streaming=True` and `pipe=True`.
-- **Removed code.** Side passes, the close's re-check after its wait, the peek token
+- **Removed code.** Side passes, the draining close (its wait, condition variables,
+  re-check and interrupted-drain retry), the peek token
   (`acquire_peek`), the drain's hand-off sleep, the mid-stream walk hand-off, and
   the check of a pass at its first stream (design.md §6).
 - **Plugin contract.** The thread rules in `archivey.formats` and
@@ -63,7 +67,7 @@ change.
 ### Modified capabilities
 
 - `reader-concurrency`: "Random-access calls beside a pass" is removed; "Draining reader
-  close" loses its re-check for a resumed pass; "Multiple concurrently-open member
+  close" is replaced by the close of design.md §3; "Multiple concurrently-open member
   streams" and "Distinct passes and shared streams remain single-owner" are rewritten to
   the rules of design.md §2 and §3.
 - `archive-reading`: the `concurrent_operations` bullet, the `stream_members()` overlap
@@ -88,8 +92,7 @@ specs above directly.
 
 ## Impact
 
-- Code: `fsspec.py` (`ArchiveyFileSystem.close()`, design.md §3),
-  `internal/reader_state.py`, `internal/base_reader.py`,
+- Code: `internal/reader_state.py`, `internal/base_reader.py`,
   `internal/walk_handoff.py`, `internal/format_adapter.py`, `core.py` and `reader.py`
   docstrings, `formats.py`.
 - Tests: `test_concurrent_pass_workers.py` becomes refusal tests; parts of

@@ -150,45 +150,79 @@ run on the calling thread; password resolution lock-free for providers.
 
 ## 3. What `close()` does
 
-**`close()` waits for lookup calls, never for a pass** (maintainer, 2026-11-24, over a
-close that never waits).
+**`close()` marks the reader closed and returns; the last call out tears down**
+(maintainer, 2026-11-24, after an independent evaluation:
+`/mnt/project-files/investigations/close-under-concurrency-2026-11-24/README.md`). It
+replaces the earlier ruling of the same day (wait for lookup calls, raise beside an
+executing pass). The same rule holds with and without the flag, for lookup calls and
+passes alike.
 
-> With `concurrent_operations=True`, `close()` waits for `open()`, `read()`, `get()`,
-> `members()`, `members_report()`, `members_report_if_available()` calls and iteration
-> running on other threads, then closes. It never waits for a pass: if a pass is
-> executing a step (a selector or a decode inside `next()`), `close()` raises
-> `ArchiveyUsageError` and the reader stays open, as without the flag. A pass suspended
-> at a yield is wound down, and resuming it raises `ArchiveyUsageError`. Every member
-> stream still open is closed: a read running on another thread returns what it already
-> had or raises `ValueError`, as a closed file does. The archive is torn down once,
-> after the last stream is closed. A second `close()` returns without doing anything,
-> also when two threads call it at once. Without the flag, `close()` raises while
-> another thread is inside any reader call.
+> `close()` marks the reader closed and returns. It never waits for another thread and
+> never raises because of one. From then on every call on the reader raises
+> `ArchiveyUsageError` ("the reader is closed"), and every member stream still open is
+> closed: a read on it raises `ValueError`, as on a closed file. A call already running
+> on another thread stops at its next checkpoint and raises the same error: the next
+> bounded read or decode chunk, the next member of `extract_all()` or `verify_all()`,
+> the next step of a `stream_members()` loop, or the return of a callback it is waiting
+> on, such as a password provider. The archive file and helper processes are released
+> when `close()` returns if no call was running, and otherwise as soon as the last
+> running call has returned. A second `close()` returns without doing anything, also
+> when two threads call it at once.
 
-Why: `with open_archive(path, concurrent_operations=True) as reader:` around a pool
-whose `reader.read()` calls are still in flight when the body raises (a failed future, a
-timeout, `KeyboardInterrupt`). With a close that raises, `__exit__` loses the body's
-exception to a chained `ArchiveyUsageError` and leaves the reader open, with no
-finalizer to close it. With the wait, the close finishes once the in-flight calls
-return. A lookup call that never returns blocks `close()`, as today.
+What this gives:
 
-The wait needs no re-check after it. Once no call with a token runs beside a pass (§2:
-the peek takes none while a pass is open), a lookup call in flight means no pass is
-open, and none can start or resume while `_closing` is set. Today's re-check after the
-wait (`reader_state.py:831-841`) exists for a pass that resumed while the close waited
-for a call beside it; it goes.
+- `with open_archive(path, concurrent_operations=True) as reader:` around a pool whose
+  calls are still in flight when the body raises: `__exit__` returns at once, the
+  body's exception reaches the caller unchanged, and the pool's calls fail fast with
+  "the reader is closed" instead of finishing.
+- No hang on another thread: a password prompt, a slow source or a long `extract_all()`
+  on another thread never holds `close()`.
+- No refused close: nothing leaves the reader open for good, so no finalizer or retry
+  is needed.
+- Cancellation: `close()` from another thread, or from a callback of the reader's own
+  call (a progress callback, a password provider), stops a running `extract_all()` or
+  `verify_all()` at its next member or chunk, through the path a damage error already
+  takes, so partial output is handled as for that error.
 
-Not taken: a `close()` that never waits, which would have made pool users put the pool's
-`with` inside the reader's.
+What it costs:
 
-`fsspec`: `ArchiveyFileSystem.close()` runs its `weakref.finalize` today, which marks
-itself spent before it calls `reader.close()`; after a close that raised (a pass
-executing on `fs.reader` from another thread) a second `fs.close()` does nothing and the
-reader stays open. The implementation changes `ArchiveyFileSystem.close()` to call
-`self.reader.close()` itself and detach the finalizer only after that call returns, so a
-later `fs.close()` closes it. The finalizer callback suppresses `ArchiveyUsageError`: it
-runs at collection, when `fs.reader` kept by a caller can still have a call in flight on
-another thread, and the reader then stays the caller's to close.
+- When another thread is mid-call, "`close()` has returned" no longer means "the file
+  is released"; it means "released as soon as that call returns". With nothing running,
+  nothing changes. Code that deletes the archive right after `close()` on Windows must
+  join its threads first. `zipfile.ZipFile.close()` with a member file still open
+  behaves the same way, as do sockets, SQLite's `sqlite3_close_v2()`, HDF5's default
+  close, Go's `os.File` and .NET's `SafeHandle` (the report's survey).
+- Teardown runs on the thread that leaves last. If it fails there, that thread is
+  already raising "the reader is closed", so it raises that with the teardown error as
+  its `__cause__`. A teardown error during a `close()` with nothing running still
+  raises from `close()`, as today.
+
+Checkpoints. Reader methods already check the lifecycle on entry, a generator pass on
+every resume, and `open()` reserves and binds so a close cannot slip in between. The
+implementation adds: one check per bounded read inside `extract_all()` and
+`verify_all()`, one per batch of a list build, and one after a user callback returns.
+Without them the rule stays safe (teardown still waits for the last call), but an
+`extract_all()` would run to its end after `close()`. The implementer confirms the
+sites. Member streams: `ArchiveStream._close()` closes the inner stream while a `read()`
+may run on another thread, relying on each inner layer to tolerate it (report, "Two
+things noticed"). The implementation checks the layers, or gives the stream the same
+flag-and-count, so that no teardown runs under a running read.
+
+Teardown on another thread is not new: the lease count in `reader_state.py` already
+gives teardown to whoever drops the last lease, and a member stream closed on another
+thread can be that one. A running call becomes one more lease holder.
+
+Not now: a `wait_closed(timeout=None)` that blocks until the release has happened, for
+code that must delete or replace the archive file right away while other threads may
+still be inside a call. Adding it later breaks nobody. The implementation keeps the
+seam: teardown sets one internal `threading.Event` when it has released everything, and
+the tests wait on it; a public `wait_closed()` would be a thin wrapper over that event.
+A `close()` that also waits (the report's option D) can likewise be added later without
+breaking anyone, since it promises more.
+
+`fsspec`: `ArchiveyFileSystem.close()` needs no change. Its `weakref.finalize` marks
+itself spent before it calls `reader.close()`, which mattered only when that call could
+raise because of another thread; it no longer can.
 
 ## 4. The flag
 
@@ -209,9 +243,11 @@ CHANGELOG line (under `### Changed` in `[Unreleased]`):
 > - **Breaking:** with `concurrent_operations=True`, `stream_members()`, `extract_all()`
 >   and `verify_all()` no longer run beside other calls: a call on the reader while a
 >   pass runs, or a pass started while a call runs or a member stream is open, raises
->   `ArchiveyUsageError`, as without the flag, and `close()` while a pass runs on
->   another thread raises instead of waiting. Without the flag, `extract_all()` beside
->   an open member stream now raises too, as `stream_members()` did. Several open
+>   `ArchiveyUsageError`, as without the flag. `close()` never waits for another thread
+>   and never raises because of one: it marks the reader closed and returns, calls
+>   running on other threads stop at their next read with `ArchiveyUsageError`, and the
+>   archive is released when the last of them returns. Without the flag, `extract_all()`
+>   beside an open member stream now raises too, as `stream_members()` did. Several open
 >   member streams, and `open()`, `read()`, `get()` and `members()` from several
 >   threads, work as before.
 
@@ -255,9 +291,9 @@ states it, rather than taking the lock there.
 
 For callers of `ArchiveReader` the cut changes this, in §2 and §3: a pass has the reader
 to itself with or without the flag, so a call beside a pass, or a pass beside a call or
-an open stream, raises; and `close()` no longer waits for a pass (it still waits for
-lookup calls). Several open streams and lookup calls from several threads
-stay.
+an open stream, raises; and `close()` marks the reader closed and returns, with the last
+running call tearing down (§3). Several open streams and lookup calls from several
+threads stay.
 
 What goes from the contract: a walk stepped for another caller while a pass reads
 through it, a pass beside random access, two passes at once, a close that waits for
@@ -273,7 +309,13 @@ In `internal/reader_state.py`:
 - `_OVERLAPPING_PASSES`, `_pass_admits_overlap_locked`, `_side_passes`: one pass at a
   time, `_root` only. `_passes_locked`, `_executing_pass_locked`, `release_pass` and the
   `mark_reader_closed` loop over passes shrink to the root.
-- The draining close: the wait stays, for workers; the re-check after it goes (§3).
+- The draining close goes (§3): the wait for workers, `_closing`, `_workers_cv` and
+  `_close_cv`, the re-check after the wait, the retry after an interrupted drain, the
+  close's call to `refuse_wait_on_provider` (the materialization election keeps its
+  own), and the two "Cannot close the archive reader while" errors. `mark_reader_closed`
+  sets the lifecycle, closes the streams, and tears down if no lease or running call is
+  left; `release_worker` and `release_pass` tear down when they are the last out after
+  a close. Teardown sets the internal released event (§3).
 - `acquire_peek` goes: outside a pass `members_report_if_available()` takes a worker
   token like the other lookup calls; while a pass is open it takes none (§2).
 - `_owner_pass_locked`: the `CONCURRENT` branch goes; with one pass, a scope goes under
@@ -307,9 +349,10 @@ In `internal/base_reader.py`:
   and reads those through views.
 - The `close()` docstring, and `stream_members()` / `open()` docstrings in `reader.py`.
 
-In `fsspec.py`: `ArchiveyFileSystem.close()` calls `reader.close()` itself and detaches
-the finalizer only once that returns (§3). Not removed code, but the one change outside
-the reader that the cut forces.
+In `fsspec.py`: nothing (§3).
+
+New, the checkpoints of §3: per bounded read in `extract_all()` and `verify_all()`, per
+batch of a list build, after a user callback returns.
 
 In `internal/backends/sevenzip_reader.py`: the rule that a pass offers its folder
 decoder for a link's bytes only to the thread that ran the pass step (`_pass_link`).
@@ -329,8 +372,15 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   answer as before the loop, per format family (ZIP and 7z in both modes, TAR `None`),
   and reads nothing from the archive (a counting source).
 - `test_concurrent_multithread.py`: `test_close_drains_in_flight_workers_then_closes`
-  stays. A new case: close() while a pass executes on another thread raises and the
-  reader stays open. `test_multithread_reads_beside_stream_members` goes.
+  is rewritten: `close()` returns while the worker is in flight, the worker's call
+  raises "the reader is closed", and teardown runs once, after it returns (the released
+  event). `test_multithread_reads_beside_stream_members` goes.
+- New, §3, both modes: `close()` while another thread is blocked in a password provider
+  returns at once; when the provider answers, that call raises and teardown runs.
+  `close()` while `extract_all()` runs on another thread returns at once, and the
+  extraction stops at its next member with the closed error. `close()` from a progress
+  callback of the reader's own `extract_all()` stops it the same way. A teardown that
+  fails on the last thread out arrives as the `__cause__` of its closed error.
 - `test_concurrent_independence.py`: the cases that run passes beside each other go; the
   ones about streams and lookup calls stay.
 - New, in the fsspec tests: an `ArchiveyFileSystem` over a ZIP, a `.tar.gz` and a 7z;
@@ -339,20 +389,21 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   the reader, every stream is closed, and teardown ran once. A second case closes with
   streams still open on other threads that read afterwards: each read raises
   `ValueError`. A third: another thread runs `stream_members()` on `fs.reader` with a
-  selector that blocks on an event, so the pass is executing a step; `fs.close()` raises
-  `ArchiveyUsageError`, then the test sets the event; a second `fs.close()` after that
-  thread returns closes the reader, and a listing after it raises `ArchiveyUsageError`.
-  It fails on main's `ArchiveyFileSystem.close()`.
+  selector that blocks on an event, so the pass is executing a step; `fs.close()`
+  returns at once, then the test sets the event; that thread's next step raises, the
+  reader is released once it returns, and a listing after it raises
+  `ArchiveyUsageError`. It fails on main, where `fs.close()` raises and leaves the
+  reader open.
 - `test_verify_all.py::test_a_held_stream_mirrors_what_verify_all_proved` holds an
   `open()` stream across `verify_all()`, which now raises. The rule it proves stays (a
   held stream's `verified` and `verifiable` mirror its member, `compressed-streams`):
   rewrite it to hold one stream, raise the member's level through a second stream of
   the same member (`ArchiveStream.verify()`), and check the held stream. Not deleted.
 - `test_reader_state.py::test_interrupted_drain_hands_close_to_the_waiting_closer` and
-  `test_format_api_passwords.py::test_copied_context_close_raises_while_another_close_drains`:
-  kept, as the drain stays.
-  `test_reader_state.py::test_interrupt_after_the_transition_still_tears_down` keeps
-  patching `_close_cv.notify_all`.
+  `test_format_api_passwords.py::test_copied_context_close_raises_while_another_close_drains`
+  go with the drain.
+  `test_reader_state.py::test_interrupt_after_the_transition_still_tears_down` moves to
+  a remaining post-transition step, so its interrupt coverage stays.
 - `test_verification_contract.py::test_a_proved_member_is_not_read_again` (rule 10, all
   format families) holds an `open()` stream across `verify_all()`. It keeps its rule-4
   and no-reread assertions and checks the held stream's level after closing and
@@ -364,8 +415,9 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   destination exists, in both modes; a held stream beside `stream_members()` over an
   archive of directories and symlinks only raises at the first `next()`.
 - `with open_archive(..., concurrent_operations=True)` whose body raises
-  while a pool's `read()` is in flight: the body's exception reaches the caller and the
-  reader is closed after the call returns.
+  while a pool's `read()` is in flight: `__exit__` returns at once, the body's
+  exception reaches the caller unchanged, the `read()` raises the closed error, and the
+  reader is released after it returns.
 - The free-threaded (`3.13t`) CI job runs the same files.
 
 ## 8. Docs
@@ -396,10 +448,12 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   maintainer, 2026-11-24).
 - Rule 2 of the plugin contract as worded in §5: outside a pass, `walk()` may run again
   while an earlier walk is open (maintainer, 2026-11-24).
-- `close()` waits for lookup calls in flight under the flag, never for a pass (§3;
-  maintainer, 2026-11-24).
+- `close()` marks the reader closed and returns; running calls stop at their next
+  checkpoint and the last one out tears down; same rule in both modes (§3; maintainer,
+  2026-11-24, after an independent evaluation, replacing the earlier ruling that day to
+  wait for lookup calls). No public `wait_closed()` now; the internal released event
+  keeps the seam.
 - `members_report_if_available()` inside a pass returns what is built and reads
   nothing; a pass converts an index already in memory when it starts, through one call
   a later optimization can move into the peek; `extract_all()` takes its totals before
-  its pass; so `close()` needs no re-check after its wait (§2, §3; maintainer,
-  2026-11-24).
+  its pass (§2; maintainer, 2026-11-24).
