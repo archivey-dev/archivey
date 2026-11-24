@@ -41,8 +41,8 @@ change.
 - **Breaking.** `close()` never waits for a pass: while a pass executes on another
   thread, it raises `ArchiveyUsageError` and the reader stays open. Under the flag it
   still waits for lookup calls in flight (design.md §3; maintainer, 2026-11-24).
-- **Changed, not breaking.** `members_report_if_available()` inside a pass returns
-  what is already built and never reads the archive; a streaming 7z pass converts its
+- **Changed, not breaking.** `members_report_if_available()` inside a pass returns what
+  is already built and never reads the archive; a streaming 7z or RAR pass converts its
   in-memory index when it starts, so the answer matches a call before the loop
   (design.md §2). `extract_all()` takes its progress totals before its pass.
 - **Kept.** Any number of member streams from `open()` at once, each used by one thread

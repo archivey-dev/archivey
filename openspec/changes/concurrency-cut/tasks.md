@@ -13,7 +13,7 @@
   when it starts beside a live `open()` stream, in both modes, and `admit_pass_streams`
   removed
 - [ ] 2.2 `members_report_if_available()` inside a pass: built report or `None`, no
-  token, no reads; outside a pass a worker token. `_INDEX_IN_MEMORY` (7z) and one
+  token, no reads; outside a pass a worker token. `_INDEX_IN_MEMORY` (7z, RAR) and one
   `_convert_index_in_memory()` call at pass start; `extract_all()` takes its progress
   totals before its pass (design.md §2)
 - [ ] 2.3 Remove what only the overlap needed (design.md §6): `_drain_walk`'s sleep, the

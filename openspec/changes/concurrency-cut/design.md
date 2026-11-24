@@ -72,6 +72,17 @@ not, and reads nothing from the archive. It takes no token then, so `close()` ha
 nothing beside a pass to wait for (§3). Outside a pass it is a lookup call with a worker
 token, and on an upfront index it builds the list as today.
 
+The rule this gives, for the `archive-reading` spec (maintainer, 2026-11-24):
+
+> `members_report_if_available()` gives the same answer before a pass and at any point
+> during it. After a pass that reached its end, it returns the full report: every member
+> (`error is None`), or, on a damaged archive, the members before the damage with the
+> `error`. After a pass left part-way (a `break`), it returns what it would have
+> returned before the pass: the full report on a format with an upfront index, `None`
+> on one without (TAR, a ZIP with no central directory, a directory), since finishing
+> the list would mean reading the rest of the archive. A streaming pass stopped by a
+> listing limit leaves `None`, as today.
+
 So that the answer does not depend on when the loop calls it, every pass builds the list
 first when it can do so without reading:
 
@@ -100,9 +111,10 @@ so the pass needs no change.
 Not in this cut: RAR has no full directory, only an optional quick-open record that may
 not list every member, yet `RarReader` walks every header inside `open_archive`
 (`_MEMBER_LIST_UPFRONT = True`), probably a leftover from before synthetic archives.
-Making it build as it goes is a change of its own; until then its table is built at
-open, so its peek answers inside a loop as before the loop. It does not set
-`_INDEX_IN_MEMORY`.
+Making it build as it goes is a change of its own. Until then its header table is in
+memory after open, so it sets `_INDEX_IN_MEMORY` like 7z; without that, a streaming RAR
+peek would read the table before the loop and answer `None` inside it. The change that
+stops RAR walking at open clears the attribute.
 
 **Why passes refuse open streams too, and when.** A pass with the reader to itself gives
 the plugin contract its rule 2 (§5): while a pass runs, no other member stream reads the
@@ -277,8 +289,8 @@ In `internal/base_reader.py`:
 
 - `members_report_if_available()`: while a pass is open, the built report or `None`,
   reading nothing; outside a pass, a worker token. `_INDEX_IN_MEMORY` and
-  `_convert_index_in_memory()` added, set on 7z. `extract_all()` asks for its progress
-  totals before it takes its pass (§2).
+  `_convert_index_in_memory()` added, set on 7z and RAR. `extract_all()` asks for its
+  progress totals before it takes its pass (§2).
 - `_drain_walk`'s sleep between batches: it exists so a pass on another thread can take
   the walk lock. With no pass beside a listing, it goes, if no other waiter remains;
   the implementation checks.
