@@ -55,9 +55,10 @@ In words, for the docstring of `open_archive` and `docs/reading.md`:
 > `members_report_if_available()` and iteration may run at the same time from several
 > threads. Each member stream belongs to one thread at a time. `stream_members()`,
 > `extract_all()` and `verify_all()` behave as they do without the flag: a pass has the
-> reader to itself, so while one runs, any other call on the reader raises
-> `ArchiveyUsageError`, except `members_report_if_available()`, which returns the member
-> list if it is already built and `None` if not. A pass raises when it starts if another
+> reader to itself, so while one runs, any other lookup call or pass raises
+> `ArchiveyUsageError`. Metadata (`format`, `info`, `cost`, `diagnostics`, `m in
+> reader`) stays readable, and `members_report_if_available()` returns the report
+> published when the pass started, or `None`. A pass raises when it starts if another
 > call is running or a stream from `open()` is still open. Without the flag, the reader
 > and its open stream belong to one thread at a time. `close()` is described in §3.
 
@@ -72,21 +73,32 @@ a close must wait to release (§3). Outside a pass it is a lookup call with a wo
 token, and on an upfront index it builds the list as today.
 
 When a report becomes visible. A report is published in one short critical section that
-sets the report and the walk's outcome (done, error, limit) together, so no reader of
-it sees `_walk_done` without the `_walk_error` or the last-entry updates that go with
-it. That section never takes the walk lock or the plugin's handle lock. A pass, when it
-is admitted (after its upfront drain, below), keeps a reference to the published report
-or to `None`. A peek while that pass is open returns that reference, and nothing else: a
-report published later in the pass, when a scan-based reader (TAR, a sequential plugin)
-reaches its end or meets damage, becomes visible only after the pass has ended. So:
+sets the report and the walk's outcome (done, damage error) together, so no reader of it
+sees `_walk_done` without the `_walk_error` or the last-entry updates that go with it.
+That section never takes the walk lock or the plugin's handle lock. A pass, when it is
+admitted (after its upfront drain, below), keeps a reference to the published report or
+to `None`. The report an upfront drain publishes is an index-only one, `_index_report`,
+kept apart from `_materialized`: `_walk_ahead()` leaves `_materialized` unset because
+link targets stored as data are not read yet, and `members()` and `get()` must not serve
+unresolved links. The pass keeps `_materialized.report` if a link-resolved list exists,
+else `_index_report`; today's `_members_report_if_available()` already builds such an
+index-only report from `_listed` and `_walk_error`. A peek while that pass is open
+returns that reference, and nothing else: a report published later in the pass, when a
+scan-based reader (TAR, a sequential plugin) reaches its end or meets damage, becomes
+visible only after the pass has ended. So:
 
 - A TAR whose list a `members()` call built before the pass: the pass sees that report,
   and a peek in the loop returns it.
 - A TAR not listed before: `None` for the whole pass, then the full report after a pass
   that reached its end.
-- A limit or damage the upfront drain meets: the published report carries it before the
+- Damage the upfront drain meets: the published report carries it (`error`) before the
   first member, the peek returns it, and the pass yields the members before that point
   and then raises, as a pass does today.
+- A listing limit (`ListingLimits`) is not damage and is never stored on a report
+  (`archive-reading`: "limits are not the damage story"). As today: a peek outside a
+  pass raises `ResourceLimitError`; a pass whose drain meets the limit publishes no
+  report, so the peek in it and after it gives `None`, and the pass yields the members
+  before the limit and then raises `ResourceLimitError`.
 - A limit or damage a scan-based pass meets: `None` during the pass, as before it.
 
 The rule this gives, for the `archive-reading` spec (maintainer, 2026-11-24):
@@ -131,7 +143,15 @@ lease covers the stream pass, the spanning passes, the report and their cleanup,
 neither `open()` nor a second pass can slip in between them. Internal children (an
 extraction's member opens, link reads, the spanning passes, the totals helper) run under
 the root pass only through its execution context, the scope `_owner_pass_locked` files
-them under; a call from any other context is refused as a call beside the pass.
+them under; a call from any other context is refused as a call beside the pass. That
+context is entered narrowly, around the library's own child calls (a pass's setup and
+advance, link and hard-link recovery opens, the totals helper, `verify_all()`'s report),
+never around a user callback: `_internal_member_opens()` today covers the whole of
+`extract_all()`'s coordinator run (`base_reader.py:5587`), so an `on_progress` callback
+that calls `reader.open()` succeeds and reads bytes on `main`. After the cut it is
+suspended across every callback (`filter`, `on_progress`, `on_diagnostic`, a password
+provider, `on_source_read`), so a callback's call on its reader is refused as before,
+`close()` excepted (§3).
 
 The seam for a later optimization: draining at pass start is one call, `_walk_ahead()`
 generalized from ZIP, made in one place, `_begin_forward_pass()`, which every streaming
@@ -304,21 +324,31 @@ would deadlock on it. So physical cleanup is deferred reader-wide:
 - A member stream's own `close()` on an open reader closes its inner stream at once
   when no call on that shared handle runs, and otherwise marks it closed and leaves the
   inner close to the last call out on that handle. Its reader lease is released only
-  after its inner close has run, so the reader is never torn down under it.
+  after its inner close has run, so the reader is never torn down under it. A failure of
+  that deferred inner close belongs to the stream already closed, not to the unrelated
+  read that runs it: it goes to `sys.unraisablehook`, and that read returns normally.
 - No plugin code and no cleanup step runs under the lifecycle lock.
 
 Entry points that can touch a live resource. Each public entry point is either a
 snapshot or takes a lease from its first backend access through its final cleanup:
 
-- Snapshots, no lease: `format`, `format_info`, `backends_used`, the closed state,
-  member objects and published reports.
-- Lease (a worker token, counted): every reader call that reaches the backend,
-  including `info` and `cost` (today they check the lifecycle and then call the backend
-  with no token: a plugin's `archive_info()` takes the handle lock,
-  `format_adapter.py:1325`).
+- Snapshots, no lease: `format`, `format_info`, `backends_used`, `diagnostics`,
+  `member in reader`, the closed state, member objects and published reports; `cost`
+  becomes one too, computed once at open (every backend and `_FormatAdapterBase._cost()`
+  build it from fields fixed at open). On a stream: `name`, `size`, `mode`,
+  `diagnostics`.
+- Counted, with no worker token: `info`. Today it checks the lifecycle and then calls
+  the backend with no token (a plugin's `archive_info()` takes the handle lock,
+  `format_adapter.py:1325`), and it is read inside a pass's loop body and from callbacks
+  (the DEB reader fills `info.extra["deb.package"]` mid-pass). A worker token would
+  refuse it there, so it joins the reader-wide running-call count only: close-safe, and
+  admitted wherever it is today.
+- Lease (a worker token, counted): every other reader call that reaches the backend.
 - Counted stream calls: `read`, `readinto`, `read_ahead`, `seek`, `tell`, `seekable`,
-  the proof properties `verified` and `verifiable`, and `verify()` as one call, so its
-  position restore and proof refresh stay inside the count.
+  `nearest_resume_offset()` (it reaches the inner layers and today does not check
+  `closed`; it raises `ValueError` on a closed stream), the proof properties `verified`
+  and `verifiable`, and `verify()` as one call, so its position restore and proof
+  refresh stay inside the count.
 - What `close()` does with state a running call writes (settling the members' read
   state) moves into teardown, after the last writer has stopped.
 
@@ -489,12 +519,13 @@ In `internal/base_reader.py`:
 - `members_report_if_available()`: while a pass is open, the built report or `None`,
   reading nothing; outside a pass, a worker token. `_walk_ahead()` moves from ZIP to the
   base and runs in `_begin_forward_pass()` for every `_MEMBER_LIST_UPFRONT` reader;
-  `_INDEX_IN_MEMORY` added, set on 7z, RAR, single-file and XAR (§2, the seam).
-  The report and the walk outcome published in one short critical section; a pass keeps
-  the reference it was admitted with (§2). `extract_all()` takes its totals inside its
-  pass through an owner-only helper, and `verify_all()` holds one outer pass lease over
-  its stream pass, spanning passes and report (§2). `info` and `cost` take a worker
-  token (§3).
+  `_INDEX_IN_MEMORY` added, set on 7z, RAR, single-file and XAR (§2, the seam). The
+  report and the walk outcome published in one short critical section; a pass keeps the
+  reference it was admitted with (§2). `extract_all()` takes its totals inside its pass
+  through an owner-only helper, and `verify_all()` holds one outer pass lease over its
+  stream pass, spanning passes and report (§2). `cost` computed once at open; `info`
+  counted without a worker token; `_index_report` beside `_materialized`;
+  `_internal_member_opens()` suspended across user callbacks (§2, §3).
 - `_drain_walk`'s sleep between batches: it exists so a pass on another thread can take
   the walk lock. With no pass beside a listing, it goes, if no other waiter remains;
   the implementation checks.
@@ -514,9 +545,10 @@ In `internal/base_reader.py`:
 In `fsspec.py`: `close()` stops taking `_tree_lock`; a closed flag and a short publish
 lock (§3).
 
-New, the checkpoints of §3: per bounded read in `extract_all()` and `verify_all()`, per
-batch of a list build, per bounded step of a skip or drain loop, after a user callback
-returns, before a call returns success or a member is moved into place.
+New, the checkpoints of §3: per bounded read in `read()`, `extract_all()` and
+`verify_all()`, per batch of a list build, per bounded step of a skip or drain loop,
+after a user callback returns, before a call returns success or a member is moved into
+place.
 
 In `internal/backends/sevenzip_reader.py`: the rule that a pass offers its folder
 decoder for a link's bytes only to the thread that ran the pass step (`_pass_link`).
@@ -589,9 +621,17 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   on an event in its spanning-pass phase: `open()` and a second pass from another thread
   both raise.
 - New, §2, upfront drain, on CAB and SquashFS or an indexed plugin, with and without a
-  peek before the pass: an early `break`, an index damaged at its end, and a listing
-  limit each give the same members before the stop and the same peek answer in both
-  cases.
+  peek before the pass: an early `break` and an index damaged at its end each give the
+  same members before the stop and the same peek answer in both cases. A listing limit:
+  the peek before the pass raises `ResourceLimitError`; without it, the pass yields the
+  members before the limit, the peek in and after it gives `None`, and the pass raises
+  `ResourceLimitError`.
+- New, §2: `reader.info`, `reader.cost`, `reader.diagnostics` and `m in reader` inside a
+  `stream_members()` loop body and from an `on_progress` callback succeed, in both
+  modes; an `on_progress` callback of `extract_all()` and an `on_diagnostic` callback of
+  `verify_all()` that call `reader.open()` raise `ArchiveyUsageError`.
+- New, §3: a deferred inner close that fails while another stream's read runs it: the
+  read returns its bytes and the failure reaches `sys.unraisablehook`.
 - New, §2, publication: a peek from another thread while a TAR pass reaches its end
   returns `None` until the pass has ended, then the full report; a peek while a damaged
   TAR pass publishes its error never returns a report without the error.

@@ -12,9 +12,11 @@
   count over reader calls and member-stream calls, with all physical cleanup (inner
   stream closes, backend iterator close, teardown) by the last call out, in one order;
   `_teardown_attempted` with its outcome; `bind_live_stream()` re-checks the lifecycle
-  and is the publication point; one claim flag for suspended-pass wind-down; worker
-  tokens for `info` and `cost`; counted stream calls including `verified`,
-  `verifiable` and `verify()`; failure precedence; the checkpoints of §3 (`read()` in
+  and is the publication point; one claim flag for suspended-pass wind-down; `cost`
+  computed once at open, `info` counted without a worker token; counted stream calls
+  including `nearest_resume_offset()`, `verified`, `verifiable` and `verify()`;
+  `_internal_member_opens()` suspended across user callbacks; `_index_report` kept
+  apart from `_materialized`; failure precedence; the checkpoints of §3 (`read()` in
   checked chunks, `verify()`'s loop, spanning passes, skip loops, before success);
   `acquire_peek` removed; a data pass refused when it starts beside a live `open()`
   stream, in both modes, and `admit_pass_streams` removed (design.md §3)
