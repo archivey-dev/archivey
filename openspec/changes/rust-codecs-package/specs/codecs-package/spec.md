@@ -43,9 +43,9 @@ and `unused_data`, with the meaning `lzma.LZMADecompressor` gives them, and SHAL
 return at most `max_length` bytes when it is not negative. The LZX decompressor SHALL
 take the declared output size (`output_size=`, or `set_output_size(n)` between frames
 before the last frame ends; while a frame waits for input or after a decode error it
-SHALL raise `ValueError`), SHALL decode whole frames of 32 KiB with only the last one shorter,
-whatever `max_length` is, and SHALL set `eof` when `total_out` reaches it. LZX and LZW
-SHALL have `flush(max_length=-1)`, which marks the end of input and returns the
+SHALL raise `ValueError`), SHALL decode whole frames of 32 KiB with only the last one
+shorter, whatever `max_length` is, and SHALL set `eof` when `total_out` reaches it. LZX
+and LZW SHALL have `flush(max_length=-1)`, which marks the end of input and returns the
 remaining output; before it, input that ends inside a frame or code only means more
 input is needed. LZX's `flush()` SHALL finish the last frame with the Python twin's zero
 padding and SHALL raise `TruncatedDataError` when the frame still cannot finish. LZW's
@@ -115,8 +115,8 @@ output a straight decode produces from offset `total_out` (for ZipCrypto, from o
 `total_in`). `from_state` SHALL refuse a state written by another kernel or another
 revision with `UnsupportedDataError`. A decoder that holds a decode error (LZW, LZX,
 BCJ2) SHALL refuse `getstate()` with `ValueError`: while it holds the error, every later
-decoding call raises it, and it has no state to resume from. Block functions have no state;
-a seek point is the block's offset.
+decoding call raises it, and it has no state to resume from. Block functions have no
+state; a seek point is the block's offset.
 
 #### Scenario: resume from a saved state
 

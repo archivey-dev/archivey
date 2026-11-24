@@ -31,12 +31,12 @@ change.
 
 ## What Changes
 
-- **Breaking.** On a reader opened with `concurrent_operations=True`, `stream_members()`,
-  `extract_all()` and `verify_all()` behave as on a default reader. While a pass runs,
-  `open()`, `read()`, `get()`, `members()`, `members_report()`, iteration and another
-  pass raise `ArchiveyUsageError`, from the loop body and from any other thread. A pass
-  raises when it starts while one of those calls runs on another thread, and at its first
-  member stream when a stream from `open()` is still open.
+- **Breaking.** On a reader opened with `concurrent_operations=True`,
+  `stream_members()`, `extract_all()` and `verify_all()` behave as on a default reader.
+  While a pass runs, `open()`, `read()`, `get()`, `members()`, `members_report()`,
+  iteration and another pass raise `ArchiveyUsageError`, from the loop body and from any
+  other thread. A pass raises when it starts while one of those calls runs on another
+  thread, and at its first member stream when a stream from `open()` is still open.
 - **Breaking.** `close()` never waits for another thread. When another thread is inside
   a reader call, or a pass is executing, `close()` raises `ArchiveyUsageError` and the
   reader stays open, as on a default reader today.
@@ -44,7 +44,8 @@ change.
   at a time. `open()`, `read()`, `get()`, `members()`, `members_report()`,
   `members_report_if_available()` and iteration from several threads at once; the first
   that needs the member list builds it and the others wait.
-- **Kept.** The flag and its name, `concurrent_operations` (maintainer, 2026-11-24). Its refusal with `streaming=True` and `pipe=True`.
+- **Kept.** The flag and its name, `concurrent_operations` (maintainer, 2026-11-24). Its
+  refusal with `streaming=True` and `pipe=True`.
 - **Removed code.** Side passes, the draining close, the drain's hand-off sleep, and the
   walk hand-off if nothing else needs it (design.md §6).
 - **Plugin contract.** The thread rules in `archivey.formats` and
@@ -68,8 +69,9 @@ specs above directly.
 
 ## Impact
 
-- Code: `internal/reader_state.py`, `internal/base_reader.py`, `internal/walk_handoff.py`,
-  `internal/format_adapter.py`, `core.py` and `reader.py` docstrings, `formats.py`.
+- Code: `internal/reader_state.py`, `internal/base_reader.py`,
+  `internal/walk_handoff.py`, `internal/format_adapter.py`, `core.py` and `reader.py`
+  docstrings, `formats.py`.
 - Tests: `test_concurrent_pass_workers.py` becomes refusal tests; parts of
   `test_concurrent_multithread.py`, `test_concurrent_independence.py`,
   `test_concurrent_cooperative.py`, `test_format_api_sequential.py`; a new fsspec test.
@@ -80,4 +82,5 @@ specs above directly.
 - Callers: code that calls `open()` or `members()` inside a `stream_members()` loop on a
   `concurrent_operations=True` reader, or runs two passes at once, now gets
   `ArchiveyUsageError`. The fix is `members()` first and then `open()`, or one pass.
-- `plugin-platform` (PR 1826) states the contract this change leaves and starts after it.
+- `plugin-platform` (PR 1826) states the contract this change leaves and starts after
+  it.

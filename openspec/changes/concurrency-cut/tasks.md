@@ -20,7 +20,8 @@
 ## 3. Tests
 
 - [ ] 3.1 Pass refusals on a `CONCURRENT` reader, per format family (design.md §7)
-- [ ] 3.2 `close()` with a worker in flight on another thread raises; the reader stays open
+- [ ] 3.2 `close()` with a worker in flight on another thread raises; the reader stays
+  open
 - [ ] 3.3 `archivey.fsspec`: threads read several member streams at once, then the file
   system closes cleanly; a close under open streams makes their later reads raise
   `ValueError`

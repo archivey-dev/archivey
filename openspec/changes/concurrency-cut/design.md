@@ -19,17 +19,17 @@ Checked on main `4210bbf` (2026-11-24).
   `members()`, `members_report()`, `members_report_if_available()` and iteration take
   worker tokens and overlap; the first to need the list builds it and the others wait
   (`begin_materialization`). `stream_members()` and `extract_all()` passes also overlap
-  workers and each other (`_side_passes`), sharing the one member walk.
-  `close()` waits for workers in flight, then re-checks for a pass that resumed meanwhile.
+  workers and each other (`_side_passes`), sharing the one member walk. `close()` waits
+  for workers in flight, then re-checks for a pass that resumed meanwhile.
 - **Who uses the flag.** `archivey.fsspec` (`ArchiveyFileSystem`), which calls
   `members()` once under its own lock to build its tree, then `open()` from whatever
-  thread fsspec or dask calls it on. No pass. `close()` runs from the instance's `close()`
-  or its finalizer. The CLI does not set the flag.
+  thread fsspec or dask calls it on. No pass. `close()` runs from the instance's
+  `close()` or its finalizer. The CLI does not set the flag.
 
 ## 2. Which calls may run beside each other
 
-The implementation PR writes this table into `reader-concurrency` and the substance of it
-into `docs/reading.md`. "Lookup calls" are `open()`, `read()`, `get()`, `members()`,
+The implementation PR writes this table into `reader-concurrency` and the substance of
+it into `docs/reading.md`. "Lookup calls" are `open()`, `read()`, `get()`, `members()`,
 `members_report()`, `members_report_if_available()` and iteration of a random-access
 reader. "Passes" are `stream_members()`, `extract_all()` and `verify_all()`.
 
@@ -57,8 +57,8 @@ In words, for the docstring of `open_archive` and `docs/reading.md`:
 
 **Why passes refuse open streams too.** On a default reader a pass already does. Keeping
 that rule under the flag makes a pass behave the same with and without it, so the flag
-changes only the lookup calls and the stream count. It also gives the plugin contract its
-rule 2 (§5): while a pass runs, no other member stream reads the archive.
+changes only the lookup calls and the stream count. It also gives the plugin contract
+its rule 2 (§5): while a pass runs, no other member stream reads the archive.
 
 **Unchanged.** The refusal for a callback's re-entry (on the thread of the call, before
 any overlap check); the garbage-collection retry before an overlap refusal stands
@@ -90,10 +90,10 @@ flight then.
 
 ## 4. The flag
 
-**Keep `concurrent_operations`**, with the narrower meaning (maintainer, 2026-11-24). The lookup calls
-it still covers are operations, not only member streams, and a rename makes every caller
-edit code for no change in what their code does. The **Breaking:** line names the
-narrowing.
+**Keep `concurrent_operations`**, with the narrower meaning (maintainer, 2026-11-24).
+The lookup calls it still covers are operations, not only member streams, and a rename
+makes every caller edit code for no change in what their code does. The **Breaking:**
+line names the narrowing.
 
 The alternative, not taken: rename to `concurrent_members`, the name it
 had until 2026-10-17, when it was widened to cover passes. That undoes the widening by
@@ -129,9 +129,9 @@ several walks are open at once. Refusing that would be format gating. Proposed w
    reader are open, each by one thread at a time.
 
 What goes from the contract: a walk stepped for another caller while a pass reads
-through it, a pass beside random access, two passes at once, a close that waits for other
-threads. What stays: several walks open at once outside a pass, which `walk()` as a
-generator already gives. The wording lands in `archivey.formats` (the reader protocol
+through it, a pass beside random access, two passes at once, a close that waits for
+other threads. What stays: several walks open at once outside a pass, which `walk()` as
+a generator already gives. The wording lands in `archivey.formats` (the reader protocol
 docstrings) and `docs/adding-a-format.md` §"Walking again" in the implementation PR, and
 `plugin-platform` design §5 takes it over.
 
@@ -158,24 +158,25 @@ In `internal/base_reader.py`:
   the walk lock. With no pass beside a listing, it goes, if no other waiter remains;
   the implementation checks.
 - `_before_pull_locked`, `_walk_handoff_locked` and `WalkHandoffStream`
-  (`internal/walk_handoff.py`): a pass's stream reads through the walk and moves to a view
-  of its own when another caller moves the walk on. If, with passes alone, nothing but
-  the pass itself moves the walk, the hand-off goes and the pass reads in place. The
+  (`internal/walk_handoff.py`): a pass's stream reads through the walk and moves to a
+  view of its own when another caller moves the walk on. If, with passes alone, nothing
+  but the pass itself moves the walk, the hand-off goes and the pass reads in place. The
   implementation checks `members_report_if_available()` on a reader with an upfront list
   whose pass reads through the walk (a plugin with `member_list_upfront=True`) first.
 - The `close()` docstring, and `stream_members()` / `open()` docstrings in `reader.py`.
 
-In `internal/backends/sevenzip_reader.py`: the rule that a pass offers its folder decoder
-for a link's bytes only to the thread that ran the pass step (`_pass_link`). With no call
-beside a pass, only the pass's own thread can ask, so the thread check goes if nothing
-else needs it. In `internal/format_adapter.py`: the comment on `_handle_lock`.
+In `internal/backends/sevenzip_reader.py`: the rule that a pass offers its folder
+decoder for a link's bytes only to the thread that ran the pass step (`_pass_link`).
+With no call beside a pass, only the pass's own thread can ask, so the thread check goes
+if nothing else needs it. In `internal/format_adapter.py`: the comment on
+`_handle_lock`.
 
 Measured in the PR: lines removed from `src/` and `tests/`.
 
 ## 7. Tests
 
-- `tests/test_concurrent_pass_workers.py` becomes `test_concurrent_pass_refusals.py`
-  (or shrinks in place): on a `CONCURRENT` reader of each format family, each lookup call
+- `tests/test_concurrent_pass_workers.py` becomes `test_concurrent_pass_refusals.py` (or
+  shrinks in place): on a `CONCURRENT` reader of each format family, each lookup call
   from the loop body and from another thread raises `ArchiveyUsageError` and leaves the
   pass usable; a pass beside a worker in flight, beside another pass, and beside an open
   stream raises; `members_report_if_available()` inside the loop works.
@@ -186,8 +187,8 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   ones about streams and lookup calls stay.
 - New, in the fsspec tests: an `ArchiveyFileSystem` over a ZIP, a `.tar.gz` and a 7z;
   eight threads each open and read several members, holding streams open across each
-  other's reads, and check the bytes; then `fs.close()` with no call in flight closes the
-  reader, every stream is closed, and teardown ran once. A second case closes with
+  other's reads, and check the bytes; then `fs.close()` with no call in flight closes
+  the reader, every stream is closed, and teardown ran once. A second case closes with
   streams still open on other threads that read afterwards: each read raises
   `ValueError`.
 - The free-threaded (`3.13t`) CI job runs the same files.
@@ -203,7 +204,8 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   the others are doing"; the 2026-10-13 ruling and its 2026-10-17 extension are marked
   superseded by the 2026-11-24 ruling.
 - ADR 0003: an amendment of 2026-11-24.
-- `dev-docs/guide/01-vocabulary.md`, `04-readers-and-members.md`, `07-pipes-and-files.md`.
+- `dev-docs/guide/01-vocabulary.md`, `04-readers-and-members.md`,
+  `07-pipes-and-files.md`.
 
 ## Decisions
 
