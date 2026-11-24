@@ -29,17 +29,20 @@ def _file(path: Path, data: bytes = b"x") -> Path:
     return path
 
 
-def _alias(existing: Path, alias: Path) -> None:
+def _alias(
+    existing: Path, alias: Path, stand_in: pytest.MonkeyPatch | None = None
+) -> None:
     """Make ``alias`` a second name of ``existing``. A case- or normalization-
-    insensitive filesystem (macOS) has made it one already."""
-    if not os.path.lexists(alias):
-        os.link(existing, alias)
+    insensitive filesystem (macOS) has made it one already.
 
-
-def _one_stand_in(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The test's one stand-in hard link is a name, not an entry: a short name or a
-    case variant adds no link to its file, so the file's entry count leaves it out."""
-    monkeypatch.setattr(placements_module, "_entry_count", lambda st: st.st_nlink - 1)
+    With ``stand_in``, a hard link made here is the test's one stand-in for a short
+    name or a case variant, which adds no link to its file: the file's entry count
+    leaves it out. Where the filesystem made the alias, nothing is patched."""
+    if os.path.lexists(alias):
+        return
+    os.link(existing, alias)
+    if stand_in is not None:
+        stand_in.setattr(placements_module, "_entry_count", lambda st: st.st_nlink - 1)
 
 
 @posix_inodes
@@ -116,11 +119,10 @@ def test_the_key_decides_between_hard_links_of_one_file(tmp_path: Path) -> None:
 def test_a_name_that_folds_to_no_claim_finds_its_file_s_only_claim(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _one_stand_in(monkeypatch)
     placements = Placements()
     only = placements.claim(_file(tmp_path / "LongFileName"), "L", tmp_path / "L", 0)
     # ``LONGFI~1`` names the one entry the file has a claim for.
-    _alias(tmp_path / "LongFileName", tmp_path / "LONGFI~1")
+    _alias(tmp_path / "LongFileName", tmp_path / "LONGFI~1", monkeypatch)
     assert placements.owner(tmp_path / "LONGFI~1", "LONGFI~1", occupied=True) is only
 
 
@@ -128,12 +130,11 @@ def test_a_name_that_folds_to_no_claim_finds_its_file_s_only_claim(
 def test_a_retired_claim_leaves_the_identity_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _one_stand_in(monkeypatch)
     placements = Placements()
     first = placements.claim(_file(tmp_path / "A"), "A", tmp_path / "A", 0)
     _alias(tmp_path / "A", tmp_path / "b")
     link = placements.claim(tmp_path / "b", "b", tmp_path / "b", 1)
-    _alias(tmp_path / "A", tmp_path / "c")
+    _alias(tmp_path / "A", tmp_path / "c", monkeypatch)
     assert placements.owner(tmp_path / "c", "c", occupied=True) is None
     # With ``A``'s claim retired, ``b``'s is the file's only one, but ``A`` is still
     # one of its entries, which ``c`` may name: no answer.
@@ -159,11 +160,10 @@ def test_an_unclaimed_hard_link_does_not_take_its_file_s_only_claim(
     # A hard link ``a`` to ``src`` whose claim was taken back stays on disk; ``A``, a
     # case variant of it, reaches ``a``'s entry, not ``src``'s. The macOS link parity
     # soak wrote a member over ``src`` before the file's entry count was checked.
-    _one_stand_in(monkeypatch)
     placements = Placements()
     placements.claim(_file(tmp_path / "src"), "src", tmp_path / "src", 0)
     os.link(tmp_path / "src", tmp_path / "a")
-    _alias(tmp_path / "a", tmp_path / "A")
+    _alias(tmp_path / "a", tmp_path / "A", monkeypatch)
     assert placements.owner(tmp_path / "A", "a", occupied=True) is None
 
 
@@ -229,7 +229,6 @@ def test_a_name_folds_unicode_normalization_too(tmp_path: Path) -> None:
 def test_hard_links_whose_names_fold_together_keep_their_own_claims(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _one_stand_in(monkeypatch)
     # Under TRUSTED on a case-sensitive filesystem, ``A`` and ``a`` are two
     # entries; here they are hard links of one file.
     _file(tmp_path / "A")
@@ -239,7 +238,7 @@ def test_hard_links_whose_names_fold_together_keep_their_own_claims(
     upper = placements.claim(tmp_path / "A", "A", tmp_path / "A", 0)
     os.link(tmp_path / "A", tmp_path / "a")
     lower = placements.claim(tmp_path / "a", "a", tmp_path / "a", 1)
-    os.link(tmp_path / "A", tmp_path / "c")
+    _alias(tmp_path / "A", tmp_path / "c", monkeypatch)
     assert placements.owner(tmp_path / "A", "", occupied=True) is upper
     assert placements.owner(tmp_path / "a", "", occupied=True) is lower
     # Two live claims: a name of neither has no answer.

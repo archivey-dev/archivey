@@ -238,9 +238,9 @@ class Placements:
                 if claim is not None and self.is_live(claim) and _is_file_of(claim, st):
                     return claim
         # The file's only claim: one folded entry key, spelled one way, on a file with
-        # one directory entry. A file with more (an unclaimed hard link, such as a
-        # copy taken back from a name that folds to this one) cannot tell which entry
-        # the name reaches, and the claim of another entry would take the write.
+        # one directory entry. A file with more (such as a hard-link member whose
+        # claim was taken back, its entry still on disk) cannot tell which entry the
+        # name reaches, and the claim of another entry would take the write.
         if len(entries) == 1 and _entry_count(st) == 1:
             (spellings,) = entries.values()
             if len(spellings) == 1:
@@ -286,7 +286,10 @@ def _dir_id(path: Path) -> tuple[int, int] | None:
 
 
 def _entry_count(st: os.stat_result) -> int:
-    """How many directory entries the file ``st`` describes has (its link count)."""
+    """How many directory entries the file ``st`` describes has (its link count).
+
+    A function of its own so the tests, which stand a hard link in for a short name or
+    a case variant, can leave that link out of the count."""
     return st.st_nlink
 
 
