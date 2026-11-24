@@ -17,8 +17,15 @@
 
 ## 2. Open names (breaking)
 
+- [ ] 2.0 Usage audit, written into the pull request: every use of enum iteration, enum
+  attributes, the `Literal` aliases and persisted values in `src/`, `tests/`, `docs/`
+  and the CLI; which names get a deprecation window under DR-12a (the stable ones) and
+  which go at once (the experimental ones)
 - [ ] 2.1 `ContainerFormat`, `StreamFormat`, `CompressionAlgorithm`, `OptionalLibrary`
-  as open string types with core's constants; construction refuses an unknown name
+  as open string types with core's constants; construction checks spelling only and
+  touches no registry; membership is checked when a call resolves the name, before I/O
+- [ ] 2.1a Tests: a known name whose package is missing, a typo at resolution, and a
+  value built from a stored string before any discovery
 - [ ] 2.2 Remove `PluginContainer`, `PluginStream` and the `Literal` spelling lists
 - [ ] 2.3 `FormatInfo.provider` replaces `from_plugin`; `FormatPolicy(plugins=False)`
   means the `archivey` distribution only
@@ -46,7 +53,12 @@
 - [ ] 3.8 CI: build the wheel, install it beside a core wheel in a fresh environment,
   run the public-imports test and the pilot checks (discovery, plain and compressed
   CPIO, limits, cleanup); wheel, editable and zipped installs
-- [ ] 3.9 `archivey.formats.API_VERSION`; the conformance recipe
+- [ ] 3.9 `archivey.formats.API_VERSION` with the acceptance rule of design.md §5,
+  checked on the manifest before import; an incompatible plugin reported apart from a
+  missing package; an older and a newer plugin tried against two host versions
+- [ ] 3.9a The conformance recipe
+- [ ] 3.9b Timing: cold import and first successful operation, on a core-only, a
+  recommended and a crowded environment
 - [ ] 3.10 A session that did not work on the migration writes the guide's indexed
   example from the guide alone; its unchanged wheel is tried against the next minor
 - [ ] 3.11 Spec deltas: `format-manifest`, `format-plugins`, `packaging-and-extras`

@@ -142,11 +142,12 @@ decoder = "archivey_disk_images.lzfse:LzfseCodec"
 
 ### 2. Names
 
-A name is a short lowercase string, and the registry is what makes a string valid.
+A name is a short lowercase string. A registry decides what a name means when an
+operation uses it.
 
 ```python
 ContainerFormat.ZIP          # a constant, for what core ships
-ContainerFormat("dmg")       # any registered or known name
+ContainerFormat("dmg")       # any well-formed name
 ArchiveFormat("dmg")         # stream defaults to uncompressed
 fmt.container == "dmg"       # True, as today
 
@@ -167,8 +168,15 @@ Rules:
 - **One owner.** The registry refuses a second registration of a name, an extension or
   an exact signature and reports the refused provider in `format_availability()`. It
   never switches providers silently.
-- **Unknown names fail early.** `ArchiveFormat("dgm")` raises `ArchiveyUsageError` when
-  built. A name that is known and not installed builds, and fails at open with the hint.
+- **A name is a value; a registry is asked when an operation resolves it.** Building
+  `ContainerFormat("dmg")` or `ArchiveFormat("outside-format")` checks the spelling
+  only (lowercase letters, digits, `.`, `_`, `-`), touches no registry and starts no
+  discovery. So a name read from a config file loads on a machine without the plugin,
+  and building a value never depends on what is installed or on which call ran first.
+  Membership is checked when a call resolves the name against its effective registry
+  and policy, before any I/O: `open_archive(path, format="dgm")` raises
+  `ArchiveyUsageError` for a name nobody knows, and `PackageNotInstalledError` with the
+  hint for a name that is known and not installed. Core's named constants stay.
 - **Provenance is data.** `FormatInfo.provider` is the distribution name: `"archivey"`
   for core. `FormatPolicy(plugins=False)` keeps its meaning: only code shipped in the
   `archivey` distribution runs.
@@ -218,9 +226,9 @@ Guardrails:
   It is a default for the process. A caller's policy works without it.
 - **Visible.** `archivey --version`, `format_availability()` and `BackendUse` name the
   provider of each format and decoder.
-- **A bad manifest does not break core.** A file that does not parse, or one written
-  for another API major version, is skipped and reported as unavailable with the
-  reason.
+- **A bad manifest does not break core.** A file that does not parse is skipped and
+  reported with the reason. One the host's API version does not accept is reported as
+  incompatible (§5).
 
 Rejected: a manifest as a Python module that the entry point loads. Importing it runs
 the package's `__init__` before any policy is known, so `plugins=False` could not keep
@@ -323,9 +331,24 @@ and with it the cases a plugin's tests would have to cover: a pass beside random
 access, two passes at once, a close that waits for other threads. Rule 3 is what
 `archivey.fsspec` needs. The rules are the same for every format.
 
-**Version.** `archivey.formats.API_VERSION` is a pair. A manifest states the version it
-was written for. Until the API is declared stable it may change in a minor release,
-never in a patch. Our packages depend on one minor of core (`archivey>=0.7,<0.8`).
+**Version.** `archivey.formats.API_VERSION` is a pair, `(major, minor)`, with its own
+numbering, apart from archivey's version.
+
+- Within one major the API only grows. A minor adds names and never removes or changes
+  one. Any breaking change, during the experimental period too, raises the major.
+- A manifest states the API it needs: `api = "1.2"` means major 1 and at least minor 2.
+  A host accepts it when the majors are equal and the host's minor is not lower.
+- The check runs on the manifest, before any code of the package is imported.
+- A refused plugin is reported as **incompatible**, with both versions, in
+  `format_availability()` and in the error on open. This is a different outcome from a
+  missing package, with a different message.
+- Tests: an older and a newer plugin against the first two host releases, and an
+  unsupported pair.
+
+Until the API is declared stable, a host minor release may raise the API major. Our
+packages depend on one minor of core (`archivey>=0.7,<0.8`) and are released with it,
+so they never meet that case; the tests above use a plugin outside that lockstep so
+the rule is exercised and not hidden by it.
 
 ### 6. Codecs
 
