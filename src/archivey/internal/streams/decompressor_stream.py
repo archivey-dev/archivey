@@ -1825,7 +1825,14 @@ class DecompressorStream(ReadOnlyIOStream):
             return call()
         except ResumeReachedStreamEnd:
             raise
-        except Exception as exc:
+        except BaseException as exc:
+            if not isinstance(exc, Exception):
+                # A ``KeyboardInterrupt`` from ``on_source_read`` on a read the
+                # decoder made itself (Brotli's replay) is kept like any other stop;
+                # an interrupt from elsewhere just raises.
+                if from_callers_source(exc):
+                    self._spent = KeptError.of(exc)
+                raise
             if self._drop_index_at_failed_point(exc):
                 return None
             self._spent = KeptError.of(exc)
@@ -2074,6 +2081,9 @@ class DecompressorStream(ReadOnlyIOStream):
 
     @override
     def readall(self) -> bytes:
+        # A kept stop raises before ``_settle``, as in ``_read``.
+        if self._spent is not None and self._spent.source_callback:
+            self._raise_spent()
         self._settle()
         if self._spent is not None:
             # The caller asked for the whole stream, which cannot be had: raise now,
@@ -2144,6 +2154,11 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def _read(self, need: int, n: int) -> bytes:
         """At least ``need`` bytes, or fewer only at the end, and at most ``n``."""
+        # A kept stop from ``on_source_read`` raises before ``_settle``: a seek target
+        # waiting there would otherwise seek the source and restart the decoder on
+        # every retry, only to raise the same stop. Inlined: every read pays for it.
+        if self._spent is not None and self._spent.source_callback:
+            self._raise_spent()
         self._settle()
         if self._spent is not None and (not self._buffer or self._spent.callers_source):
             # A decoder error waits behind the bytes buffered before it; the caller's

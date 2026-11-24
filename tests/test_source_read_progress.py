@@ -10,7 +10,7 @@ import threading
 import zipfile
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, cast
 
 import pytest
 
@@ -549,8 +549,6 @@ def test_a_stop_during_the_re_decode_of_a_damaged_member_is_not_lost(
                 pass
             stream.read(size)
 
-    from archivey import CorruptionError
-
     recorder = _Recorder()
     if call == "extract_all":
         go(recorder)
@@ -719,6 +717,7 @@ def test_a_read_after_a_stop_does_not_touch_the_caller_s_source() -> None:
     class Recording(io.BytesIO):
         stopped = False
         after = 0
+        seeks_after = 0
 
         def read(self, n: int | None = -1, /) -> bytes:
             self.after += self.stopped
@@ -727,6 +726,10 @@ def test_a_read_after_a_stop_does_not_touch_the_caller_s_source() -> None:
         def readinto(self, b: Any, /) -> int:
             self.after += self.stopped
             return super().readinto(b)
+
+        def seek(self, offset: int, whence: int = 0, /) -> int:
+            self.seeks_after += self.stopped
+            return super().seek(offset, whence)
 
     source = Recording(data)
     calls = 0
@@ -748,13 +751,108 @@ def test_a_read_after_a_stop_does_not_touch_the_caller_s_source() -> None:
         for size in (1 << 20, 1, -1):
             with pytest.raises(_StopValue):
                 stream.read(size)
-        # A seek restarts the decoder, which then reads the source again.
-        stream.seek(0)
-        for size in (1 << 20, 1, -1):
-            with pytest.raises(_StopValue):
-                stream.read(size)
-    assert source.stopped
-    assert source.after == 0
+        # A seek restarts the decoder, which then reads the source again; a retry
+        # raises before that restart, so the source is not even sought.
+        for target in (0, 3 << 20):
+            stream.seek(target)
+            for size in (1 << 20, 1, 1, -1):
+                with pytest.raises(_StopValue):
+                    stream.read(size)
+        assert source.stopped
+        assert source.after == 0
+        assert source.seeks_after == 0
+
+
+def test_a_read_ahead_buffer_keeps_only_a_callback_stop_across_a_seek() -> None:
+    from archivey.internal.streams.callers_source import (
+        mark_callers_source,
+        mark_source_callback,
+    )
+    from archivey.internal.streams.streamtools.readahead import ReadAheadStream
+
+    class Failing(io.BytesIO):
+        fail_with: BaseException | None = None
+
+        def read(self, n: int | None = -1, /) -> bytes:
+            exc, self.fail_with = self.fail_with, None
+            if exc is not None:
+                raise exc
+            return super().read(n)
+
+    # The caller's source failing clears on a seek; the next fill tries again.
+    inner = Failing(b"abcdefgh" * 1024)
+    failure = OSError("transient")
+    mark_callers_source(failure)
+    inner.fail_with = failure
+    stream = ReadAheadStream(cast("BinaryIO", inner), 64)
+    with pytest.raises(OSError, match="transient"):
+        stream.read(8)
+    stream.seek(0)
+    assert stream.read(8) == b"abcdefgh"
+
+    # A stop from ``on_source_read`` holds across the seek.
+    inner = Failing(b"abcdefgh" * 1024)
+    stop = _StopValue("stop")
+    mark_source_callback(stop)
+    inner.fail_with = stop
+    stream = ReadAheadStream(cast("BinaryIO", inner), 64)
+    with pytest.raises(_StopValue):
+        stream.read(8)
+    stream.seek(0)
+    with pytest.raises(_StopValue):
+        stream.read(8)
+
+
+def test_every_source_read_and_peek_raises_a_recorded_stop() -> None:
+    from archivey.internal.source import ArchiveSource
+
+    source = ArchiveSource.for_stream(cast("BinaryIO", _Pipe(b"abcdefghij" * 100)))
+    calls = 0
+
+    def stop(progress: SourceProgress) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise _StopValue("stop")
+
+    source.report_reads(stop, step=0)
+    assert source.peek(10) == b"abcdefghij"
+    with pytest.raises(_StopValue):
+        source.peek(20)
+    # The prefix already holds these bytes, and an empty read asks for none: each
+    # still raises the stop.
+    for call in (
+        lambda: source.peek(5),
+        lambda: source.peek_arrived(5),
+        lambda: source.read(0),
+        lambda: source.read_arrived(0),
+        lambda: source.read(5),
+    ):
+        with pytest.raises(_StopValue):
+            call()
+
+
+@requires("brotli")
+def test_an_interrupt_on_a_read_the_decoder_makes_is_kept(tmp_path: Path) -> None:
+    # Brotli reads the source itself, inside a decoder call, to tell bytes after its
+    # stream from damage. A ``KeyboardInterrupt`` stop there must be kept, not leave
+    # a broken decoder for the next read.
+    import random
+
+    import brotli
+
+    payload = random.Random(0).randbytes(1 << 18) + b"a" * (1 << 20)
+    path = tmp_path / "trailing.br"
+    path.write_bytes(brotli.compress(payload, quality=1) + b"not brotli" * 20)
+
+    @contextlib.contextmanager
+    def seekable_reads(callback: Any) -> Any:
+        cfg = ArchiveyConfig(on_source_read=callback, source_read_step=0)
+        with open_stream(path, seekable=True, config=cfg) as stream:
+            yield stream.read
+
+    sizes = [1 << 16] * 40 + [1, 1]
+    assert _check_stop_holds(seekable_reads, sizes, KeyboardInterrupt)
 
 
 def test_a_stop_holds_after_a_seek_to_a_seek_point(tmp_path: Path) -> None:

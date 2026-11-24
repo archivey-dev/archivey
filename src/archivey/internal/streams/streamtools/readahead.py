@@ -84,8 +84,9 @@ class ReadAheadStream(DelegatingStream):
         self._held: Exception | None = None
         # An exception from the caller's source or ``on_source_read`` (a stop) that a
         # fill raised. It is raised at once, never held behind buffered bytes, and
-        # every later read raises it again, also one the buffer could answer. Kept
-        # across a seek: the stop holds for the whole file.
+        # every later read raises it again, also one the buffer could answer. Only a
+        # stop from ``on_source_read`` survives a seek: it holds for the whole file.
+        # The caller's source failing clears there, and the next fill tries again.
         self._stop: KeptError | None = None
         self._buffer_size = buffer_size
         self._rewind_oversize = rewind_oversize
@@ -201,6 +202,8 @@ class ReadAheadStream(DelegatingStream):
         self._buffer = b""
         self._offset = 0
         self._held = None
+        if self._stop is not None and not self._stop.source_callback:
+            self._stop = None
         return position
 
     @override

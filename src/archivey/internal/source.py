@@ -935,6 +935,8 @@ class ArchiveSource(ReadOnlyIOStream):
                 self._progress.read(self._pos, len(data))
             return data
         if n == 0:
+            # As on the fast path: a stop holds for an empty read too.
+            self._raise_if_stopped()
             return b""
         if self._replay:
             head = self._take_replayed(n)
@@ -1082,13 +1084,14 @@ class ArchiveSource(ReadOnlyIOStream):
         replay = self._replay
         if replay is None:
             raise io.UnsupportedOperation("peek: the source is seekable; rewind it")
+        # A stop holds for bytes the prefix already holds, as in ``_take_replayed``.
+        self._raise_if_stopped()
         missing = n - len(replay)
         if missing > 0:
             # One full-count read: a short return is EOF. ``None`` is a stall, so
             # it raises instead of leaving this prefix short or empty. Not bounded
             # by the step — ``n`` is detection's own window, never a number read
             # out of the archive.
-            self._raise_if_stopped()
             chunk = self._full_count_reader().read(missing)
             replay.extend(chunk)
             if self._progress is not None:
@@ -1117,11 +1120,11 @@ class ArchiveSource(ReadOnlyIOStream):
             raise io.UnsupportedOperation(
                 "read_arrived: the source is seekable; read() is already complete"
             )
+        self._raise_if_stopped()
         if n == 0:
             return b""
         if replay:
             return self._take_replayed(n)
-        self._raise_if_stopped()
         data = read_arrived(self._stream(), n)
         self._pos += len(data)
         if self._progress is not None:
@@ -1158,9 +1161,9 @@ class ArchiveSource(ReadOnlyIOStream):
         replay = self._replay
         if replay is None:
             raise io.UnsupportedOperation("peek: the source is seekable; rewind it")
+        self._raise_if_stopped()
         missing = n - len(replay)
         if missing > 0:
-            self._raise_if_stopped()
             chunk = read_arrived(self._stream(), missing)
             if not chunk:
                 self._peek_met_end = True
