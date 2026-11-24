@@ -348,10 +348,10 @@ would deadlock on it. So physical cleanup is deferred reader-wide:
   before it takes the lock, instead of deadlocking. The deferred cleanup above is for
   `reader.close()` only. The rule is the same for every member stream, built-in or
   plugin (maintainer, 2026-11-24): where a reader's streams share a handle lock, the
-  close takes it, so closing one stream waits for at most one read call of a sibling,
-  never for that sibling to finish, and changes nothing else. Streams that no
-  `LockedStream` wraps (ZIP, 7z, RAR, and TAR outside streaming) close at once, as
-  today. Plugins keep "you need no lock of your own"; CAB's own `_lock` around its
+  close takes it, so closing one stream waits only for the sibling read calls holding or
+  queued on that lock, never for a sibling to finish, and changes nothing else. Streams
+  that no `LockedStream` wraps (ZIP, 7z, RAR, and TAR outside streaming) close at once,
+  as today. Plugins keep "you need no lock of your own"; CAB's own `_lock` around its
   parked decoder (`cab_reader.py:660-673`) is then redundant, and the implementation
   removes it if nothing else needs it.
 - No plugin code and no cleanup step runs under the lifecycle lock.
@@ -361,8 +361,11 @@ snapshot or takes a lease from its first backend access through its final cleanu
 
 - Snapshots, no lease: `format`, `format_info`, `backends_used`, `diagnostics`,
   `member in reader`, the closed state, member objects and published reports; `cost`
-  becomes one too, computed once at open (every backend and `_FormatAdapterBase._cost()`
-  build it from fields fixed at open). On a stream: `name`, `size`, `mode`,
+  becomes one too: it is derived from the published `ArchiveInfo` snapshot (below), so
+  `reader.cost` and `reader.info.cost` always agree. A live `info` that finds new facts
+  (a plugin learning `is_solid` while listing) republishes both; `cost` itself never
+  enters the backend. Built-in backends build it from fields fixed at open, so for them
+  it never changes. On a stream: `name`, `size`, `mode`,
   `diagnostics`.
 - Counted, with no worker token: `info`. Today it checks the lifecycle and then calls
   the backend with no token (a plugin's `archive_info()` takes the handle lock,
@@ -389,11 +392,15 @@ snapshot or takes a lease from its first backend access through its final cleanu
 Suspended-pass wind-down has one owner. A `stream_members()` pass suspended at a yield
 can be wound down by three paths: its yielded stream's final close, the iterator's
 resume or `close()` (its `finally`, `base_reader.py:5473`), and the reader's teardown.
-One claim flag, taken under the state lock, decides which path runs it; the others
-return. The claimant runs, under the pass's wind-down lease and in order, the yielded
-stream's inner close, the backend iterator close, then the source teardown if the
-reader is closed and it is last out. Each step is attempted once, even if an earlier
-one fails.
+Closing the yielded stream on its own (`with stream:` in the loop body) does not end the
+pass: the next iterator step goes on to the next member, as today
+(`base_reader.py:5416`). The stream's final close takes the claim only when the pass is
+already shutting down (the reader or the iterator was closed) and that stream's running
+call was what held the wind-down back. One claim flag, taken under the state lock,
+decides which path runs it; the others return. The claimant runs, under the pass's
+wind-down lease and in order, the yielded stream's inner close, the backend iterator
+close, then the source teardown if the reader is closed and it is last out. Each step is
+attempted once, even if an earlier one fails.
 
 Interrupted cleanup keeps today's recovery (`reader-concurrency` spec, the row
 "interrupted inside its wind-down step"). The claim records each step as pending or
@@ -413,10 +420,12 @@ it first thing (`reader_state.py:781-787`), because a close let through would te
 walk down under the call that ran the callback (the peek test's docstring: "an
 AssertionError in the next pull"). Under this rule that hazard is gone: the call that
 ran the callback is still running, so it holds teardown, and it stops at the checkpoint
-after the callback returns. A member stream closed from inside its own `read()` (a
-callback during a decode) is marked closed at once and torn down when that read
-returns. So the refusal goes, and `close()` from a callback is the supported way to
-cancel the call. The `archive-reading` rule that a callback must not start another
+after the callback returns. A member stream's own `close()` from a callback inside an
+active read of that same stream raises `ArchiveyUsageError`, on every stream, with or
+without a handle lock, as a close from inside a sibling's read does: a synchronous close
+there would run beside the read or re-enter its lock. To stop from a callback, close the
+reader. So the reader's refusal goes, and `close()` from a callback is the supported way
+to cancel the call. The `archive-reading` rule that a callback must not start another
 operation on its reader keeps holding for every call but `close()`.
 
 Teardown on another thread is not new: the lease count in `reader_state.py` already
@@ -570,9 +579,9 @@ In `internal/base_reader.py`:
   report and the walk outcome published in one short critical section; a pass keeps the
   reference it was admitted with (§2). `extract_all()` takes its totals inside its pass
   through an owner-only helper, and `verify_all()` holds one outer pass lease over its
-  stream pass, spanning passes and report (§2). `cost` computed once at open; `info`
-  counted without a worker token; `_index_report` beside `_materialized`;
-  `_internal_member_opens()` suspended across user callbacks (§2, §3).
+  stream pass, spanning passes and report (§2). `cost` derived from the published
+  `ArchiveInfo` snapshot; `info` counted without a worker token; `_index_report` beside
+  `_materialized`; `_internal_member_opens()` suspended across user callbacks (§2, §3).
 - `_drain_walk`'s sleep between batches: it exists so a pass on another thread can take
   the walk lock. With no pass beside a listing, it goes, if no other waiter remains;
   the implementation checks.
@@ -680,8 +689,15 @@ Measured in the PR: lines removed from `src/` and `tests/`.
 - New, §3, stream close: under the flag, stream B's `close()` while stream A's read is
   blocked waits for that read and then closes B before it returns, raising B's own close
   failure; a `reader.close()` during that wait returns at once and teardown follows B's
-  close. A stream `close()` from a callback inside a sibling's read raises
-  `ArchiveyUsageError` and does not deadlock.
+    close. A stream `close()` from a callback inside a sibling's read, and one from a
+  callback inside the same stream's read, each raise `ArchiveyUsageError` and do not
+  deadlock, on a plugin stream and on a ZIP stream.
+- New, §3, pass survives a member close: `stream_members()` over three members, the
+  first stream closed explicitly (and by `with`) in the loop body; the second and third
+  members are yielded and read in full, and the pass winds down once at its end.
+- New, §2, `cost` follows `info`: an indexed plugin whose `archive_info()` reports
+  `is_solid=True` only after its first listing; after the listing `reader.cost` and
+  `reader.info.cost` agree.
 - New, §3, `info` from an `on_source_read` callback that runs inside a plugin's
   `open_member()` (holding the handle lock) returns the published snapshot without
   deadlocking; `info` in a loop body stays live.

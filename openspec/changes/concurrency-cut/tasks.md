@@ -17,14 +17,14 @@
   explicit stream `close()` kept synchronous under a reader lease, refused from a
   callback inside a sibling's read; `info` from a callback served from the published
   snapshot; the pass lease taken before startup, the report pinned before the first
-  member, list-only passes included; `cost` computed once at open, `info` counted
-  without a worker token; counted stream calls including `nearest_resume_offset()`,
-  `verified`, `verifiable` and `verify()`; `_internal_member_opens()` suspended across
-  user callbacks; `_index_report` kept apart from `_materialized`; failure precedence;
-  the checkpoints of §3 (`read()` in checked chunks, `verify()`'s loop, spanning passes,
-  skip loops, before success); `acquire_peek` removed; a data pass refused when it
-  starts beside a live `open()` stream, in both modes, and `admit_pass_streams` removed
-  (design.md §3)
+  member, list-only passes included; `cost` derived from the published `ArchiveInfo`
+  snapshot, `info` counted without a worker token; counted stream calls including
+  `nearest_resume_offset()`, `verified`, `verifiable` and `verify()`;
+  `_internal_member_opens()` suspended across user callbacks; `_index_report` kept apart
+  from `_materialized`; failure precedence; the checkpoints of §3 (`read()` in checked
+  chunks, `verify()`'s loop, spanning passes, skip loops, before success);
+  `acquire_peek` removed; a data pass refused when it starts beside a live `open()`
+  stream, in both modes, and `admit_pass_streams` removed (design.md §3)
 - [ ] 2.2 `members_report_if_available()` inside a pass: the report published when the
   pass started, or `None`; no token, no reads; outside a pass a worker token. Every
   streaming pass over an upfront-list reader drains at its start (`_walk_ahead()` in
