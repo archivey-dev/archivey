@@ -39,9 +39,8 @@ change.
   thread or a stream from `open()` is still open, in both modes (`extract_all()` beside
   an open stream raises on a default reader too, which it does not today).
 - **Breaking.** `close()` never waits for a pass: while a pass executes on another
-  thread, it raises `ArchiveyUsageError` and the reader stays open. Whether it still
-  waits for lookup calls in flight is the maintainer's pick (design.md §3); the plan
-  recommends it does.
+  thread, it raises `ArchiveyUsageError` and the reader stays open. Under the flag it
+  still waits for lookup calls in flight (design.md §3; maintainer, 2026-11-24).
 - **Kept.** Any number of member streams from `open()` at once, each used by one thread
   at a time. `open()`, `read()`, `get()`, `members()`, `members_report()`,
   `members_report_if_available()` and iteration from several threads at once; the first
@@ -75,9 +74,9 @@ change.
 
 Checked with a grep of `openspec/specs/` for `CONCURRENT` and `concurrent_operations`
 (2026-11-24): `archive-data-model`, `error-handling`, `format-directory`, `format-iso`,
-`packaging-and-extras` and `testing-contract` mention the flag only for the second-stream
-refusal, thread-safe streams, or a pointer to `reader-concurrency`, none of which
-changes.
+`packaging-and-extras` and `testing-contract` mention the flag only for the
+second-stream refusal, thread-safe streams, or a pointer to `reader-concurrency`, none
+of which changes.
 
 No spec deltas in this change (`skip_specs: true`): the implementation PR edits the
 specs above directly.

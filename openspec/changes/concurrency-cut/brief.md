@@ -25,9 +25,9 @@ at once, and `open()` from several threads.
   `verify_all()` behave the same with or without the flag: a pass has the reader to
   itself, and a call beside it raises `ArchiveyUsageError`.
 - `close()` never waits for a pass: beside one executing on another thread it raises
-  and the reader stays open. Whether it still waits for lookup calls in flight is open
-  (design.md §3); recommended: it does, so a `with` block around a thread pool closes
-  cleanly when its body raises.
+  and the reader stays open. Under the flag it still waits for lookup calls in flight
+  (maintainer, 2026-11-24), so a `with` block around a thread pool closes cleanly when
+  its body raises.
 - Keeps the flag's name, `concurrent_operations` (maintainer, 2026-11-24).
 - No format gating: the rules are the same for every format.
 

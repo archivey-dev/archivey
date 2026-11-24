@@ -2,13 +2,15 @@
 
 - [x] 1.1 The flag keeps its name (design.md §4; maintainer, 2026-11-24)
 - [x] 1.2 Rule 2 of the plugin contract agreed (design.md §5; maintainer, 2026-11-24)
-- [ ] 1.3 The maintainer picks what `close()` waits for (design.md §3: A or B)
+- [x] 1.3 `close()` waits for lookup calls, never for a pass (design.md §3; maintainer,
+  2026-11-24)
 
 ## 2. The cut (one implementation PR, deep tier)
 
 - [ ] 2.1 `ReaderState`: one pass at a time in both modes; no side passes; `close()`
-  never waits for a pass, and for workers as §3 decides; a data pass refused when it
-  starts beside a live `open()` stream, in both modes, and `admit_pass_streams` removed
+  never waits for a pass, and for workers in flight under the flag (design.md §3); a
+  data pass refused when it starts beside a live `open()` stream, in both modes, and
+  `admit_pass_streams` removed
 - [ ] 2.2 `members_report_if_available()` takes the peek token in both modes
 - [ ] 2.3 Remove what only the overlap needed (design.md §6): `_drain_walk`'s sleep, the
   mid-stream walk hand-off (`MemberDataView` and the at-open `reopen(0)` fallback stay)
@@ -22,7 +24,7 @@
 
 - [ ] 3.1 Pass refusals on a `CONCURRENT` reader, per format family (design.md §7)
 - [ ] 3.2 `close()` beside a pass executing on another thread raises and the reader
-  stays open; beside a worker in flight, as §3 decides; a held stream makes
+  stays open; beside a worker in flight it waits; a held stream makes
   `extract_all()` raise before the destination exists, and a directory-only
   `stream_members()` raise at its first `next()`
 - [ ] 3.3 `archivey.fsspec`: threads read several member streams at once, then the file
