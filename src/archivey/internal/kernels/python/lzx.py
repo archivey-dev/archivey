@@ -87,39 +87,33 @@ class Decompressor:
 
     def set_output_size(self, output_size: int) -> None:
         """Give the declared output size once it is known, before the last frame
-        ends."""
+        ends. Only between frames: before the first, or once a frame's output is
+        decoded. While a frame waits for input, or after a decode error, it raises
+        ``ValueError``."""
         from archivey.internal.streams.codecs.lzx_decoder import (
             FRAME_SIZE,
         )
 
+        if self._failed is not None:
+            raise ValueError("set_output_size() after a decode error")
         d = self._d
+        if d.frame_in_progress() is not None:
+            raise ValueError("set_output_size() while a frame waits for input")
         decoded = d.decoded
         if output_size < decoded:
             raise ValueError(
                 f"an output size of {output_size}, below the {decoded} bytes already "
                 "decoded"
             )
-        progress = d.frame_in_progress()
         # Only the last frame is short: a stream that ended with one has no more.
-        if output_size > decoded and decoded % FRAME_SIZE and progress is None:
+        if output_size > decoded and decoded % FRAME_SIZE:
             raise ValueError(
                 f"an output size of {output_size}, past the end of a stream whose last "
                 f"frame ended short at {decoded} bytes"
             )
-        if progress is not None:
-            size, done = progress
-            frame = min(output_size - decoded, FRAME_SIZE)
-            if frame == done and self._failed is not None:
-                # The output ends where the frame got to: the error was met in input
-                # after the stream.
-                self._failed = None
-            if frame != size and not d.resize_frame(frame):
-                raise ValueError(
-                    f"an output size of {output_size}, below the {decoded + done} "
-                    "bytes already decoded"
-                )
         self._output_size = output_size
-        # The frame that waited for input may now be shorter: try it again.
+        # A frame that ran out of input before it read anything may now be shorter,
+        # or not wanted: try it again.
         self._starved = False
 
     def decompress(

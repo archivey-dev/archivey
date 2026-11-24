@@ -69,24 +69,16 @@ DOS-era ZIP methods and ARJ method 4.
 
 ```python
 archivey_codecs.crc16_arc(data, value=0) -> int     # function, like zlib.crc32
-c = archivey_codecs.Crc16Arc(b"optional initial data")  # type, like hashlib.sha256
-c.update(chunk); c.digest(); c.hexdigest(); c.copy()
-c.name, c.digest_size, c.block_size                 # "crc16_arc", 2, 1
 ```
 
-- Every hash is a type, named in CamelCase (`Crc16Arc`), with `update`, `digest`,
-  `hexdigest`, `copy`, `name`, `digest_size`, `block_size`, and a constructor taking
-  optional initial data. That type is the name to use in annotations.
-- A CRC also has a function in snake case (`crc16_arc`), the `zlib.crc32` form. A PyO3
-  function cannot carry attributes, so the two are separate names.
-- CRC names follow the CRC catalogue (`crc16_arc`), since "CRC-16" names over twenty
-  algorithms.
-- A CRC's `digest()` is big-endian (question 6), matching the `crc32c` package and
-  archivey's `MemberDigest`.
-- `update()` releases the GIL above a threshold (64 KiB), as `hashlib` does, but only
+- A CRC is a function in snake case (`crc16_arc`), the `zlib.crc32` form, named after
+  its CRC catalogue entry ("CRC-16" names over twenty algorithms).
+- The function releases the GIL above a threshold (64 KiB), as `hashlib` does, but only
   for immutable `bytes` input. A `bytearray` or writable `memoryview` is copied first,
   or hashed with the GIL held, so no other thread can write the buffer while Rust
   reads it. The same rule applies to every `decompress()` and `decrypt()`.
+- The `hashlib`-shaped `Crc16Arc` type of the first design was cut before the first
+  release (2026-11-24, D9): archivey calls only the function.
 
 ## D3. Decoder API
 
@@ -102,14 +94,14 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
 
 | Kernel | `KERNELS` key | Python name | Constructor or call |
 | --- | --- | --- | --- |
-| LZX | `"lzx"` | `lzx.Decompressor` | `(window_bits, *, output_size=None)`; `set_output_size(n)`; `reset(output_size=None)` at a CAB folder start |
+| LZX | `"lzx"` | `lzx.Decompressor` | `(window_bits, *, output_size=None)`; `set_output_size(n)` between frames |
 | Unix `compress` | `"lzw"` | `lzw.Decompressor` | `(*, max_width=None, block_mode=None, nine_bit_widens=None)`; `flush(max_length=-1)`, `truncation`; `header_params`, `clear_offsets` |
 | LZO1X | `"lzo1x"` | `lzo1x.decompress` | `(block, *, out_size)` or `(block, *, max_size)` |
 | ZipCrypto | `"zipcrypto"` | `zipcrypto.Decryptor` | `(password: bytes)`; `decrypt(data) -> bytes` |
 | BCJ2 | `"bcj2"` | `bcj2.Decompressor` | `(main, call, jump, rc, *, out_size)`, four readable binary streams |
 | ARM64 filter | `"arm64"` | `filters.Arm64Decoder` | `(start_offset=0)`; `decode(data) -> bytes`, `flush()` |
 | RISC-V filter | `"riscv"` | `filters.RiscvDecoder` | `(start_offset=0)`; `decode(data) -> bytes`, `flush()` |
-| CRC-16/ARC | `"crc16_arc"` | `crc16_arc`, `Crc16Arc` | `(data, value=0) -> int`; `Crc16Arc(data=b"")` |
+| CRC-16/ARC | `"crc16_arc"` | `crc16_arc` | `(data, value=0) -> int` |
 | LZFSE | `"lzfse"` | `lzfse.decompress` | `(data, *, out_size)` or `(data, *, max_size)` |
 | LZVN (raw, decmpfs) | `"lzvn"` | `lzvn.decompress` | `(data, *, out_size)` or `(data, *, max_size)` |
 
@@ -120,11 +112,10 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
   length sets where the input realigns and where the Intel E8 scan stops, so the kernel
   must know it whatever `max_length` the caller asks for. The caller gives the folder's
   declared output size with `output_size=` or, when the CAB reader learns it later,
-  with `set_output_size(n)` before the last frame ends. A late size that ends the output
-  where a frame or a block header started gives back what the decoder read from there,
-  and drops an error met in it. It cannot give that input back once the decoder has
-  dropped it from its buffer, or when the decoder was restored from a state saved after
-  it read it: the input then stays consumed and the error stays. The kernel decodes one
+  with `set_output_size(n)` before the last frame ends. A late size is taken only
+  between frames: while a frame waits for input, or after a decode error, it raises
+  `ValueError`. The CAB reader sets it before each frame, to that frame's end, while
+  the folder's block table is incomplete. The kernel decodes one
   whole frame into an internal buffer of at most 32 KiB and returns it in `max_length`
   slices. `eof` turns true when `total_out`, the bytes returned so far, reaches the
   output size. Without an output size, every frame is 32 KiB, and `eof` turns true at
@@ -282,10 +273,10 @@ the two. `src/archivey/internal/kernels/` holds it:
   `lzw.Decompressor`, `lzx.Decompressor`, `bcj2.Decompressor`, and `crc16_arc`). Each
   has the subset of the package's API that archivey's call sites use, with the same
   names, arguments, attributes and errors (archivey's, as the wrappers raise them).
-  They leave out `Crc16Arc`, the state methods (`getstate`, `from_state`, and `copy`
-  except ZipCrypto's), and LZX's `reset()`, `window_bits`, `unused_data` and
-  `total_in`: the Python decoder's bit buffer reads its input ahead of the output, and
-  no call site needs any of them. The package's stubs give its whole API.
+  They leave out the state methods (`getstate`, `from_state`, and `copy` except
+  ZipCrypto's), and LZX's `unused_data` and `total_in`: the Python decoder's bit
+  buffer reads its input ahead of the output, and no call site needs any of them.
+  The package's stubs give its whole API.
 - `kernels/rust.py`: the package's objects wrapped to raise archivey's errors and latch
   panics, with the same API.
 - `kernels/__init__.py`: the switch. `kernels.lzx(excluded, isolated=...)` (and one
@@ -405,6 +396,26 @@ arm64 and x86_64, Windows x86_64 and arm64. About 300 KB each.
 5. `scripts/release.py` support only if releases become frequent.
 
 Release when a kernel is added or its revision changes, or for a security fix.
+
+## D9. What the API holds
+
+Cut 2026-11-24, before the first release: the package's API holds what archivey calls,
+plus what a planned archivey feature needs. Seek points are the one planned feature, so
+`copy()`, `getstate()`, `from_state()`, `total_in` and `total_out` stay on every
+streaming object although no call site uses them yet. A name with neither reason is
+not added, and parity tests cover only what the API holds.
+
+The cut removed the `Crc16Arc` hash type (D2), LZX's `reset()` and `window_bits`, and
+LZX's late `set_output_size()` inside a frame or after an error, with the rewind it
+needed: the decoder kept a copy of itself at every frame start and block header to go
+back to. The CAB reader gives a late size only between frames.
+
+An int argument outside its parameter's range raises `ValueError` with a fixed
+message that names the parameter and the range (LZX's `window_bits` raises
+`CorruptDataError`, as for any window it does not know); a `max_length` past 64 bits
+means no limit. PyO3's own `OverflowError` text differs by platform. A non-int raises
+PyO3's `TypeError`. The Python twins need no matching checks: archivey's call sites
+pass only sizes they read and checked.
 
 ## Risks
 

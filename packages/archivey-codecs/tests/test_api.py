@@ -18,7 +18,6 @@ from archivey_codecs import (
     KERNELS,
     CodecError,
     CorruptDataError,
-    Crc16Arc,
     TruncatedDataError,
     UnsupportedDataError,
     bcj2,
@@ -64,19 +63,10 @@ def test_crc16_check_value() -> None:
     assert crc16_arc(b"123456789") == 0xBB3D
 
 
-def test_crc16_hash_interface() -> None:
+def test_crc16_goes_on_from_a_value() -> None:
     a, b = b"hello ", b"world" * 50_000
-    h = Crc16Arc()
-    h.update(a)
-    h.update(bytearray(b))
-    assert h.digest() == Crc16Arc(a + b).digest()
-    assert h.digest() == crc16_arc(a + b).to_bytes(2, "big")
-    assert h.hexdigest() == h.digest().hex()
-    assert (h.name, h.digest_size, h.block_size) == ("crc16_arc", 2, 1)
-    copy = h.copy()
-    copy.update(b"more")
-    assert h.digest() == Crc16Arc(a + b).digest()
     assert crc16_arc(b, crc16_arc(a)) == crc16_arc(a + b)
+    assert crc16_arc(bytearray(b), crc16_arc(a)) == crc16_arc(a + b)
     assert crc16_arc(memoryview(a)) == crc16_arc(a)
 
 
@@ -332,15 +322,31 @@ def test_lzx_max_length_slices_the_frame() -> None:
 
 
 def test_lzx_output_size_given_late() -> None:
+    """CAB's late size: given between frames, never inside one."""
     d = lzx.Decompressor(15)
     assert d.decompress(_LZX_HELLO) == b""
     assert d.needs_input
+    # The first frame started and waits for input: too late for it.
+    with pytest.raises(ValueError, match="while a frame waits for input"):
+        d.set_output_size(len(_HELLO))
+    d = lzx.Decompressor(15)
     d.set_output_size(len(_HELLO))
     assert d.output_size == len(_HELLO)
-    assert d.decompress(b"") == _HELLO
+    assert d.decompress(_LZX_HELLO) == _HELLO
     assert d.eof
     with pytest.raises(ValueError, match="below"):
         d.set_output_size(3)
+
+
+def test_lzx_output_size_after_an_error_is_refused() -> None:
+    r_regs = (1).to_bytes(4, "little") * 3
+    first = bytes.fromhex("0030a000") + r_regs + b"0123456789"
+    bad = bytes.fromhex("00e000000000")  # block type 7, after the first block
+    d = lzx.Decompressor(15)
+    with pytest.raises(archivey_codecs.CorruptDataError, match="block type 7"):
+        d.decompress(first + bad)
+    with pytest.raises(ValueError, match="after a decode error"):
+        d.set_output_size(10)
 
 
 def test_lzx_without_output_size() -> None:
@@ -375,15 +381,12 @@ def test_lzx_window_range() -> None:
         lzx.Decompressor(14)
 
 
-def test_lzx_reset_and_copy() -> None:
+def test_lzx_copy() -> None:
     d = lzx.Decompressor(15, output_size=len(_HELLO))
     assert d.decompress(_LZX_HELLO, 5) == b"hello"
     c = d.copy()
     assert d.decompress(b"") == _HELLO[5:]
     assert c.decompress(b"") == _HELLO[5:]
-    d.reset(len(_HELLO))
-    assert (d.total_in, d.total_out, d.eof) == (0, 0, False)
-    assert d.decompress(_LZX_HELLO) == _HELLO
 
 
 def test_lzx_state_resumes_from_total_in() -> None:
@@ -393,7 +396,7 @@ def test_lzx_state_resumes_from_total_in() -> None:
     assert d.decompress(_LZX_HELLO, 5) == b"hello"
     state, total_in = d.getstate(), d.total_in
     r = lzx.Decompressor.from_state(state)
-    assert (r.total_in, r.total_out, r.window_bits) == (total_in, 5, 15)
+    assert (r.total_in, r.total_out) == (total_in, 5)
     assert r.decompress(_LZX_HELLO[total_in:]) == _HELLO[5:]
     assert r.eof
 
@@ -440,45 +443,6 @@ def test_lzx_state_after_a_capped_flush() -> None:
         assert out == _HELLO, at
         assert r.unused_data == b"tail"
         assert d.flush() == _HELLO[max(at, 1) :]
-
-
-def test_lzx_state_of_a_frame_ended_by_a_late_output_size() -> None:
-    """A frame stalls after 10 bytes, and a late output size of 10 ends it there. A
-    state saved before the next call holds a frame with all its bytes decoded."""
-    r_regs = (1).to_bytes(4, "little") * 3
-    first = bytes.fromhex("0030a000") + r_regs + b"0123456789"  # 10 bytes, uncompressed
-    second = bytes.fromhex("00604001") + r_regs + b"abcdefghij"
-    data = first + second[:-5]
-    d = lzx.Decompressor(15)
-    assert d.decompress(data) == b""
-    d.set_output_size(10)
-    # The second block's header is after the stream: it is given back.
-    assert d.total_in == len(first)
-    r = lzx.Decompressor.from_state(d.getstate())
-    assert not r.needs_input
-    assert r.decompress(b"") == b"0123456789"
-    assert r.eof
-    assert d.decompress(b"") == b"0123456789"
-    assert d.eof
-    assert d.unused_data == data[len(first) :]
-    # The restored decoder holds no input: what follows `total_in` is not given.
-    assert r.unused_data == b""
-    assert d.total_in == r.total_in == len(first)
-
-
-def test_lzx_output_size_given_late_drops_an_error_after_the_stream() -> None:
-    """The block after the stream's last one is damaged: a late output size that
-    ends the stream before it drops the error, and gives that block back."""
-    r_regs = (1).to_bytes(4, "little") * 3
-    first = bytes.fromhex("0030a000") + r_regs + b"0123456789"
-    bad = bytes.fromhex("00e000000000")  # block type 7, after the first block
-    d = lzx.Decompressor(15)
-    with pytest.raises(archivey_codecs.CorruptDataError, match="block type 7"):
-        d.decompress(first + bad)
-    d.set_output_size(10)
-    assert d.decompress(b"") == b"0123456789"
-    assert d.eof
-    assert d.unused_data == bad
 
 
 def test_lzx_stream_cut_inside_a_block_on_a_frame_boundary() -> None:
@@ -989,3 +953,48 @@ def test_lzx_frame_of_empty_blocks_holds_little_input() -> None:
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True
     )
     assert int(got.stdout) < 16, f"the decoder kept {got.stdout.strip()} MB of input"
+
+
+# ── Int arguments ──────────────────────────────────────────────────────────────────
+
+
+def test_an_int_outside_its_parameter_raises_a_fixed_value_error() -> None:
+    """Not PyO3's ``OverflowError``, whose message differs by platform."""
+    stream = io.BytesIO
+    calls = {
+        "start_offset": lambda n: archivey_codecs.filters.Arm64Decoder(n),
+        "output_size": lambda n: lzx.Decompressor(15, output_size=n),
+        "out_size": lambda n: archivey_codecs.lzo1x.decompress(b"", out_size=n),
+        "max_size": lambda n: archivey_codecs.lzfse.decompress(b"", max_size=n),
+    }
+    for name, call in calls.items():
+        for n in (-1, 2**64, -(2**70)):
+            with pytest.raises(
+                ValueError, match=f"^{name} is outside 0 to 2\\*\\*64 - 1$"
+            ):
+                call(n)
+    with pytest.raises(ValueError, match="^out_size is outside"):
+        archivey_codecs.bcj2.Decompressor(
+            stream(), stream(), stream(), stream(), out_size=-1
+        )
+    with pytest.raises(ValueError, match="^output_size is outside"):
+        lzx.Decompressor(15).set_output_size(-1)
+    for n in (-1, 2**32):
+        with pytest.raises(ValueError, match="^max_width is outside 9 to 16$"):
+            archivey_codecs.lzw.Decompressor(max_width=n, block_mode=True)
+        with pytest.raises(
+            archivey_codecs.CorruptDataError, match="^LZX window bits outside"
+        ):
+            lzx.Decompressor(n)
+
+
+def test_any_int_is_a_max_length() -> None:
+    d = lzx.Decompressor(15, output_size=len(_HELLO))
+    assert d.decompress(_LZX_HELLO, 2**70) == _HELLO
+    d = lzx.Decompressor(15, output_size=len(_HELLO))
+    assert d.decompress(_LZX_HELLO, -(2**70)) == _HELLO
+
+
+def test_a_non_int_still_raises_type_error() -> None:
+    with pytest.raises(TypeError, match="start_offset"):
+        archivey_codecs.filters.Arm64Decoder(1.5)  # type: ignore[arg-type]
