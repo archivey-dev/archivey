@@ -50,7 +50,7 @@ from archivey.exceptions import (
     exception_detail,
 )
 from archivey.formats import ReaderContext, ReaderSource
-from archivey.internal import native
+from archivey.internal import kernels
 from archivey.internal.listing_limits import str_retained_bytes
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.adc_decoder import adc_decompress
@@ -787,10 +787,10 @@ class UdifImage:
         except (CorruptionError, TruncatedError) as exc:
             # The run was read whole, so a stream that stops early is a wrong stored
             # size or damage, not a cut file. A kernel panic stays the cause: it is a
-            # bug, not damage (native.py).
+            # bug, not damage (kernels/_select.py).
             raise CorruptionError(
                 f"{self._where(index)}: {exception_detail(exc)}"
-            ) from native.panic_of(exc)
+            ) from kernels.panic_of(exc)
         if len(data) != decoded:
             got = f"more than {decoded}" if len(data) > decoded else str(len(data))
             raise CorruptionError(

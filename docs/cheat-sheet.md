@@ -43,7 +43,7 @@ What each call returns, and the errors you're most likely to meet. The
   `fsspec.open(url)` ([Remote archives](remote.md)). A missing file raises
   `FileNotFoundError`, and a file in no format archivey reads raises `FormatDetectionError`. A
   file object that can't seek, such as a pipe, raises `StreamNotSeekableError` unless you pass
-  `streaming=True`, which reads TAR, ZIP, cpio, ar, deb, RPM, makeself and single compressed files
+  `pipe=True`, which reads TAR, ZIP, cpio, ar, deb, RPM, makeself and single compressed files
   from one. [Opening an archive](opening.md)
 - **`for member in archive`** and **`archive.members()`** give
   [`ArchiveMember`][archivey.ArchiveMember] objects. A directory's name ends with `/` in every
@@ -71,9 +71,13 @@ What each call returns, and the errors you're most likely to meet. The
   and how sure archivey is about it. A file in no format archivey reads raises
   `FormatDetectionError`. [Format](opening.md#format)
 
-`open_archive(source, streaming=True)` reads the archive once, from start to end, which also
-works on a pipe. Its reader has no `members()`, `get()`, `read()` or `open()`: they raise
-`ArchiveyUsageError`. [Reading once](reading.md#reading-once)
+`open_archive(source, streaming=True)` reads the archive once, from start to end. Its reader has
+no `members()`, `get()`, `read()` or `open()`: they raise `ArchiveyUsageError`. [Reading
+once](reading.md#reading-once)
+
+`open_archive(source, pipe=True)` reads a pipe, a socket or an HTTP response the same way, and gives
+what a pipe gives, which isn't always what a file gives. [Reading from a
+pipe](formats.md#reading-from-a-pipe)
 
 ## Exceptions
 

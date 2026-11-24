@@ -105,7 +105,7 @@ def test_a_tar_inside_is_found() -> None:
 @needs_bzip3
 def test_reads_from_a_pipe_in_small_pieces() -> None:
     source = NonSeekableBytesIO((FIXTURES / "lines.txt.bz3").read_bytes())
-    with open_archive(source, streaming=True) as archive:
+    with open_archive(source, pipe=True) as archive:
         for _member, stream in archive.stream_members():
             assert stream is not None
             pieces = []

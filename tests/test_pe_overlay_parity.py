@@ -25,7 +25,7 @@ from archivey.diagnostics import DiagnosticPolicy
 from archivey.exceptions import FormatDetectionError
 from archivey.types import ArchiveFormat
 from tests.pe_build import FILE_ALIGNMENT, pe_file, pe_headers
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, open_mode
 from tests.test_sevenzip_trailing_data import _stored_7z
 
 _FAST = ArchiveyConfig(detection_budget=FAST_BUDGET)
@@ -57,7 +57,9 @@ def _names(
     config: ArchiveyConfig | None = None,
     streaming: bool = False,
 ) -> list[str]:
-    with open_archive(source, format=fmt, config=config, streaming=streaming) as reader:
+    with open_archive(
+        source, format=fmt, config=config, **open_mode(source, streaming=streaming)
+    ) as reader:
         if streaming:
             return [member.name for member, _ in reader.stream_members()]
         return [member.name for member in reader.members()]

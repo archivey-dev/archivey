@@ -123,11 +123,12 @@ fn input<'a>(obj: &'a Bound<'_, PyAny>) -> PyResult<Cow<'a, [u8]>> {
         let copy = with_critical_section(&owner, || buffer.to_vec(obj.py()))?;
         return Ok(Cow::Owned(copy));
     }
-    // A buffer of wider items (`array.array("I")`): its bytes, as hashlib reads them.
-    let bytes = PyMemoryView::from(obj)?.call_method1("cast", ("B",))?;
-    let buffer = PyBuffer::<u8>::get(&bytes)?;
-    let copy = with_critical_section(&owner, || buffer.to_vec(obj.py()))?;
-    Ok(Cow::Owned(copy))
+    // A buffer of other items (`array.array("I")`, signed bytes), strided or not: its
+    // bytes in order, as hashlib reads them. `tobytes()` takes any layout, where
+    // `cast("B")` takes only a C-contiguous one.
+    let view = PyMemoryView::from(obj)?;
+    let bytes = with_critical_section(&owner, || view.call_method0("tobytes"))?;
+    Ok(Cow::Owned(bytes.cast::<PyBytes>()?.as_bytes().to_vec()))
 }
 
 // ── Saved state ─────────────────────────────────────────────────────────────────────
@@ -920,7 +921,10 @@ impl LzwDecompressor {
         let total_out = r.u64().map_err(to_py0)?;
         r.finish().map_err(to_py0)?;
         let produced = total_out.checked_add(held.len() as u64);
-        if clear_at.0 > fed || produced.is_none_or(|p| clear_at.1 > p) {
+        // A CLEAR's segment ends after its group padding, which may not have arrived:
+        // the last CLEAR offset is ahead of `total_in` by the padding still to skip.
+        let consumed = fed.checked_add(inner.pending_skip());
+        if consumed.is_none_or(|c| clear_at.0 > c) || produced.is_none_or(|p| clear_at.1 > p) {
             return Err(CorruptDataError::new_err(
                 "the lzw state holds offsets that do not agree",
             ));
@@ -1292,6 +1296,16 @@ impl LzxDecompressor {
                 "an output size of {output_size}, below the {decoded} bytes already decoded"
             )));
         }
+        // Only the last frame is short: a stream that ended with one has no more.
+        if output_size > decoded
+            && !decoded.is_multiple_of(lzx::FRAME_SIZE as u64)
+            && self.inner.frame_in_progress().is_none()
+        {
+            return Err(PyValueError::new_err(format!(
+                "an output size of {output_size}, past the end of a stream whose last \
+                 frame ended short at {decoded} bytes"
+            )));
+        }
         if let Some((size, done)) = self.inner.frame_in_progress() {
             let frame = (output_size - decoded).min(lzx::FRAME_SIZE as u64) as usize;
             if frame == 0 && self.inner.rewind_frame() {
@@ -1415,7 +1429,12 @@ impl LzxDecompressor {
             };
             size == next
         });
-        if (out.len() as u64) > decoded || output_size.is_some_and(|n| n < decoded) || !frame_agrees
+        // The input taken counts the bytes the bit buffer and the input buffer hold.
+        let held = (inner.lookahead().len() + inner.unread_input().len()) as u64;
+        if (out.len() as u64) > decoded
+            || output_size.is_some_and(|n| n < decoded)
+            || !frame_agrees
+            || total_in < held
         {
             return Err(CorruptDataError::new_err(
                 "the lzx state holds sizes that do not agree",
@@ -1452,7 +1471,9 @@ impl LzxDecompressor {
         self.failed.is_none()
             && !self.ended
             && self.drained()
-            && (!self.at_end() && self.starved || self.at_end() && self.pad_pending())
+            // Input queued by a call that decoded nothing is still to be read.
+            && (!self.at_end() && self.starved && self.queued() == 0
+                || self.at_end() && self.pad_pending())
     }
 
     /// After `eof`, the input that follows the stream.
@@ -1506,10 +1527,8 @@ impl bcj2::Streams for PyStreams<'_, '_> {
     type Error = PyErr;
     fn read(&mut self, which: usize, n: usize) -> Result<Vec<u8>, PyErr> {
         let data = self.reads[which].call1((n,))?;
-        let data = match data.cast::<PyBytes>() {
-            Ok(b) => b.as_bytes().to_vec(),
-            Err(_) => data.extract::<Vec<u8>>()?,
-        };
+        // Read as `input()` reads an argument: a buffer's bytes, copied as a buffer.
+        let data = input(&data)?.into_owned();
         if data.len() > n {
             return Err(PyValueError::new_err(format!(
                 "read({n}) returned {} bytes",
@@ -1648,8 +1667,16 @@ impl Bcj2Decompressor {
     }
 
     /// Up to `max_length` bytes of output (all of it when negative); `b""` at the end.
+    /// `read(0)` decodes nothing and reads no input: it raises an error the decoder
+    /// holds, else returns `b""`.
     #[pyo3(signature = (max_length = -1))]
     fn read<'py>(&mut self, py: Python<'py>, max_length: i64) -> PyResult<Bound<'py, PyBytes>> {
+        if max_length == 0 {
+            if let Some(err) = self.raise_failure(py) {
+                return Err(err);
+            }
+            return Ok(PyBytes::new(py, b""));
+        }
         let want = if max_length < 0 {
             usize::MAX
         } else {

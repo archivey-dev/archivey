@@ -822,7 +822,7 @@ class SingleFileBackend(ReadBackend):
 
     FORMATS: tuple[ArchiveFormat, ...] = ()
     RAW_STREAMS = True
-    # A compressed stream decodes front-to-back, so streaming=True works on a
+    # A compressed stream decodes front-to-back, so pipe=True works on a
     # non-seekable source. Random access always needs a seekable source.
     SUPPORTS_STREAMING_NON_SEEKABLE = True
 

@@ -23,10 +23,10 @@ through a larger file opens as is. Bytes after the archive don't stop it opening
 zeros are recorded as `ARCHIVE_TRAILING_DATA`, which `DiagnosticPolicy.STRICT` turns into an
 exception. Behind more than 64 KiB of trailing bytes, zeros included, a ZIP's index is found by
 walking its members from the start, which takes longer. A file object that can't seek, such as a
-pipe or an HTTP response, needs `streaming=True` and works only for some formats, which [Reading
-once](reading.md#reading-once) lists. An archive on S3, an HTTP server or another remote store
-opens from `fsspec.open(url)` without downloading it, and can seek
-([Remote archives](remote.md)).
+pipe or an HTTP response, needs `pipe=True` and works only for some formats, which [Reading from a
+pipe](formats.md#reading-from-a-pipe) lists. An archive on S3, an HTTP server or another remote
+store opens from `fsspec.open(url)` without downloading it, and can seek ([Remote
+archives](remote.md)).
 
 ??? note "Why not refuse bytes after the archive?"
     They aren't part of any member, so every member is still read correctly. GNU gzip and bzip2 also

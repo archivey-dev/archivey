@@ -73,7 +73,7 @@ from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
 from tests.conftest import binary_refusal, case_sensitive
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.extract_util import open_and_extract
-from tests.streams_util import NonSeekableBytesIO, SizedNonSeekable
+from tests.streams_util import NonSeekableBytesIO, SizedNonSeekable, open_mode
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -2608,14 +2608,14 @@ def test_tar_hardlink_orphan_forward_only_onerror(tmp_path: Path) -> None:
     # STOP: raises on the unrecoverable orphan.
     dest = tmp_path / "out_stop"
     with (
-        open_archive(NonSeekableBytesIO(raw), streaming=True) as r,
+        open_archive(NonSeekableBytesIO(raw), pipe=True) as r,
         pytest.raises(ExtractionError),
     ):
         r.extract_all(dest, filter=drop_source, on_blocked="skip")
 
     # CONTINUE: records FAILED, does not raise.
     dest2 = tmp_path / "out_continue"
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+    with open_archive(NonSeekableBytesIO(raw), pipe=True) as r:
         results = r.extract_all(
             dest2, filter=drop_source, on_error=OnError.CONTINUE, on_blocked="skip"
         ).results
@@ -2666,7 +2666,7 @@ def test_non_seekable_targz_extract(tmp_path: Path) -> None:
         [("file", "a.txt", b"hello"), ("file", "b.txt", b"world")], mode="w:gz"
     )
     dest = tmp_path / "out"
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+    with open_archive(NonSeekableBytesIO(raw), pipe=True) as r:
         r.extract_all(dest, on_blocked="skip")
     assert (dest / "a.txt").read_bytes() == b"hello"
     assert (dest / "b.txt").read_bytes() == b"world"
@@ -2830,7 +2830,7 @@ def test_compressed_bytes_consumed_grows_on_piped_targz() -> None:
     from tests.streams_util import NonSeekableBytesIO
 
     raw = _tar_bytes([("file", "a.txt", b"x" * 200_000)], mode="w:gz")
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
+    with open_archive(NonSeekableBytesIO(raw), pipe=True) as r:
         # A compressed pipe has no cheaply-knowable total, but the live counter is present.
         assert r.compressed_source_size is None
         assert r.compressed_bytes_consumed is not None
@@ -2847,7 +2847,7 @@ def test_streaming_targz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
     # only the live ratio (and the absolute cap, set high) can catch it.
     raw = _tar_bytes([("file", "z.bin", b"\x00" * (8 * 1024 * 1024))], mode="w:gz")
     dest = tmp_path / "out"
-    with open_archive(NonSeekableBytesIO(raw), streaming=True, config=_LIVE_RATIO) as r:
+    with open_archive(NonSeekableBytesIO(raw), pipe=True, config=_LIVE_RATIO) as r:
         assert r.compressed_source_size is None  # no static archive-wide denominator
         with pytest.raises(ResourceLimitError):
             r.extract_all(
@@ -2864,7 +2864,7 @@ def test_streaming_live_ratio_halts_under_continue(tmp_path: Path) -> None:
     raw = _tar_bytes([("file", "z.bin", b"\x00" * (8 * 1024 * 1024))], mode="w:gz")
     dest = tmp_path / "out"
     with (
-        open_archive(NonSeekableBytesIO(raw), streaming=True, config=_LIVE_RATIO) as r,
+        open_archive(NonSeekableBytesIO(raw), pipe=True, config=_LIVE_RATIO) as r,
         pytest.raises(ResourceLimitError),
     ):
         r.extract_all(
@@ -2883,7 +2883,7 @@ def test_streaming_plain_tar_no_live_ratio_trip(tmp_path: Path) -> None:
     config = ArchiveyConfig(
         decoder_limits=DecoderLimits(max_ratio=10.0, ratio_activation_threshold=1024)
     )
-    with open_archive(NonSeekableBytesIO(raw), streaming=True, config=config) as r:
+    with open_archive(NonSeekableBytesIO(raw), pipe=True, config=config) as r:
         # Uncompressed: the live denominator is what the pipe gave, so the output
         # stays near 1:1 of it and the ratio never trips.
         r.extract_all(dest, on_blocked="skip")
@@ -2908,7 +2908,7 @@ def test_streaming_bare_gz_bomb_caught_by_live_ratio(tmp_path: Path) -> None:
 
     raw = gzip.compress(b"\x00" * (8 * 1024 * 1024))
     dest = tmp_path / "out"
-    with open_archive(NonSeekableBytesIO(raw), streaming=True, config=_LIVE_RATIO) as r:
+    with open_archive(NonSeekableBytesIO(raw), pipe=True, config=_LIVE_RATIO) as r:
         assert r.compressed_source_size is None
         assert (
             r.compressed_bytes_consumed is not None
@@ -2938,7 +2938,7 @@ def test_pipe_size_claim_does_not_switch_off_live_ratio(
     # High, so the cap is not what trips.
     limits = ExtractionLimits(max_extracted_bytes=100 * 2**20)
     with open_archive(
-        SizedNonSeekable(raw, size=10**9), streaming=True, config=_LIVE_RATIO
+        SizedNonSeekable(raw, size=10**9), pipe=True, config=_LIVE_RATIO
     ) as r:
         assert r.compressed_source_size is None
         assert r.compressed_bytes_consumed is not None
@@ -2968,7 +2968,7 @@ def test_piped_blank_start_passes_like_a_file(tmp_path: Path) -> None:
         ("pipe", NonSeekableBytesIO(raw)),
     ]:
         config = ArchiveyConfig(decoder_limits=limits)
-        with open_archive(src, streaming=True, config=config) as r:
+        with open_archive(src, **open_mode(src, streaming=True), config=config) as r:
             r.extract_all(tmp_path / name, on_blocked="skip")
         assert (tmp_path / name / "img.bin").read_bytes() == payload
 
@@ -2978,7 +2978,7 @@ def test_piped_blank_start_passes_like_a_file(tmp_path: Path) -> None:
         decoder_limits=replace(limits, live_ratio_activation_threshold=1024)
     )
     with (
-        open_archive(NonSeekableBytesIO(raw), streaming=True, config=low) as r,
+        open_archive(NonSeekableBytesIO(raw), pipe=True, config=low) as r,
         pytest.raises(ResourceLimitError, match="Live decompression ratio"),
     ):
         r.extract_all(tmp_path / "low", on_blocked="skip")
@@ -2996,7 +2996,7 @@ def test_non_seekable_member_stream_keeps_its_declared_size(tmp_path: Path) -> N
         t.addfile(info, io.BytesIO(inner))
     with open_archive(outer) as outer_ar, outer_ar.open("inner.gz") as member_stream:
         assert not member_stream.seekable()
-        with open_archive(member_stream, streaming=True) as inner_ar:
+        with open_archive(member_stream, pipe=True) as inner_ar:
             assert inner_ar.compressed_source_size == len(inner)
             assert inner_ar.compressed_bytes_consumed is None
 
@@ -3006,7 +3006,7 @@ def test_plain_tar_from_sized_pipe_counts_what_the_pipe_gave() -> None:
     # is the caller's claim) and no codec counter: the live denominator is what the
     # source has taken from the pipe, the whole archive once it is read to its end.
     raw = _tar_bytes([("file", "a.bin", b"x" * 4096)])
-    with open_archive(SizedNonSeekable(raw, size=len(raw)), streaming=True) as r:
+    with open_archive(SizedNonSeekable(raw, size=len(raw)), pipe=True) as r:
         assert r.compressed_source_size is None
         for _member, stream in r.stream_members():
             if stream is not None:
@@ -3040,7 +3040,7 @@ def test_forged_member_declaration_is_refused_only_after_the_decode(
     out = tmp_path / "out"
     with open_archive(outer) as outer_ar, outer_ar.open("inner.gz") as member_stream:
         assert not member_stream.seekable()
-        with open_archive(member_stream, streaming=True, config=config) as inner_ar:
+        with open_archive(member_stream, pipe=True, config=config) as inner_ar:
             assert inner_ar.compressed_source_size == forged
             assert inner_ar.compressed_bytes_consumed is None
             with pytest.raises(TruncatedError):
@@ -7830,7 +7830,7 @@ def test_a_run_link_made_where_a_taken_back_directory_was_is_refused(
     dest = tmp_path / "out"
     raw = _tar_bytes(specs)
     source = NonSeekableBytesIO(raw) if streaming else io.BytesIO(raw)
-    with open_archive(source, streaming=streaming) as reader:
+    with open_archive(source, pipe=streaming) as reader:
         report = reader.extract_all(
             dest,
             filter=drop_second_d,

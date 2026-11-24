@@ -159,7 +159,7 @@ def test_pipe_metadata_stays_absent_and_costs_no_decode(
     from archivey.types import HashAlgorithm
 
     path = _archive("single-file", key, tmp_path)
-    with open_archive(_NonSeekable(path.read_bytes()), streaming=True) as reader:
+    with open_archive(_NonSeekable(path.read_bytes()), pipe=True) as reader:
         member = next(iter(reader))
         assert member.size is None
         assert HashAlgorithm.CRC32 not in member.hashes
@@ -460,14 +460,14 @@ def test_trailing_index_formats_refuse_a_pipe_loudly(key: str, tmp_path: Path) -
     path = _archive("basic", key, tmp_path)
     data = path.read_bytes()
     with pytest.raises(StreamNotSeekableError):
-        open_archive(_NonSeekable(data), streaming=True)
+        open_archive(_NonSeekable(data), pipe=True)
 
 
 @pytest.mark.parametrize("key", ["tar", "tar.gz", "zip"])
 def test_front_indexed_formats_accept_a_pipe(key: str, tmp_path: Path) -> None:
     """F8 (guardrail): the other side of the same rule."""
     path = _archive("basic", key, tmp_path)
-    with open_archive(_NonSeekable(path.read_bytes()), streaming=True) as reader:
+    with open_archive(_NonSeekable(path.read_bytes()), pipe=True) as reader:
         assert sum(1 for _ in reader) > 0
 
 
@@ -690,7 +690,7 @@ def test_single_file_compressed_size_is_absent_for_a_pipe(tmp_path: Path) -> Non
     count", which would cost a whole pass at open on a pipe.
     """
     path = _archive("single-file", "gz", tmp_path)
-    with open_archive(_NonSeekable(path.read_bytes()), streaming=True) as reader:
+    with open_archive(_NonSeekable(path.read_bytes()), pipe=True) as reader:
         assert next(iter(reader)).compressed_size is None
 
 

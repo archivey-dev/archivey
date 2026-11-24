@@ -45,7 +45,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 
 from archivey.exceptions import CorruptionError, TruncatedError
-from archivey.internal import native
 from archivey.types import OptionalLibrary
 
 if TYPE_CHECKING:
@@ -170,11 +169,23 @@ def decoder(
     isolated: bool,
 ) -> Decode:
     """The LZFSE or the raw LZVN decoder to use: archivey-codecs' ``kernel`` when
-    :mod:`archivey.internal.native` allows it (installed, not in ``excluded``, not
-    ``isolated`` under ``NATIVE_DECODERS``), else :func:`lzfse_decompress` or
-    :func:`lzvn_decompress`. Both give the same bytes and the same errors."""
-    python = lzfse_decompress if kernel == "lzfse" else lzvn_decompress
-    return native.apple_lz(kernel, excluded, isolated=isolated) or python
+    :mod:`archivey.internal.kernels` allows it (installed, not in ``excluded``; in a
+    decoder child when ``isolated``, for ``NATIVE_DECODERS``), else
+    :func:`lzfse_decompress` or :func:`lzvn_decompress`. Both give the same bytes and
+    the same errors."""
+    # Imported here: the kernels' Python twins import this module.
+    from archivey.internal import kernels
+
+    switch = kernels.lzfse if kernel == "lzfse" else kernels.lzvn
+    chosen = switch(excluded, isolated=isolated)
+    if chosen.library is None:
+        return lzfse_decompress if kernel == "lzfse" else lzvn_decompress
+    decompress = chosen.decompress
+
+    def decode(data: bytes, max_length: int) -> bytes:
+        return decompress(data, max_size=max_length)
+
+    return decode
 
 
 def decoder_for(kernel: Literal["lzfse", "lzvn"], config: ArchiveyConfig) -> Decode:

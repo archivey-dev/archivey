@@ -330,7 +330,7 @@ def _load_ppmd8() -> Callable[..., Any]:
 class KernelPanic(Exception):
     """A Rust panic in an archivey-codecs kernel. PyO3 raises ``PanicException``, a
     ``BaseException`` that ``_serve`` would not report, so :class:`_Codecs` raises this
-    instead, and the parent rebuilds it as a panic (``native_child.ChildPanic``)."""
+    instead, and the parent rebuilds it as a panic (``kernels.child.ChildPanic``)."""
 
 
 def _kernel_call(function: Callable[..., Any], args: Any, kwargs: Any) -> Any:
@@ -360,6 +360,9 @@ class _Codecs:
         "header_params",
         "nine_bit_widens",
         "clear_offsets",
+        "output_size",
+        "total_in",
+        "total_out",
     )
 
     def __init__(self, module: Any) -> None:
@@ -377,10 +380,26 @@ class _Codecs:
             target = getattr(target, part)
         self._kernel = _kernel_call(target, args, kwargs)
 
-    def lzo1x(self, block: bytes, max_size: int) -> bytes:
+    def lzo1x(self, block: bytes, out_size: int | None, max_size: int | None) -> bytes:
         """One LZO1X block: the package's ``lzo1x.decompress``."""
-        decompress = self._module.lzo1x.decompress
-        return _kernel_call(decompress, (block,), {"max_size": max_size})
+        return self._one_shot("lzo1x", block, out_size, max_size)
+
+    def lzfse(self, data: bytes, out_size: int | None, max_size: int | None) -> bytes:
+        """One LZFSE stream: the package's ``lzfse.decompress``."""
+        return self._one_shot("lzfse", data, out_size, max_size)
+
+    def lzvn(self, data: bytes, out_size: int | None, max_size: int | None) -> bytes:
+        """Raw LZVN: the package's ``lzvn.decompress``."""
+        return self._one_shot("lzvn", data, out_size, max_size)
+
+    def _one_shot(
+        self, kernel: str, data: bytes, out_size: int | None, max_size: int | None
+    ) -> bytes:
+        """``kernel.decompress(data, ...)``, given ``out_size`` or ``max_size``."""
+        decompress = getattr(self._module, kernel).decompress
+        sizes = {"out_size": out_size, "max_size": max_size}
+        given = {name: size for name, size in sizes.items() if size is not None}
+        return _kernel_call(decompress, (data,), given)
 
     def report(self) -> dict[str, object]:
         report: dict[str, object] = {}

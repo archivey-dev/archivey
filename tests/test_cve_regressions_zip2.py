@@ -36,7 +36,7 @@ from archivey.exceptions import (
 from tests.conftest import requires
 from tests.extract_util import open_and_extract
 from tests.memory_util import traced_peak
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, open_mode
 from tests.test_cve_regressions import _outside_layout, _zip as _zip_entries
 
 # ``pipe`` reads a stream that cannot seek, so a ZIP is read by its local headers.
@@ -45,7 +45,9 @@ _MODES = pytest.mark.parametrize("mode", ["random", "stream", "pipe"])
 
 def _open(data: bytes, mode: str, **kwargs):
     source = NonSeekableBytesIO(data) if mode == "pipe" else io.BytesIO(data)
-    return open_archive(source, streaming=mode != "random", **kwargs)
+    return open_archive(
+        source, **open_mode(source, streaming=mode != "random"), **kwargs
+    )
 
 
 def _zip(*members: tuple[str, bytes], extra: bytes = b"") -> bytes:

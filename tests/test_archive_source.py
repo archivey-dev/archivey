@@ -1293,7 +1293,7 @@ def test_open_archive_on_a_fifo_path_behaves_as_a_pipe(
         with pytest.raises(StreamNotSeekableError):
             open_archive(fifo)
         return
-    with open_archive(fifo, streaming=True) as reader:
+    with open_archive(fifo, pipe=True) as reader:
         read = [
             (member.name, stream.read() if stream else None)
             for member, stream in reader.stream_members()

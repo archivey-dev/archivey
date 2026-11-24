@@ -82,7 +82,11 @@ from archivey.types import ArchiveFormat
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.detection_cost_util import trailer_allowance, within_budget
-from tests.streams_util import NonSeekableBytesIO, brotli_compressed_metablock_header
+from tests.streams_util import (
+    NonSeekableBytesIO,
+    brotli_compressed_metablock_header,
+    open_mode,
+)
 from tests.test_detection_workspace import InstrumentedBytesIO
 
 # The stub shape from Topic 8 A-34: `MZ` plus low-entropy filler. Deliberately the
@@ -2322,7 +2326,7 @@ def test_an_unzipsfx_self_extractor_streams_from_its_payload_offset(
     data = _unzipsfx_archive(tmp_path, payload_at=128 << 10)
     src = NonSeekableBytesIO(data) if source == "pipe" else io.BytesIO(data)
     config = ArchiveyConfig(detection_budget=budget)
-    with open_archive(src, streaming=True, config=config) as reader:
+    with open_archive(src, **open_mode(src, streaming=True), config=config) as reader:
         assert reader.format_info is not None
         assert reader.format_info.payload_offset == 128 << 10
         read = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
@@ -2342,15 +2346,20 @@ def test_a_self_extractor_past_the_fast_window_needs_the_default_or_a_named_form
 
     with pytest.raises(FormatDetectionError, match="executable header"):
         open_archive(
-            src(), streaming=True, config=ArchiveyConfig(detection_budget=FAST_BUDGET)
+            src(),
+            streaming=True,
+            pipe=source == "pipe",
+            config=ArchiveyConfig(detection_budget=FAST_BUDGET),
         )
-    with open_archive(src(), streaming=True) as reader:
+    with open_archive(src(), streaming=True, pipe=source == "pipe") as reader:
         assert reader.format_info is not None
         assert reader.format_info.payload_offset == 1 << 20
         read = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
     assert read == _FILES
     # Naming the format skips detection; the walk finds the first local header itself.
-    with open_archive(src(), streaming=True, format=ArchiveFormat.ZIP) as reader:
+    with open_archive(
+        src(), streaming=True, pipe=source == "pipe", format=ArchiveFormat.ZIP
+    ) as reader:
         read = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
     assert read == _FILES
 
@@ -2425,7 +2434,7 @@ def test_a_zip_read_forward_cut_inside_its_signature_is_truncated(held: int) -> 
     source = NonSeekableBytesIO(b"PK\x03\x04"[:held])
     with (
         pytest.raises(TruncatedError, match="ZIP archive is truncated"),
-        open_archive(source, streaming=True, format=ArchiveFormat.ZIP) as reader,
+        open_archive(source, pipe=True, format=ArchiveFormat.ZIP) as reader,
     ):
         list(reader.iter_members())
 

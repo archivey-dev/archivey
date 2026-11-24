@@ -46,8 +46,8 @@ The RAR backend SHALL expose these properties:
 | Open non-header-encrypted RAR without `unrar`/`rar` | Listing and metadata still work through the native parser |
 | Read a stored, encrypted member in one part without `unrar`/`rar`, `cryptography` installed | Decrypted and returned by archivey |
 | Open from a non-seekable source, `streaming=False` | Open fails: random access needs seek |
-| Open from a non-seekable source, `streaming=True`, `unrar` 7.00 or later | Opens a forward reader (requirement below) |
-| Open from a non-seekable source, `streaming=True`, no `unrar` 7.00 or later | `StreamNotSeekableError` naming a seekable source or `unrar` 7.00 as the fix |
+| Open from a non-seekable source, `pipe=True`, `unrar` 7.00 or later | Opens a forward reader (requirement below) |
+| Open from a non-seekable source, `pipe=True`, no `unrar` 7.00 or later | `StreamNotSeekableError` naming a seekable source or `unrar` 7.00 as the fix |
 
 ### Requirement: Parse RAR headers natively (RAR 1.5 through RAR5)
 
@@ -1643,7 +1643,7 @@ FILE header damaged unless stated.
 | Solid, a member with no stored digest after a listed damaged member | Its own bytes; `DIGEST_UNVERIFIABLE` (`reason="after_damaged_header"`) |
 | Solid RAR5, a name byte damaged, `stream_members()` | One pass; every member reads its own bytes; the damaged one flagged |
 | A RAR5 file copy or hard link whose source is the damaged member | Resolves to it as to any listed member |
-| From a pipe (`streaming=True`), a damaged member whose data and the next header fit in 4 MiB | As from a file: every member, the damaged one flagged |
+| From a pipe (`pipe=True`), a damaged member whose data and the next header fit in 4 MiB | As from a file: every member, the damaged one flagged |
 | From a pipe, a damaged member larger than 4 MiB | The members before it; `CorruptionError` saying a file would go on past the damage (from a file: every member) |
 | RAR 1.5-4, the last bytes of the third and fifth headers flipped (the fourth is intact) | Six listed, two flagged: the fifth confirms the fourth once its own sizes are confirmed |
 | `rar_decompressor="unar"`, read each member after the damage | Each returns its own bytes (the damaged member takes its `lsar` index, as `lsar` lists it) |
@@ -1800,7 +1800,7 @@ before. A member whose password was confirmed against its own CRC SHALL NOT emit
 
 ### Requirement: Read a RAR archive forward from a non-seekable source
 
-For a non-seekable source opened with `streaming=True`, the RAR backend SHALL read a
+For a non-seekable source opened with `pipe=True`, the RAR backend SHALL read a
 single-volume archive front to back: each member is listed once its header and data are
 in the pass and the next header has been read, or once a volume that ends inside it is
 written, and every member with packed data is decoded by one RARLAB `unrar` (7.00 or

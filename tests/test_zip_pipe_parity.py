@@ -36,7 +36,7 @@ from archivey.internal.backends.zip_reader import ZipReader
 from archivey.types import ExtractionStatus, HashAlgorithm, OnError
 from tests.create_adversarial import adversarial_archives
 from tests.sample_archives import CORPUS, build_archive, skip_unless_runnable
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, open_mode
 from tests.test_zip_pipe import _visible
 from tests.test_zip_pipe_extract import _tree
 
@@ -129,7 +129,7 @@ def _from_file(data: bytes, password: _PasswordArg) -> object:
 def _from_pipe(data: bytes, password: _PasswordArg) -> object:
     try:
         with archivey.open_archive(
-            NonSeekableBytesIO(data), streaming=True, password=password
+            NonSeekableBytesIO(data), pipe=True, password=password
         ) as reader:
             contents = {}
             for member, stream in reader.stream_members():
@@ -153,9 +153,7 @@ def _extracted(
 ) -> object:
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
     try:
-        with archivey.open_archive(
-            source, streaming=piped, password=password
-        ) as reader:
+        with archivey.open_archive(source, pipe=piped, password=password) as reader:
             report = reader.extract_all(dest, on_error=OnError.CONTINUE)
     except ArchiveyError as exc:
         return type(exc)
@@ -289,7 +287,7 @@ def _no_end_record_params() -> Iterator[pytest.ParameterSet]:
 def _report(data: bytes, *, piped: bool) -> object:
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
     try:
-        with archivey.open_archive(source, streaming=piped) as reader:
+        with archivey.open_archive(source, pipe=piped) as reader:
             if piped:
                 # The pass raises the walk's error; the report then holds it.
                 with contextlib.suppress(ArchiveyError):
@@ -368,7 +366,7 @@ def test_a_descriptor_a_file_read_cannot_check_is_listed_as_it_states(
         (member,) = report.members
         with pytest.raises(ArchiveyError):
             reader.read(member)
-    with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+    with archivey.open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
         with contextlib.suppress(ArchiveyError):
             for _member, stream in reader.stream_members():
                 assert stream is not None
@@ -407,7 +405,9 @@ def _stream_past_the_limit(data: bytes, *, seekable: bool) -> object:
     config = ArchiveyConfig(listing_limits=ListingLimits(max_members=2))
     source = io.BytesIO(data) if seekable else NonSeekableBytesIO(data)
     yielded = []
-    with archivey.open_archive(source, streaming=True, config=config) as reader:
+    with archivey.open_archive(
+        source, **open_mode(source, streaming=True), config=config
+    ) as reader:
         with pytest.raises(ResourceLimitError) as raised:
             for member, stream in reader.stream_members():
                 assert stream is not None
@@ -519,7 +519,7 @@ def _damaged_zip64_params() -> Iterator[pytest.ParameterSet]:
 
 def _diagnostic_codes(data: bytes, *, piped: bool) -> list[str]:
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
-    with archivey.open_archive(source, streaming=piped) as reader:
+    with archivey.open_archive(source, pipe=piped) as reader:
         with contextlib.suppress(ArchiveyError):
             for _member, _stream in reader.stream_members():
                 pass
@@ -662,7 +662,7 @@ def test_a_signature_in_a_name_with_a_wrong_count_reads_alike(pipe: bool) -> Non
     assert [m["mode"] for m in members] == [0o640, 0o640]
     for piped in (False, True):
         source = NonSeekableBytesIO(bytes(data)) if piped else io.BytesIO(bytes(data))
-        with archivey.open_archive(source, streaming=piped) as reader:
+        with archivey.open_archive(source, pipe=piped) as reader:
             for _ in reader.stream_members():
                 pass
             assert list(reader.diagnostics.counts) == [
@@ -718,7 +718,7 @@ def test_many_signatures_in_names_and_comments_are_not_damage(pipe: bool) -> Non
         assert {m["comment"] for m in members} == {"PK\x01\x02PK\x01\x02"}
         assert all(m["diagnostics"] == [] for m in members)
         source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
-        with archivey.open_archive(source, streaming=piped) as reader:
+        with archivey.open_archive(source, pipe=piped) as reader:
             for _ in reader.stream_members():
                 pass
             assert reader.diagnostics.total_count == 0
@@ -806,7 +806,7 @@ def test_a_directory_offset_past_the_directory_reads_the_stored_offsets_either_w
     assert _tree(tmp_path / "pipe", since=started) == tree
     for piped in (False, True):
         source = NonSeekableBytesIO(bytes(data)) if piped else io.BytesIO(bytes(data))
-        with archivey.open_archive(source, streaming=piped) as reader:
+        with archivey.open_archive(source, pipe=piped) as reader:
             for _member, stream in reader.stream_members():
                 if stream is not None:
                     stream.read()

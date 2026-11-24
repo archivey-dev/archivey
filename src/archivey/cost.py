@@ -1,9 +1,10 @@
 """Access-cost types: the `CostReceipt` and its enums.
 
-Access *mode* is not modelled here — it is the plain ``streaming: bool`` parameter of
-``open_archive`` (``False`` = random access, fail fast on a non-seekable source;
-``True`` = forward-only, single pass). This module is only the cost half of the
-``access-mode-and-cost`` capability.
+Access *mode* is not modelled here — it is the plain ``streaming: bool`` and
+``pipe: bool`` parameters of ``open_archive`` (``streaming=False`` = random access;
+``streaming=True`` = forward-only, single pass; ``pipe=True`` = a single pass read as a
+pipe is read, the only mode that takes a non-seekable source). This module is only the
+cost half of the ``access-mode-and-cost`` capability.
 """
 
 from __future__ import annotations

@@ -32,7 +32,7 @@ from archivey.internal.backends import ar_reader
 from archivey.internal.backends.ar_reader import ArReader
 from tests.memory_util import traced_peak
 from tests.public_names import assert_only_public_archivey
-from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO
+from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO, open_mode
 
 AR = archivey.ArchiveFormat.AR
 DATA = Path(__file__).parent / "fixtures" / "ar"
@@ -130,7 +130,7 @@ def test_the_dialects_hold_the_same_object() -> None:
 def test_stream_from_a_pipe(name: str) -> None:
     data = (DATA / f"{name}.a").read_bytes()
     seen: dict[str, bytes] = {}
-    with open_archive(_Pipe(data), streaming=True) as reader:
+    with open_archive(_Pipe(data), pipe=True) as reader:
         assert reader.format == AR
         for member, stream in reader.stream_members():
             assert stream is not None
@@ -144,7 +144,7 @@ def test_stream_from_a_pipe(name: str) -> None:
 def test_streams_left_unread(name: str) -> None:
     """The walk resumes after a member whose stream was not read, or read in part."""
     data = (DATA / f"{name}.a").read_bytes()
-    with open_archive(_Pipe(data), streaming=True) as reader:
+    with open_archive(_Pipe(data), pipe=True) as reader:
         names = []
         for member, stream in reader.stream_members():
             names.append(member.name)
@@ -162,7 +162,7 @@ def test_extract(tmp_path: Path, pipe: bool, name: str) -> None:
     path = DATA / f"{name}.a"
     source = _Pipe(path.read_bytes()) if pipe else path
     dest = tmp_path / "out"
-    with open_archive(source, streaming=pipe) as reader:
+    with open_archive(source, pipe=pipe) as reader:
         reader.extract_all(dest)
     for member_name in CONTENT:
         _check_content(name, (dest / member_name).read_bytes(), member_name)
@@ -199,7 +199,7 @@ def test_inside_a_compression_stream(
     path.write_bytes(data)
     fmt = archivey.ArchiveFormat(AR.container, stream)
     assert detect_format(io.BytesIO(data)).format == fmt
-    with open_archive(_Pipe(data) if pipe else path, streaming=pipe) as reader:
+    with open_archive(_Pipe(data) if pipe else path, pipe=pipe) as reader:
         assert reader.format == fmt
         seen = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
     assert list(seen) == NAMES
@@ -466,7 +466,7 @@ def test_a_cut_archive_keeps_the_members_before_the_cut(
     source = _Pipe(cut) if pipe else _archive(tmp_path, cut)
     names = []
     with (
-        open_archive(source, streaming=pipe) as reader,
+        open_archive(source, pipe=pipe) as reader,
         pytest.raises(TruncatedError),
     ):
         for member, stream in reader.stream_members():
@@ -609,7 +609,9 @@ def test_streaming_header_size_does_not_drive_the_allocation(
     def walk() -> None:
         with (
             pytest.raises(TruncatedError),
-            open_archive(source, format=fmt, streaming=True) as reader,
+            open_archive(
+                source, format=fmt, **open_mode(source, streaming=True)
+            ) as reader,
         ):
             for _member, _stream in reader.stream_members():
                 pass
