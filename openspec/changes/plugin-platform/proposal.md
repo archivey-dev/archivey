@@ -40,8 +40,8 @@ that other formats use, and solve the import cost with the same mechanism.
 - **Codec registry.** Codecs by name, method bindings per container, and a second
   implementation of a name only where its owner or the caller approves it.
 - **Reader API.** Public helpers replace each `archivey.internal` import of the moved
-  readers. `API_VERSION` replaces the exact version pin. The thread rules shrink with
-  the concurrency cut (tracked internally).
+  readers. `API_VERSION` replaces the exact version pin. The thread rules are the short ones
+  that the concurrency cut, a separate change that lands first, leaves.
 - **Packages.** `archivey-disk-images`, `archivey-package-formats` and
   `archivey-legacy-formats` under `packages/`, with extras of the same names;
   `[recommended]`, `[all]` and `archivey-cli` include all three.
@@ -61,7 +61,6 @@ Deltas are written with each implementation step, not in this plan.
 - `format-detection`: detection from manifest data, `refines`.
 - `compressed-streams`: codecs by name, method bindings, second implementations.
 - `packaging-and-extras`: the three packages and their extras.
-- `reader-concurrency`: the cut contract.
 - `archive-data-model`: open name types.
 - The format specs of the formats that move: where they live, nothing else.
 

@@ -317,8 +317,9 @@ the same for every format. Code inside the `archivey` distribution may use
 Each new public helper lands in the pull request of the reader that needs it. Nothing
 is added on speculation.
 
-**Threads.** With the concurrency cut (tracked internally), the contract a reader
-author sees is three sentences:
+**Threads.** The concurrency cut is a separate change that lands before this one
+(decision 9). This change builds on its result: the contract a reader author sees is
+three sentences:
 
 1. archivey calls the methods of one reader from one thread at a time.
 2. A walk has the reader to itself from its first member to its end. A second walk
@@ -454,8 +455,8 @@ All ten were put to the maintainer and agreed on 2026-11-24.
 6. **Three format packages** (§7). DMG stays in disk-images for now.
 7. **`[recommended]` and `archivey-cli` install all three.**
 8. **One repository, released together**, each package depending on one minor of core.
-9. **The concurrency cut is part of this change** where it shortens the reader contract
-   (§5).
+9. **The concurrency cut comes first, as a separate change** (maintainer, 2026-11-24).
+   This plan states the contract it leaves (§5) and carries none of its tasks.
 10. **Timing.** Steps 1 and 2 with the breaking trims of 0.6.0; the split in 0.7.0.
 
 Earlier rulings kept: the composition interface with `BaseArchiveReader` private
@@ -514,10 +515,9 @@ failure points at the API, at detection or at distribution, and not at all three
 6. **Afterwards.** Aliases removed one release later; the plugin guide rewritten,
    shorter.
 
-**The concurrency cut is its own pull request,** outside this sequence, with a check
-that `archivey.fsspec` reads several member streams from threads and closes cleanly.
-It stays in this plan because it shortens the reader contract (decision 9), but
-nothing above waits for it, and it does not wait for anything above.
+**The concurrency cut is not in this sequence.** It is a separate change that lands
+first (decision 9), so that the reader contract is already the short one when step 1
+starts and the migration guide of step 3 is written against it.
 
 Rollback: steps 1 and 4 are internal and revert cleanly. Steps 2, 3 and 5 are released
 behaviour; their rollback is a new release.

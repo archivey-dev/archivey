@@ -99,15 +99,8 @@
 - [ ] 5.7 Spec deltas: `packaging-and-extras`, the moved format specs
 - [ ] 5.8 Remove `openspec/changes/plugin-api`, which this change replaces
 
-## 6. The concurrency cut (its own pull request, any time after group 1)
+## 6. Afterwards
 
-- [ ] 6.1 The cut, and the three-sentence thread contract in `archivey.formats`
-- [ ] 6.2 A check that `archivey.fsspec` reads several member streams from threads and
-  closes cleanly
-- [ ] 6.3 Spec delta: `reader-concurrency`
-
-## 7. Afterwards
-
-- [ ] 7.1 Remove the aliases one release later
-- [ ] 7.2 Rewrite `docs/adding-a-format.md` against the settled contract
-- [ ] 7.3 `openspec validate --strict plugin-platform`
+- [ ] 6.1 Remove the aliases one release later
+- [ ] 6.2 Rewrite `docs/adding-a-format.md` against the settled contract
+- [ ] 6.3 `openspec validate --strict plugin-platform`
