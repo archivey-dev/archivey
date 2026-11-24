@@ -325,28 +325,35 @@ sites.
 Member streams and the shared handle: `ArchiveStream._close()` closes the inner
 stream while a `read()` may run on another thread, relying on each inner layer to
 tolerate it (report, "Two things noticed"). Under this rule that becomes reachable in
-both modes, and archivey cannot check a third-party stream's layers. A per-stream count
-is not enough: under the flag a plugin's streams share one handle lock
-(`LockedStream`, `format_adapter.py:1604`), so with stream A blocked in a read under
-that lock, closing idle stream B would wait for A, and a `close()` from A's own read
-would deadlock on it. So physical cleanup is deferred reader-wide:
+both modes, and archivey cannot check a third-party stream's layers. Under the
+flag a plugin's streams share one handle lock (`LockedStream`,
+`format_adapter.py:1604`) around their reads; a stream's close no longer takes it (the
+§5 close rule, below), so closing an idle stream never waits for a sibling's read. What
+is deferred is what a running call still uses:
 
 - One reader-wide count of running calls covers reader calls and member-stream calls
   alike. A stream call counts from its first touch of the inner stream to its return.
 - `reader.close()` marks the reader and every open stream closed (new calls raise
-  `ValueError` on a stream, the closed error on the reader) and does nothing physical
-  while the count is above zero. The last call out runs the whole cleanup in one fixed
-  order: inner stream closes, a suspended pass's backend iterator close
-  (`source_closer()`), then archive and source teardown. Every step is attempted even
-  if an earlier one fails; failures are routed as above.
-- A member stream's own `close()` on an open reader stays synchronous, as today: it
-  closes its inner stream before it returns, taking the shared handle lock and so
-  waiting for a sibling's running read, and raises its own close failure. It holds a
-  reader lease (a counted call) for the physical close, so a `reader.close()` that
-  arrives meanwhile defers teardown to it. A stream `close()` from a callback that runs
-  while this thread holds the handle lock (a sibling's read) raises
-  `ArchiveyUsageError` before it takes the lock, instead of deadlocking. The deferred
-  cleanup above is for `reader.close()` only.
+  `ValueError` on a stream, the closed error on the reader) and closes the inner stream
+  of every stream with no call of its own running. The last call out runs the rest of
+  the cleanup in one fixed order: the remaining inner stream closes, a suspended pass's
+  backend iterator close (`source_closer()`), then archive and source teardown. Every
+  step is attempted even if an earlier one fails; failures are routed as above.
+- Closing one member stream has nothing to do with the other streams (the maintainer's
+  principle, 2026-11-24; the contract rule below is proposed and awaits the maintainer's
+  OK). A member stream's own `close()` on an open reader closes its inner stream before
+  it returns and raises its own close failure, as today, but it no longer takes the
+  shared handle lock, so it never waits for a sibling's read and cannot deadlock from a
+  callback inside one. It holds a reader lease (a counted call) for the physical close,
+  so a `reader.close()` that arrives meanwhile defers teardown to it. This rests on a
+  contract rule (§5): a stream's `close()` may run on any thread, without archivey's
+  lock, while other streams of the same reader are read; it reads nothing from the
+  archive, and whatever it hands back to the reader it guards itself. CAB is the one
+  built-in that hands something back (its folder decoder, parked for the next member of
+  a solid folder), and it already does so under its own lock (`cab_reader.py:660-673`);
+  the implementation audits the other built-in streams against the rule.
+  `LockedStream.close()` stops taking the lock.
+
 - No plugin code and no cleanup step runs under the lifecycle lock.
 
 Entry points that can touch a live resource. Each public entry point is either a
@@ -499,11 +506,14 @@ without the lock, but archivey cannot tell it apart, so it takes the lock too. T
 contract text adds one sentence:
 
 > archivey serializes your reader's methods and the reads of the streams it returns with
-> one lock per reader; you need no lock of your own. In both modes archivey never calls
-> a stream's `close()` while one of its reads runs, and never tears your reader down
-> while one of its methods runs. `translate_exception()` is the one
-> method called without that lock: map the exception you are given, and read no state
-> of the reader or its library there.
+> one lock per reader; you need no lock of your own, except in a stream's `close()`:
+> archivey may call it on any thread, without that lock, while other streams of the
+> reader are read. It must not read the archive, and anything it hands back to your
+> reader (a decoder kept for the next member) it guards with a lock of its own. In both
+> modes archivey never calls a stream's `close()` while one of its reads runs, and never
+> tears your reader down while one of its methods runs. `translate_exception()` is the
+> one method called without that lock: map the exception you are given, and read no
+> state of the reader or its library there.
 
 `translate_exception()` runs outside the lock on purpose today (`format_adapter.py`
 comment at `_handle_lock`; `base_reader.py` runs it after the lock is released), so a
@@ -671,10 +681,10 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   modes; an `on_progress` callback of `extract_all()` and an `on_diagnostic` callback of
   `verify_all()` that call `reader.open()` raise `ArchiveyUsageError`.
 - New, §3, stream close: under the flag, stream B's `close()` while stream A's read is
-  blocked waits for that read and then closes B before it returns, raising B's own close
-  failure; a `reader.close()` during that wait returns at once and teardown follows B's
-  close. A stream `close()` from a callback inside a sibling's read raises
-  `ArchiveyUsageError` and does not deadlock.
+  blocked returns at once with B closed and B's own close failure raised, and A's read
+  then completes unchanged; a stream `close()` from a callback inside a sibling's read
+  closes that stream without deadlocking. Run per built-in format family with several
+  streams (CAB solid folder included) and for a plugin, as the check of the §5 rule.
 - New, §3, `info` from an `on_source_read` callback that runs inside a plugin's
   `open_member()` (holding the handle lock) returns the published snapshot without
   deadlocking; `info` in a loop body stays live.
