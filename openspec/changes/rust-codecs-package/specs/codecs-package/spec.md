@@ -5,11 +5,7 @@
 The `archivey-codecs` distribution SHALL contain only codecs, filters and checksums for
 which archivey ships a pure-Python version that stays the reference. It SHALL NOT
 contain archive parsers, archive types, I/O, or policy, and SHALL NOT depend on any
-package other than its build-time binding layer. It SHALL NOT import archivey. Its API
-SHALL hold only what archivey calls or a planned archivey feature needs. An int
-argument outside its parameter's range SHALL raise `ValueError` with a fixed message
-(LZX's `window_bits` raises `CorruptDataError`, as for any window the kernel does not
-know).
+package other than its build-time binding layer. It SHALL NOT import archivey.
 
 #### Scenario: package contents
 
@@ -18,22 +14,26 @@ know).
 | `import archivey_codecs` with archivey absent | Succeeds; every kernel usable |
 | A kernel with no archivey Python twin | Not added |
 | A wrapper of zlib, bz2 or LZMA | Not added |
-| A name that no archivey call site uses and no planned archivey feature needs | Not added |
-| An int argument outside its parameter's range | `ValueError` with a fixed message, the same on every platform (`CorruptDataError` for LZX's `window_bits`) |
 
-### Requirement: A CRC is a function like zlib.crc32
+### Requirement: Hash objects follow hashlib
 
-Each CRC SHALL be a function `name(data, value=0) -> int` in snake case, like
-`zlib.crc32`, named after its CRC catalogue entry. It SHALL release the GIL only for
-immutable `bytes` input above a documented size; a mutable buffer SHALL be copied first
-or read with the GIL held.
+Each hash SHALL be a type, named in CamelCase (`Crc16Arc`), whose constructor takes
+optional initial data and whose objects have `update(data)`, `digest()`, `hexdigest()`,
+`copy()`, `name`, `digest_size` and `block_size`, with the meaning `hashlib` gives them.
+Each CRC SHALL also have a separate function `name(data, value=0) -> int` in snake case,
+like `zlib.crc32`, and both SHALL be named after its CRC catalogue entry. A CRC's
+`digest()` SHALL be big-endian. `update()` SHALL release the GIL only for immutable
+`bytes` input above a documented size; a mutable buffer SHALL be copied first or read
+with the GIL held.
 
-#### Scenario: CRC function
+#### Scenario: hash interface
 
 | Case | Expected |
 | --- | --- |
+| `h = Crc16Arc(); h.update(a); h.update(b)` | `h.digest()` equals `Crc16Arc(a + b).digest()` |
+| `h.copy()` then more `update()` on the copy | The original's digest is unchanged |
 | `crc16_arc(b, crc16_arc(a))` | Equals `crc16_arc(a + b)` |
-| `crc16_arc(b"123456789")` | `0xBB3D`, the catalogue's check value |
+| `Crc16Arc(a).digest()` | `crc16_arc(a).to_bytes(2, "big")` |
 
 ### Requirement: Streaming objects and block functions have fixed shapes
 
@@ -41,11 +41,10 @@ Each streaming object SHALL have one of three shapes. A decompressor (LZX, LZW) 
 have `decompress(data, max_length=-1) -> bytes` and the attributes `eof`, `needs_input`
 and `unused_data`, with the meaning `lzma.LZMADecompressor` gives them, and SHALL
 return at most `max_length` bytes when it is not negative. The LZX decompressor SHALL
-take the declared output size (`output_size=`, or `set_output_size(n)` between frames
-before the last frame ends; while a frame waits for input or after a decode error it
-SHALL raise `ValueError`), SHALL decode whole frames of 32 KiB with only the last one
-shorter, whatever `max_length` is, and SHALL set `eof` when `total_out` reaches it. LZX
-and LZW SHALL have `flush(max_length=-1)`, which marks the end of input and returns the
+take the declared output size (`output_size=` or `set_output_size(n)` before the last
+frame ends), SHALL decode whole frames of 32 KiB with only the last one shorter,
+whatever `max_length` is, and SHALL set `eof` when `total_out` reaches it. LZX and LZW
+SHALL have `flush(max_length=-1)`, which marks the end of input and returns the
 remaining output; before it, input that ends inside a frame or code only means more
 input is needed. LZX's `flush()` SHALL finish the last frame with the Python twin's zero
 padding and SHALL raise `TruncatedDataError` when the frame still cannot finish. LZW's
@@ -77,8 +76,6 @@ allocation SHALL be bounded by a constructor argument, `max_length`, the input l
 | LZX last frame split across two `decompress()` calls | After the first, `needs_input` true and no error; after the second and `flush()`, the frame as the twin decodes it |
 | LZX input that stops at that same split, then `flush()` | The twin's output and its terminal error (`TruncatedDataError`) |
 | LZX with no output size (incomplete block table), `flush()` inside a frame | `TruncatedDataError`, as the twin |
-| LZX with no output size, `set_output_size()` before each frame to that frame's end | The folder's bytes, the last frame short |
-| LZX `set_output_size()` while a frame waits for input, or after a decode error | `ValueError` |
 | LZW `decompress(b"")` before the source ends | Buffered output only; `eof` false |
 | LZW `flush()` after a clean stream | The rest of the output; `eof` true; `truncation` is `None` |
 | LZW `flush()` with padding still owed | The bytes before the cut; `truncation` names the owed padding; no exception |
@@ -115,8 +112,9 @@ output a straight decode produces from offset `total_out` (for ZipCrypto, from o
 `total_in`). `from_state` SHALL refuse a state written by another kernel or another
 revision with `UnsupportedDataError`. A decoder that holds a decode error (LZW, LZX,
 BCJ2) SHALL refuse `getstate()` with `ValueError`: while it holds the error, every later
-decoding call raises it, and it has no state to resume from. Block functions have no
-state; a seek point is the block's offset.
+decoding call raises it, and it has no state to resume from. (An LZX `set_output_size()`
+that gives back the input the error was met in drops it.) Block functions have no state;
+a seek point is the block's offset.
 
 #### Scenario: resume from a saved state
 
@@ -124,6 +122,7 @@ state; a seek point is the block's offset.
 | --- | --- |
 | Save at any call boundary before a decode error, resume from `total_in` | Output equals the straight decode from `total_out`, byte for byte, errors included |
 | LZW, LZX or BCJ2 `getstate()` after a decode error | `ValueError`; every later decoding call raises the same error while the decoder holds it |
+| LZX without an output size, saved after it read input past the stream, then a late `set_output_size()` | The original gives that input back and drops an error met in it, unless it has already dropped that input from its buffer; the restored decoder keeps it consumed and keeps the error |
 | BCJ2 saved mid-stream, restored with four new streams each at its own `total_in` | Output equals the straight decode from `total_out` |
 | BCJ2 restored twice from one state, with independent streams, reads interleaved past their buffers | Both produce the straight decode; neither affects the other |
 | `bcj2.Decompressor.copy` | Does not exist |
