@@ -2361,7 +2361,9 @@ class DecompressorStream(ReadOnlyIOStream):
 
         Raising the stored instance would tie this stream into a cycle through the
         raise's frames (``kept_errors``), and append each raise's frames to one
-        traceback that grows with every retry.
+        traceback that grows with every retry. A stop from ``on_source_read`` is the
+        exception: it is the caller's own instance, raised with the traceback it had
+        when it was kept (``KeptError.stop``), so it does not grow either.
         """
         assert self._spent is not None
         self._spent.raise_again()

@@ -626,6 +626,60 @@ def test_a_retry_raises_the_caller_s_own_stop_instance(tmp_path: Path) -> None:
     assert stopped
 
 
+@pytest.mark.parametrize("shape", ["gz", "stored_zip"])
+def test_retries_after_a_stop_do_not_grow_its_traceback(
+    tmp_path: Path, shape: str
+) -> None:
+    # The stop is the caller's own instance, raised again on every retry. A raise
+    # adds its frames to the traceback on the instance, so each retry must start
+    # from the traceback the stop had when it was kept.
+    import traceback
+
+    if shape == "gz":
+        path = _gz_file(tmp_path, 2 << 20)
+    else:
+        path = tmp_path / "stored.zip"
+        path.write_bytes(_small_zip({"a.bin": os.urandom(2 << 20)}))
+
+    @contextlib.contextmanager
+    def stream(config: ArchiveyConfig) -> Any:
+        if shape == "gz":
+            with open_stream(path, config=config) as s:
+                yield s
+        else:
+            with open_archive(path, config=config) as reader, reader.open("a.bin") as s:
+                yield s
+
+    # Stop on the third report after the stream is open, so the stop comes from a
+    # read of the data, not from opening.
+    armed = 0
+
+    def stop(progress: SourceProgress) -> None:
+        nonlocal armed
+        if armed:
+            armed += 1
+            if armed == 4:
+                raise _StopValue("stop")
+
+    config = ArchiveyConfig(
+        on_source_read=stop, source_read_step=0, use_rapidgzip="off"
+    )
+    lengths = []
+    with stream(config) as s:
+        armed = 1
+        with pytest.raises(_StopValue) as caught:
+            while s.read(1 << 16):
+                pass
+        first = caught.value
+        for _ in range(100):
+            with pytest.raises(_StopValue) as caught:
+                s.read(1)
+            assert caught.value is first
+            lengths.append(len(traceback.extract_tb(caught.value.__traceback__)))
+    assert max(lengths) < 80
+    assert lengths[-1] == lengths[1]
+
+
 def _check_stop_holds(
     open_reads: Any, sizes: list[int], stop_type: type[BaseException]
 ) -> int:
@@ -701,8 +755,9 @@ def test_a_stop_on_a_feed_read_holds_for_a_smaller_read(
 def test_a_stop_whose_copy_drops_its_attributes_still_holds(
     tmp_path: Path, stop_type: type[BaseException]
 ) -> None:
-    # The stream keeps a copy of a stop. A copy without the caller's marks must not
-    # let buffered bytes out, nor turn an ``EOFError`` into a truncation error.
+    # A stop whose copy would drop the caller's marks: the stream raises the caller's
+    # own instance, so the marks hold, buffered bytes stay in, and an ``EOFError`` is
+    # not turned into a truncation error.
     path = _bad_crc_gz(tmp_path, 0, 1 << 16, 1 << 18)
     sizes = [1 << 20, 1 << 20, 1, -1]
     reads = _stream_reads(path, use_rapidgzip="off")

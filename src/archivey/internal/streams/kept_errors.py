@@ -16,8 +16,10 @@ raise's traceback as text. Each later raise is a fresh copy whose cause is an
 raised and where it was raised again, and pins no frame.
 
 The one exception is a stop that ``on_source_read`` raised: it is the caller's own
-object, raised again unchanged (:attr:`KeptError.stop`). The source's reporter keeps
-and raises that same instance, so the stream adds no cycle of its own.
+object, raised again with the caller's fields and identity (:attr:`KeptError.stop`).
+Each raise first puts back the traceback it had when it was kept, so a retry adds one
+propagation's frames to that and the traceback does not grow with every retry. The
+source's reporter keeps and raises that same instance the same way.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from __future__ import annotations
 import copy
 import traceback
 from dataclasses import dataclass, field
+from types import TracebackType
 from typing import NoReturn, TypeVar
 
 from archivey.internal.streams.callers_source import (
@@ -78,11 +81,17 @@ class KeptError:
     (:func:`~archivey.internal.streams.callers_source.from_source_callback`)."""
 
     stop: BaseException | None = field(default=None, compare=False, repr=False)
-    """For a stop from ``on_source_read``, the caller's own instance, raised again as
-    it is. A copy would drop fields the caller set (a slot, say), and the caller may
-    compare by identity. The reporter keeps this same instance and raises it on every
-    later source read (``SourceReadReporter.raise_if_stopped``), so keeping it here
-    ties no frame that the reporter does not already tie."""
+    """For a stop from ``on_source_read``, the caller's own instance, raised again. A
+    copy would drop fields the caller set (a slot, say), and the caller may compare
+    by identity. The reporter keeps this same instance and raises it on every later
+    source read (``SourceReadReporter.raise_if_stopped``)."""
+
+    stop_traceback: TracebackType | None = field(
+        default=None, compare=False, repr=False
+    )
+    """:attr:`stop`'s traceback when it was kept, put back before each raise: a raise
+    adds its frames to the traceback already on the instance, so without the reset
+    every retry would make it longer and keep more frames alive."""
 
     @classmethod
     def of(cls, raised: BaseException) -> KeptError:
@@ -99,6 +108,7 @@ class KeptError:
             callers_source=from_callers_source(raised),
             source_callback=callback,
             stop=raised if callback else None,
+            stop_traceback=raised.__traceback__ if callback else None,
         )
 
     def raise_again(self) -> NoReturn:
@@ -110,10 +120,11 @@ class KeptError:
         the error.
 
         A stop from ``on_source_read`` is the exception: the caller's own instance is
-        raised again, unchanged (:attr:`stop`), as the reporter raises it.
+        raised again (:attr:`stop`), with the traceback it had when it was kept, as the
+        reporter raises it.
         """
         if self.stop is not None:
-            raise self.stop
+            raise self.stop.with_traceback(self.stop_traceback)
         again = unraised(self.error)
         again.__traceback__ = None
         # Each copy carries the caller's marks again, so every boundary above raises
