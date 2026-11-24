@@ -236,19 +236,6 @@ class LzxDecoder:
             and self._block_length & 1 == 1
         )
 
-    def resize_frame(self, size: int) -> bool:
-        """Give the frame in progress a new size once the output size is known late.
-        It decodes as if it had that size from its start, as long as it has not
-        decoded past it; a size of 0 leaves no frame in progress. ``False`` when it
-        has decoded past ``size``."""
-        progress = self.frame_in_progress()
-        if progress is None:
-            return False
-        if size > FRAME_SIZE or progress[1] > size:
-            return False
-        self._frame_size = size or None
-        return True
-
     # ── Input ────────────────────────────────────────────────────────────────────────
 
     def _refill(self, need: int) -> None:
