@@ -2156,6 +2156,101 @@ def test_raw_runs_that_share_stored_bytes_count_toward_the_pass_ratio() -> None:
         assert isinstance(error.__cause__, ResourceLimitError)
 
 
+def _empty_tables(count: int, name: Callable[[int], str]) -> bytes:
+    """A one-file image whose property list also holds ``count`` empty tables (no
+    sectors, no runs), table ``i`` named ``name(i)``."""
+    hfs = d.write_hfsplus([d.Node("a.txt", data=b"hello")])
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+    disk = d.write_gpt([d.Partition(volume)])
+
+    def add(plist: dict) -> None:
+        blkx = plist["resource-fork"]["blkx"]
+        mish = bytearray(blkx[0]["Data"][: d.MISH.size])
+        struct.pack_into(">Q", mish, 16, 0)  # no sectors
+        struct.pack_into(">I", mish, d.MISH.size - 4, 0)  # no runs
+        blkx.extend({"CFName": name(i), "Data": bytes(mish)} for i in range(count))
+
+    return d.write_udif(disk.segments, tables=disk.tables, patch_plist=add).image
+
+
+@pytest.mark.parametrize(
+    ("name", "limit"),
+    [
+        # 2,000 unnamed tables: their 512,000 bytes alone pass a 384 KiB limit.
+        (lambda i: "", 384 << 10),
+        # 2,000 tables with 300-character names: 512,000 bytes of tables and 600,000
+        # of names, past 1 MiB only with the names.
+        (lambda i: f"{i:04d}" + "n" * 296, 1 << 20),
+        # The same names in a non-ASCII letter count four bytes a character: 2.4 MB.
+        (lambda i: f"{i:04d}" + "\u00e9" * 296, 2 << 20),
+    ],
+    ids=["tables", "names", "non-ascii-names"],
+)
+def test_kept_tables_and_their_names_count_toward_max_metadata_bytes(
+    name: Callable[[int], str], limit: int
+) -> None:
+    """Empty tables (no sectors, no runs) cost no run bytes, so only the runs were
+    charged and any number of them loaded. Each limit is one the image passes without
+    the charge its case names."""
+    image = _empty_tables(2000, name)
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=limit))
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes.*blkx tables"):
+        _open(image, config=config)
+    with _open(image) as reader:
+        assert [m.name for m in reader.members() if m.is_file] == ["a.txt"]
+
+
+def test_kept_tables_count_with_the_members_toward_max_metadata_bytes() -> None:
+    """The tables are kept for the reader's life, so they share the budget with the
+    listing: at the smallest limit the image lists under, one byte less opens (the
+    tables fit alone, as does the listing) but refuses the listing."""
+    image = _empty_tables(2000, lambda i: "")
+
+    def lists(limit: int) -> bool:
+        config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=limit))
+        with _open(image, config=config) as reader:
+            try:
+                return [m.name for m in reader.members() if m.is_file] == ["a.txt"]
+            except ResourceLimitError as error:
+                assert "max_metadata_bytes" in str(error)
+                return False
+
+    with _open(image) as reader:
+        reader.members()
+        tracker = reader._listing_tracker  # type: ignore[attr-defined]
+        kept, listed = tracker._kept_bytes, tracker.metadata_bytes - tracker._kept_bytes
+    # 2,000 tables of 256 bytes, and the runs of the image's own tables at 36 bytes.
+    assert kept >= 2000 * 256 > 100 * listed > 0
+    low, high = kept, 2 * kept
+    assert not lists(low) and lists(high)
+    while high - low > 1:
+        middle = (low + high) // 2
+        low, high = (low, middle) if lists(middle) else (middle, high)
+    assert high >= kept + listed  # the boundary counts both
+    assert not lists(high - 1)
+    assert lists(high)
+
+
+def test_an_adc_run_that_decodes_past_its_sectors_names_their_size() -> None:
+    hfs = d.write_hfsplus([d.Node("a.txt", data=bytes(range(256)) * 64)])
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+    disk = d.write_gpt([d.Partition(volume)])
+
+    def encode(kind: int, data: bytes) -> bytes:
+        if kind == d.ADC:
+            return d.adc_literals(data + b"extra bytes!" * 20)
+        return d.encode_run(kind, data)
+
+    image = d.write_udif(
+        disk.segments, tables=disk.tables, codec=d.ADC, run_sectors=2, encode=encode
+    ).image
+    with (
+        pytest.raises(CorruptionError, match="disk sector 1 .*more than 512 bytes"),
+        _open(image) as reader,
+    ):
+        reader.members()
+
+
 # ── Runs decoded again, and the data order ───────────────────────────────────────────
 
 _RUN_SECTORS = 64  # 32 KiB runs: eight 4 KiB blocks each

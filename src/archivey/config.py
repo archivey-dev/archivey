@@ -462,6 +462,9 @@ class ListingLimits:
     upper bound on the text's size rather than an exact size. A TAR sparse member's
     map, which the listing keeps to read the member, counts 24 bytes per entry, and each
     ZIP extra field kept in ``extra["zip.extra_fields"]`` counts 72 bytes plus its data.
+    A DMG's run tables, kept for the reader's life, weigh 256 bytes per table plus its
+    name and 36 bytes per declared run, added to the members' weight from when the image
+    is opened, so ``open_archive()`` can raise too.
 
     Some formats also hold a total of their own to this amount, for structures the
     listing does not weigh. ISO weighs the full UDF paths when the archive is opened, so
