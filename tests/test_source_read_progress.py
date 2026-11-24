@@ -16,6 +16,7 @@ import pytest
 
 from archivey import (
     ArchiveyConfig,
+    CorruptionError,
     SourceProgress,
     SpoolLimits,
     open_archive,
@@ -576,6 +577,55 @@ class _StopEOFDropsMarks(EOFError):
 
     def __copy__(self) -> _StopEOFDropsMarks:
         return type(self)(*self.args)
+
+
+class _StopWithSlots(ValueError):
+    """A stop with a caller-defined field in a slot, which a copy does not carry."""
+
+    __slots__ = ("code",)
+
+
+def test_a_retry_raises_the_caller_s_own_stop_instance(tmp_path: Path) -> None:
+    # The stream keeps the stop to raise it again. For the callback's stop that is
+    # the caller's own instance, with its own fields, not a copy.
+    path = _bad_crc_gz(tmp_path, 0, 1 << 16, 1 << 18)
+    config = ArchiveyConfig(source_read_step=0, use_rapidgzip="off")
+    recorder = _Recorder()
+    with pytest.raises(CorruptionError):
+        _read_stream(path, replace(config, on_source_read=recorder))
+    stopped = 0
+    for n in range(1, len(recorder.calls) + 1):
+        raised: list[_StopWithSlots] = []
+        calls = 0
+
+        def stop(
+            progress: SourceProgress,
+            n: int = n,
+            raised: list[_StopWithSlots] = raised,
+        ) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == n:
+                exc = _StopWithSlots("stop")
+                exc.code = 42
+                raised.append(exc)
+                raise exc
+
+        try:
+            stream = open_stream(path, config=replace(config, on_source_read=stop))
+        except _StopWithSlots:
+            continue
+        with stream:
+            for size in (1 << 20, 1 << 20, 1, -1):
+                try:
+                    stream.read(size)
+                except _StopWithSlots as caught:
+                    assert caught is raised[0]
+                    assert caught.code == 42
+                    stopped += 1
+                except CorruptionError:
+                    assert not raised
+    assert stopped
 
 
 def _check_stop_holds(
