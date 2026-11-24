@@ -2,9 +2,9 @@
 //!
 //! The kernels (`kernels/`) know nothing about Python. This module gives them the
 //! standard-library shapes of archivey's design (openspec change
-//! `rust-codecs-package`, D2 and D3): `hashlib`-style hashes, `zlib.crc32`-style
-//! functions, `lzma.LZMADecompressor`-style decompressors, length-keeping transforms,
-//! one-shot block functions, and the `CodecError` family.
+//! `rust-codecs-package`, D2 and D3): `zlib.crc32`-style functions,
+//! `lzma.LZMADecompressor`-style decompressors, length-keeping transforms, one-shot
+//! block functions, and the `CodecError` family.
 //!
 //! Input: an immutable `bytes` object is read in place, and the GIL is released while
 //! a kernel reads it (by the CRC only from 64 KiB up); any other buffer is copied
@@ -21,7 +21,7 @@ use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyEOFError, PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::critical_section::with_critical_section;
-use pyo3::types::{PyByteArray, PyBytes, PyDict, PyInt, PyMemoryView};
+use pyo3::types::{PyByteArray, PyBytes, PyDict, PyMemoryView};
 use pyo3::{PyTraverseError, PyVisit};
 
 pyo3::create_exception!(
@@ -320,15 +320,9 @@ fn crc16_arc(
     };
     // A CRC-16 has 16 bits: a value outside them is refused rather than masked, since
     // it can only be a caller's mistake. Any int is compared, however large.
-    let value = match value.extract::<u16>() {
-        Ok(v) => v,
-        Err(_) if value.is_instance_of::<PyInt>() => {
-            return Err(PyValueError::new_err(format!(
-                "CRC-16 value {value} is outside 0 to 0xFFFF"
-            )));
-        }
-        Err(e) => return Err(e),
-    };
+    let value: u16 = int_arg(value.as_borrowed(), || {
+        PyValueError::new_err("CRC-16 value is outside 0 to 0xFFFF")
+    })?;
     Ok(u32::from(crc16_update(py, value, data)?))
 }
 

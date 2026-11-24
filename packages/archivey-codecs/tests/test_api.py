@@ -71,9 +71,16 @@ def test_crc16_goes_on_from_a_value() -> None:
 
 
 def test_crc16_value_out_of_range() -> None:
-    for value in (0x10000, -1, 2**63, 2**64):
-        with pytest.raises(ValueError, match="outside 0 to 0xFFFF"):
-            crc16_arc(b"", value)
+    class Index:
+        def __init__(self, n: int) -> None:
+            self.n = n
+
+        def __index__(self) -> int:
+            return self.n
+
+    for value in (0x10000, -1, 2**63, 2**64, Index(-1), Index(0x10000)):
+        with pytest.raises(ValueError, match="^CRC-16 value is outside 0 to 0xFFFF$"):
+            crc16_arc(b"", value)  # type: ignore[arg-type]
 
 
 def test_crc16_reads_any_buffer() -> None:
