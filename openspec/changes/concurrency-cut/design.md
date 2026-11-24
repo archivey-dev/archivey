@@ -141,8 +141,9 @@ lock stays. So rule 3 means "may be open at once", not "read at the same instant
 threads reading two such streams take turns, and a read never runs beside an
 `open_member` or another call of the same reader. A reader whose streams call back into
 its own state (a block cache, a shared decoder, a library handle) needs no lock of its
-own, on a free-threaded build too. Streams over `ReaderSource` views are archivey's own,
-safe without the lock, and do not take it. The contract text adds one sentence:
+own, on a free-threaded build too. A stream over `ReaderSource` views would be safe
+without the lock, but archivey cannot tell it apart, so it takes the lock too. The
+contract text adds one sentence:
 
 > archivey serializes your reader's methods and the reads of the streams it returns with
 > one lock per reader; you need no lock of your own.
