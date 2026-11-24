@@ -1,7 +1,7 @@
 ## 1. Plan
 
 - [x] 1.1 The flag keeps its name (design.md §4; maintainer, 2026-11-24)
-- [ ] 1.2 The maintainer agrees rule 2 of the plugin contract (design.md §5)
+- [x] 1.2 Rule 2 of the plugin contract agreed (design.md §5; maintainer, 2026-11-24)
 - [ ] 1.3 The maintainer picks what `close()` waits for (design.md §3: A or B)
 
 ## 2. The cut (one implementation PR, deep tier)

@@ -170,7 +170,8 @@ raises `ArchiveyUsageError` and the reader stays open."
 cut as written. Rule 2 needs a change: a sequential reader whose member data exists only
 while the walk is at it (`MemberSpan.data`) gives each `open()` stream a walk of its own
 (`SequentialAdapter._decoded_by_walk`). With several streams open, which this cut keeps,
-several walks are open at once. Refusing that would be format gating. Proposed wording:
+several walks are open at once. Refusing that would be format gating. Wording (agreed by
+the maintainer, 2026-11-24):
 
 1. archivey calls the methods of one reader from one thread at a time.
 2. A pass has the reader to itself from its first member to its end: nothing else reads
@@ -342,5 +343,6 @@ Measured in the PR: lines removed from `src/` and `tests/`.
   close was this plan's proposal, not a ruling: §3 puts it to the maintainer.
 - Keep the flag's name, `concurrent_operations`, with the narrower meaning (§4;
   maintainer, 2026-11-24).
-- Open: rule 2 of the plugin contract (§5). Recommended: the wording above.
+- Rule 2 of the plugin contract as worded in §5: outside a pass, `walk()` may run again
+  while an earlier walk is open (maintainer, 2026-11-24).
 - Open: what `close()` waits for (§3). Recommended: A, lookup calls only.
