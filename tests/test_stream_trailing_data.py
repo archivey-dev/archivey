@@ -175,7 +175,7 @@ def test_a_pipe_reads_and_reports_the_same(suffix: str) -> None:
     _name, compress, _marks = _CODECS[suffix]
     compressed = compress(_PAYLOAD)
     source = NonSeekableBytesIO(compressed + _JUNK)
-    with open_archive(source, streaming=True, config=_ALWAYS_PROBE) as reader:
+    with open_archive(source, pipe=True, config=_ALWAYS_PROBE) as reader:
         for _member, stream in reader.stream_members():
             assert stream is not None
             assert stream.read() == _PAYLOAD
@@ -187,7 +187,7 @@ def test_a_pipe_reads_and_reports_the_same(suffix: str) -> None:
 def test_brotli_on_a_pipe_cannot_tell_appended_bytes_from_damage() -> None:
     """``brotli`` fails the same way on both; telling them apart re-reads the source."""
     source = NonSeekableBytesIO(_brotli(_PAYLOAD) + _JUNK)
-    with open_archive(source, streaming=True, format=_format(".br")) as reader:
+    with open_archive(source, pipe=True, format=_format(".br")) as reader:
         for _member, stream in reader.stream_members():
             assert stream is not None
             with raises_corruption_not_truncation():
@@ -997,7 +997,7 @@ def test_a_damaged_magic_on_a_later_stream_is_corruption(
     data = _second_stream_magic_damaged(suffix, position)
     if access == "streaming":
         source = NonSeekableBytesIO(data)
-        with open_archive(source, streaming=True, format=_format(suffix)) as reader:
+        with open_archive(source, pipe=True, format=_format(suffix)) as reader:
             for _member, stream in reader.stream_members():
                 assert stream is not None
                 with raises_corruption_not_truncation():
@@ -1035,7 +1035,7 @@ def test_other_bytes_after_a_stream_are_still_reported(
     data = compressed + tail
     if access == "streaming":
         source = NonSeekableBytesIO(data)
-        with open_archive(source, streaming=True, format=_format(suffix)) as reader:
+        with open_archive(source, pipe=True, format=_format(suffix)) as reader:
             for _member, stream in reader.stream_members():
                 assert stream is not None
                 assert stream.read() == _SMALL
@@ -1124,7 +1124,7 @@ def test_a_magic_damaged_to_a_zero_byte_is_corruption(
     data = compress(_SMALL) + bytes(second)
     if access == "streaming":
         source = NonSeekableBytesIO(data)
-        with open_archive(source, streaming=True, format=_format(suffix)) as reader:
+        with open_archive(source, pipe=True, format=_format(suffix)) as reader:
             for _member, stream in reader.stream_members():
                 assert stream is not None
                 with raises_corruption_not_truncation():
@@ -1153,7 +1153,7 @@ def test_a_magic_damaged_to_zeros_at_the_end_of_the_file_is_corruption(
     data = first + b"\x00" * zeros + compress(_SMALL)[zeros:width]
     if access == "streaming":
         source = NonSeekableBytesIO(data)
-        with open_archive(source, streaming=True, format=_format(suffix)) as reader:
+        with open_archive(source, pipe=True, format=_format(suffix)) as reader:
             for _member, stream in reader.stream_members():
                 assert stream is not None
                 with raises_corruption_not_truncation():
@@ -1283,7 +1283,7 @@ def test_the_xz_forward_read_names_where_the_damaged_stream_starts(
     second = bytearray(first)
     second[0] ^= 0x40
     source = NonSeekableBytesIO(first + b"\x00" * padding + bytes(second))
-    with open_archive(source, streaming=True, format=_format(".xz")) as reader:
+    with open_archive(source, pipe=True, format=_format(".xz")) as reader:
         for _member, stream in reader.stream_members():
             assert stream is not None
             with pytest.raises(

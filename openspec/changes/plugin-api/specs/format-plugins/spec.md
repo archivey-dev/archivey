@@ -80,7 +80,7 @@ without an `open_member` from the plugin.
 
 | Case | Expected |
 | --- | --- |
-| An archive of a sequential plugin format piped to `open_archive(stream, streaming=True)`; `stream_members()` | Every member with its data, in one pass |
+| An archive of a sequential plugin format piped to `open_archive(stream, pipe=True)`; `stream_members()` | Every member with its data, in one pass |
 | `x.lha.gz` from a file; `open(member)` on the third member | Its data |
 | A caller reads half of a member's stream and advances | The next member's header and data are read correctly |
 

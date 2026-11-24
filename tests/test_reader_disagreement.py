@@ -46,7 +46,7 @@ def _reported(archive: bytes, *, streaming: bool = False) -> list[tuple[str, str
     """(member name, code, shape or earlier member id) for each of the two codes."""
     source = NonSeekableBytesIO(archive) if streaming else io.BytesIO(archive)
     found = []
-    with open_archive(source, streaming=streaming) as ar:
+    with open_archive(source, pipe=streaming) as ar:
         members = (
             [m for m, _ in ar.stream_members()] if streaming else list(ar.members())
         )
@@ -379,7 +379,7 @@ def test_a_zip_directory_by_attribute_is_a_directory(
         ("d/", _DISAGREE, "directory_attribute_without_slash")
     ]
     source = NonSeekableBytesIO(archive) if streaming else io.BytesIO(archive)
-    with open_archive(source, streaming=streaming) as ar:
+    with open_archive(source, pipe=streaming) as ar:
         ar.extract_all(tmp_path, on_blocked="skip")
     assert (tmp_path / "d").is_dir()
 
@@ -435,7 +435,7 @@ def test_a_pipe_pass_yields_a_directory_by_attribute_as_its_name_says() -> None:
     """The attributes come with the central directory, after the pass: the pass
     yields the file the name says, and the member is a directory afterwards (DR-25)."""
     archive = _DIRECTORY_BY_ATTRIBUTE["dos directory bit"]
-    with open_archive(NonSeekableBytesIO(archive), streaming=True) as ar:
+    with open_archive(NonSeekableBytesIO(archive), pipe=True) as ar:
         yielded = [
             (member, member.name, member.type, stream is not None)
             for member, stream in ar.stream_members()

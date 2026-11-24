@@ -80,7 +80,8 @@ mail attachments or a plugin installer.
 
 **Caller:** a training or ETL job reading many members from large tar or zip shards,
 often from a pipe or object storage.
-**Code:** `open_archive(stream, streaming=True)`, then `stream_members()`. Sometimes
+**Code:** `open_archive(stream, pipe=True)` for a pipe, `streaming=True` for a file or
+object storage, then `stream_members()`. Sometimes
 random access with `seekable_members=True` and concurrent readers.
 **Needs:**
 - Throughput close to the standard library.

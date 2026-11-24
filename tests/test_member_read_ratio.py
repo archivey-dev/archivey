@@ -176,7 +176,7 @@ def test_a_piped_zip_pass_is_held_to_the_live_ratio(
     data = _small_bzip2_members(tmp_path)
     pipe = SizedNonSeekable(data, len(data)) if sized else NonSeekableBytesIO(data)
     with (
-        open_archive(pipe, streaming=True, config=_LOW_LIVE_FLOOR) as reader,
+        open_archive(pipe, pipe=True, config=_LOW_LIVE_FLOOR) as reader,
         pytest.raises(AlwaysStopResourceLimitError, match="Live decompression ratio"),
     ):
         for _member, stream in reader.stream_members():
@@ -188,7 +188,7 @@ def test_a_piped_zip_extraction_is_held_to_the_live_ratio(tmp_path: Path) -> Non
     data = _small_bzip2_members(tmp_path)
     with (
         open_archive(
-            NonSeekableBytesIO(data), streaming=True, config=_LOW_LIVE_FLOOR
+            NonSeekableBytesIO(data), pipe=True, config=_LOW_LIVE_FLOOR
         ) as reader,
         pytest.raises(AlwaysStopResourceLimitError, match="Live decompression ratio"),
     ):
@@ -201,7 +201,7 @@ def test_a_piped_sparse_tar_is_held_to_the_live_ratio() -> None:
     data = member + _TRAILER
     with (
         open_archive(
-            NonSeekableBytesIO(data), streaming=True, config=_LOW_LIVE_FLOOR
+            NonSeekableBytesIO(data), pipe=True, config=_LOW_LIVE_FLOOR
         ) as reader,
         pytest.raises(AlwaysStopResourceLimitError, match="Live decompression ratio"),
     ):
@@ -212,7 +212,7 @@ def test_a_piped_sparse_tar_is_held_to_the_live_ratio() -> None:
 
 def test_a_piped_zip_counts_the_bytes_taken_from_the_pipe(tmp_path: Path) -> None:
     data = _small_bzip2_members(tmp_path)
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
         for _member, stream in reader.stream_members():
             assert stream is not None
             _drain(stream)
@@ -227,7 +227,7 @@ def test_a_piped_zip_of_stored_data_passes_the_live_ratio(tmp_path: Path) -> Non
         for i in range(3):
             zf.writestr(f"s{i}", bytes(4 * _MIB))
     with open_archive(
-        NonSeekableBytesIO(path.read_bytes()), streaming=True, config=_LOW_LIVE_FLOOR
+        NonSeekableBytesIO(path.read_bytes()), pipe=True, config=_LOW_LIVE_FLOOR
     ) as reader:
         total = 0
         for _member, stream in reader.stream_members():
@@ -242,7 +242,7 @@ def test_measurement_reports_the_piped_count(tmp_path: Path) -> None:
     data = _small_bzip2_members(tmp_path)
     with (
         enable_measurement(),
-        open_archive(NonSeekableBytesIO(data), streaming=True) as reader,
+        open_archive(NonSeekableBytesIO(data), pipe=True) as reader,
     ):
         for _member, stream in reader.stream_members():
             assert stream is not None

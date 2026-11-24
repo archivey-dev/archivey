@@ -998,7 +998,7 @@ def test_a_zero_central_crc_takes_the_check_byte_from_the_local_crc(
     cd = blob.index(b"PK\x01\x02")
     blob[cd + 16 : cd + 20] = b"\0\0\0\0"
     source = NonSeekableBytesIO(bytes(blob)) if piped else io.BytesIO(bytes(blob))
-    with open_archive(source, streaming=piped, password=RIGHT) as ar:
+    with open_archive(source, pipe=piped, password=RIGHT) as ar:
         if piped:
             read = []
             for _, stream in ar.stream_members():

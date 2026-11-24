@@ -52,9 +52,12 @@ on purpose.
 **Random access vs streaming.** `open_archive(..., streaming=False)`, the default, gives a
 reader you can ask for any member in any order, as often as you like. It needs a source
 that can seek. `streaming=True` is a *promise* by the caller to read once, front to back:
-in exchange archivey can read from a pipe, but `members()`, `get()`, `open()` and `read()`
-are refused. Streaming is not a property of the file. A seekable file can be opened with
-`streaming=True` too.
+`members()`, `get()`, `open()` and `read()` are refused. Streaming is not a property of
+the file. A seekable file can be opened with `streaming=True` too.
+
+**Pipe mode.** `pipe=True` reads the source once, front to back, as a pipe is read,
+whatever the object can do; it implies `streaming=True`. It is the only mode that reads
+a source that cannot seek (a pipe, a socket, a `stream_members()` stream).
 
 **Seekable members.** `seekable_members=True` makes `seek()` work on a member stream
 from `open()`. Off by default, because seeking backwards in compressed data can mean

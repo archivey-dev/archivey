@@ -212,7 +212,7 @@ def test_a_copy_is_not_filled(tmp_path: Path) -> None:
 
 def test_streaming_pass_from_a_pipe_fills_size() -> None:
     source = NonSeekableBytesIO(bz2.compress(PAYLOAD))
-    with open_archive(source, streaming=True) as reader:
+    with open_archive(source, pipe=True) as reader:
         for member, stream in reader.stream_members():
             assert member.size is None
             assert stream is not None
@@ -241,7 +241,7 @@ def test_extract_all_fills_size(tmp_path: Path) -> None:
 def test_xz_from_a_pipe_fills_size() -> None:
     """An xz records its size in an index a pipe cannot reach: a full read fills it."""
     source = NonSeekableBytesIO(lzma.compress(PAYLOAD))
-    with open_archive(source, streaming=True) as reader:
+    with open_archive(source, pipe=True) as reader:
         for member, stream in reader.stream_members():
             assert member.size is None
             assert stream is not None
@@ -331,6 +331,6 @@ def test_gzip_isize_covers_only_the_last_member(tmp_path: Path) -> None:
 
 def test_gzip_isize_not_read_from_a_pipe() -> None:
     source = NonSeekableBytesIO(gzip.compress(PAYLOAD))
-    with open_archive(source, streaming=True) as reader:
+    with open_archive(source, pipe=True) as reader:
         member = next(iter(reader))
         assert "gzip.isize" not in member.extra

@@ -62,7 +62,7 @@ is a framed standalone stream and is in scope here.
 | Open `sessionstore.jsonlz4` | One file member named `sessionstore.json` |
 | Open compressed `mystery.bin` detected by content | One file member named `mystery.bin.uncompressed` |
 | Open `....gz` | One file member named `....gz.uncompressed`, under every extraction policy |
-| Open anonymous non-seekable stream with `streaming=True` | One file member named `data` |
+| Open anonymous non-seekable stream with `pipe=True` | One file member named `data` |
 | Iterate any supported single-file compressor | Exactly one file member is yielded |
 
 ### Requirement: Report single-file compressor properties
@@ -74,12 +74,12 @@ The backend SHALL expose these properties for every single-file compressor:
 | Listing cost | `INDEXED`; exactly one member |
 | Access cost | `DIRECT`; no inter-member dependency exists |
 | Supports write | No — writing is not shipped for any format (`dev-docs/investigations/archive-writing-design.md`) |
-| Requires seek | Random access (`streaming=False`) requires seek; forward-only `streaming=True` accepts non-seekable sources for every supported single-file codec including `.Z` |
+| Requires seek | Random access (`streaming=False`) requires seek; forward-only `pipe=True` accepts non-seekable sources for every supported single-file codec including `.Z` |
 
 Random access over a non-seekable source SHALL fail fast at open with
 `StreamNotSeekableError`; the backend MUST NOT buffer an unbounded source to
-simulate repeatable reads. Under `streaming=True`, every supported single-file
-codec including unix-compress `.Z` SHALL stream from non-seekable sources.
+simulate repeatable reads. Under `pipe=True`, every supported single-file codec
+including unix-compress `.Z` SHALL stream from non-seekable sources.
 
 Member-stream seekability is a stream-level property from index- or
 accelerator-backed decoders (for example xz indexes, CLEAR seek points for
@@ -92,7 +92,7 @@ unix-compress, `indexed_bzip2`, `rapidgzip`, seekable zstd), not an archive-leve
 | --- | --- |
 | Open any supported single-file compressor | `listing_cost=INDEXED`; `access_cost=DIRECT` |
 | Non-seekable source with `streaming=False` | `StreamNotSeekableError` |
-| Non-seekable source with `streaming=True` (including `.Z`) | Opens and `stream_members()` yields data |
+| Non-seekable source with `pipe=True` (including `.Z`) | Opens and `stream_members()` yields data |
 | Seekable `.Z` with declared member-stream seekability | Member stream is seekable via CLEAR seek points |
 
 ### Requirement: Report member size with codec caveats
@@ -185,7 +185,7 @@ A size the format records SHALL NOT be replaced.
 | Same, `seek(0, SEEK_END)`, then read to EOF | `size` stays `None` |
 | Same, then `seek()` back to where the reads had reached, read to EOF | `size` is the byte count |
 | Same, `read(100)`, `seek(50)`, read to EOF | `size` is the byte count |
-| Same, `streaming=True` pass over a pipe, stream read to EOF | `size` is the byte count read |
+| Same, `pipe=True` pass over a pipe, stream read to EOF | `size` is the byte count read |
 | Same, reader closed with the member never read in full | `size` is `None`; `member_state_final` is `True` |
 | `.lz` opened from a seekable source whose end is cheap to reach | Size is available from the trailer |
 | `.xz` / `.lz`, seekable source, with and without `seekable_members=True` | Same `member.size` both ways |
@@ -364,7 +364,7 @@ reader SHALL say so where it is stated.
 | 40 000 zero bytes | `open_archive` raises `CorruptionError`, except LZMA Alone, whose first 18 zero bytes are a complete empty stream: it opens, reads `b""`, and the rest is padding with no diagnostic |
 | Zero-byte source, codec whose decoder rejects it | `open_archive` raises the translated error |
 | Zero-byte source, `unix-compress` | `open_archive` raises `TruncatedError` (the decoder rejects a source shorter than its header) |
-| A `.tar.bz2` of 60 KB cut to two thirds, from a pipe with `streaming=True` and from a file | `open_archive` raises `TruncatedError` from both |
+| A `.tar.bz2` of 60 KB cut to two thirds, from a pipe with `pipe=True` and from a file | `open_archive` raises `TruncatedError` from both |
 | Non-seekable source that detection did not read to its end (a longer pipe, or `format=` given) | Validation deferred to the first read |
 
 #### Scenario: the failure carries honest provenance
@@ -626,7 +626,7 @@ names only its own layer.
 
 | Case | Expected |
 | --- | --- |
-| `.gz` from a path, and from a pipe with `streaming=True` | `compression == (CompressionMethod(DEFLATE),)` both times |
+| `.gz` from a path, and from a pipe with `pipe=True` | `compression == (CompressionMethod(DEFLATE),)` both times |
 | `.xz` | `(CompressionMethod(XZ),)` |
 | `.lz` or `.lzma` | `(CompressionMethod(LZMA),)` |
 | `.Z` | `(CompressionMethod(LZW),)` |

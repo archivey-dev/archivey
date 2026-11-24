@@ -72,7 +72,7 @@ zero SHALL be reported with `ARCHIVE_TRAILING_DATA`. The archive SHALL be solid.
 | `--ssl-encrypt`, wrong password | `EncryptionError`, wrong password |
 | `--ssl-encrypt`, damaged padding | `CorruptionError` |
 | `--gpg-encrypt` | `UnsupportedFeatureError` |
-| A pipe, `streaming=True` | The same files |
+| A pipe, `pipe=True` | The same files |
 
 ### Requirement: Check every digest the header states
 

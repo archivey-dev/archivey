@@ -29,19 +29,21 @@ archivey.open_archive(
     *,
     format: ArchiveFormat | None = None,
     streaming: bool = False,
+    pipe: bool = False,
     seekable_members: bool = False,
     concurrent_operations: bool = False,
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
     parent: ForwardArchiveReader | None = None,
-) -> ArchiveReader  # ForwardArchiveReader when streaming may be True; see below
+) -> ArchiveReader  # ForwardArchiveReader when streaming or pipe may be True; see below
 ```
 
-The return type SHALL follow the access mode, through two `typing.overload`
-signatures: `streaming=False` (the default, or the literal `False`) returns
-`ArchiveReader`, and `streaming=True` or a `bool` whose value is not known statically
-returns `ForwardArchiveReader`. `ForwardArchiveReader` is the public ABC that
+The return type SHALL follow the access mode, through three `typing.overload`
+signatures: `streaming` and `pipe` both `False` (the defaults, or the literal `False`)
+return `ArchiveReader`; `streaming=True`, `pipe=True` (whatever `streaming` says, since
+`pipe=True` implies it), or a `bool` for either whose value is not known statically
+return `ForwardArchiveReader`. `ForwardArchiveReader` is the public ABC that
 declares every reader method except `members()`, `get()`, `open()` and `read()`, the
 four a streaming reader refuses; `ArchiveReader` subclasses it and adds those four.
 The distinction SHALL be static only: every reader returned at run time is an
@@ -804,7 +806,7 @@ cumulative snapshot without being retained twice. A standalone `ArchiveStream`
 `MEMBER_DIRECTORY_DATA_IGNORED`) SHALL be paired with a stream when its size is known as
 the pass reaches it, which holds in every format and both access modes but one: a ZIP
 directory whose local header defers its sizes to a data descriptor (bit 3, which every
-writer to a pipe sets), read from a source that cannot seek, is paired with `None`,
+writer to a pipe sets), read as a pipe (`pipe=True`), is paired with `None`,
 since its data has gone past before the descriptor says it is data (`format-zip`, "Two
 shapes read differently from a pipe"). That stream SHALL deliver the bytes `open()`
 delivers for the directory, under the same checks (the stored digest,
@@ -818,8 +820,8 @@ agree: a stream where `open()` reads, `None` where it refuses.
 | Case | Expected |
 | --- | --- |
 | Directory member declaring no data | Stream `None` |
-| ZIP directory written with a data descriptor (bit 3) declaring 12 bytes, from a source that cannot seek | Stream `None`; `MEMBER_DIRECTORY_DATA_IGNORED` when the central directory arrives, its message saying the pass yields no stream for it; from a seekable source, with or without `streaming=True`, the row below |
-| Directory member declaring 12 bytes (ZIP, RAR, an old-style TAR `d/`), from a file or a forward-only source | A stream; `read()` returns the 12 bytes `open()` returns, and raises the `CorruptionError` `open()` raises when they fail the CRC-32 |
+| ZIP directory written with a data descriptor (bit 3) declaring 12 bytes, under `pipe=True`, whether or not the source can seek | Stream `None`; `MEMBER_DIRECTORY_DATA_IGNORED` when the central directory arrives, its message saying the pass yields no stream for it; from a seekable source without `pipe=True`, the row below |
+| Directory member declaring 12 bytes (ZIP, RAR, an old-style TAR `d/`), opened in random access or a one-pass read, `pipe=True` included (a ZIP's under `pipe=True` only when bit 3 is clear: the row above covers bit 3) | A stream; `read()` returns the 12 bytes `open()` returns, and raises the `CorruptionError` `open()` raises when they fail the CRC-32 |
 | TAR `DIRTYPE` header with a size the walk cannot tell from the trailer | Stream `None` (no `size`; `open()` refuses it) |
 | `MemberType.ANTI` | Stream `None` |
 

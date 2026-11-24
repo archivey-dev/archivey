@@ -51,6 +51,7 @@ from archivey.exceptions import (
 )
 from archivey.formats import ReaderContext, ReaderSource
 from archivey.internal import kernels
+from archivey.internal.listing_limits import str_retained_bytes
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.adc_decoder import adc_decompress
 from archivey.internal.streams.codecs.lzfse_decoder import (
@@ -161,6 +162,10 @@ TRAILING_LOOK = 1 << 20
 CHECK_SLICE = 1 << 20
 # What a run costs in the packed arrays: a u32 type and four u64 fields.
 _RUN_BYTES = 36
+# What a kept table costs beyond its name (``str_retained_bytes``): its ``UdifTable``,
+# the ints in it, the name's string header and its ``plist_checksums`` entry (about 230
+# bytes measured with ``sys.getsizeof``).
+_TABLE_BYTES = 256
 # Offsets must stay below 2^63 (``ReaderSource`` takes Python ints, but a disk of more
 # sectors than this names offsets no file system can).
 _MAX_SECTORS = (1 << 63) // SECTOR
@@ -524,6 +529,8 @@ class UdifImage:
         """Parse every ``mish`` table and keep its runs, sorted by sector."""
         parsed: list[tuple[str, int, int, int | None, bytes, int]] = []
         total_runs = 0
+        # The tables and their names are kept for the life of the reader too.
+        kept = 0
         for index, entry in enumerate(blkx):
             if not isinstance(entry, dict) or not isinstance(entry.get("Data"), bytes):
                 raise CorruptionError(f"blkx entry {index} holds no mish table")
@@ -553,6 +560,7 @@ class UdifImage:
                     f"{first + count}, past the disk's {self.sector_count}"
                 )
             total_runs += runs
+            kept += _TABLE_BYTES + str_retained_bytes(name)
             parsed.append(
                 (
                     name,
@@ -563,12 +571,25 @@ class UdifImage:
                     data_offset,
                 )
             )
-        budget = self._context.config.listing_limits.max_metadata_bytes
-        if budget is not None and total_runs * _RUN_BYTES > budget:
-            raise ResourceLimitError(
-                f"Listing limit reached: max_metadata_bytes={budget} (the UDIF run "
-                f"tables hold {total_runs} runs, {total_runs * _RUN_BYTES} bytes kept)"
-            )
+        # A weight, not a measured size: 36 bytes per declared run (terminators,
+        # comments and empty runs included), charged before the run arrays exist.
+        kept += total_runs * _RUN_BYTES
+        what = (
+            f"the UDIF property list's {len(parsed)} blkx tables and {total_runs} "
+            "declared runs"
+        )
+        keep = self._context._keep_metadata
+        if keep is not None:
+            # With the listing and what other readers keep, for the reader's life, as
+            # ``DmgReader._keep`` charges APFS's trees.
+            keep(kept, what)
+        else:
+            budget = self._context.config.listing_limits.max_metadata_bytes
+            if budget is not None and kept > budget:
+                raise ResourceLimitError(
+                    f"Listing limit reached: max_metadata_bytes={budget} ({what} "
+                    f"weigh {kept} bytes)"
+                )
         # The master checksum in the koly block is a CRC-32 of these, in this order.
         self.plist_checksums = [table[3] for table in parsed]
         parsed.sort(key=lambda table: (table[1], table[2]))
@@ -759,7 +780,8 @@ class UdifImage:
                         # archivey-codecs' kernel when the call allows it.
                         self._lzfse = decoder_for("lzfse", self._context.config)
                     decode = self._lzfse
-                data = decode(raw, decoded + 1)
+                # Each refuses output past the limit itself.
+                data = decode(raw, decoded)
             else:
                 data = self._through_archivey(raw, _THROUGH_ARCHIVEY[kind], decoded)
         except (CorruptionError, TruncatedError) as exc:

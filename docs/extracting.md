@@ -11,7 +11,7 @@ with archivey.open_archive("download.zip") as archive:
 outside `out/`, and an archive that expands far beyond its size is stopped. [What each policy does
 with unusual members](#what-each-policy-does-with-unusual-members) has the details.
 
-To extract from a pipe, open it with `streaming=True`. Extraction reads each member once, in order,
+To extract from a pipe, open it with `pipe=True`. Extraction reads each member once, in order,
 so it needs no other option. A ZIP keeps its index at the end, so from a pipe archivey first
 writes each member's data into one `.archivey-tmp-` folder inside the destination, and puts the
 members in place only once it has read the index, the same way it does from a file. If the run

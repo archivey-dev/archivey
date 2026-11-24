@@ -117,8 +117,8 @@ Before any backend code runs, `_open_resolved` checks, in this order:
 7. **Unused arguments.** A password given for a format that has no encryption, or
    `encoding=` for a format that does not use it, is recorded as a diagnostic, not refused:
    a batch job can pass one keyring to every archive.
-8. **Access mode.** A pipe with `streaming=False` is refused: random access needs a
-   seekable source and archivey never buffers a pipe silently (ADR
+8. **Access mode.** A pipe without `pipe=True` is refused, in both access modes: reading
+   a pipe is a mode the caller chooses, and archivey never buffers a pipe silently (ADR
    [0010](../decisions/0010-no-silent-buffer-nonseekable.md)).
 
 Each message names what to do next. The order matters because each refusal assumes the
@@ -217,6 +217,6 @@ opened itself.
   folder from the start.
 - **RAR** walks all headers at open with the native parser, and member data comes from an
   `unrar p` child process reading a pipe, unless the member is stored uncompressed.
-- **A pipe** (`streaming=True`) skips step 8 entirely: members and their streams come
+- **A pipe** (`pipe=True`) passes step 8: members and their streams come
   together from `stream_members()`, in archive order, once. See
   [page 7](07-pipes-and-files.md).

@@ -25,7 +25,7 @@ from archivey.exceptions import (
 )
 from archivey.types import MemberType
 from tests.conftest import requires, requires_binary
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, open_mode
 
 
 def _assert_dir_open_raises(archive_path: Path) -> None:
@@ -314,9 +314,7 @@ def test_directory_data_is_the_same_in_a_pass_and_in_random_access(
     with open_archive(path) as reader:
         assert _pass_outcomes(reader) == expected
     if shape.startswith(("zip", "tar")):
-        with open_archive(
-            NonSeekableBytesIO(path.read_bytes()), streaming=True
-        ) as reader:
+        with open_archive(NonSeekableBytesIO(path.read_bytes()), pipe=True) as reader:
             assert _pass_outcomes(reader) == {
                 **expected,
                 **_PIPE_DIFFERS.get(shape, {}),
@@ -338,7 +336,7 @@ def test_zip_directory_data_digest_unverifiable_in_a_pass(
     data = _zip_directory_data(tmp_path, "zip-zero-crc").read_bytes()
     with open_archive(
         NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
-        streaming=streaming,
+        pipe=streaming,
     ) as reader:
         read = {
             member.name: (member, stream.read() if stream is not None else None)
@@ -362,7 +360,7 @@ def test_zip_bit3_directory_from_a_pipe_says_it_has_no_stream(tmp_path: Path) ->
         ("pipe", NonSeekableBytesIO(data)),
         ("seekable", io.BytesIO(data)),
     ):
-        with open_archive(source, streaming=True) as reader:
+        with open_archive(source, **open_mode(source, streaming=True)) as reader:
             list(reader.stream_members())
             [diag] = [
                 d

@@ -470,8 +470,8 @@ def _decoder_config(
     if config.seekable and not source_seekable:
         # Seek demand on a source that cannot seek cannot be met, and it would make
         # accelerator AUTO pick a decoder that fails at open when it asks the
-        # source for ``tell``. A compressed TAR opened ``streaming=True`` with
-        # ``seekable_members=True`` over a forward-only stream arrives here so.
+        # source for ``tell``. A compressed TAR opened ``pipe=True`` with
+        # ``seekable_members=True`` arrives here so.
         changes["seekable"] = False
     if source_seekable != config.source_seekable:
         # Lets accelerator AUTO consider a sequential read (``_rapidgzip_wanted``).

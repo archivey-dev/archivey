@@ -39,7 +39,7 @@ def _names(
     data: bytes, fmt: ArchiveFormat | None = None, *, pipe: bool = False
 ) -> list[str]:
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
-    with open_archive(source, format=fmt, streaming=pipe) as reader:
+    with open_archive(source, format=fmt, pipe=pipe) as reader:
         if pipe:
             return [member.name for member, _ in reader.stream_members()]
         return [member.name for member in reader.members()]

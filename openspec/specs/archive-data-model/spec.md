@@ -427,7 +427,7 @@ fields that change in practice.
 | `.xz` with a readable index, after `members()` | `True`: the index records the size |
 | macOS ZIP member whose size is unknown (stored modulo 2³²), after `members()` | `False` until a read whose length and CRC-32 check out sets `size`, then `True`; `True` after the reader closes |
 | A `.gz` member, or that ZIP member, `streaming=True`, after the pass | `True`, whether or not a read filled the size |
-| ZIP from a non-seekable source, `streaming=True`, `stream_members()` | Each member reads `False` when yielded, with `mode`, `create_system`, `comment`, `uid` and `gid` `None`; after the pass every member reads `True`, with the directory's fields |
+| ZIP from a non-seekable source, `pipe=True`, `stream_members()` | Each member reads `False` when yielded, with `mode`, `create_system`, `comment`, `uid` and `gid` `None`; after the pass every member reads `True`, with the directory's fields |
 
 ### Requirement: Member diagnostics attach under the shared budget
 

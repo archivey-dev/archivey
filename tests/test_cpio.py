@@ -32,7 +32,7 @@ from archivey.internal.backends import cpio_reader
 from archivey.internal.backends.cpio_reader import MAX_NAME_BYTES, CpioReader
 from archivey.internal.listing_limits import member_metadata_bytes
 from tests.public_names import assert_only_public_archivey
-from tests.streams_util import ShortReadBytesIO
+from tests.streams_util import ShortReadBytesIO, open_mode
 
 CPIO = archivey.ArchiveFormat.CPIO
 DATA = Path(__file__).parent / "fixtures" / "cpio"
@@ -142,7 +142,7 @@ def test_stream_from_a_pipe(name: str) -> None:
     members = []
     # A binary archive has no magic: on a nameless stream, detection runs no probe.
     fmt = CPIO if variant == "bin" else None
-    with open_archive(_Pipe(data), streaming=True, format=fmt) as reader:
+    with open_archive(_Pipe(data), pipe=True, format=fmt) as reader:
         assert reader.format == CPIO
         for member, stream in reader.stream_members():
             members.append(member)
@@ -165,7 +165,7 @@ def test_extract(tmp_path: Path, name: str, pipe: bool) -> None:
     data = (DATA / f"{name}.cpio").read_bytes()
     dest = tmp_path / "out"
     source = _Pipe(data) if pipe else DATA / f"{name}.cpio"
-    with open_archive(source, streaming=pipe) as reader:
+    with open_archive(source, pipe=pipe) as reader:
         reader.extract_all(dest, on_blocked="skip")
     for member_name, content in CONTENT.items():
         assert (dest / member_name).read_bytes() == content
@@ -179,7 +179,7 @@ def test_a_compressed_archive_from_a_pipe_reaches_the_checksum() -> None:
     buffer's read-ahead; that end counts as reached, so the gzip trailer raises every
     file and verify_all() fails nothing."""
     data = gzip.compress((DATA / "gnu-newc.cpio").read_bytes())
-    with open_archive(_Pipe(data), streaming=True) as reader:
+    with open_archive(_Pipe(data), pipe=True) as reader:
         report = reader.verify_all()
         files = [m for m in reader.members_report().members if m.is_file]
     assert report.failures == ()
@@ -200,7 +200,7 @@ def test_an_os_pipe(tmp_path: Path) -> None:
     try:
         with (
             open(read_fd, "rb", buffering=0) as pipe,
-            open_archive(pipe, streaming=True) as reader,
+            open_archive(pipe, pipe=True) as reader,
         ):
             names = [m.name for m, _ in reader.stream_members()]
     finally:
@@ -323,7 +323,7 @@ def test_inside_a_compression_stream(
     fmt = archivey.ArchiveFormat(CPIO.container, stream)
     assert detect_format(io.BytesIO(data)).format == fmt
     source = _Pipe(data) if pipe else io.BytesIO(data)
-    with open_archive(source, streaming=pipe) as reader:
+    with open_archive(source, pipe=pipe) as reader:
         assert reader.format == fmt
         members = []
         for member, member_stream in reader.stream_members():
@@ -403,7 +403,7 @@ def test_a_cut_archive_keeps_the_members_before_the_cut(
     source = _Pipe(cut) if pipe else _archive(tmp_path, cut)
     names = []
     with (
-        open_archive(source, streaming=pipe) as reader,
+        open_archive(source, pipe=pipe) as reader,
         pytest.raises(TruncatedError),
     ):
         for member, stream in reader.stream_members():
@@ -772,7 +772,7 @@ def test_afio_large_headers(tmp_path: Path) -> None:
     )
     data += bytes(-len(data) % 5120)  # afio's block size
     for source in (_archive(tmp_path, data), _Pipe(data)):
-        with open_archive(source, streaming=True) as reader:
+        with open_archive(source, **open_mode(source, streaming=True)) as reader:
             got = [
                 (m.name, m.uid, m.size, s.read()) for m, s in reader.stream_members()
             ]

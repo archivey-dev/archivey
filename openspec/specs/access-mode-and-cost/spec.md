@@ -20,26 +20,58 @@ block count). This spec is the **canonical** access-mode × method table;
 
 ### Requirement: Declaring access mode at open_archive()
 
-`open_archive(..., streaming: bool = False)` SHALL accept exactly two modes:
+`open_archive(..., streaming: bool = False, pipe: bool = False)` SHALL accept exactly
+three modes:
 
 | Mode | Meaning |
 | --- | --- |
-| `streaming=False` (default) | **Random access.** Load indexes when available. Fail fast at open if the source is non-seekable and the format cannot adapt — never silently degrade to forward-only. Seek points for single-stream formats are built **lazily** on first `seek()`. |
-| `streaming=True` | **Forward-only, single pass.** Disable index loading where possible; works on non-seekable sources **where the backend reads front to back** (see below). Random-access / full-materialization APIs disabled **uniformly** (independent of any loaded index). `members_report_if_available()` stays callable (never scans). |
+| `streaming=False` (default) | **Random access.** Load indexes when available. Seek points for single-stream formats are built **lazily** on first `seek()`. Needs a source that can seek. |
+| `streaming=True` | **Forward-only, single pass.** Disable index loading where possible. Random-access / full-materialization APIs disabled **uniformly** (independent of any loaded index). `members_report_if_available()` stays callable (never scans). Needs a source that can seek, and gives the members, metadata and errors random access gives. |
+| `pipe=True` | **Pipe mode: a single forward read.** The `streaming=True` access rules, over a source read as a pipe is read: once, from its position at open to its end, never seeking, **whether or not the source can seek**. `streaming=` has no effect with it. Works **only where the backend reads front to back** (see below). |
 
-Non-seekable sources are never given random access: with `streaming=False` the
-library fails fast at open when the format needs seek (it does not buffer the
-source into memory or a temp file). `streaming=True` is the fix for pipes and
-sockets **only where the backend reads front to back** (TAR, ZIP, the single-file
-compressors, and RAR with RARLAB `unrar` 7.00 or later, whose refusal otherwise names
-that program). A format that needs seek in either mode (ISO, 7z) SHALL be
-refused with one message naming a seekable source as the fix, in both modes, rather
-than proposing a `streaming=True` retry the same call would then refuse. That refusal
-SHALL come before the format's availability check: a pipe cannot be read even with the
-optional package installed, so a missing package MUST NOT be reported first. The
-`streaming=False` refusal for a format that does read front to back stays after the
-availability check, because there the missing package is a real step on the way.
-Eager seek-point building is not exposed.
+A source that cannot seek SHALL be read only in pipe mode: without `pipe=True`, either
+other mode fails fast at open (the library does not buffer the source into memory or a
+temp file, and never silently switches to pipe mode). The refusal names `pipe=True`,
+says that a pipe read differs from a file read, and names a file or a `BytesIO` as the
+other fix (maintainer ruling, 2026-11-21: pipe reading is opt-in, so a caller who hands
+over a non-seekable object by accident learns it at open, instead of getting pipe
+results silently).
+
+Under `pipe=True` a source that can seek SHALL be wrapped at the boundary so that
+detection and the backend see the non-seekable raw shape: no path, no volume paths, no
+fact size, a detection replay prefix and full-count gathering. A caller's stream SHALL
+be wrapped before anything measures it, so pipe mode never seeks it, nor decodes ahead
+in a seekable decoder stream to learn its size; a source archivey opens itself (a path,
+an fsspec `OpenFile`) is wrapped once opened (`ArchiveSource.read_as_pipe`). The wrapper
+keeps the name, the one hint a pipe can carry, and an `OpenFile`'s range sources, so a
+remote object's change checks (`SOURCE_CHANGE_UNDETECTABLE`, `SourceChangedError`) and
+per-request `on_source_read` reports stay as in the other modes. What pipe mode gives
+SHALL therefore depend only on the bytes from the source's position, the name it
+carries and the arguments, never on whether the object can seek: equal bytes under an
+equal name give an equal result, and an anonymous stream can differ from a named one
+(a gzip member's name, a format only the name identifies). A directory has no bytes to
+carry: `pipe=True` on one raises `ArchiveyUsageError`, and so does a volume set (a list
+of two or more parts, refused before any part is read, or a set found beside a path),
+whose parts one stream cannot join.
+
+A refusal at open comes after detection. When detection ran, it has read from the
+source by then, so a refusal of a source that cannot seek SHALL ask for a new source,
+or a copy from the archive's start, rather than a retry on the same object. When
+`format=` skipped detection, nothing has been read, and the refusal SHALL NOT claim
+that detection read from the source: the caller may retry the same object.
+
+Pipe mode reads **only where the backend reads front to back** (TAR, ZIP, the
+single-file compressors, and RAR with RARLAB `unrar` 7.00 or later, whose refusal
+otherwise names that program). A format that cannot be read as a pipe (ISO, 7z) SHALL be
+refused with one message naming a seekable source as the fix, in every mode, rather
+than proposing a `pipe=True` retry the same call would then refuse. Only when the
+object the caller passed can seek and `pipe=True` made it a pipe does the message
+instead say the format cannot be read as a pipe and to open it without the flag.
+That refusal SHALL come before the format's availability check: a pipe cannot be read
+even with the optional package installed, so a missing package MUST NOT be reported
+first. The refusal of a non-seekable source without `pipe=True` for a format that does
+read front to back stays after the availability check, because there the missing
+package is a real step on the way. Eager seek-point building is not exposed.
 
 Every source `open_archive` and `open_stream` take SHALL cross one boundary, which
 returns one `ArchiveSource`; standalone `detect_format` does not cross it, except for an
@@ -84,8 +116,8 @@ when the ISO probe triggers, up to 1 MiB for the inner-TAR probe
 
 Neither is the materialization forbidden above: `ArchiveSource` over a non-seekable
 source SHALL hold no buffered bytes beyond the detection prefix, which never grows past
-that 2 MiB cap, and SHALL report `seekable()` as `False`, so `streaming=False` over it
-still fails fast at open.
+that 2 MiB cap, and SHALL report `seekable()` as `False`, so an open without
+`pipe=True` over it still fails fast.
 
 This is how "archivey never closes a caller-supplied `BinaryIO`" (`archive-reading`) is
 kept regardless of what a backend builds on top of the source: the caller's object is
@@ -100,11 +132,11 @@ never handed past the boundary, so no wrapper a backend adds can reach it except
 | Same stream returns a short chunk, then `None` | Same error. The short chunk is not the result of the read. Those bytes have already left the source and cannot be read again |
 | Non-seekable already-buffered stream, `read` returns `None` | Same five methods raise `BlockingIOError` |
 | Non-seekable already-buffered stream returns what has arrived short, then `None` on the next read | Same five methods raise `BlockingIOError`. The short return is asked again, not taken as the end of the source |
-| `open_archive(..., streaming=True)` on a stream with nothing ready | `BlockingIOError`, not an empty-archive detection error |
-| `open_archive(..., streaming=True)` on an already-buffered stream with nothing ready | `BlockingIOError`, not an empty-archive detection error |
-| `open_archive(..., streaming=True)` on a stream that returns a complete gzip and then `None` | `BlockingIOError`. The member those bytes happen to hold is not returned |
-| `open_archive(..., streaming=True)` on an already-buffered stream that returns a complete gzip and then `None` | `BlockingIOError`. The member those bytes happen to hold is not returned |
-| `open_archive(..., streaming=True)` on an already-buffered stream that has delivered the first 100 bytes of a tar and then stalls | `BlockingIOError`, not a format detection error |
+| `open_archive(..., pipe=True)` on a stream with nothing ready | `BlockingIOError`, not an empty-archive detection error |
+| `open_archive(..., pipe=True)` on an already-buffered stream with nothing ready | `BlockingIOError`, not an empty-archive detection error |
+| `open_archive(..., pipe=True)` on a stream that returns a complete gzip and then `None` | `BlockingIOError`. The member those bytes happen to hold is not returned |
+| `open_archive(..., pipe=True)` on an already-buffered stream that returns a complete gzip and then `None` | `BlockingIOError`. The member those bytes happen to hold is not returned |
+| `open_archive(..., pipe=True)` on an already-buffered stream that has delivered the first 100 bytes of a tar and then stalls | `BlockingIOError`, not a format detection error |
 | `detect_format` on a raw or already-buffered stream with nothing ready | `BlockingIOError`, not "there are no bytes to read" |
 | `detect_format` on a raw or already-buffered stream that returns 100 bytes and then `None` | `BlockingIOError`, not a format detection error over the 100 bytes |
 | A volume list with a caller stream whose `read` returns `None` | `BlockingIOError`, not `TruncatedError` |
@@ -115,14 +147,22 @@ never handed past the boundary, so no wrapper a backend adds can reach it except
 | --- | --- |
 | `streaming=False` on indexed ZIP | Central directory loaded; random access available |
 | `streaming=True` on `.tar.gz` | No full-archive index scan; members as stream is read |
-| `streaming=False` on non-seekable source, backend reads front to back | Error at open (before member data) naming `streaming=True` — library does not buffer |
-| Either mode on non-seekable source, backend needs seek | Same error and same message in both modes, naming a seekable source (buffer to disk or a `BytesIO`) — library does not buffer |
-| Either mode on non-seekable source, backend needs seek, its optional package missing (a plugin that needs seek and a package that is not installed) | The same seekability error, not `PackageNotInstalledError` |
-| `streaming=False` on non-seekable source, backend reads front to back, its codec package missing (`.tar.lz4` without `lz4`) | `PackageNotInstalledError` first; the `streaming=True` hint follows once the package is installed |
-| Non-seekable source refused by either refusal rule (needs seek in either mode, or `streaming=False` on a front-to-back format), with `password=` for a format with no encryption (ISO, TAR) | `PASSWORD_ARGUMENT_UNUSED` (and `ENCODING_ARGUMENT_UNUSED` likewise) is emitted before the refusal, the same for both rules. The availability refusal (`.tar.lz4` without `lz4`) emits neither: `PackageNotInstalledError` is raised before the argument diagnostics run |
+| `streaming=False` or `streaming=True` on non-seekable source, backend reads front to back | `StreamNotSeekableError` at open (before member data) naming `pipe=True`; after detection it asks for a new source, since detection has read from this one, and with `format=` it says nothing has been read; the same message in both modes — library does not buffer |
+| `pipe=True` on non-seekable source, backend reads front to back | Opens; one forward pass, as `streaming=True` |
+| `pipe=True` on a seekable source (a path, a `BytesIO`, an `OpenFile`) | Read as a pipe carrying the same bytes: the same members, metadata and errors as the non-seekable case, `cost.stream_capability` is `FORWARD_ONLY`, and the ZIP backend walks local headers |
+| `pipe=True` on a directory | `ArchiveyUsageError` at open |
+| `pipe=True` on a list of two or more parts (paths, streams, or both), or on a path whose set is found beside it | `ArchiveyUsageError` at open, naming the volume set; no part of a list is read or seeked |
+| `pipe=True` on a seekable caller stream | The stream is never seeked, not even to learn its size |
+| `pipe=True` on an `OpenFile` read by range | The same `SOURCE_CHANGE_UNDETECTABLE` and per-request `on_source_read` reports as `streaming=True` |
+| `pipe=True` + `concurrent_operations=True` | `ArchiveyUsageError` at open, as `streaming=True` |
+| Any mode on non-seekable source, backend needs seek, detected or named by `format=` | Same error and the same message in every mode, `pipe=True` included, naming only a copy from the archive's start to a file or a `BytesIO`; no mention of `pipe=True` — library does not buffer |
+| `pipe=True` on a seekable source, backend needs seek | `StreamNotSeekableError` saying the format cannot be read as a pipe and to open it without `pipe=True`, from where the archive starts (where the stream was when the call began) |
+| Any mode on non-seekable source, backend needs seek, its optional package missing (a plugin that needs seek and a package that is not installed) | The same seekability error, not `PackageNotInstalledError` |
+| `streaming=False` on non-seekable source, backend reads front to back, its codec package missing (`.tar.lz4` without `lz4`) | `PackageNotInstalledError` first; the `pipe=True` hint follows once the package is installed |
+| Non-seekable source refused by either refusal rule (needs seek in every mode, or no `pipe=True` on a front-to-back format), with `password=` for a format with no encryption (ISO, TAR) | `PASSWORD_ARGUMENT_UNUSED` (and `ENCODING_ARGUMENT_UNUSED` likewise) is emitted before the refusal, the same for both rules. The availability refusal (`.tar.lz4` without `lz4`) emits neither: `PackageNotInstalledError` is raised before the argument diagnostics run |
 | `fsspec.core.OpenFile` source, either mode, and `detect_format` on one | Every byte comes through the remote fetch planner's range reads; `fs.size(path)` is read once and clamps reads; the caller's file system is not closed |
 | Seekable stream source, either mode | Full-count `read(n)` from the `ArchiveSource`: a source that is not already buffered gets a fixed-size read buffer (bounded readahead only), and one that already is (a `BytesIO`, an `open()` handle) gets no readahead. Never materialized to memory or disk |
-| Non-seekable stream source, `streaming=True` | The `ArchiveSource` gives full-count `read(n)` with no read-ahead beyond the detection prefix: `seekable()` stays `False`; reads drain the prefix first, and once it is drained (or when an explicit `format=` meant it was never filled) a `read(n)` on *that stream* takes exactly `n` bytes from the source. Codec layers above the boundary read differently: a codec over a non-seekable source reads what has arrived (`arrived_view`), one source read per feed, so an end-to-end `read(20)` on a compressed non-seekable open makes one source read per decoder feed, each for up to one feed (64 KiB, more for a large sized read), and decodes what it returns. A short return is not the end of the source; only an empty one is |
+| Non-seekable stream source, `pipe=True` | The `ArchiveSource` gives full-count `read(n)` with no read-ahead beyond the detection prefix: `seekable()` stays `False`; reads drain the prefix first, and once it is drained (or when an explicit `format=` meant it was never filled) a `read(n)` on *that stream* takes exactly `n` bytes from the source. Codec layers above the boundary read differently: a codec over a non-seekable source reads what has arrived (`arrived_view`), one source read per feed, so an end-to-end `read(20)` on a compressed non-seekable open makes one source read per decoder feed, each for up to one feed (64 KiB, more for a large sized read), and decodes what it returns. A short return is not the end of the source; only an empty one is |
 | Non-seekable stream that is already `io.BufferedReader` | No second full-count buffer is added: the caller's buffer supplies full-count. The detection prefix sits in front of it when detection ran, and is drained first. `fileno()` forwards through the `ArchiveSource` |
 | Non-seekable stream source, metadata probes | The `ArchiveSource` answers what the probes need: a source carrying `name` still answers `source_name`, so `ResolvedSource.archive_name` does not degrade. A `size` that a non-seekable caller stream carries is a claim nothing can check: it bounds no read and is not `compressed_source_size` (safe-extraction, archive-wide ratio); detection still takes it as the total size. It is not transparent in general — what a backend sees is the `ArchiveSource`'s surface, not the source's class, so `read1` / `detach` / `BytesIO.getvalue` do not survive it, and `peek` is the `ArchiveSource`'s own replay prefix, not the source's. `tell()` does not become available either — it raises, as the seek-required refusals depend on |
 | Non-seekable short-returning source, any supported streaming format, with and without `format=` | Opens, lists, and reads identically to the full-count source — the guarantee does not depend on detection having run or on a third-party reader's internal buffering |
@@ -191,7 +231,7 @@ with `error is None` (either mode).
 | Scan-based (directory) | `None` until a pass completes — the filesystem walk is lazy, so before it there is nothing to peek at |
 | Scan at open (RAR) | Both modes, as complete report |
 | Trailing (ZIP CD, 7z EOF header), seekable source | Both modes, as complete report |
-| Trailing, non-seekable source (ZIP under `streaming=True`) | `None` until the pass has read the index after the last member; then the complete report, as for TAR after a completed pass |
+| Trailing, non-seekable source (ZIP under `pipe=True`) | `None` until the pass has read the index after the last member; then the complete report, as for TAR after a completed pass |
 | No-index (TAR), no prior materialization/pass | `None` |
 | No-index after completed successful pass / `members_report` / `members` | Complete report |
 | No-index after a terminal archive error was stored after a recoverable prefix | Incomplete report (`members` is prefix, `error` set); count is a floor |
@@ -229,7 +269,7 @@ report to a caller MUST NOT change the complete-or-raise behaviour of `members()
 The system SHALL behave per this canonical table (`✅` allowed,
 `⛔` → `ArchiveyUsageError`):
 
-| Method | `streaming=False` | `streaming=True` |
+| Method | `streaming=False` | `streaming=True` or `pipe=True` |
 | --- | --- | --- |
 | `__iter__` | ✅ repeatable after **successful** complete cache; yield-then-raise on terminal archive error | ✅ **once** (no replay); yield-then-raise on terminal archive error |
 | `stream_members` | ✅; yield-then-raise on terminal archive error | ✅ once; yield-then-raise |
@@ -239,9 +279,9 @@ The system SHALL behave per this canonical table (`✅` allowed,
 | `members` / `get` / `open` / `read` | ✅; `members`/`get` complete-or-raise | ⛔ |
 | `in` (identity) | ✅ no scan (incl. recovered report members) | ✅ no scan |
 | `cost` / `info` / `format` / `close` / CM | ✅ | ✅ |
-| at `open_archive()` | fail fast if source not RA-capable | any source |
+| at `open_archive()` | `StreamNotSeekableError` if the source cannot seek | `streaming=True`: `StreamNotSeekableError` if the source cannot seek; `pipe=True`: one byte stream, seekable or not, read once as a pipe; a directory or a volume set raises `ArchiveyUsageError`, and a format that needs seeking still refuses (see the source rules above) |
 
-In streaming mode, `__iter__` / `stream_members` / `extract_all` share one pass.
+In streaming mode and pipe mode, `__iter__` / `stream_members` / `extract_all` share one pass.
 
 #### Scenario: summary checks
 
@@ -306,7 +346,7 @@ pipe → `REQUIRES_SCANNING`+`DIRECT`+`FORWARD_ONLY` (members found by local hea
 | --- | --- |
 | Successful open | `ar.cost` populated without separate member scan/read |
 | ZIP | `listing_cost=INDEXED`, `access_cost=DIRECT` |
-| ZIP on a pipe, `streaming=True` | `listing_cost=REQUIRES_SCANNING`, `access_cost=DIRECT`, `stream_capability=FORWARD_ONLY` |
+| ZIP on a pipe, `pipe=True` | `listing_cost=REQUIRES_SCANNING`, `access_cost=DIRECT`, `stream_capability=FORWARD_ONLY` |
 | `.tar.gz` | `REQUIRES_DECOMPRESSION` + `SOLID` |
 | Same plain tar: file vs pipe | `stream_capability` SEEKABLE vs FORWARD_ONLY; `access_cost=DIRECT` both |
 | Solid 7z, multiple folders | `info.is_solid`, `access_cost=SOLID`, `solid_block_count` = folder count |
@@ -338,9 +378,10 @@ an occurrence log or counter.
 
 ### Requirement: Declared capabilities compose with the two access modes
 
-`streaming` SHALL remain the only access-mode choice. `seekable_members` /
-`concurrent_operations` SHALL declare stream capabilities **within** a mode (not a third
-mode; no `ArchiveyConfig` equivalent). Ownership, leases, materialization, and
+`streaming` and `pipe` SHALL remain the only access-mode choices. `seekable_members` /
+`concurrent_operations` SHALL declare stream capabilities **within** a mode (not another
+mode; no `ArchiveyConfig` equivalent). `pipe=True` composes with them as
+`streaming=True` does. Ownership, leases, materialization, and
 free-threaded rules for declared concurrency live in `reader-concurrency`; this
 requirement only states how the capabilities compose with `streaming`.
 
@@ -362,7 +403,7 @@ after `reader.close()` → `ArchiveyUsageError` (idempotent `close`).
 
 | Case | Expected |
 | --- | --- |
-| `streaming=True` + `concurrent_operations=True` | `ArchiveyUsageError` at open; no reader |
+| `streaming=True` or `pipe=True` + `concurrent_operations=True` | `ArchiveyUsageError` at open; no reader |
 | RA + `concurrent_operations=True` (or without) | Concurrent-open / single-live-stream rules per `reader-concurrency` / `archive-reading` |
 | Active pass + conflicting pass/open, or close while the pass executes | Later → `ArchiveyUsageError`; original pass usable |
 | Pass suspended at a yield + `close()` | Reader closed; resuming the pass → `ArchiveyUsageError` |
