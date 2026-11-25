@@ -631,7 +631,14 @@ class MemberVerifier:
             # trailing byte is corruption independent of the checksum, so a seek that
             # reached the size must not silence it. This probe also drains post-payload
             # authenticators (e.g. WinZip AES HMAC).
-            if not self._bounded and _probe_past_declared(inner):
+            try:
+                past = not self._bounded and _probe_past_declared(inner)
+            except Exception:
+                # The probe's error is the verdict, as a decoder error on a read is:
+                # later reads ask the inner again, and raise it again.
+                self._abandon()
+                raise
+            if past:
                 raise CorruptionError(
                     "Decompressed content exceeds its declared size of "
                     f"{expected_size} bytes."
@@ -791,6 +798,7 @@ class MemberVerifier:
         if self._abandoned or self._concluded:
             if (
                 self._concluded
+                and not self._abandoned
                 and self._expected_size is not None
                 and self._pos >= self._expected_size
             ):

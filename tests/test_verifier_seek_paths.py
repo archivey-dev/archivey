@@ -252,3 +252,30 @@ def test_a_verifying_stream_reports_the_proofs_of_the_layer_below() -> None:
     assert proofs.ended
     assert proofs.content
     assert proofs.content_possible
+
+
+
+def test_an_error_in_the_overrun_probe_is_raised_on_every_later_read() -> None:
+    # The read that reaches the declared size probes one byte past it. An error
+    # there (a caller's on_source_read stop, which its source raises on every read)
+    # is the read's, and every later read asks the inner again and raises it too,
+    # instead of answering a quiet end.
+    class _Stop(Exception):
+        pass
+
+    class _StopsPastTheEnd(io.BytesIO):
+        def read(self, n: int | None = -1, /) -> bytes:
+            if self.tell() >= len(_DATA):
+                raise _Stop("stop")
+            return super().read(n)
+
+    stream = VerifyingStream(
+        _StopsPastTheEnd(_DATA),
+        {HashAlgorithm.CRC32: _crc(_DATA)},
+        expected_size=len(_DATA),
+    )
+    with pytest.raises(_Stop):
+        stream.read(len(_DATA))
+    for _ in range(2):
+        with pytest.raises(_Stop):
+            stream.read(10)
