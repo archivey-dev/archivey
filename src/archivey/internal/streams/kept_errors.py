@@ -14,14 +14,27 @@ So a stream keeps a :class:`KeptError`: a copy that was never raised, and the fi
 raise's traceback as text. Each later raise is a fresh copy whose cause is an
 :class:`EarlierRaise` holding that text, so a printed error shows where it was first
 raised and where it was raised again, and pins no frame.
+
+The one exception is a stop that ``on_source_read`` raised: it is the caller's own
+object, raised again with the caller's fields and identity (:attr:`KeptError.stop`).
+Each raise first puts back the traceback it had when it was kept, so a retry adds one
+propagation's frames to that and the traceback does not grow with every retry. The
+source's reporter keeps and raises that same instance the same way.
 """
 
 from __future__ import annotations
 
 import copy
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from types import TracebackType
 from typing import NoReturn, TypeVar
+
+from archivey.internal.streams.callers_source import (
+    from_callers_source,
+    from_source_callback,
+    mark_callers_source,
+)
 
 _E = TypeVar("_E", bound=BaseException)
 
@@ -59,11 +72,44 @@ class KeptError:
     first_raise: str
     """The first raise's traceback, its causes included, as text."""
 
+    callers_source: bool = False
+    """The error came from the caller's source or ``on_source_read``
+    (:func:`~archivey.internal.streams.callers_source.from_callers_source`)."""
+
+    source_callback: bool = False
+    """The error was raised by ``on_source_read``
+    (:func:`~archivey.internal.streams.callers_source.from_source_callback`)."""
+
+    stop: BaseException | None = field(default=None, compare=False, repr=False)
+    """For a stop from ``on_source_read``, the caller's own instance, raised again. A
+    copy would drop fields the caller set (a slot, say), and the caller may compare
+    by identity. The reporter keeps this same instance and raises it on every later
+    source read (``SourceReadReporter.raise_if_stopped``)."""
+
+    stop_traceback: TracebackType | None = field(
+        default=None, compare=False, repr=False
+    )
+    """:attr:`stop`'s traceback when it was kept, put back before each raise: a raise
+    adds its frames to the traceback already on the instance, so without the reset
+    every retry would make it longer and keep more frames alive."""
+
     @classmethod
     def of(cls, raised: BaseException) -> KeptError:
-        """Keep ``raised``, which is being raised now (its traceback so far)."""
+        """Keep ``raised``, which is being raised now (its traceback so far).
+
+        The caller's marks are read off ``raised`` here, not off the copy: a type whose
+        ``__copy__`` builds a fresh instance drops them.
+        """
         first_raise = "".join(traceback.format_exception(raised))
-        return cls(unraised(raised), first_raise)
+        callback = from_source_callback(raised)
+        return cls(
+            unraised(raised),
+            first_raise,
+            callers_source=from_callers_source(raised),
+            source_callback=callback,
+            stop=raised if callback else None,
+            stop_traceback=raised.__traceback__ if callback else None,
+        )
 
     def raise_again(self) -> NoReturn:
         """Raise a fresh copy of the error, caused by where it was first raised.
@@ -71,9 +117,21 @@ class KeptError:
         The traceback is cleared first: a copy has none, and the instance the
         fallback keeps would otherwise gain this raise's frames every time. The local
         goes as the raise leaves, or this frame and the caller's would stay tied to
-        the error."""
+        the error.
+
+        A stop from ``on_source_read`` is the exception: the caller's own instance is
+        raised again (:attr:`stop`), with the traceback it had when it was kept, as the
+        reporter raises it.
+        """
+        if self.stop is not None:
+            raise self.stop.with_traceback(self.stop_traceback)
         again = unraised(self.error)
         again.__traceback__ = None
+        # Each copy carries the caller's marks again, so every boundary above raises
+        # it as itself (an exception from the caller's source, parked by a decoder
+        # child, is not translated).
+        if self.callers_source:
+            mark_callers_source(again)
         try:
             raise again from EarlierRaise(f"first raised here:\n{self.first_raise}")
         finally:

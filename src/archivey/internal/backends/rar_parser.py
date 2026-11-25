@@ -493,8 +493,9 @@ class RarMemberInfo:
     # ``split_before`` and the last part's ``split_after``: with both clear the list
     # is the whole member. ``split_before`` set means the first part is in a volume
     # outside the set; the parser refuses that only when the continuation is the
-    # first volume's first member. ``split_after`` set means the last part was not
-    # found (an end block that claimed no next volume).
+    # first volume's first member and its header is intact (a damaged header's flag is
+    # cleared there, :func:`_damaged_split_continues`). ``split_after`` set means the
+    # last part was not found (an end block that claimed no next volume).
     data_parts: list[tuple[int, int]] = field(default_factory=list)
     # The dictionary (sliding window) size the header declares, in bytes; 0 for a
     # directory (on RAR5, one that is not also a link: its flag is kept apart from
@@ -1401,7 +1402,8 @@ def _parse_rar_volume(
     ``volume_index`` is the 0-based position in that set, not a RAR format
     version: RAR3-on-disk is ``archive.version == 4``, RAR5 is ``5``.
     A ``split_before`` member on the first volume is refused ("Need first
-    volume") rather than listed as a fragment.
+    volume") rather than listed as a fragment, when its header is intact; on a
+    header that failed its CRC the flag is cleared.
     ``password_proven`` carries an earlier RAR 1.5-4 volume's proof of the header
     password into this volume's walk (:attr:`RarArchive.password_proven`).
 
@@ -1474,7 +1476,10 @@ def _parse_rar_volume(
         and archive.members[0].split_before
         and not archive.main_lost
     ):
-        raise UnsupportedFeatureError(NEED_FIRST_VOLUME_MSG)
+        if archive.members[0].damaged_header is None:
+            raise UnsupportedFeatureError(NEED_FIRST_VOLUME_MSG)
+        # A damaged header's flag: the first volume holds no continuation.
+        archive.members[0].split_before = False
     return archive
 
 
@@ -2477,15 +2482,20 @@ def _settle_unknown_stored_size(member: RarMemberInfo) -> None:
         member.size_unknown = False
 
 
-def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
+def _merge_split_member(
+    old: RarMemberInfo, new: RarMemberInfo, *, check_name: bool = True
+) -> None:
     """Collapse a SPLIT_AFTER continuation into the first part (rarfile-style).
 
     A genuine continuation repeats the same file name and follows a part that was itself
     marked SPLIT_AFTER. Reject a continuation that names a different file or follows a
     non-split member, so a crafted split_before flag cannot silently fold an unrelated
     member's size/CRC into the previous one (and hide it from the listing).
+    ``check_name=False``: a damaged header is involved and
+    :func:`_damaged_split_continues` already decided; the name and flags are not
+    compared, and the member keeps ``old``'s name.
     """
-    if not old.split_after or old.filename != new.filename:
+    if check_name and (not old.split_after or old.filename != new.filename):
         raise CorruptionError(
             "Mismatched RAR split continuation: "
             f"{quoted(new.filename)} does not continue {quoted(old.filename)}"
@@ -3718,6 +3728,7 @@ class _Rar3Walk:
         if self.past_damage and not _only_zeros_after(source, end):
             return end
         self.needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
+        _settle_damaged_split_after(self.members, self.needs_next_volume)
         volume_number = _rar3_end_block_volume_number(hdata, flags, header_size)
         if self.volume_index == 0 and self.is_volume and volume_number:
             # A later volume whose first member starts on its boundary: no
@@ -3799,13 +3810,13 @@ class _Rar3Walk:
                 member.after_lost, self.pending_lost = self.pending_lost, None
                 if self.is_solid and self.found_here:
                     self.solid_damage = _solid_damage_after(self.solid_damage, False, 0)
-            if _emit_walked_member(
+            # The volume's last member decides; an intact end block overrides it.
+            self.needs_next_volume = _emit_walked_member(
                 self.members,
                 member,
                 max_members=self.max_members,
                 max_metadata_bytes=self.max_metadata_bytes,
-            ):
-                self.needs_next_volume = True
+            )
             if self.yield_files:
                 self.pending = ForwardMember(member, block.data_offset, packed_size)
                 return
@@ -4767,9 +4778,25 @@ def _emit_file_member(
 
     Both header walks, the QO run and the cross-volume merge use this one rule. A
     continuation is appended only when ``members`` is empty: in a header walk that is
-    the first member of a volume, which :func:`_parse_rar_volume` refuses on volume 1.
-    Returns ``split_after``.
+    the first member of a volume, which :func:`_parse_rar_volume` refuses on volume 1
+    when its header is intact. A header that failed its CRC does not decide the merge
+    alone (:func:`_damaged_split_continues`). Returns ``split_after``.
     """
+    if members and (
+        members[-1].damaged_header is not None or member.damaged_header is not None
+    ):
+        old = members[-1]
+        if _damaged_split_continues(old, member):
+            _merge_split_member(old, member, check_name=False)
+            return member.split_after
+        # Not a continuation, so a damaged header's split flag that says otherwise
+        # is wrong: ``old`` is not continued here, and ``member`` continues nothing.
+        # An intact header's SPLIT_BEFORE stays, and the merge below refuses it as
+        # it refuses it between two intact headers.
+        if old.damaged_header is not None:
+            old.split_after = False
+        if member.damaged_header is not None:
+            member.split_before = False
     if member.split_before and members:
         _merge_split_member(members[-1], member)
     else:
@@ -4808,6 +4835,37 @@ def _emit_walked_member(
     return member.split_after
 
 
+def _damaged_split_continues(old: RarMemberInfo, new: RarMemberInfo) -> bool:
+    """Whether ``new`` continues ``old`` when one of them, or both, was listed from a
+    header that failed its CRC.
+
+    The split flags and the name of a damaged header are not checked by anything, and
+    one damaged byte can set ``SPLIT_BEFORE`` or change the name. The walk does not
+    trust them over what it knows: a continuation is never in the volume of the part
+    it continues, and across a volume boundary the flag of the intact header decides.
+    The names are not compared, because a damaged name would fail the open. The
+    merged member keeps ``damaged_header``, and its data is still checked by the last
+    part's digest. When both headers are damaged, both flags must say so.
+    """
+    if new.volume_index == old.volume_index:
+        return False
+    if new.damaged_header is None:
+        return new.split_before
+    if old.damaged_header is None:
+        return old.split_after
+    return new.split_before and old.split_after
+
+
+def _settle_damaged_split_after(members: _MemberList, next_volume: bool) -> None:
+    """Clear a damaged last member's ``SPLIT_AFTER`` when the volume's intact end
+    block says no volume follows: the end block's CRC checks that flag, and nothing
+    checks the damaged header's."""
+    if members and not next_volume:
+        last = members[-1]
+        if last.damaged_header is not None and last.split_after:
+            last.split_after = False
+
+
 def _packed_end(member: RarMemberInfo) -> int:
     return member.data_offset + member.compress_size
 
@@ -4824,7 +4882,7 @@ def _emit_and_skip_qo_run(
     """If ``tell()`` is a QO FILE, emit the consecutive cached run and seek past it.
 
     Returns ``None`` when ``tell()`` is not a QO FILE (caller parses the block).
-    Otherwise returns whether any emitted member has ``split_after``.
+    Otherwise returns whether the last emitted member has ``split_after``.
     """
     pos = source.tell()
     if pos not in qo_by_off:
@@ -4843,13 +4901,12 @@ def _emit_and_skip_qo_run(
         pos = nxt
     needs_next = False
     for member in run:
-        if _emit_file_member(
+        needs_next = _emit_file_member(
             members,
             member,
             max_members=max_members,
             max_metadata_bytes=max_metadata_bytes,
-        ):
-            needs_next = True
+        )
     seen_file_offsets.update(m.header_offset for m in run)
     _seek_to(source, pos)
     return needs_next
@@ -5173,8 +5230,7 @@ class _Rar5Walk:
                 max_metadata_bytes=self.max_metadata_bytes,
             )
             if skipped is not None:
-                if skipped:
-                    self.needs_next_volume = True
+                self.needs_next_volume = skipped
                 continue
 
             block = self._read_block(header_fd, header_start)
@@ -5528,6 +5584,7 @@ class _Rar5Walk:
         """Finish the walk at ``ENDARC``: record whether a volume follows."""
         endarc_flags = _load_vint_or_zero(block.hdata, block.pos)[0]
         self.needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
+        _settle_damaged_split_after(self.members, self.needs_next_volume)
         self.end_block_seen = True
         self.trailing_at = _scan_after_end_block(
             self.source, _packed_span_end(block.data_offset, block.add_size)
@@ -5575,13 +5632,13 @@ class _Rar5Walk:
                         self.solid_damage = _solid_damage_after(
                             self.solid_damage, False, 0
                         )
-                if _emit_walked_member(
+                # The volume's last member decides; an intact end block overrides it.
+                self.needs_next_volume = _emit_walked_member(
                     self.members,
                     member,
                     max_members=self.max_members,
                     max_metadata_bytes=self.max_metadata_bytes,
-                ):
-                    self.needs_next_volume = True
+                )
                 self.seen_file_offsets.add(member.header_offset)
                 if self.yield_files:
                     self.pending = ForwardMember(

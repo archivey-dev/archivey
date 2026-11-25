@@ -14,7 +14,7 @@ the format.
 | Write | **Not shipped** |
 | Source | Seekable only (`required_source` is `SEEKABLE`): the run tables are at the end of the image and the filesystem metadata anywhere in the disk. A pipe is refused, or spooled by the caller |
 | Listing cost | The open reads the `koly` block, the property list and its run tables, the partition map, a 4 KiB probe of each partition, each HFS+ volume header (plus two 512-byte journal reads) and each APFS container's block 0; the first listing walks each HFS+ catalog twice and the attributes tree once, and for APFS scans the checkpoint ring, reads the object maps whole and walks each filesystem tree once |
-| Core dependencies | None. ADC, LZFSE and LZVN are decoded in Python, LZFSE and LZVN by the `archivey-codecs` kernels when that package is installed (not yet under `NATIVE_DECODERS`; same bytes and errors); zlib, bzip2 and xz through `ReaderContext.decompress`. An encrypted image needs `cryptography` (the `[recommended]` extra) |
+| Core dependencies | None. ADC, LZFSE and LZVN are decoded in Python, LZFSE and LZVN by the `archivey-codecs` kernels when that package is installed (in the decoder child under `NATIVE_DECODERS`; same bytes and errors); zlib, bzip2 and xz through `ReaderContext.decompress`. An encrypted image needs `cryptography` (the `[recommended]` extra) |
 | Refuses | Version 1 encrypted images (`cdsaencr`), encrypted images locked only by a certificate or keychain key, encrypted read-write (raw disk) images, segmented images, images with no property list, HFS wrappers, HFS+ volumes whose journal may hold changes, APFS Fusion and prerelease-layout containers, encrypted and sealed APFS volumes, unknown run types (at read), directory hard links (at read) |
 | `format=` | `format="dmg"` opens a file as UDIF; one with no `koly` block is `CorruptionError` |
 
@@ -147,8 +147,12 @@ open stay within 64 MiB (`udif.OPEN_BUDGET`), else `ResourceLimitError`.
    checked (signature, version, run count against the `Data` length, every run inside
    the table and the data fork, a compressed run's stored length at most twice its
    decoded size plus 64 KiB, a decoded size at most 16 MiB) before its runs are kept,
-   as packed arrays charged against `max_metadata_bytes`. Overlapping tables are
-   `CorruptionError`.
+   as packed arrays. Before they are allocated, they are weighed against
+   `max_metadata_bytes`: 256 bytes per kept table (an empty table counts too) plus its
+   name, and 36 bytes per declared run (terminators, comments and empty runs included).
+   The weight is kept for the reader's life with what the listing holds, as APFS's
+   trees are (`ReaderContext._keep_metadata`); a context without that hook holds the
+   tables to the limit alone. Overlapping tables are `CorruptionError`.
 3. Partitions: a GPT whose header and entry array pass their CRCs and whose geometry is
    sound (primary, else the backup at the last sector), else an Apple partition map
    whose entries all agree, else the run tables' ranges, else the whole disk. Either

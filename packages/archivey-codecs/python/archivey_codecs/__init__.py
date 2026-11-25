@@ -1,7 +1,6 @@
 """Rust codecs with standard-library-shaped interfaces.
 
-- Hashes like :mod:`hashlib`: :class:`Crc16Arc`, and :func:`crc16_arc` like
-  :func:`zlib.crc32`.
+- :func:`crc16_arc`: CRC-16/ARC, like :func:`zlib.crc32`.
 - :mod:`archivey_codecs.lzw`: Unix ``compress`` (``.Z``), a decompressor like
   :class:`lzma.LZMADecompressor`.
 - :mod:`archivey_codecs.lzx`: LZX as Microsoft cabinets store it, a decompressor like
@@ -33,7 +32,6 @@ from archivey_codecs import (
 from archivey_codecs._codecs import (
     CodecError,
     CorruptDataError,
-    Crc16Arc,
     TruncatedDataError,
     UnsupportedDataError,
     crc16_arc,
@@ -46,7 +44,6 @@ __all__ = [
     "KERNELS",
     "CodecError",
     "CorruptDataError",
-    "Crc16Arc",
     "TruncatedDataError",
     "UnsupportedDataError",
     "bcj2",
