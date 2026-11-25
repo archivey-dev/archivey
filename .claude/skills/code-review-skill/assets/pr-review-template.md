@@ -18,7 +18,7 @@ Two things about the shape, because they are what people get wrong:
 ## A. The review body (blocks 1 and 3)
 
 ```markdown
-## Round [N] · [✅ Approve | ✅ Approve, conditional on K7, K9 | 💬 Comment | 🔄 Request Changes]
+## Round [N] · [✅ Approve | ✅ Approve, conditional on K7, K9 | 🔄 Request Changes | ⏸️ Maintainer decision needed]
 
 **Claude Code** · `code-review-skill` · `[head-sha]` · scope `[main...HEAD | last..HEAD]`
 
@@ -58,8 +58,8 @@ included. Post the inline comments **before** the body, so their URLs exist to l
 ```markdown
 ### Findings
 
-- **K6** 🔴 `CONFIRMED` — [gist in one sentence] · [`path/to/file.py:123`]([thread url])
-- **K7** 🟡 `PLAUSIBLE` — [gist] · [`path/to/other.py:45`]([thread url])
+- **K6** 🔴 `CONFIRMED` · reach: `hostile-bytes` — [gist in one sentence] · [`path/to/file.py:123`]([thread url])
+- **K7** 🟡 `PLAUSIBLE` · reach: `normal-use` — [gist] · [`path/to/other.py:45`]([thread url])
 - **K8** 🟢 `[nit]` — [gist] · [`path/to/third.py:9`]([thread url])
 ```
 
@@ -137,13 +137,16 @@ One per finding, anchored on the line it concerns. Written to be read months lat
 someone who has only this thread open: no "see the briefing", no "as in K3".
 
 ```markdown
-### K6 · 🔴 `[blocking]` · `CONFIRMED`
+### K6 · 🔴 `[blocking]` · `CONFIRMED` · reach: `hostile-bytes`
 
 **Claude Code** · `code-review-skill` · round [N] · `[head-sha]`
 
 [What is wrong and why it matters.]
 
 **Fix:** [concrete direction]
+
+**Class:** [invariant; other sites checked and what each showed; the guard], or "this
+site only" and what you checked. 🔴/🟡 `CONFIRMED` only.
 
 **Trigger:** [input/state → failure], or `needs-repro`
 ```

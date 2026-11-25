@@ -1,6 +1,6 @@
 """Operations on one ``concurrent_operations=True`` reader stay independent of each other.
 
-Under the flag every call works as if it ran on a reader of its own: what one call
+Under the flag, calls that may overlap do not see each other's effects: what one call
 emits, or a close on another thread, does not show up in a different call's result
 as something that call did. ``test_concurrent_pass_refusals.py`` covers which calls
 may overlap; this file covers what they see of each other.
@@ -103,8 +103,14 @@ def test_link_followed_on_several_threads_is_reported_once(tmp_path: Path) -> No
     assert errors == [type(single.value)] * 4
 
 
-def test_close_waits_for_members_report_if_available(tmp_path: Path) -> None:
-    """``close()`` waits for the walk, as it does for ``members()``."""
+def test_close_beside_members_report_if_available_cancels_the_walk(
+    tmp_path: Path,
+) -> None:
+    """``close()`` does not wait for the walk: it returns, the peek raises the closed
+    error at the walk's next checkpoint, and the archive is torn down after it."""
+    from archivey.exceptions import ArchiveyUsageError
+    from archivey.internal.reader_state import LifecycleState
+
     path = tmp_path / "a.zip"
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("a.txt", b"a")
@@ -119,24 +125,27 @@ def test_close_waits_for_members_report_if_available(tmp_path: Path) -> None:
         original()
 
     reader._ensure_walked = slow_walk  # type: ignore[attr-defined]
-    reports: list[object] = []
-    caller = threading.Thread(
-        target=lambda: reports.append(reader.members_report_if_available())
-    )
+    outcome: list[object] = []
+
+    def peek() -> None:
+        try:
+            outcome.append(reader.members_report_if_available())
+        except BaseException as exc:  # noqa: BLE001 - checked below
+            outcome.append(exc)
+
+    caller = threading.Thread(target=peek)
     caller.start()
-    walking.wait(5)
-    closer = threading.Thread(target=reader.close)
-    closer.start()
-    closer.join(0.2)
-    # Still waiting for the walk.
-    assert closer.is_alive()
+    assert walking.wait(5)
+    reader.close()  # returns at once
+    state = reader._state  # type: ignore[attr-defined]
+    assert state.lifecycle is LifecycleState.READER_CLOSED  # the peek holds teardown
     release.set()
     caller.join(5)
-    closer.join(5)
-    report = reports[0]
-    assert report is not None
-    assert [m.name for m in report.members] == ["a.txt"]  # type: ignore[attr-defined]
-    assert report.error is None  # type: ignore[attr-defined]
+    assert not caller.is_alive()
+    (result,) = outcome
+    assert isinstance(result, ArchiveyUsageError)
+    assert "closed" in str(result)
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
 def test_close_during_a_read_raises_the_closed_file_error() -> None:

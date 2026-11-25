@@ -130,10 +130,12 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.codecs.registry import save_codec_state
 from archivey.internal.streams.decompressor_stream import StreamChecksumError
+from archivey.internal.streams.kept_errors import KeptError
 from archivey.internal.streams.read_hints import mark_read_span, read_span_hint
 from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
     FullCountStream,
+    HandleLock,
     LockedStream,
     OneReadEachStream,
     ReadAheadStream,
@@ -287,7 +289,7 @@ class _PluginAdapter(BaseArchiveReader):
         # plugin, and the pass has the reader to itself. Decoded member data
         # (``MemberSpan.data``) is the plugin's stream, so it takes this lock too.
         if MemberStreams.CONCURRENT in member_streams:
-            self._handle_lock = threading.Lock()
+            self._handle_lock = HandleLock()
         # Views over a seekable source, when the reader shape uses them.
         self._shared: SharedSource | None = None
         # The member decoder config, as ZIP builds its own: the compressed bytes a
@@ -354,16 +356,44 @@ class _PluginAdapter(BaseArchiveReader):
         # check that passes does not raise them (``SpanningCheck.passed``).
         self._failed_reads: frozenset[int] = frozenset()
         context._spanning_pass = self._spanning_passes.append
+        # Only verify_all() runs the passes (``_run_spanning_passes``).
+        context._checkpoint = functools.partial(self._state.check_open, "verify_all()")
         context._decompress_coder = self._decompress_coder
         context._keep_metadata = self._listing_tracker.keep
         if self._listing_decode is not None:
             context._listing_draw = self._listing_decode.draw
         self._reader = self._open_reader(context)
         self._reader_open = True
+        # What kept the first ``info`` from being published at open
+        # (``_validate_at_open``), if anything.
+        self._info_open_error: KeptError | None = None
 
     def _open_reader(self, context: ReaderContext) -> FormatReader:
         """Call the plugin's ``open``, and check what it returned."""
         raise NotImplementedError
+
+    @override
+    def _validate_at_open(self) -> None:
+        super()._validate_at_open()
+        # Publish the first ``info`` now, so one read inside a callback (which may
+        # run under the plugin's handle lock) has a snapshot to answer. A plugin whose
+        # ``archive_info()`` fails still opens: the first live ``info`` raises it.
+        try:
+            self._info_snapshot = self._get_archive_info()
+        except Exception as exc:  # noqa: BLE001 - raised again by the first live info
+            self._info_open_error = KeptError.of(exc)
+
+    @override
+    def _info_unpublished_in_callback(self) -> ArchiveInfo:
+        # Never call the plugin's archive_info() here, in either mode: the call that
+        # ran this callback may hold the plugin's handle lock, or be inside a plugin
+        # method (an archive_info() whose source read runs the callback) that is not
+        # re-entrant. Nothing is published only when it failed at open, so raise
+        # that failure again.
+        kept = self._info_open_error
+        if kept is not None:
+            kept.raise_again()
+        return self._get_archive_info()
 
     def _charge_key_derivation(self, rounds: int) -> None:
         """``ReaderContext.charge_key_derivation``: the reader's one budget."""
@@ -2534,7 +2564,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         it (random access), over the decoded bytes when the format is compressed."""
         if self._streaming:
             # The walk and the member windows read one stream, as a TAR pass does.
-            self._handle_lock = self._handle_lock or threading.Lock()
+            self._handle_lock = self._handle_lock or HandleLock()
         if self._compressed:
             codec = self._codec_stream = self._open_outer_codec_stream(
                 source,
