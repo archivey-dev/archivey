@@ -20,7 +20,7 @@ from typing import BinaryIO
 import pytest
 
 import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
-from archivey import open_archive
+from archivey import ArchiveyConfig, open_archive
 from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
@@ -853,6 +853,88 @@ def test_bare_bcj2_member_seeks_with_seekable_members() -> None:
             assert_seek_underflow_matches_bytesio(stream)
         with reader.open(member) as stream:
             assert_non_integer_seek_is_type_error(stream, payload)
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_the_read_after_a_stop_raises_it_again() -> None:
+    """A stop from ``on_source_read`` is not held behind the bytes BCJ2 decoded.
+
+    The read that meets the stop raises it, and so does the next one: the bytes that
+    read gathered are dropped, as they are on every other stream.
+    """
+    alphabet = bytes(b for b in range(256) if b not in (0xE8, 0xE9, 0x0F))
+    rng = random.Random(3)
+    payload = bytes(rng.choice(alphabet) for _ in range(6 * bcj2_mod._BLOCK))
+    calls = 0
+    armed = False
+
+    def stop(progress: object) -> None:
+        nonlocal calls
+        if armed:
+            calls += 1
+            if calls == 4:
+                raise _Stop("stop")
+
+    config = ArchiveyConfig(on_source_read=stop, source_read_step=1)
+    with open_archive(io.BytesIO(_bare_bcj2_archive(payload)), config=config) as reader:
+        (member,) = reader.members()
+        with reader.open(member) as stream:
+            armed = True
+            got = b""
+            with pytest.raises(_Stop):
+                while chunk := stream.read(70_000):
+                    got += chunk
+            assert calls == 4
+            assert payload.startswith(got)
+            with pytest.raises(_Stop):
+                stream.read(10)
+
+
+class _ZeroRcStoppingAt(io.RawIOBase):
+    """An ``rc`` stream of zero bytes, one a read, whose ``stop_at``-th read raises a
+    stop from ``on_source_read``: zeros decode every branch as not converted."""
+
+    def __init__(self, stop_at: int) -> None:
+        self._stop_at = stop_at
+        self._reads = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        from archivey.internal.streams.callers_source import mark_source_callback
+
+        self._reads += 1
+        if self._reads == self._stop_at:
+            stop = _Stop("stop")
+            mark_source_callback(stop)
+            raise stop
+        return b"\x00"
+
+
+@pytest.mark.parametrize("stop_at", [6, 50])
+def test_a_stop_in_the_middle_of_a_block_drops_the_decoded_bytes(stop_at: int) -> None:
+    """The bytes the decoder decoded before a mid-block stop are not returned after it."""
+    rng = random.Random(5)
+    main = bytes(rng.choice(b"\xe8ABC") for _ in range(200_000))
+    stream = _bcj2(
+        io.BytesIO(main),
+        io.BytesIO(),
+        io.BytesIO(),
+        _ZeroRcStoppingAt(stop_at),
+        unpack_size=len(main),
+    )
+    got = b""
+    with pytest.raises(_Stop):
+        while chunk := stream.read(10):
+            got += chunk
+    assert main.startswith(got)
+    for _ in range(3):
+        with pytest.raises(_Stop):
+            stream.read(10)
 
 
 def test_encrypted_folder_with_a_cycle_is_corruption_not_a_password_error() -> None:

@@ -43,6 +43,7 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import ArchiveyUsageError, DiagnosticRaisedError
 from archivey.internal import logs
+from archivey.internal.callback_scope import user_callback
 
 if TYPE_CHECKING:
     from archivey.config import ArchiveyConfig
@@ -776,7 +777,8 @@ class DiagnosticCollector:
         )
         if self._on_diagnostic is not None:
             try:
-                self._on_diagnostic(diagnostic)
+                with user_callback():
+                    self._on_diagnostic(diagnostic)
             except Exception as exc:
                 if not self._hold(thread_id, exc):
                     raise

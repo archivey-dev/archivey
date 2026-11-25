@@ -228,7 +228,12 @@ def prepare(case: Case, work: Path, install: bool = False) -> Path:
     git("update-ref", ref, case.head)
     try:
         git("init", "-q", cwd=repo)
-        git("fetch", "-q", "--no-tags", str(ROOT), f"{ref}:refs/heads/pr", cwd=repo)
+        # --update-shallow: from a shallow clone (a cloud session's), git otherwise
+        # rejects the ref, as the fetched history would end at a shallow root.
+        git(
+            "fetch", "-q", "--no-tags", "--update-shallow", str(ROOT),
+            f"{ref}:refs/heads/pr", cwd=repo,
+        )  # fmt: skip
     finally:
         git("update-ref", "-d", ref)
     git("checkout", "-q", "pr", cwd=repo)

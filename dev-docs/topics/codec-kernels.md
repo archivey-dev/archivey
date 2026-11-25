@@ -60,9 +60,9 @@ links them rather than repeating them:
     ADC decoder, PPMd, LHA's and ARJ's decompressors and the rest are Python or another
     library only.
   - The package's whole API on the twins. A twin has only what archivey's call sites
-    use: no `Crc16Arc` class, no state methods (`getstate`, `from_state`, and `copy`
-    except ZipCrypto's), and no LZX `reset()`, `window_bits`, `unused_data` or
-    `total_in`. The package's stubs (`python/archivey_codecs/`) have the whole API.
+    use: no state methods (`getstate`, `from_state`, and `copy` except ZipCrypto's),
+    and no LZX `unused_data` or `total_in`. The package's stubs
+    (`python/archivey_codecs/`) have the whole API.
   - A way to tell, from outside, which side decoded a member. Nothing in the result
     changes. LZO is the one kernel whose backend a reader records (§2.1).
   - Rust parsers. The package holds decoding kernels only; archive parsing stays in
