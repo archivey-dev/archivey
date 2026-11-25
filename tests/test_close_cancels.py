@@ -425,3 +425,34 @@ def test_an_interrupt_while_settling_the_listing_still_releases_the_archive(
         assert len(outcome) == 1 and isinstance(outcome[0], KeyboardInterrupt)
     assert released == [1]
     assert reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+
+
+def _zip_with_dir_and_symlink(tmp_path: Path) -> Path:
+    path = tmp_path / "dirlink.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("adir/"), b"")
+        link = zipfile.ZipInfo("alink")
+        link.external_attr = (0o120777 << 16) | 0x20
+        link.create_system = 3
+        zf.writestr(link, b"target.txt")
+    return path
+
+
+@pytest.mark.parametrize("closing_at", ["adir", "alink"])
+def test_close_from_the_filter_places_no_directory_or_link(
+    tmp_path: Path, closing_at: str
+) -> None:
+    """A directory or link is placed with no read and no swap; a close() from the
+    filter must still stop the call before it reaches the destination."""
+    reader = open_archive(_zip_with_dir_and_symlink(tmp_path))
+    out = tmp_path / "out"
+
+    def keep(member: object) -> object:
+        if getattr(member, "name", "").rstrip("/") == closing_at:
+            reader.close()
+        return member
+
+    with pytest.raises(ArchiveyUsageError, match=r"^extract_all\(\)"):
+        reader.extract_all(out, filter=keep)  # type: ignore[arg-type]
+    left = sorted(p.name for p in out.iterdir()) if out.exists() else []
+    assert closing_at not in left, left

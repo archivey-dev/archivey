@@ -2126,6 +2126,8 @@ class ExtractionCoordinator:
             # the member (``member_state_final``): it may see the member again.
             transformed._listing_pending = original._listing_pending
             filtered = self._filter(transformed)
+            # The filter is user code, so it may have closed the reader.
+            self._checkpoint()
             if filtered is None:
                 return None, None, frozenset()
             if not isinstance(filtered, ArchiveMember):
@@ -2462,6 +2464,9 @@ class ExtractionCoordinator:
         is tracked in ``links``, so a later member that moves what it resolves through
         gets it rechecked."""
         written_paths = self._state.written_paths
+        # Directories and links are placed directly, with no stream read and no
+        # swap, so this is their last chance to see a close() from a callback.
+        self._checkpoint()
         if transformed.type == MemberType.DIRECTORY:
             return self._write_directory(original, transformed, dest_path)
 
