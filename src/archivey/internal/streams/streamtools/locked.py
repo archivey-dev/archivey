@@ -51,10 +51,14 @@ class HandleLock:
 
     def release(self) -> None:
         # The holder's batch, taken while it still holds the lock: a thread that
-        # takes the lock after this release starts its own.
-        batch = self._deferred
+        # takes the lock after this release starts its own list. Nothing deferred
+        # (every plain read) keeps no reference to the list, which the next holder
+        # may fill, and allocates none.
+        batch: list[Callable[[], None]] | tuple[()] = self._deferred
         if batch:
             self._deferred = []
+        else:
+            batch = ()
         self._owner = None
         self._lock.release()
         for close in batch:

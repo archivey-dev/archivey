@@ -181,3 +181,40 @@ def test_each_holder_runs_only_the_closes_it_deferred() -> None:
     assert [name for name, _ in ran] == ["first", "other", "second"]
     assert ran[0][1] == me and ran[2][1] == me
     assert ran[1][1] != me
+
+
+def test_a_holder_with_nothing_deferred_runs_no_later_holders_close() -> None:
+    """A holder that deferred nothing runs nothing after its release, though another
+    thread takes the lock, defers a close and lets go before that holder's drain."""
+    from archivey.internal.streams.streamtools import HandleLock
+
+    lock = HandleLock()
+    ran: list[int] = []
+
+    def other_holder() -> None:
+        with lock:
+            lock.defer(lambda: ran.append(threading.get_ident()))
+
+    class _HandOffOnRelease:
+        """The inner lock: its release lets the other thread in at once."""
+
+        def __init__(self, inner: threading.Lock) -> None:
+            self._inner = inner
+            self.hand_off = True
+
+        def acquire(self, *args: object) -> bool:
+            return self._inner.acquire(*args)  # type: ignore[arg-type]
+
+        def release(self) -> None:
+            self._inner.release()
+            if self.hand_off:
+                self.hand_off = False
+                thread = threading.Thread(target=other_holder)
+                thread.start()
+                thread.join(5)
+
+    lock._lock = _HandOffOnRelease(lock._lock)  # type: ignore[assignment]
+    with lock:
+        pass
+    assert len(ran) == 1, ran
+    assert ran[0] != threading.get_ident()
