@@ -87,7 +87,7 @@ from typing import (
     Self,
     cast,
 )
-from weakref import ref
+from weakref import WeakMethod, ref
 
 from archivey.internal.overrides import override
 from archivey.internal.pe_resources import ProgramResources
@@ -1046,8 +1046,10 @@ class BaseArchiveReader(ArchiveReader):
 
         # --- Who may call now, and when to close (``ReaderState``) ---------------
         self._state = ReaderState(member_streams=member_streams, open_site=open_site)
-        # The last call out after a close() tears the archive down.
-        self._state.teardown_hook = self._teardown_after_call
+        # The last call out after a close() tears the archive down. Weakly: the state
+        # belongs to the reader, and a bound method would make a cycle that keeps a
+        # closed reader (and its listing) alive until the cyclic collector runs.
+        self._state.teardown_hook = WeakMethod(self._teardown_after_call)
         self._closed = False
         # A backend that shares one underlying handle across member streams (the TAR
         # walk's stream) sets this to a lock under CONCURRENT (and TAR
@@ -1417,12 +1419,15 @@ class BaseArchiveReader(ArchiveReader):
         except Exception as exc:
             if propagating is None:
                 raise
-            logger.warning("Closing the archive after a call failed: %r", exc)
+            logger.warning(
+                "Closing the archive after a call failed: %s", exception_detail(exc)
+            )
             if is_closed_reader_error(propagating) and propagating.__cause__ is None:
                 propagating.__cause__ = exc
             else:
                 propagating.add_note(
-                    f"Closing the archive after this call also failed: {exc!r}"
+                    "Closing the archive after this call also failed: "
+                    + exception_detail(exc)
                 )
 
     def _internal_member_opens(self) -> _InternalMemberOpens:

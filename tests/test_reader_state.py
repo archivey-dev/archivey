@@ -65,7 +65,11 @@ def _in_thread(fn: Callable[[], object]) -> None:
 
 def _counting_hook(state: ReaderState) -> list[int]:
     calls: list[int] = []
-    state.teardown_hook = lambda: calls.append(1)
+
+    def hook() -> None:
+        calls.append(1)
+
+    state.teardown_hook = lambda: hook  # what a weak reference gives while alive
     return calls
 
 

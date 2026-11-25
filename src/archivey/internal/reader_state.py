@@ -263,8 +263,10 @@ class ReaderState:
         self.cache_state = CacheState.UNMATERIALIZED
         self.lifecycle = LifecycleState.OPEN
         # Run, outside the lock, by the call that leaves last after a close: the
-        # reader sets it to its teardown (``BaseArchiveReader._teardown_after_call``).
-        self.teardown_hook: Callable[[], None] | None = None
+        # reader sets it to a weak reference to its teardown
+        # (``BaseArchiveReader._teardown_after_call``), so the state does not keep the
+        # reader alive. Called, it gives the hook, or ``None`` once the reader is gone.
+        self.teardown_hook: Callable[[], Callable[[], None] | None] | None = None
         # The one reader-wide pass or default-reader lookup in progress, if any.
         self._root: OperationToken | None = None
         self._children: set[OperationToken] = set()
@@ -530,7 +532,8 @@ class ReaderState:
             self._run_teardown_hook()
 
     def _run_teardown_hook(self) -> None:
-        hook = self.teardown_hook
+        ref = self.teardown_hook
+        hook = ref() if ref is not None else None
         if hook is not None:
             hook()
 
