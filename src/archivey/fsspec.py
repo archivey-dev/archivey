@@ -646,9 +646,13 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         # closed before it returns, also on a second thread while the first is still
         # inside it, and after an interrupted first call. The finalizer runs only once,
         # so a second ``fs.close()`` through it could return with the reader still open.
-        # The finalizer stays registered: if this close is interrupted, collecting the
-        # file system still closes the reader (a later close is a no-op).
+        # The finalizer holds the reader, and through its callbacks maybe this file
+        # system, so it stays registered only while the reader may still need a close:
+        # after an interrupted close, or while a peer's close still owns the shutdown.
+        # Once the reader's close has finished, it is dropped.
         self.reader.close()
+        if cast("BaseArchiveReader", self.reader)._closed:
+            self._finalizer.detach()
 
     def __enter__(self) -> Self:
         return self
@@ -985,21 +989,13 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         A close stops the reports of every member after the one being checked. That one
         member's refusal can still be reported once, after the close, if its closed
         check passed first: the check and the report are not atomic. The listing raises
-        the closed error either way, also when the policy raises on the refusal. The
-        report is not made under ``_publish_lock``: a callback that closes the file
+        the closed error either way, also when the policy raises on this refusal. Only
+        that escalation is replaced: an error out of the log handler or the callback,
+        another file system's ``DiagnosticRaisedError`` included, propagates unchanged.
+        The report is not made under ``_publish_lock``: a callback that closes the file
         system would wait for itself."""
         if self._closed:
             raise closed_reader_error("listing")
-        try:
-            self._emit_refused(member, reason, unmodelled)
-        except DiagnosticRaisedError as exc:
-            if self._closed:
-                raise closed_reader_error("listing") from exc
-            raise
-
-    def _emit_refused(
-        self, member: ArchiveMember, reason: str, unmodelled: bool
-    ) -> None:
         reader = cast("BaseArchiveReader", self.reader)
         why = (
             reason
@@ -1007,18 +1003,26 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
             else f"extraction under the {self.policy.value} policy would not write "
             f"it ({reason})"
         )
-        reader._diagnostics_collector.emit(
-            code=DiagnosticCode.MEMBER_PATH_REFUSED,
-            message=f"{quoted(member.name)} is not in the archivey:// tree: {why}",
-            context=PathRefusedContext(
-                archive_name=reader._archive_name,
-                member_name=member.name,
-                member_id=member.member_id,
-                policy=self.policy.value,
-                reason=reason,
-            ),
-            member=member,
+        context = PathRefusedContext(
+            archive_name=reader._archive_name,
+            member_name=member.name,
+            member_id=member.member_id,
+            policy=self.policy.value,
+            reason=reason,
         )
+        try:
+            reader._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_PATH_REFUSED,
+                message=f"{quoted(member.name)} is not in the archivey:// tree: {why}",
+                context=context,
+                member=member,
+            )
+        except DiagnosticRaisedError as exc:
+            # This emit's own escalation carries this context object; any other
+            # DiagnosticRaisedError came out of the callback or the log handler.
+            if self._closed and exc.diagnostic.context is context:
+                raise closed_reader_error("listing") from exc
+            raise
 
     # fsspec annotates ``_open`` as returning its own buffered file; any binary file
     # object is what callers of ``open`` get, and a member stream is one.

@@ -37,6 +37,7 @@ from archivey import (  # noqa: E402
     ExtractionPolicy,
     open_archive,
 )
+from archivey.exceptions import DiagnosticRaisedError  # noqa: E402
 from archivey.fsspec import ArchiveyFileSystem  # noqa: E402
 from archivey.internal.reader_state import LifecycleState  # noqa: E402
 from tests.conftest import case_sensitive  # noqa: E402
@@ -1314,6 +1315,58 @@ def test_a_close_during_a_refusal_raises_the_closed_error(memfs: Any) -> None:
     holder.append(ArchiveyFileSystem("memory://d/in-refusal.zip", config=config))
     with pytest.raises(ArchiveyUsageError):
         holder[0].ls("")
+
+
+def test_a_callbacks_own_error_is_not_replaced_by_the_closed_error(memfs: Any) -> None:
+    """An ``on_diagnostic`` callback closes its file system, then lists another one
+    that raises on the same refusal. That other file system's error comes out of the
+    first listing unchanged: only this file system's own escalation of the refusal
+    becomes the closed error."""
+    memfs.pipe("/d/outer.zip", _zip_bytes([("ok", b"x"), ("../up", b"y")]))
+    memfs.pipe("/d/inner.zip", _zip_bytes([("../in", b"z")]))
+    inner = ArchiveyFileSystem(
+        "memory://d/inner.zip",
+        config=ArchiveyConfig(
+            diagnostic_policy=DiagnosticPolicy(
+                raise_on={DiagnosticCode.MEMBER_PATH_REFUSED}
+            )
+        ),
+    )
+    holder: list[ArchiveyFileSystem] = []
+
+    def close_then_list_inner(d: Any) -> None:
+        if d.code is DiagnosticCode.MEMBER_PATH_REFUSED:
+            holder[0].close()
+            inner.ls("")
+
+    holder.append(
+        ArchiveyFileSystem(
+            "memory://d/outer.zip",
+            config=ArchiveyConfig(on_diagnostic=close_then_list_inner),
+        )
+    )
+    with pytest.raises(DiagnosticRaisedError) as caught:
+        holder[0].ls("")
+    assert caught.value.diagnostic.context.member_name == "../in"
+    inner.close()
+
+
+def test_a_closed_file_system_held_by_its_callback_is_collected(memfs: Any) -> None:
+    """A file system whose ``on_diagnostic`` callback refers to it, closed, then
+    dropped: collection frees it. The close leaves nothing that keeps it alive."""
+    memfs.pipe("/d/cycle.zip", _zip_bytes([("a", b"x")]))
+
+    def make() -> weakref.ref[ArchiveyFileSystem]:
+        box: dict[str, ArchiveyFileSystem] = {}
+        config = ArchiveyConfig(on_diagnostic=lambda _d: box)
+        fs = ArchiveyFileSystem("memory://d/cycle.zip", config=config)
+        box["fs"] = fs  # the callback now keeps the file system alive
+        fs.close()
+        return weakref.ref(fs)
+
+    fs_ref = make()
+    gc.collect()
+    assert fs_ref() is None
 
 
 def test_an_interrupted_close_still_closes_the_reader_on_collection(
