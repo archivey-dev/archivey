@@ -128,9 +128,10 @@ Handoff mechanics (one shared collector/budget, no copy/re-seed): see
 
 `open_archive()` SHALL accept two keyword-only booleans, both defaulting to `False`:
 
-- `concurrent_operations=True` — reader operations may overlap: any number of member
-  streams may be open simultaneously, and passes and `extract_all()` run beside random
-  access and one another (full contract: `reader-concurrency`)
+- `concurrent_operations=True` — random-access operations may overlap: any number of
+  member streams may be open simultaneously, and lookup calls may run from several
+  threads. A pass (`stream_members()`, `extract_all()`, `verify_all()`) still has the
+  reader to itself in both modes (full contract: `reader-concurrency`)
 - `seekable_members=True` — every member stream from random `open()` is seekable;
   `stream_members()` yields stay forward-only (below)
 
@@ -403,6 +404,18 @@ report for backends that carry one; `None` only when nothing is materialized and
 scan would be required. Returning an incomplete report to a caller MUST NOT change
 the complete-or-raise behaviour of `members()` / `get(name)`; the report self-labels
 via `error` and those methods still raise.
+
+`members_report_if_available()` SHALL give the same answer before a pass and at any
+point during it: the report published when the pass started, or `None`. Inside a pass
+it reads nothing and takes no token (`reader-concurrency`, "A pass has the reader to
+itself"). After a pass that reached its end it returns the full report: every member
+(`error is None`), or, on a damaged archive, the members before the damage with the
+`error`. After a pass left part-way (a `break`) it returns what it returned before the
+pass: the full report on a format with an upfront index, `None` on one without (TAR, a
+ZIP with no central directory, a directory). A streaming pass stopped by a listing limit
+leaves `None`. So that the answer does not depend on when the loop asks, every streaming
+pass over a format with an upfront index reads the whole index when it starts, before
+its first member, as `members()` would (maintainer, 2026-11-24).
 
 On `streaming=True`, `members_report()` MAY start or finish the single forward
 pass and thereby consume it; it still returns a report instead of raising on
@@ -887,25 +900,23 @@ yielded; resyncing past such damage is out of scope. (The pass also raises for r
 other than damage, such as `ListingLimits` or a diagnostic set to raise.)
 
 A `stream_members()` invocation is an exclusive one-pass/data-path operation in
-both modes. It SHALL NOT overlap random `open()`, materialization, another
-iteration/data pass, unrelated extraction, or reader close. On a reader opened with
-`concurrent_operations=True`, random `open()` / `read()` / `get()` / `members()`,
-iteration, further `stream_members()` passes and `extract_all()` MAY run beside it, on
-every format (`reader-concurrency`, "Random-access calls beside a pass"). An
-`extract_all()` owner MAY invoke it as a child pass and MAY read/close the yielded
-child stream. Unrelated overlap SHALL raise `ArchiveyUsageError` at the later op and
-leave the active pass/stream valid. (Unlike random `open()`, whose independently
-owned streams may coexist when `CONCURRENT` is declared — see `reader-concurrency`.)
+both modes, with or without `concurrent_operations=True`. It SHALL NOT overlap random
+`open()`, `read()`, `get()`, `members()`, iteration, another pass or extraction: the
+later op SHALL raise `ArchiveyUsageError` and leave the active pass/stream valid, and
+the pass SHALL raise when it starts if a stream from `open()` is still open
+(`reader-concurrency`, "A pass has the reader to itself"). An `extract_all()` owner MAY
+invoke it as a child pass and MAY read/close the yielded child stream.
 
-Reader close is the one exception, and only while the pass is suspended at a yield
-(the caller holds the iterator and is not inside a `next()` call). `close()` and
-`with`-exit then close the reader, as `zipfile.ZipFile.close()` does with member
-handles open, in this order: the backend's pass is wound down (its last yielded
-stream closed, then its pass-scoped resources such as a solid block or an `unrar`
-pipe released), then any other member stream still open is closed, and only then is
-the archive torn down. Resuming that iterator SHALL raise `ArchiveyUsageError`. A
-pass that is executing (inside `next()`, e.g. a selector on another thread) still
-makes `close()` raise (maintainer's ruling, 2026-10-10).
+Reader close is never refused (`reader-concurrency`, "Reader close marks the reader
+closed"). While the pass is suspended at a yield (the caller holds the iterator and is
+not inside a `next()` call), `close()` and `with`-exit close the reader, as
+`zipfile.ZipFile.close()` does with member handles open, in this order: the backend's
+pass is wound down (its last yielded stream closed, then its pass-scoped resources
+such as a solid block or an `unrar` pipe released), then any other member stream still
+open is closed, and only then is the archive torn down. Resuming that iterator SHALL
+raise `ArchiveyUsageError` (maintainer's ruling, 2026-10-10). A pass that is executing
+(inside `next()`, e.g. a selector, or on another thread) stops at its next checkpoint
+and raises `ArchiveyUsageError`; its wind-down and the teardown run after it.
 
 The returned `MemberPass` SHALL be an iterator of `(member, stream)` pairs that also has
 `close()` and works as a context manager whose exit calls `close()`. Closing a pass
@@ -915,7 +926,7 @@ the pass releases the reader. Closing does not give a streaming reader a second 
 finishes the interrupted walk. Closing an ended or closed pass SHALL do nothing, and
 advancing a closed pass SHALL end the iteration. Closing a pass that is executing
 (another thread inside `next()`, or a selector closing its own pass) SHALL raise
-`ArchiveyUsageError` and leave the pass running, as `reader.close()` does; a
+`ArchiveyUsageError` and leave the pass running; a
 `ValueError` the pass itself raises on close SHALL reach the caller unchanged. A plain
 `for` loop over a pass SHALL behave as before.
 
@@ -929,10 +940,10 @@ advancing a closed pass SHALL end the iteration. Closing a pass that is executin
 | `stream_members(lambda m: m.name.endswith(".txt"))` | Only `.txt`; unselected never opened, except data-stored symlink targets when `read_link_targets=True`; original mutable members |
 | Fully read stream, then inspect member | Late-bound fields (e.g. size/CRC) visible on same object |
 | Advance after one yield | Prior stream closed/invalidated first |
-| Random `open()` during active pass | `ArchiveyUsageError`; pass remains usable. Under `concurrent_operations=True`: admitted |
+| Random `open()` during active pass | `ArchiveyUsageError`, in both modes; pass remains usable |
 | Close/abandon partial generator | Current stream closed; pass ownership released once |
 | `reader.close()` / `with`-exit while the pass is suspended at a yield | Reader closed; yielded stream closed; next `next()` → `ArchiveyUsageError`; a body exception propagates unchanged |
-| `reader.close()` while the pass is executing (another thread inside `next()`) | `ArchiveyUsageError`; reader stays open; pass remains usable |
+| `reader.close()` while the pass is executing (another thread inside `next()`) | `close()` returns; the pass raises `ArchiveyUsageError` at its next checkpoint; teardown after it |
 | Random `open()` into solid block | Re-decode from block start + skip; no diagnostic, no warning — discoverable via `reader.cost.access_cost` and the `open()` docstring |
 | Unencrypted solid 7z, selector excludes a symlink, pass to the end (default config), either access mode | The link's target is resolved; its folder is decoded up to the link once |
 | Pass to the end without `members()`, either access mode, over a ZIP, 7z, RAR4 or RAR5 holding symlinks (default config) | Each yielded symlink ends with the same `link_target` a `members()` call would set, unset where that read cannot produce one |
@@ -1027,12 +1038,16 @@ be idempotent.
   `__enter__`, iteration/listing/lookup, metadata/cost, `open`/`read`,
   `stream_members`, extraction) SHALL raise `ArchiveyUsageError`. Repeated
   `close()` / `__exit__` are no-ops.
+- `close()` SHALL mark the reader closed and return, in both modes, without
+  waiting for or raising because of a call running on another thread
+  (`reader-concurrency`, "Reader close marks the reader closed"). A call already
+  running stops at its next checkpoint with `ArchiveyUsageError`.
 - `close()` SHALL close every member stream still open on that reader, in the
-  order they were opened, and SHALL do so only after the reader has actually
-  transitioned to closed (so a `close()` that raises leaves streams untouched).
-  A member stream SHALL NOT outlive its reader — reading one afterwards raises
-  as it would for any closed stream. This matches `zipfile.ZipFile.close()` and
-  `tarfile.TarFile.close()`.
+  order they were opened: each reports `closed` at once, and the inner close runs
+  when no call is running. A member stream SHALL NOT outlive its reader: a call on
+  one afterwards raises as it would for any closed stream, also a read that was
+  already running. This matches `tarfile.TarFile.close()`; `zipfile.ZipFile.close()`
+  leaves a member handle readable.
 - Each stream close releases that stream's lease, so backend teardown still runs
   once, after the last stream closes — the source is never torn down underneath
   a stream still reading through it.
@@ -1051,10 +1066,11 @@ be idempotent.
   iterator alive exits cleanly, and a body exception is never replaced by a
   close-time usage error.
 
-**Under `MemberStreams.CONCURRENT`:** `reader.close()` drains in-flight worker
-`open()`/`read()` before transitioning to closed (see `reader-concurrency`).
-Without `CONCURRENT`, concurrent close with an actively executing worker call is
-rejected.
+**From a callback.** `close()` from a callback of the reader's own call
+(`on_progress`, `on_diagnostic`, a password provider, `on_source_read`, `filter=`) is
+allowed and is the way to cancel that call: the call stops at the checkpoint after the
+callback returns and raises `ArchiveyUsageError`. A member stream's own `close()` from
+such a callback raises `ArchiveyUsageError`.
 
 Lease/token/teardown once-guards and dual-failure `ExceptionGroup` rules:
 `reader-concurrency`.
@@ -1066,9 +1082,9 @@ Lease/token/teardown once-guards and dual-failure `ExceptionGroup` rules:
 | Open stream, then close reader (no concurrent I/O) | New reader ops → `ArchiveyUsageError`; the stream is closed by that `close()`; backend released after it |
 | Idle open stream + `reader.close()` | Close succeeds and closes the stream; a later read raises; `stream.close()` is a no-op |
 | Several open streams + `reader.close()` | All are closed; teardown runs once, after the last |
-| `close()` raises (executing pass/worker) | Reader stays open; member streams untouched |
+| `close()` while a pass or worker executes | Returns; the call raises `ArchiveyUsageError` at its next checkpoint; teardown after it |
 | `close()` while a pass is suspended at a yield | Reader closed; yielded stream closed; resuming the pass → `ArchiveyUsageError` |
-| Stream dropped without close | `IOBase.__del__` closes it, which releases its lease; nothing the reader or the stream holds may keep it alive |
+| Stream dropped without close | Its finalizer closes it, which releases its lease; nothing the reader or the stream holds may keep it alive |
 | Caller-supplied `BinaryIO`, all closed | Library does not call `close()` on that source |
 | `open_archive()` context exits | Reader closed; any member stream still open is closed with it, then the backend is released |
 | Op after reader close | `ArchiveyUsageError` |
@@ -1419,10 +1435,11 @@ as member data are read only when configured"); like `listing_limits`, it holds 
 reader's lifetime.
 
 `on_diagnostic` runs synchronously after count/retention/logging updates. Snapshot
-reads from a callback are allowed. Starting another operation on the same
-emitting reader/stream SHALL be rejected: the reader's operation gate raises
-`ArchiveyUsageError`, and a re-entrant call that gets as far as emitting a diagnostic
-of its own raises `ArchiveyUsageError` from the collector; other readers OK.
+reads from a callback are allowed; `info` there answers the last published snapshot.
+`close()` of the reader is allowed and stops the emitting call. Starting another
+operation on the same emitting reader/stream SHALL be rejected: the reader's operation
+gate raises `ArchiveyUsageError`, and a re-entrant call that gets as far as emitting a
+diagnostic of its own raises `ArchiveyUsageError` from the collector; other readers OK.
 Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 (`diagnostics` / `reader-concurrency`).
 

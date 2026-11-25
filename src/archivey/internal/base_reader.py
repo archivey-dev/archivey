@@ -2968,9 +2968,9 @@ class BaseArchiveReader(ArchiveReader):
         walk first; a pass that reaches the end then finalizes its links and publishes
         the listing as the streaming pass does, so a 7z or RAR4 symlink whose target is
         its data has that target after the pass in both modes. A pass abandoned early
-        never gets here and resolves nothing. Under ``CONCURRENT`` a ``members()`` call
-        beside the pass can publish first; the pass then publishes nothing
-        (``_finalize_pass_links`` goes through the election).
+        never gets here and resolves nothing. No ``members()`` call runs beside the
+        pass in either mode, so the pass is the one that publishes;
+        ``_finalize_pass_links`` still goes through the election, as a defence.
         """
         if self._streaming:
             yield from self._begin_forward_pass()
@@ -4195,9 +4195,9 @@ class BaseArchiveReader(ArchiveReader):
             return
         # Also ends a random-access reader's stream_members() pass (TAR's one-pass
         # walk, and the 7z and solid RAR passes over ``_listed_members()``), which
-        # opens no child scope either. Through the election: under CONCURRENT a
-        # members() call beside the pass may be publishing, and then this waits for
-        # it and publishes nothing.
+        # opens no child scope either. The pass has the reader to itself, so no
+        # members() call can be publishing now; the election is kept as a defence,
+        # and if it is lost this publishes nothing.
         if not self._state.begin_materialization():
             return
         try:

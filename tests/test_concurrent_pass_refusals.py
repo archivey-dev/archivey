@@ -276,8 +276,9 @@ def test_lookup_calls_beside_a_pass_raise_and_leave_it_usable(
 def test_metadata_stays_readable_inside_a_pass(
     tmp_path: Path, concurrent: bool
 ) -> None:
-    """``format``, ``info``, ``cost``, ``diagnostics`` and ``in`` are not lookup calls:
-    they work in the loop body, from another thread, and from a progress callback."""
+    """``format``, ``info``, ``cost``, ``diagnostics``, ``in`` and
+    ``members_report_if_available()`` are not lookup calls: they work in the loop body,
+    from another thread, and from a progress callback."""
     path = _zip(tmp_path)
     seen: list[object] = []
 
@@ -288,6 +289,7 @@ def test_metadata_stays_readable_inside_a_pass(
                 reader.info.format,
                 reader.cost,
                 reader.diagnostics.total_count,
+                reader.members_report_if_available(),
                 member in reader,
             )
         )

@@ -1334,10 +1334,12 @@ finalization holds the walk lock (`base_reader.py` `_walk_lock`). A pass
 (`stream_members()`, `extract_all()`, `verify_all()`) has the reader to itself in both
 modes: any other call beside it raises, so nothing moves the walk under a pass stream
 that reads through it. A library-internal scope (an extraction's own opens, link-data
-reads) is filed under that pass. Close stays
-single-owner, as does everything on a reader without `CONCURRENT`. Stream leases defer
-backend teardown until the last stream closes, because an accelerator must close before
-it is finalized
+reads) is filed under that pass. `close()` only marks the reader closed: no inner
+stream close and no teardown runs beside a call that may use it, in either mode. One
+count of running calls (reader calls and member-stream calls) holds the physical
+cleanup back, and the last call out runs it once (`reader_state.py`). Everything else on
+a reader without `CONCURRENT` stays single-owner. Stream leases defer backend teardown
+until the last stream closes, because an accelerator must close before it is finalized
 ([`investigations/rapidgzip-upstream-report.md`](investigations/rapidgzip-upstream-report.md)
 §6).
 
