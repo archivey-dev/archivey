@@ -411,7 +411,9 @@ def test_archive_close_defers_teardown_past_an_in_flight_member_read() -> None:
     closer.start()
     try:
         assert closed.wait(5)
-        assert not stream.closed
+        # Closed to the caller at once; its inner close waits for the read.
+        assert stream.closed
+        assert not stream._inner_closed()  # type: ignore[attr-defined]
         assert ar._state.lifecycle is LifecycleState.READER_CLOSED
     finally:
         release.set()

@@ -703,27 +703,33 @@ class ReaderState:
             calls[ident] = calls.get(ident, 0) + 1
         return sys.exception()
 
-    def enter_stream_close(
-        self, *, finalizing: bool
-    ) -> BaseException | None | _Refused:
+    def enter_stream_close(self) -> BaseException | None | _Refused:
         """Count a member stream's own ``close()`` as a stream call
         (:meth:`enter_stream_call`), so a ``reader.close()`` meanwhile defers its
         shutdown to it. ``REFUSED`` once the reader is closed: the shutdown then owns
         the stream's inner close.
 
-        A close from inside a stream call on this thread is a callback's (a source
-        read's ``on_source_read`` inside a read of this stream or of a sibling, which
-        may hold the shared handle lock): it raises ``ArchiveyUsageError`` before it
-        takes any lock, instead of closing the decoder under the read or deadlocking.
-        ``finalizing``: the collector's close of a dropped stream, never refused.
+        A close from a callback that runs inside a call of this reader on this thread
+        raises ``ArchiveyUsageError`` before it takes any lock, instead of closing a
+        decoder under that call or waiting on the shared handle lock the call may
+        hold: a stream call (an ``on_source_read`` inside a read of this stream or of
+        a sibling), or, from inside a caller's callback, any other call (``open()``,
+        a listing, ``info``, a pass). The pass's own closes of its streams come from
+        no callback.
         """
         with self._lock:
             ident = threading.get_ident()
-            if ident in self._stream_calls and not finalizing:
+            current = threading.current_thread()
+            if ident in self._stream_calls or (
+                callback_depth() > 0
+                and (
+                    self._same_thread_token_locked() is not None
+                    or any(t.thread is current for t in self._info_calls)
+                )
+            ):
                 raise ArchiveyUsageError(
                     "A member stream cannot be closed from a callback that runs inside "
-                    "a read of a stream of the same reader. To stop the read, close "
-                    "the reader."
+                    "a call on the same reader. To stop the call, close the reader."
                 )
             if self.lifecycle is not LifecycleState.OPEN:
                 return REFUSED

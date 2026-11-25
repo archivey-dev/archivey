@@ -626,7 +626,7 @@ class ArchiveStreamImpl(ArchiveStream):
         return None
 
     def _ensure_open(self) -> BinaryIO:
-        if self.closed:
+        if self._inner_closed():
             raise ValueError("I/O operation on closed file.")
         if self._inner is not None:
             return self._inner
@@ -638,7 +638,7 @@ class ArchiveStreamImpl(ArchiveStream):
             if self._inner is not None:
                 return self._inner
             if self._open_fn is None:
-                if self.closed:
+                if self._inner_closed():
                     raise ValueError("I/O operation on closed file.")
                 failed = self._open_error
                 if failed is not None:
@@ -684,7 +684,7 @@ class ArchiveStreamImpl(ArchiveStream):
                 self._open_interrupted_by = type(e)
             raise
         with self._open_lock:
-            if self.closed:
+            if self._inner_closed():
                 try:
                     opened.close()
                 except Exception:  # noqa: BLE001, S110 - best-effort; stream already closing
@@ -804,7 +804,7 @@ class ArchiveStreamImpl(ArchiveStream):
         ``stamp`` / ``rewind_warning`` keeps BadGzipFile / zlib.error / etc. typed
         after the collapse.
         """
-        if nested.closed:
+        if nested._inner_closed():
             raise ValueError("I/O operation on closed file.")
 
         nested_translate = nested._translate
@@ -886,7 +886,7 @@ class ArchiveStreamImpl(ArchiveStream):
         as damage. Raise the closed-file error a read after ``close()`` raises.
         """
         try:
-            if self._closing or self.closed:
+            if self._closing or self._inner_closed():
                 raise ValueError("I/O operation on closed file.") from e
             self._fail(e)
         finally:
@@ -998,7 +998,7 @@ class ArchiveStreamImpl(ArchiveStream):
         n = check_read_size(n)
         # A closed stream's ValueError first, and ``read(0)`` stays a no-op that
         # leaves a waiting error for the next read that asks for bytes.
-        if self._returns_failed_chunks and not self.closed:
+        if self._returns_failed_chunks and not self._inner_closed():
             pending = self._pending_failure
             if pending is not None:
                 if n == 0:
@@ -1517,7 +1517,7 @@ class ArchiveStreamImpl(ArchiveStream):
         return self._counted("tell()", self._tell)
 
     def _tell(self) -> int:
-        if self.closed:
+        if self._inner_closed():
             raise ValueError("I/O operation on closed file.")
         inner = self._inner
         if inner is None:
@@ -1656,13 +1656,37 @@ class ArchiveStreamImpl(ArchiveStream):
         reader's closed error naming the pass's call (``_checkpoint``), any other the
         closed-file error."""
         checkpoint = self._checkpoint
-        if checkpoint is not None and not self.closed:
+        if checkpoint is not None and not self._inner_closed():
             checkpoint()
         raise ValueError("I/O operation on closed file.")
 
+    @property
+    @override
+    def closed(self) -> bool:
+        """Closed once the stream is, or once its reader is: ``reader.close()``
+        closes every open member stream to the caller at once, though the inner
+        close of one waits for the last running call (``_inner_closed``)."""
+        if super().closed:
+            return True
+        calls = self._calls
+        return calls is not None and calls.closing()
+
+    def _inner_closed(self) -> bool:
+        """Whether this stream's own close has run (the inner close is done)."""
+        return super().closed
+
     @override
     def close(self) -> None:
-        if self.closed:
+        if self._inner_closed():
+            return
+        calls = self._calls
+        if calls is None:
+            self._close_scoped()
+            return
+        if self._finalizing:
+            # The collector's close of a dropped stream: the reader's shutdown no
+            # longer reaches it (its registry holds it weakly), so it closes here.
+            self._close_owned()
             return
         calls = self._calls
         if calls is None:
@@ -1670,7 +1694,7 @@ class ArchiveStreamImpl(ArchiveStream):
             return
         # A counted call, so a reader.close() meanwhile defers its shutdown to it.
         # Raises from a callback inside a read of a stream of this reader.
-        entry = calls.enter_stream_close(finalizing=self._finalizing)
+        entry = calls.enter_stream_close()
         if entry is REFUSED:
             # The reader is closed: its shutdown owns this stream's inner close,
             # now or when the last running call is out.
@@ -1685,7 +1709,7 @@ class ArchiveStreamImpl(ArchiveStream):
         """Close the stream for the reader's shutdown or its pass's wind-down, which
         own the inner close once the reader is closed: no count, no refusal. A close
         that another call already claimed is left to it."""
-        if self.closed:
+        if self._inner_closed():
             return
         calls = self._calls
         if calls is None or calls.claim_stream_close(self):
@@ -1693,9 +1717,13 @@ class ArchiveStreamImpl(ArchiveStream):
 
     @override
     def __del__(self) -> None:
-        # A dropped stream may be collected on a thread inside another stream's call:
-        # that is not a callback's close, so close() does not refuse it.
+        # A dropped stream may be collected on a thread inside another stream's call,
+        # or after its reader closed: neither refuses or defers its close. Closed
+        # here, as ``closed`` may already answer True (a closed reader) and the base
+        # finalizer would then skip it.
         self._finalizing = True
+        if not self._inner_closed():
+            self.close()
         super().__del__()
 
     def _close_scoped(self) -> None:

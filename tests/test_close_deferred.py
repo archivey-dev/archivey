@@ -258,8 +258,12 @@ def test_close_beside_a_blocked_read_defers_every_close(gated: Path) -> None:
     closer.join(TIMEOUT)
     assert not closer.is_alive(), "close() waited for the blocked read"
     assert closed == [None]
+    # Closed to the caller at once, though its inner close waits for A's read.
+    assert b.closed
     with pytest.raises(ValueError, match="closed file"):
         b.read(1)
+    b.close()
+    assert b.closed
     assert not [e for e in _HOOKS.events if "close" in e]
     _HOOKS.go.set()
     thread.join(TIMEOUT)
@@ -461,3 +465,33 @@ def test_a_stream_close_from_a_callback_inside_a_read_raises(
         assert isinstance(seen[0], ArchiveyUsageError), seen
         assert not b.closed
         assert b.read(1)
+
+
+def test_a_stream_close_from_a_callback_inside_open_raises(gated: Path) -> None:
+    """A sibling stream's ``close()`` from a callback inside ``open()``, whose
+    ``open_member()`` holds the plugin's handle lock under the flag, raises
+    ``ArchiveyUsageError`` instead of waiting on that lock; the open completes and
+    the sibling stays usable."""
+    seen: list[BaseException] = []
+    targets: list[object] = []
+
+    def on_read(_progress: object) -> None:
+        if _HOOKS.read_in_open and targets:
+            target = targets.pop()
+            try:
+                target.close()  # type: ignore[attr-defined]
+            except BaseException as exc:  # noqa: BLE001 - the test inspects it
+                seen.append(exc)
+
+    config = ArchiveyConfig(on_source_read=on_read, source_read_step=0)
+    with open_archive(gated, config=config, concurrent_operations=True) as reader:
+        idle = reader.open("b.bin")
+        targets.append(idle)
+        _HOOKS.read_in_open = True
+        thread, out = _run(lambda: reader.open("docs/a.txt"))
+        thread.join(TIMEOUT)
+        assert not thread.is_alive(), "the close in the callback deadlocked"
+        assert len(seen) == 1 and isinstance(seen[0], ArchiveyUsageError), seen
+        assert not idle.closed
+        assert idle.read(1) == b"\x00"
+        out[0].close()  # type: ignore[attr-defined]

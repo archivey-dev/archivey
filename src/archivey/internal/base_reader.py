@@ -5904,7 +5904,7 @@ class BaseArchiveReader(ArchiveReader):
         failures: list[BaseException] = []
         # A snapshot: each close removes its stream from the registry (the lease hook).
         for stream in self._state.live_streams():
-            if stream.closed:
+            if stream._inner_closed():
                 continue
             try:
                 # The shutdown owns the inner close: the reader is closed, so the
