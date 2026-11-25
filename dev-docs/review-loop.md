@@ -226,9 +226,7 @@ evidence for it.
 
 Deep-tier pull requests also need an approving review from a second model (Codex, Cursor
 or Antigravity) before merge (`AGENTS.md`). Codex and Antigravity run by hand, outside
-the label loop. Cursor, when the workflow requests it (below, "Cursor reviews a deep
-pull request's Opus round"), reviews during step 1; its findings join step 3, and it
-counts as one of the second models. The order below comes from a pass over every
+the label loop, and so does Cursor when it has quota. The order below comes from a pass over every
 multi-model PR in the week to 2026-11-25 (evidence, with the PR list behind each count:
 [`review-eval/multi-model-2026-11-25.md`](review-eval/multi-model-2026-11-25.md)).
 
@@ -319,15 +317,12 @@ the three `risk:` labels.
   merges after the Opus pass and its security pass. Only the files that decide whether a
   round runs and approves, and who merges, stay with the maintainer, and so does an edit
   that talks about merging in the prose the merging agent follows (`MERGE_RULE_FILES`).
-- **Cursor reviews a deep pull request's Opus round.** The workflow posts an
-  `@cursoragent` request when that round starts, with the `CURSOR_TRIGGER_TOKEN`
-  secret: a fine-grained personal token limited to pull request comments on this
-  repository. Cursor drops comments from bots and GitHub Apps, so the request posted
-  as `github-actions[bot]` went unanswered on five pull requests. Without the secret
-  the step skips and says so in the job summary; ask Cursor by hand then. Every request,
-  by hand or not, names Cursor's included models, not Fast variants (Grok 4.7 or later for the
-  review, Composer 2.5 or later for its subagents): third-party models such as Sonnet
-  bill to paid credit, and Fast variants cost more.
+- **The workflow asks no second model.** Codex and Antigravity are asked by hand, on
+  one head, after the Opus loop approves ("Second-model reviews" above). Until
+  2026-11-25 the workflow posted an `@cursoragent` request at every Opus round of a deep
+  pull request. That reviewed heads still in the Opus loop, and once Cursor ran out of
+  spend each request only drew an out-of-spend reply. The `CURSOR_TRIGGER_TOKEN` secret
+  is no longer used.
 
 ## What this replaced
 
