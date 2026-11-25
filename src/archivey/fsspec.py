@@ -41,7 +41,6 @@ from archivey.internal.filters import (
     resolve_or_raise_on_loop,
 )
 from archivey.internal.overrides import override
-from archivey.internal.reader_state import closed_reader_error
 from archivey.terminal import quoted
 from archivey.types import ArchiveMember, ExtractionPolicy, MemberType
 
@@ -615,12 +614,7 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         self._finalizer = weakref.finalize(self, reader.close)
         # The tree extraction writes, built at the first listing; ``close`` drops it.
         self._tree: _Tree | None = None
-        # Elects the one thread that builds the tree. ``close`` never takes it, so it
-        # does not wait for a first listing.
         self._tree_lock = threading.Lock()
-        # Short: publishing a built tree, and ``close``, which drops it.
-        self._publish_lock = threading.Lock()
-        self._closed = False
 
     @classmethod
     @override
@@ -631,18 +625,12 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
 
     def close(self) -> None:
         """Close the reader and drop the tree. After this, a call that lists or opens
-        raises ``ArchiveyUsageError``, as the closed reader does. It returns at once,
-        also while another thread lists for the first time or reads. A listing, or a
-        call on ``fs.reader``, then raises ``ArchiveyUsageError`` at its next check. A
-        file from ``fs.open()`` raises the closed-file ``ValueError`` on its next
-        read."""
-        # Not under ``_tree_lock``: a first listing on another thread may hold it for
-        # the whole build. The reader's close returns at once and stops that build at
-        # its next check; the publish lock keeps it from storing a tree after this.
-        with self._publish_lock:
-            self._closed = True
+        raises ``ArchiveyUsageError``, as the closed reader does."""
+        # Under the lock, so a listing that builds the tree now either finishes
+        # first or finds the reader closed, and no tree is kept after the close.
+        with self._tree_lock:
+            self._finalizer()
             self._tree = None
-        self._finalizer()
 
     def __enter__(self) -> Self:
         return self
@@ -667,16 +655,9 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         # Two threads can list at once (``concurrent_operations=True``): one builds the
         # tree and reports each refusal once. After ``close``, ``members()`` raises.
         with self._tree_lock:
-            tree = self._tree
-            if tree is not None:
-                return tree
-            built = self._build_tree()
-            with self._publish_lock:
-                if not self._closed:
-                    self._tree = built
-                    return built
-        # Closed while the tree was built from what the reader had already listed.
-        raise closed_reader_error("listing")
+            if self._tree is None:
+                self._tree = self._build_tree()
+            return self._tree
 
     @override
     def ls(self, path: str, detail: bool = True, **kwargs: Any) -> list[Any]:

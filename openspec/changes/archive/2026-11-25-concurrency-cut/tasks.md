@@ -64,10 +64,13 @@
 - [x] 3.7 `archivey.fsspec`: `fs.close()` beside a cold `fs.ls()` returns at once
   (`close()` no longer takes `_tree_lock`)
 
+3.3, 3.5 and 3.7 land in their own pull request, #1839, with the `fsspec-integration`
+spec edit, so that the one code change gets its own review.
+
 ## 4. Specs and docs
 
 - [x] 4.1 `reader-concurrency`, `archive-reading`, `access-mode-and-cost`, `format-tar`,
-  `fsspec-integration` and `error-handling` edited in place
+  `fsspec-integration` (in #1839) and `error-handling` edited in place
 - [x] 4.2 `docs/reading.md`, `dev-docs/design-rules.md`, `dev-docs/threat-model.md`,
   ADR 0003 amendment, the guide pages (design.md §8)
 - [x] 4.3 `CHANGELOG.md` **Breaking:** line (design.md §4)
