@@ -110,11 +110,14 @@ def test_teardown_error_is_a_note_on_another_error(
     assert teardowns == [1]
 
 
+@pytest.mark.parametrize("inside_except", [False, True])
 def test_a_call_returning_normally_raises_the_teardown_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inside_except: bool
 ) -> None:
     """A lookup past its last checkpoint returns its result even if a close came in
-    between; when that call is the last out and teardown fails, it raises that."""
+    between; when that call is the last out and teardown fails, it raises that. Also
+    when the call runs inside the caller's own ``except`` block: the exception that
+    block handles is not this call's."""
     reader = open_archive(_plain_zip(tmp_path), concurrent_operations=True)
     assert isinstance(reader, BaseArchiveReader)
     reader.members()
@@ -135,7 +138,13 @@ def test_a_call_returning_normally_raises_the_teardown_error(
 
     def lookup() -> None:
         try:
-            outcome.append(reader.get("f0.txt"))
+            if not inside_except:
+                outcome.append(reader.get("f0.txt"))
+                return
+            try:
+                raise KeyError("the caller's own")
+            except KeyError:
+                outcome.append(reader.get("f0.txt"))
         except BaseException as exc:  # noqa: BLE001 - checked below
             outcome.append(exc)
 
@@ -236,3 +245,90 @@ def test_a_progress_callback_cannot_open_a_member_during_extract_all(
         reader.extract_all(tmp_path / "out", on_progress=on_progress)
     assert errors
     assert all("re-entered" in str(e) for e in errors)
+
+
+def _zip_with_a_big_stored_member(tmp_path: Path) -> Path:
+    path = tmp_path / "big.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("big.bin", bytes(range(256)) * (4 * 4096 * 4))  # 16 MiB
+        zf.writestr("after.txt", b"after")
+    return path
+
+
+def _hold_the_second_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[threading.Event, threading.Event, list[int]]:
+    """Hold the first worker thread's second member-stream read until released."""
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
+
+    held = threading.Event()
+    release = threading.Event()
+    real = ArchiveStreamImpl._ensure_open
+    calls: list[int] = []
+
+    def ensure_open(self: ArchiveStreamImpl) -> object:
+        if threading.current_thread() is not threading.main_thread():
+            calls.append(1)
+            if len(calls) == 2:
+                held.set()
+                assert release.wait(5)
+        return real(self)
+
+    monkeypatch.setattr(ArchiveStreamImpl, "_ensure_open", ensure_open)
+    return held, release, calls
+
+
+@pytest.mark.parametrize("call", ["extract_all", "verify_all"])
+def test_close_from_another_thread_stops_the_run_within_a_chunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, call: str
+) -> None:
+    """A close() while extract_all() or verify_all() reads a member on another thread
+    stops the run at that member's next read: the error names the call, the member
+    being written is not placed, and no temp file is left."""
+    reader = open_archive(_zip_with_a_big_stored_member(tmp_path))
+    assert isinstance(reader, BaseArchiveReader)
+    reader.members()
+    out = tmp_path / "out"
+    held, release, reads = _hold_the_second_read(monkeypatch)
+    outcome: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            if call == "extract_all":
+                reader.extract_all(out)
+            else:
+                reader.verify_all()
+        except BaseException as exc:  # noqa: BLE001 - checked below
+            outcome.append(exc)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    assert held.wait(5)
+    reader.close()
+    release.set()
+    worker.join(10)
+    assert not worker.is_alive()
+    (error,) = outcome
+    assert isinstance(error, ArchiveyUsageError)
+    assert str(error).startswith(f"{call}()"), error
+    # The held read was the last: 16 one-MiB chunks were left, none was read.
+    assert len(reads) == 2, len(reads)
+    assert reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+    if call == "extract_all":
+        left = sorted(p.name for p in out.rglob("*")) if out.exists() else []
+        assert left == [], left  # neither big.bin nor a temp, nor after.txt
+
+
+def test_a_cancelled_extract_all_names_extract_all(tmp_path: Path) -> None:
+    """Closing from on_progress mid-member: the error names extract_all(), not the
+    nested pass, and the member is not placed."""
+    reader = open_archive(_zip_with_a_big_stored_member(tmp_path))
+    out = tmp_path / "out"
+
+    def on_progress(_progress: object) -> None:
+        reader.close()
+
+    with pytest.raises(ArchiveyUsageError, match=r"^extract_all\(\)"):
+        reader.extract_all(out, on_progress=on_progress)
+    left = sorted(p.name for p in out.rglob("*")) if out.exists() else []
+    assert left == [], left

@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import enum
 import gc
+import sys
 import threading
 import weakref
 from dataclasses import dataclass, field
@@ -113,6 +114,14 @@ def closed_reader_error(op: str) -> ArchiveyUsageError:
 
 def is_closed_reader_error(exc: BaseException) -> bool:
     return getattr(exc, _CLOSED_MARK, False)
+
+
+def _call_name(token: OperationToken) -> str:
+    """The public call ``token`` runs for, as an error names it: a nested pass is
+    named after the call it is filed under (``extract_all()``, ``verify_all()``), not
+    after its own ``stream_members``."""
+    root = token.parent if token.parent is not None else token
+    return f"{root.name}()"
 
 
 def _retry_after_collecting(
@@ -217,6 +226,13 @@ class OperationToken:
     # The member-list report a pass pinned (``pin_report``): what
     # ``members_report_if_available()`` answers while the pass is open, or ``None``.
     report: MemberListReport | None = field(default=None, repr=False)
+    # The exception the acquiring thread was handling when the token was taken (the
+    # caller's own ``except`` block around the call), or ``None``. The teardown hook
+    # tells "this call is raising" from "this call returns inside its caller's
+    # ``except``" by comparing it with the exception in flight at the release.
+    entry_exc: BaseException | None = field(
+        default_factory=sys.exception, repr=False, compare=False
+    )
     _released: bool = field(default=False, repr=False)
 
 
@@ -266,7 +282,9 @@ class ReaderState:
         # reader sets it to a weak reference to its teardown
         # (``BaseArchiveReader._teardown_after_call``), so the state does not keep the
         # reader alive. Called, it gives the hook, or ``None`` once the reader is gone.
-        self.teardown_hook: Callable[[], Callable[[], None] | None] | None = None
+        self.teardown_hook: (
+            Callable[[], Callable[[BaseException | None], None] | None] | None
+        ) = None
         # The one reader-wide pass or default-reader lookup in progress, if any.
         self._root: OperationToken | None = None
         self._children: set[OperationToken] = set()
@@ -467,7 +485,7 @@ class ReaderState:
         raises (it runs on the way out of a yield that raised)."""
         with self._lock:
             if suspended:
-                self._require_lifecycle_open_locked(token.name)
+                self._require_lifecycle_open_locked(_call_name(token))
             token.suspended = suspended
 
     def resume(self, token: OperationToken, op: str) -> None:
@@ -476,7 +494,7 @@ class ReaderState:
         a pass runs this once per member."""
         with self._lock:
             token.suspended = False
-            self._require_admissible_locked(op)
+            self._require_admissible_locked(_call_name(token) if token.parent else op)
 
     def set_pass_closer(
         self, token: OperationToken, closer: Callable[[], None] | None
@@ -542,13 +560,13 @@ class ReaderState:
                 self._children = {c for c in self._children if c.parent is not token}
             due = self._teardown_due_locked()
         if due:
-            self._run_teardown_hook()
+            self._run_teardown_hook(token)
 
-    def _run_teardown_hook(self) -> None:
+    def _run_teardown_hook(self, token: OperationToken) -> None:
         ref = self.teardown_hook
         hook = ref() if ref is not None else None
         if hook is not None:
-            hook()
+            hook(token.entry_exc)
 
     def enter_child_scope(self, name: str) -> OperationToken | None:
         """A child scope under the pass this thread works for, or ``None`` if no pass.
@@ -620,7 +638,8 @@ class ReaderState:
             if root is not None and root.pass_kind is not PassKind.LOOKUP:
                 return None, root.report
             if not self._internal_opens_active_locked():
-                # The library's own call under its pass (extract_all) is not re-entry.
+                # Inside a library-internal open window (first-touch link reads), the
+                # library's own call is not re-entry.
                 self._reject_same_thread_reentry_locked(f"call {name!r}")
             token = OperationToken(name=name, kind="worker")
             self._workers.add(token)
@@ -639,7 +658,7 @@ class ReaderState:
                 self._workers.discard(token)
             due = self._teardown_due_locked()
         if due:
-            self._run_teardown_hook()
+            self._run_teardown_hook(token)
 
     def begin_materialization(self) -> bool:
         """Elect a materialization owner or wait for a published snapshot.

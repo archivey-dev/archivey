@@ -391,6 +391,10 @@ class ArchiveStreamImpl(ArchiveStream):
     _seekable_hint: bool | None = False
     _verifier: MemberVerifier | None = None
     _on_close: CloseHook | None = None
+    # Set by ``stream_members()`` on a pass's streams: raises the reader's closed error
+    # once ``close()`` has come, so a read running on another thread (or the
+    # extract_all()/verify_all() copy loop) stops within one chunk.
+    _checkpoint: Callable[[], None] | None = None
     # Set by ``_hold_inner``: wraps the inner stream when a lazy handle opens it.
     _inner_wrap: Callable[[BinaryIO], BinaryIO] | None = None
     # Set by ``_hold_ratio``: the ratio check every read and seek of the inner goes
@@ -990,6 +994,9 @@ class ArchiveStreamImpl(ArchiveStream):
         # mid-stream needs a full-count layer in front (the ``ArchiveSource`` at the
         # boundary is one), not a loop here.
         inner = self._ensure_open()  # a closed stream's ValueError comes first
+        checkpoint = self._checkpoint
+        if checkpoint is not None:
+            checkpoint()
         if self._consumed_by_verify:
             raise _consumed_by_verify_error()
         verdict = self._verdict

@@ -21,8 +21,9 @@ translates errors, verifies checksums and is held to the decompression-ratio lim
 (``_iter_with_data``), over the same walk. ``extract_all()`` hands the work to
 ``ExtractionCoordinator`` (``extraction.py``), which reads through such a pass or
 through ``open()``. ``verify_all()`` reads the members' data to check it, skipping
-members already proved. ``close()`` refuses or waits for calls in progress, closes the
-member streams still open, and tears the backend down once nothing reads through it.
+members already proved. ``close()`` marks the reader closed and returns: calls in
+progress stop at their next checkpoint, the member streams still open are closed, and
+the backend is torn down by the last call out, once nothing reads through it.
 
 ``ReaderState`` (``reader_state.py``) decides whether a call may start and who runs
 teardown.
@@ -76,6 +77,7 @@ from collections.abc import (
 )
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -1367,10 +1369,11 @@ class BaseArchiveReader(ArchiveReader):
     ) -> ArchiveStreamImpl:
         """Admit ``stream`` under the live-stream gate and attach lease release on close.
 
-        ``token`` is a reservation already taken (eager ``open()``); bind is
-        infallible. Without ``token`` this acquires a new slot (the extraction
+        ``token`` is a reservation already taken (eager ``open()``); the bind raises
+        the closed error when ``close()`` came after the reservation, and the stream is
+        then closed here. Without ``token`` this acquires a new slot (the extraction
         coordinator re-opening a retyped member). A ``stream_members()`` pass's streams
-        do not come here (``ReaderState.admit_pass_streams``).
+        do not come here: the pass winds them down.
 
         The gate also records the stream, weakly and in open order, for ``close()``
         to close if the caller has not (stdlib parity: ``ZipFile.close()`` and
@@ -1405,15 +1408,26 @@ class BaseArchiveReader(ArchiveReader):
                 raise
         return stream
 
-    def _teardown_after_call(self) -> None:
+    def _teardown_after_call(self, entry_exc: BaseException | None) -> None:
         """Teardown, run by the call that leaves last after a ``close()``.
 
         It runs in that call's ``finally``. A teardown failure never replaces an error
         the call is already raising: it becomes the ``__cause__`` of the closed error,
         or a note on any other error, and is logged. A call that is returning normally
         raises it instead.
+
+        ``entry_exc`` is the exception the thread was handling when the call took its
+        token (``OperationToken.entry_exc``): a call that returns inside its caller's
+        ``except`` block sees that one in flight, and is returning normally. So is a
+        pass generator closed at a yield (``GeneratorExit``): its ``close()`` caller
+        gets the teardown error.
         """
-        propagating = sys.exc_info()[1]
+        in_flight = sys.exception()
+        propagating = (
+            None
+            if in_flight is entry_exc or isinstance(in_flight, GeneratorExit)
+            else in_flight
+        )
         try:
             self._maybe_teardown()
         except Exception as exc:
@@ -2649,9 +2663,9 @@ class BaseArchiveReader(ArchiveReader):
                 self._walk = self._iter_members()
             # Read once for the batch: only ``_end_walk`` and ``_abandon_walk`` drop
             # ``_walk`` while it is pulled, and the loop leaves right after either.
-            # Teardown's ``_close_walk`` drops it too, but no close() reaches
-            # teardown during a pull: every caller holds a pass or worker token, so a
-            # callback's close() is refused as re-entry.
+            # Teardown's ``_close_walk`` drops it too, but teardown never runs during
+            # a pull: every caller holds a pass or worker token, and a running call
+            # holds teardown back until it returns, a callback's close() included.
             walk = self._walk
             streaming = self._streaming
             member: ArchiveMember | None = None
@@ -2977,8 +2991,7 @@ class BaseArchiveReader(ArchiveReader):
             # reader then raises a misleading "materialization already in progress", and a
             # CONCURRENT waiter blocks on the CV with no owner left to notify it. We reset
             # the election state and re-raise so the interrupt still propagates unchanged.
-            # (mark_reader_closed's drain path handles BaseException the same way.) The
-            # walk has already discarded itself, if it was the walk that failed.
+            # The walk has already discarded itself, if it was the walk that failed.
             self._materialized = None
             self._state.fail_materialization()
             raise
@@ -4750,9 +4763,9 @@ class BaseArchiveReader(ArchiveReader):
         token, pinned = self._state.acquire_peek("members_report_if_available()")
         if token is None:
             return pinned
-        # A worker token, as members() takes: close() then waits for the walk below
-        # instead of closing the archive under it, and a callback's close() during the
-        # drain is refused as re-entry instead of tearing the walk down under it.
+        # A worker token, as members() takes: it holds teardown back, so a close()
+        # during the drain (from another thread, or from a callback of this call)
+        # stops the drain at its next batch and never tears the walk down under it.
         try:
             return self._members_report_if_available()
         finally:
@@ -5279,6 +5292,7 @@ class BaseArchiveReader(ArchiveReader):
                         retry_next.update(id(c) for c in e.covers)
         # The checks the reader runs itself over bytes no member read reaches: they
         # pass or fail into ``_spanning_unreachable``, taken below.
+        self._state.check_open("verify_all()")
         self._run_spanning_passes(frozenset(id(m) for m, _ in failures))
         for error in self._unraised_spanning.values():
             spanning.append(error)
@@ -5512,6 +5526,7 @@ class BaseArchiveReader(ArchiveReader):
             if parent is None
             else self._state.acquire_child(parent, "stream_members")
         )
+        call_name = f"{(parent or token).name}()"
         current: ArchiveStreamImpl | None = None
         source_closer: Callable[[], None] | None = None
         pinned = False
@@ -5563,6 +5578,9 @@ class BaseArchiveReader(ArchiveReader):
                         # some formats only is a per-format accident callers would
                         # come to rely on. seekable_members=True is for open().
                         stream._make_forward_only()
+                        # Each read is a checkpoint: a close() stops the pass's reads
+                        # within one chunk, with the error naming the public call.
+                        stream._checkpoint = partial(self._state.check_open, call_name)
                         stream._level_member = m
                         stream._level_refresh = self._refresh_member_levels
                         if hold_to_ratio:
@@ -5713,6 +5731,7 @@ class BaseArchiveReader(ArchiveReader):
             # open-phase diagnostics stay on reader.diagnostics, and on a CONCURRENT
             # reader other threads emit into the same collector meanwhile.
             coordinator.pass_token = token
+            coordinator.checkpoint = partial(self._state.check_open, "extract_all()")
             with collector.scoped() as scope:
                 results = coordinator.run(self, dest_path)
         finally:
@@ -5735,15 +5754,23 @@ class BaseArchiveReader(ArchiveReader):
     def close(self) -> None:
         """Close the reader.
 
-        Marks the reader closed and returns, in both modes. It never waits for another
-        thread and never raises because of one, and a callback of the reader's own
-        call may call it to cancel that call. From here on every call on the reader
-        raises ``ArchiveyUsageError``; a call already running stops at its next
-        checkpoint (a chunk of ``read()``, a batch of a listing, the next member of a
-        pass) with the same error. Still-open member streams are closed, matching
-        ``zipfile.ZipFile.close()`` / ``tarfile.TarFile.close()``: a stream's next
-        ``read()`` raises ``ValueError``. A ``stream_members()`` pass suspended at a
-        yield is wound down here; one that is running winds itself down.
+        Marks the reader closed and returns, in both modes. It never waits for a call
+        running on another thread and never refuses, and a callback of the reader's
+        own call may call it to cancel that call. From here on every call on the
+        reader raises ``ArchiveyUsageError``; a call already running stops at its next
+        checkpoint (a chunk of ``read()`` or of a pass's member read, a batch of a
+        listing, the next member of a pass, the return of an ``extract_all()``
+        progress callback, before a member is moved into place) with the same error.
+        Still-open member streams are closed, matching ``zipfile.ZipFile.close()`` /
+        ``tarfile.TarFile.close()``: a stream's next ``read()`` raises ``ValueError``.
+        A ``stream_members()`` pass suspended at a yield is wound down here; one that is
+        running winds itself down.
+
+        Not yet: a member stream from ``open()`` that another thread is reading is
+        closed under that read, and the two then share the decoder. The close can
+        then raise from the stream's cleanup (a helper process's pipe read by both),
+        and the read gets ``ValueError`` or a decoder error. Join such threads before
+        closing, or close their streams from those threads.
 
         The archive is torn down once: here when no call is running, else by the last
         call to return. Idempotent, also when two threads call it at once.
