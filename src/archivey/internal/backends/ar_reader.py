@@ -238,7 +238,7 @@ class ArReader(SequentialReader):
                         stream, raw, offset, names, salvaging=damage is not None
                     )
                 except CorruptionError as err:
-                    if salvage is None:
+                    if salvage is None or not salvage.is_damage(err):
                         raise
                     # Damage: the walk searches on from the damaged header, and the
                     # pass ends in this error.
@@ -385,7 +385,9 @@ class ArReader(SequentialReader):
                 entry = self._entry(
                     stream, stream.read(HEADER_SIZE), at, names, salvaging=True
                 )
-            except CorruptionError:
+            except CorruptionError as exc:
+                if not salvage.is_damage(exc):
+                    raise
                 start = at
                 continue
             if not salvage.holds(at + HEADER_SIZE + entry.size):

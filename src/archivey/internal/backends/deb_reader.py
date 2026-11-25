@@ -33,7 +33,7 @@ from __future__ import annotations
 import io
 import itertools
 import re
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from typing import BinaryIO
 
 from archivey.exceptions import (
@@ -62,6 +62,7 @@ from archivey.internal.filters import (
 from archivey.internal.format_adapter import HeldInnerData, register_builtin_format
 from archivey.internal.overrides import override
 from archivey.internal.salvage import WalkSalvage
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -548,7 +549,7 @@ class DebReader(SequentialReader):
                 try:
                     name, size = self._header(stream)
                 except CorruptionError as err:
-                    if salvage is None:
+                    if salvage is None or not salvage.is_damage(err):
                         raise
                     damage = damage or err
                     search_from = offset
@@ -583,10 +584,16 @@ class DebReader(SequentialReader):
                     assert salvage is not None
                     search_from = salvage.after(offset)
                     continue
-                yield from self._found(
+                whole = yield from self._found(
                     salvage if damage else None, spans, offset, confirmed, searched
                 )
                 control = True
+                if not whole:
+                    # The control tar failed after listing members: the search goes
+                    # on past its header, for the data tar.
+                    assert salvage is not None
+                    search_from = salvage.after(offset)
+                    continue
                 stream.read(size & 1)
                 continue
             fmt = _tar_format(name, b"data", _DATA_STREAMS)
@@ -645,7 +652,9 @@ class DebReader(SequentialReader):
             first = next(spans)
         except StopIteration:
             return iter(())
-        except CorruptionError:
+        except CorruptionError as exc:
+            if from_source_callback(exc):
+                raise
             return None
         return itertools.chain((first,), spans)
 
@@ -656,16 +665,31 @@ class DebReader(SequentialReader):
         offset: int,
         confirmed: bool,
         searched: bool,
-    ) -> Iterator[MemberSpan]:
+    ) -> Generator[MemberSpan, None, bool]:
         """``spans``, each member flagged with ``MEMBER_FOUND_BY_SCAN`` when
         ``salvage`` is given: the tar's ar header at ``offset`` is past damage, found
-        by the search (``searched``) or walked on to."""
-        for span in spans:
-            if salvage is not None:
-                salvage.found(
-                    span.member, offset=offset, confirmed=confirmed, searched=searched
-                )
-            yield span
+        by the search (``searched``) or walked on to.
+
+        Returns whether the tar listed to its end. Past damage, a tar that raises
+        ``CorruptionError`` after its first member ends there and returns ``False``:
+        the pass still ends in the first damage, the package's own error. Before
+        damage, and for an exception ``on_source_read`` raised, the error is raised.
+        """
+        try:
+            for span in spans:
+                if salvage is not None:
+                    salvage.found(
+                        span.member,
+                        offset=offset,
+                        confirmed=confirmed,
+                        searched=searched,
+                    )
+                yield span
+        except CorruptionError as exc:
+            if salvage is None or not salvage.is_damage(exc):
+                raise
+            return False
+        return True
 
     def _search(
         self, salvage: WalkSalvage, stream: ForwardStream, start: int
@@ -685,7 +709,9 @@ class DebReader(SequentialReader):
             salvage.seek(at)
             try:
                 name, size = self._header(stream)
-            except CorruptionError:
+            except CorruptionError as exc:
+                if not salvage.is_damage(exc):
+                    raise
                 start = at
                 continue
             if not salvage.holds(at + HEADER_SIZE + size):

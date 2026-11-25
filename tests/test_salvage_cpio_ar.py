@@ -1061,3 +1061,33 @@ def test_cpio_odc_search_finds_an_afio_large_header(tmp_path: Path) -> None:
     ]
     found = _found(diagnostics)
     assert [c.member_name for c in found] == ["c.txt", "d.txt"]
+
+
+def test_deb_found_data_tar_that_fails_later_keeps_the_first_error(
+    tmp_path: Path,
+) -> None:
+    """A data tar found past the damage lists its members up to its own damage, and
+    the pass still ends in the package's first error, not the tar's later one."""
+    import io
+    import tarfile
+
+    from tests.test_deb import _deb
+
+    raw = _deb(data_kind="")
+    damaged = bytearray(raw)
+    control_at = 8 + 60 + 4
+    damaged[control_at + 58] = ord("!")
+    data_at = raw.index(b"data.tar") + 60
+    with tarfile.open(fileobj=io.BytesIO(raw[data_at:])) as tar:
+        later = tar.getmembers()[-1]
+    assert later.name == "./usr/b"
+    size_at = data_at + later.offset + 124
+    damaged[size_at : size_at + 4] = b"zzzz"  # its size does not parse
+    path = _write(tmp_path, bytes(damaged), "a.deb")
+    default = _read(path, format="deb")[2]
+    members, diagnostics, error = _read(path, salvage=True, format="deb")
+    assert [m[0] for m in members if m[0].startswith("usr/")] == ["usr/", "usr/a"]
+    assert {c.member_name for c in _found(diagnostics)} == {m[0] for m in members}
+    assert isinstance(error, CorruptionError)
+    assert isinstance(default, CorruptionError)
+    assert error.raw_message.startswith(default.raw_message)  # type: ignore[attr-defined]

@@ -42,6 +42,7 @@ from archivey.exceptions import ArchiveyError
 from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError
 from archivey.internal.logs import backends as logger
 from archivey.internal.overrides import override
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.terminal import escape_control_chars
 
 if TYPE_CHECKING:
@@ -848,6 +849,13 @@ class WalkSalvage:
             f"Salvage found {self._format_name} member {member.name!r} {where}, "
             f"at offset {offset}{_in_layer(self.layer)}; {how}.",
         )
+
+    @staticmethod
+    def is_damage(error: BaseException) -> bool:
+        """Whether ``error``, a ``CorruptionError`` the walk caught, is damage the
+        search may go past. An exception ``ArchiveyConfig.on_source_read`` raised is
+        the caller's own, whatever its type: the walk raises it unchanged."""
+        return not from_source_callback(error)
 
     def ending(self, error: ArchiveyError) -> ArchiveyError:
         """Finish the walk's salvage records and give the damage error to raise."""

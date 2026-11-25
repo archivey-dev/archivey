@@ -335,7 +335,11 @@ class CpioReader(SequentialReader):
                 try:
                     header, raw = self._read_entry(stream)
                 except CorruptionError as err:
-                    if salvage is None or self._search_magics(salvage) is None:
+                    if (
+                        salvage is None
+                        or not salvage.is_damage(err)
+                        or self._search_magics(salvage) is None
+                    ):
                         raise
                     # Damage: the walk searches on from the damaged header, and the
                     # pass ends in this error.
@@ -463,7 +467,9 @@ class CpioReader(SequentialReader):
             salvage.seek(at)
             try:
                 header, raw = self._read_entry(stream)
-            except CorruptionError:
+            except CorruptionError as exc:
+                if not salvage.is_damage(exc):
+                    raise
                 start = at
                 continue
             if not salvage.holds(stream.offset + header.file_size):
