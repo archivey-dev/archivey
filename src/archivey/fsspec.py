@@ -29,7 +29,7 @@ from fsspec.core import OpenFile
 
 from archivey.core import open_archive
 from archivey.diagnostics import DiagnosticCode, PathRefusedContext
-from archivey.exceptions import FilterRejectionError
+from archivey.exceptions import DiagnosticRaisedError, FilterRejectionError
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.internal.enum_args import coerce_enum
 from archivey.internal.extraction import hardlink_chain_end
@@ -989,9 +989,10 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         member's refusal can still be reported once, after the close, if its closed
         check passed first: the check and the report are not atomic. The listing raises
         the closed error either way, also when the policy raises on this refusal: a
-        closed check runs after the report is delivered and before the policy's raise.
-        An error out of the log handler or the callback comes before that check and
-        propagates unchanged. The report is not made under ``_publish_lock``: a
+        closed check runs after the report is delivered and before the policy's raise,
+        and the raise is replaced if a close lands after that check. An error out of
+        the log handler or the callback comes before the check and propagates
+        unchanged. The report is not made under ``_publish_lock``: a
         callback that closes the file system would wait for itself."""
         if self._closed:
             raise closed_reader_error("listing")
@@ -1009,13 +1010,27 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
             policy=self.policy.value,
             reason=reason,
         )
-        reader._diagnostics_collector.emit(
-            code=DiagnosticCode.MEMBER_PATH_REFUSED,
-            message=f"{quoted(member.name)} is not in the archivey:// tree: {why}",
-            context=context,
-            member=member,
-            checkpoint=self._raise_if_closed,
-        )
+        checked: list[bool] = []
+
+        def checkpoint() -> None:
+            self._raise_if_closed()
+            checked.append(True)
+
+        try:
+            reader._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_PATH_REFUSED,
+                message=f"{quoted(member.name)} is not in the archivey:// tree: {why}",
+                context=context,
+                member=member,
+                checkpoint=checkpoint,
+            )
+        except DiagnosticRaisedError as exc:
+            # Past the checkpoint, the only error is the emit's own escalation: the
+            # log handler and the callback ran before it. A close that landed since
+            # the check (from another thread) still makes it the closed error.
+            if checked and self._closed:
+                raise closed_reader_error("listing") from exc
+            raise
 
     def _raise_if_closed(self) -> None:
         if self._closed:

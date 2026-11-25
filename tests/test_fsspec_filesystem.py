@@ -1317,6 +1317,30 @@ def test_a_close_during_a_refusal_raises_the_closed_error(memfs: Any) -> None:
         holder[0].ls("")
 
 
+def test_a_close_just_after_the_refusals_closed_check_raises_the_closed_error(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A close that lands after the refusal's closed check passed, before the
+    policy raises on that refusal (on another thread, in use): the listing still
+    raises the closed error, not the policy's ``DiagnosticRaisedError``."""
+    memfs.pipe("/d/after-check.zip", _zip_bytes([("ok", b"x"), ("../up", b"y")]))
+    config = ArchiveyConfig(
+        diagnostic_policy=DiagnosticPolicy(
+            raise_on={DiagnosticCode.MEMBER_PATH_REFUSED}
+        ),
+    )
+    fs = ArchiveyFileSystem("memory://d/after-check.zip", config=config)
+    real_check = fs._raise_if_closed
+
+    def check_then_close() -> None:
+        real_check()
+        fs.close()  # the check passed; the policy's raise comes next
+
+    monkeypatch.setattr(fs, "_raise_if_closed", check_then_close)
+    with pytest.raises(ArchiveyUsageError):
+        fs.ls("")
+
+
 def test_a_callbacks_own_error_is_not_replaced_by_the_closed_error(memfs: Any) -> None:
     """An ``on_diagnostic`` callback closes its file system, then lists another one
     that raises on the same refusal. That other file system's error comes out of the
