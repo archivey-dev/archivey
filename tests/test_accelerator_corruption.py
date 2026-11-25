@@ -38,7 +38,7 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
     _StdlibOnAcceleratorError,
 )
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
-from tests.conftest import assert_raised_again
+from tests.conftest import CPYTHON, assert_raised_again
 from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,
@@ -1083,3 +1083,56 @@ def test_bzip2_read_as_empty_fallback_keeps_the_single_stream_rule(
         ),
     )
     assert stream.read() == (b"first" if single_stream else b"firstsecond")
+
+
+class _DataErrorOnRead(io.RawIOBase):
+    """A decoder stream whose every read fails on the data with ``error``."""
+
+    def __init__(self, error: type[Exception]) -> None:
+        self._error = error
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        return 0
+
+    def readinto(self, buffer: object) -> int:
+        raise self._error("bad data")
+
+
+@pytest.mark.skipif(not CPYTHON, reason="PyPy frees nothing without a collection")
+def test_a_typed_error_after_a_takeover_leaves_no_reference_cycle() -> None:
+    """The typed error a switched takeover raises in place of the standard library's
+    raw one frees the stream with its last reference, with no garbage collection
+    (``kept_errors``). A generator context manager that raised it would not, on
+    CPython 3.12: the raw error's traceback holds the generator's frame, whose
+    ``f_back`` is contextlib's ``__exit__`` frame, which holds the raw error."""
+
+    def translate(exc: Exception) -> TruncatedError | None:
+        return TruncatedError("cut") if isinstance(exc, EOFError) else None
+
+    stream = _StdlibOnAcceleratorError(
+        _DataErrorOnRead(ValueError),
+        views=_SourceViews(lambda: io.BytesIO(b"")),
+        open_stdlib=lambda source: _DataErrorOnRead(EOFError),
+        label="zlib",
+        takes_over=lambda exc: isinstance(exc, ValueError),
+        translate=translate,
+    )
+    ref = weakref.ref(stream)
+    gc.disable()
+    try:
+        try:
+            stream.read(16)
+        except TruncatedError as exc:
+            assert stream.switched
+            del exc
+        del stream
+        alive = ref() is not None
+    finally:
+        gc.enable()
+    assert not alive
