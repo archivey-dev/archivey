@@ -486,16 +486,26 @@ def open_archive(
       ``io.UnsupportedOperation``. A backward seek may re-decompress from the
       start when there is no index or accelerator. A ``stream_members()``
       stream never seeks, with or without this flag.
-    - ``concurrent_operations=True`` — operations on the reader may overlap, from one
-      thread or several, on every format: random ``open()`` / ``read()`` / ``get()``
-      / ``members()``, iteration, ``stream_members()`` passes and ``extract_all()``.
-      Each works as if it ran on a reader of its own. A single member stream object
-      still has one owner, first-touch materialization is coordinated rather than
-      parallel, and ``close()`` waits for calls in flight. Overlap is correct, not
-      always cheaper. Without it, a second overlapping ``open()``, or a random-access
-      call or another pass beside a running pass, raises ``ArchiveyUsageError``;
-      ``close()`` beside a pass suspended at a yield closes the reader, and resuming
-      the pass raises.
+    - ``concurrent_operations=True`` — any number of member streams may be open at
+      once, and ``open()``, ``read()``, ``get()``, ``members()``,
+      ``members_report()``, ``members_report_if_available()`` and iteration may run
+      at the same time from several threads, on every format. Each member stream
+      belongs to one thread at a time, and the member list is built once while the
+      other callers wait for it. Overlap is correct, not always cheaper. Without it,
+      a second ``open()`` while a stream is open raises ``ArchiveyUsageError``, and
+      the reader and its open stream belong to one thread at a time.
+
+    In both modes ``stream_members()``, ``extract_all()`` and ``verify_all()`` have the
+    reader to themselves: while one runs, any other of the calls above and any other
+    pass raises ``ArchiveyUsageError``, and a pass raises when it starts if another
+    call is running or a stream from ``open()`` is still open. ``format``, ``info``,
+    ``cost``, ``diagnostics``, ``member in reader`` and
+    ``members_report_if_available()`` stay readable beside a pass.
+
+    ``close()`` marks the reader closed and returns, in both modes: it never waits for
+    another thread. A call still running raises ``ArchiveyUsageError`` at its next
+    check, a member stream still open raises ``ValueError``, and the archive is
+    released when the last running call returns.
 
     ``open_stream`` uses the same vocabulary for the single-stream case
     (``open_stream(..., seekable=True)``); concurrency is meaningless there, so it has

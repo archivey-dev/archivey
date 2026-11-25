@@ -390,14 +390,19 @@ requirement only states how the capabilities compose with `streaming`.
 | `streaming=False` | `concurrent_operations` and/or `seekable_members` MAY be declared; concurrent-open semantics are `reader-concurrency`. Without `concurrent_operations`, one live member stream (`archive-reading`). |
 | `streaming=True` | Random `open`/`read` still unavailable. Single progressive pass is exclusive. **`concurrent_operations=True` incompatible** → `ArchiveyUsageError` at open. `seekable_members=True` alone MAY be declared. |
 
-Random-access `stream_members()` is exclusive on a default reader. Under
-`concurrent_operations=True`, random `open()`, the other random-access calls, further
-`stream_members()` passes and `extract_all()` run beside it on every format (see
-`reader-concurrency`, "Random-access calls beside a pass").
-Detected pass/open/close overlap → later op `ArchiveyUsageError`; active pass stays usable. The exception is `close()`
-while the pass is suspended at a yield: the reader closes and resuming the pass raises
-`ArchiveyUsageError` (maintainer's ruling, 2026-10-10; see `archive-reading`). Ops
-after `reader.close()` → `ArchiveyUsageError` (idempotent `close`).
+Random-access `stream_members()` is exclusive in both modes, with or without
+`concurrent_operations=True` (see `reader-concurrency`, "A pass has the reader to
+itself"). Detected pass/open overlap → later op `ArchiveyUsageError`; active pass stays
+usable. `close()` is never refused: while the pass is suspended at a yield the reader
+closes and resuming the pass raises `ArchiveyUsageError` (maintainer's ruling,
+2026-10-10; see `archive-reading`), and a pass that is executing raises it at its next
+checkpoint. Ops after `reader.close()` → `ArchiveyUsageError` (idempotent `close`).
+
+A streaming pass over a format with an upfront member index (ZIP's central directory,
+7z, RAR, ISO, SquashFS, CAB, XAR, DMG, single-file compressors, plugins that declare
+one) reads the whole index when it starts, before its first member, as `members()`
+would: a `break` after the first member has still paid for it. No member data is read
+for it. On ISO this is about 0.65 s per 20,000 members (maintainer, 2026-11-24).
 
 #### Scenario: mode × capability matrix
 

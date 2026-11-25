@@ -71,69 +71,59 @@ or a synchronized, bounded/spooled shared decode/materialization strategy; the
 contract neither requires one decoder per open nor promises elimination of
 redundant decompression.
 
-**Reader-wide operation ownership.** Distinct reader-wide passes (`__iter__`,
-`stream_members`, `extract_all`) and `members_report_if_available` initialization
-remain single-owner and cannot overlap one another or the random worker seam, with
-one exception: `stream_members()` and `extract_all()` passes on a `CONCURRENT` reader
-overlap workers and one another (see "Random-access calls beside a pass"). Under
-`CONCURRENT`, first-touch materialization through `members()` or `members_report()`
-is coordinated (wait/share) and `reader.close()` drains in-flight worker calls
-rather than rejecting them. The base reader SHALL represent ownership with an
-explicit unforgeable root token, not thread identity. Private helpers MAY receive
-that token to enter child scopes: materialization may perform link-data reads; a
-random worker `open()` may do name lookup/link following and late link-data reads;
-`extract_all` may inspect available members/source counters and drive one or more
-`stream_members` passes; and a pass may advance and perform I/O/close on its
-yielded stream. An unrelated/reentrant public call has no token even on the owner
-thread and is rejected. The later conflicting operation SHALL raise
-`ArchiveyUsageError` before changing state; the earlier root and children remain
+**Reader-wide operation ownership.** Distinct reader-wide passes (`stream_members()`,
+`extract_all()`, `verify_all()`, iteration and `members_report()` of a streaming reader)
+are single-owner in both modes: a pass has the reader to itself (see "A pass has the
+reader to itself"). Under `CONCURRENT`, first-touch materialization through `members()`
+or `members_report()` is coordinated (wait/share). The base reader SHALL represent
+ownership with an explicit unforgeable root token, not thread identity. Private helpers
+MAY receive that token to enter child scopes: materialization may perform link-data
+reads; a random worker `open()` may do name lookup/link following and late link-data
+reads; `extract_all` may take its progress totals and drive its `stream_members` pass;
+`verify_all` may run its spanning passes and its report; and a pass may advance and
+perform I/O/close on its yielded stream. That scope is entered around the library's own
+child calls only, never around a user callback. An unrelated/reentrant public call has
+no token even on the owner thread and is rejected. The later conflicting operation SHALL
+raise `ArchiveyUsageError` before changing state; the earlier root and children remain
 usable.
 
-Random `open()` SHALL hold a short-lived worker token only while that call
-executes. An operation on a random-open stream holds no worker token: an open
-stream owns a lifecycle lease, not active operation ownership. Under
-`CONCURRENT`, `close()` waits for in-flight worker tokens to drain, then closes;
-without `CONCURRENT`, close is rejected while a worker call is executing. Either
-way, a `close()` that goes ahead closes every member stream still open
-(archive-reading), including one another thread is reading: that read returns
-what it already had or raises the closed-file `ValueError`, never a damage
-error, and every later read raises it. Closure does not enable any new reader
-API.
+Random `open()` SHALL hold a short-lived worker token only while that call executes. An
+operation on a random-open stream holds no worker token: an open stream owns a lifecycle
+lease, not active operation ownership. `close()` never waits for a running call and
+never raises because of one (see "Reader close marks the reader closed"). Closure does
+not enable any new reader API.
 
-"Overlap" means concurrent method/I/O execution, not the lifetime of an idle
-open member stream: a non-concurrent `reader.close()` MAY run while member
-streams remain open. Each stream keeps its lease until that `close()` closes it.
-This is not a blanket thread-safety guarantee for every reader method. Nor is a
-pass or member stream that nothing can reach any more an overlap, on any
-interpreter: a call refused for an overlap SHALL run a garbage collection and try
-once more, so whether it is refused depends only on whether the earlier pass or
-stream is still referenced, never on when the collector ran. A refusal that is not
-an overlap (a closed reader, a callback re-entry) SHALL NOT collect.
+"Overlap" means concurrent method/I/O execution, not the lifetime of an idle open
+member stream, except that a data pass refuses to start while a stream from `open()` is
+open. This is not a blanket thread-safety guarantee for every reader method. Nor is a
+pass or member stream that nothing can reach any more an overlap, on any interpreter: a
+call refused for an overlap SHALL run a garbage collection and try once more, so whether
+it is refused depends only on whether the earlier pass or stream is still referenced,
+never on when the collector ran. A refusal that is not an overlap (a closed reader, a
+callback re-entry) SHALL NOT collect.
 
 **`stream_members()` is separate.** A `stream_members()` pass owns the reader's
-one-pass data path. It MUST NOT overlap any other forward/data pass, nor random
-`open()` work, except as "Random-access calls beside a pass"
-allows. Advancing the iterator closes/invalidates the previously yielded
+one-pass data path. Advancing the iterator closes/invalidates the previously yielded
 stream before yielding the next; this iterator-owned lifecycle does not apply to
 independent streams returned by random `open()`. The yielded stream carries a child
 scope so its I/O is permitted during the pass. Exhaustion, exceptions, explicit
-generator close, and generator abandonment/finalization SHALL close the current
-yielded stream and release the pass scope/token exactly once. While the generator is
-suspended at a yield the pass is not executing, so `reader.close()` does not refuse:
-it closes the reader, winds the backend's pass down (last yielded stream, then
-pass-scoped resources), closes any other open member stream, and only then tears the
-archive down, holding a lease from the close transition until the member streams are
-closed, so no stream close can start teardown early. Teardown runs even when the
-wind-down fails, and the failure then propagates out of whatever finished the step. A
-`close()` interrupted inside that step (`KeyboardInterrupt`) leaves it to the next
-`close()`, or, when none comes, to the generator's own close or finalization; a
-concurrent `close()` that returned while another was in the step does not stop either.
-A failure in a step finished that way comes out of that `close()`, out of the
-generator's own `close()`, or, when the collected generator finished it, through
-`sys.unraisablehook`: the caller sees nothing. Resuming the
-generator then raises `ArchiveyUsageError` (maintainer's ruling, 2026-10-10). A pass
-that is executing still makes a non-`CONCURRENT` `close()` raise. A caller needing
-simultaneous streams SHALL materialize and use random `open()`.
+generator close, and generator abandonment/finalization SHALL close the current yielded
+stream and release the pass scope/token exactly once. While the generator is suspended
+at a yield the pass is not executing: `reader.close()` closes the reader, winds the
+backend's pass down (last yielded stream, then pass-scoped resources), closes any other
+open member stream, and only then tears the archive down, holding a lease from the close
+transition until the member streams are closed, so no stream close can start teardown
+early. Teardown runs even when the wind-down fails, and the failure then propagates out
+of whatever finished the step. A `close()` interrupted inside that step
+(`KeyboardInterrupt`) leaves it to the next `close()`, or, when none comes, to the
+generator's own close or finalization; a concurrent `close()` that returned while
+another was in the step does not stop either. A failure in a step finished that way
+comes out of that `close()`, out of the generator's own `close()`, or, when the
+collected generator finished it, through `sys.unraisablehook`: the caller sees nothing.
+Resuming the generator then raises `ArchiveyUsageError` (maintainer's ruling,
+2026-10-10). A pass that is executing when `close()` comes stops at its next checkpoint,
+and its own cleanup runs the wind-down on the way out. A caller needing simultaneous
+streams SHALL materialize and use random `open()`.
 
 **Cost is informational.** `AccessCost.SOLID` / `solid_block_count` tell callers
 that simultaneous random streams may repeat decompression. They never disable
@@ -168,8 +158,8 @@ release.
 | `CONCURRENT` interleaved reads, any format | Both correct; `AccessCost` describes expense only |
 | Concurrent first-touch on unmaterialized `CONCURRENT` reader | One builder; others wait; all proceed on published snapshot; no overlap `ArchiveyUsageError` |
 | Materialization fails before publish | Private state discarded; `UNMATERIALIZED`; waiters re-elect/see error; lifecycle stays `OPEN` |
-| Workers active + `stream_members`, `__iter__` or `extract_all` | Admitted (see "Random-access calls beside a pass") |
-| `close()` under `CONCURRENT` with in-flight workers | Blocks until return, then closes; no raise merely for active workers; idle member streams are closed by that `close()` and their leases drop |
+| Workers active + `stream_members`, `extract_all` or `verify_all` | The pass → `ArchiveyUsageError` (see "A pass has the reader to itself") |
+| `close()` under `CONCURRENT` with in-flight workers | Returns at once; the workers raise the closed error at their next checkpoint; the last one out tears down |
 | Two members in one solid block opened together | Correct independent bytes; may re-decode; no concurrency exception |
 | Same on CPython `3.13t` free-threaded job | Data-race-free; same observables as regular build |
 
@@ -190,139 +180,149 @@ callbacks still run with no reader-state lock held).
 | Electing materialization fails (e.g. corrupt header) | Back to unmaterialized; no partial snapshot; waiters see error or re-elect |
 | Default reader or uncontended path | No waiting; scan/link reads/callbacks with no reader-state lock held |
 
-### Requirement: Draining reader close
+### Requirement: Reader close marks the reader closed
 
-Under declared concurrency, `reader.close()` SHALL wait for in-flight
-worker `open()`/`read()` calls to return and then transition the reader to
-closed, rather than raising because workers are active. Member streams still open
-at that point SHALL be closed by that `close()`, per "Context-manager and close
-lifecycle" in `archive-reading`; their leases drop as they close, and teardown
-follows the last one. Close idempotency, one-shot teardown, and post-close
-rejection SHALL be preserved.
+`reader.close()` SHALL mark the reader closed and return, in both modes. It SHALL NOT
+wait for another thread and SHALL NOT raise because of one (maintainer, 2026-11-24,
+after an independent evaluation: `dev-docs/investigations/close-under-concurrency/`).
+From then on every call on the reader raises `ArchiveyUsageError` (the closed error),
+and every member stream still open reports `closed` and raises the closed-file
+`ValueError` on its next call. A call already running, on another thread or under a
+callback of the caller's own thread, SHALL stop at its next checkpoint and raise the
+closed error: the next batch of a list build, the next member of `extract_all()` or
+`verify_all()`, the next step of a `stream_members()` loop, the return of a user
+callback, and the return of a member-stream call. Cancellation is cooperative: a plugin
+or a source blocked inside one call is not interrupted. A lookup call past its last
+checkpoint returns its result.
 
-Closing those streams SHALL happen **once**, on a single caller. Concurrent
-`close()` calls SHALL NOT each walk the live-stream set: `ArchiveStream.close`
-tests its closed flag outside its lock, so two callers would otherwise be able to
-enter one stream's underlying `close()` together — and a backend that is not
-re-entrant on close would be entered twice. The same once-guard shape as teardown
-applies, and like teardown the claim is not retried.
+**Physical cleanup by the last call out.** One reader-wide count covers the running
+calls: worker and pass tokens, `info`, and member-stream calls. While it is above zero,
+`close()` does nothing physical. The last call out runs the cleanup once, in one order:
+the inner close of every member stream still open, the wind-down of a suspended pass,
+then archive and source teardown. Every step is attempted even if an earlier one fails.
+No inner stream close and no teardown ever runs beside a call that may use it. The
+stream shutdown holds the streams it will close strongly from the close transition, so
+the collector does not close one beside a running call.
 
-#### Scenario: draining close matrix
+**Which failure wins.** A call already raising its own error when the close arrives
+raises that error. A teardown failure on the last call out never replaces an error that
+is propagating: when the call raises the closed error, the teardown error is its
+`__cause__`; otherwise the teardown error is attached with a note. A call that would
+have returned normally raises the teardown error. With nothing running, `close()`
+raises it, as before.
 
-| Case | Expected |
-| --- | --- |
-| `close()` while workers execute | Blocks until return; then closed; no raise merely for active workers |
-| Member stream still open when `close()` runs | Closed by that `close()`; teardown once after the last lease drops |
-| Two threads `close()` / `__exit__` | Stream shutdown once **and** teardown once; both return; dual failures → one `ExceptionGroup` |
-| Op after `close()` returned | `ArchiveyUsageError` (unchanged) |
+**Member-stream closes.** A member stream's own `close()` on an open reader is
+synchronous: it closes its inner stream before it returns, and where the reader's
+streams share a handle lock it takes that lock, waiting only for the sibling read calls
+holding or queued on it. It counts as a running call, so a `reader.close()` meanwhile
+defers teardown to it. Two closes of one stream at once, or a close and the shutdown,
+run one inner close. A stream `close()` from a callback that runs inside a call of the
+same reader on the same thread SHALL raise `ArchiveyUsageError` before it takes any
+lock: the call may hold the handle lock, and a close beside it would run under the
+call. To stop a call from its callback, close the reader. Once the reader is closed, a
+stream's `close()` returns at once and leaves the inner close to the shutdown.
 
-### Requirement: Random-access calls beside a pass
+**Collector closes.** A member stream the garbage collector frees closes as above. When
+it is freed inside a call of the same reader on the same thread (a callback dropping the
+last reference to a sibling), its close SHALL be queued, not run under that call: the
+thread's last call out runs it, or the shutdown if the reader closes first. Where the
+collector finalizes each layer of a stream on its own (a reference cycle, a
+free-threaded build), the layer that takes the shared handle lock defers its close in
+the same way until the thread releases the lock. A stream the collector frees after the
+close, whose weak registration it cleared first, is still closed once: handed to the
+shutdown if that has not run, closed by its finalizer otherwise.
 
-A random-access reader opened with `concurrent_operations=True` SHALL admit `open()`,
-`read()`, `get()`, `members()`, `members_report()`, iteration, further
-`stream_members()` passes and `extract_all()` while a `stream_members()` or
-`extract_all()` pass is active, from the pass's own thread (the loop body, while the
-generator is suspended at a yield) and from any other thread, on every format. Either
-pass SHALL likewise start while worker calls are in flight. Each call SHALL behave as
-it would on a reader of its own (maintainer, 2026-10-17). The reader does not arbitrate
-between two extractions into one folder: a file the other wrote, or one already there,
-is an existing destination to each, under its own overwrite policy.
+**Once.** A second `close()` returns without doing anything, also when two threads call
+it at once. Stream shutdown and teardown each run once and are not retried; an
+interrupt inside the stream shutdown leaves it to the next `close()`.
 
-**Why.** Consistency (maintainer, 2026-10-13). A call that raises only on some formats,
-or only on a first pass, raises in production on an input nobody tried during
-development. A caller should be able to open an archive with
-`concurrent_operations=True`, hand the reader to several threads and let each do what it
-wants without worrying about what the others are doing. The one case that still raises
-does not depend on the archive: every overlap on a reader opened without
-`concurrent_operations=True`.
-
-**One shared walk.** Every pass and listing call reads the reader's one member walk,
-each at its own position: a member already walked is served from the list, and the
-next one is read from the archive, under the walk lock, when the first caller reaches
-it. So a pass that lists as it goes (TAR, and the link finalization 7z and solid RAR
-do at the end of a pass) shares its walk with the calls beside it, and a pass nobody
-walks ahead of costs what it costs on a default reader. A call that needs more of the
-list than the pass has reached (`members()`, or `get()` of a name not yet walked)
-walks ahead and pays that cost then: on a compressed TAR, the pass's later reads seek
-the decoder back and emit `STREAM_REWIND_REDECOMPRESSES`, as `members()` followed by
-`read()` does on a default reader. A TAR pass reads the member the walk is at through
-the walk; when another caller moves the walk on, that stream SHALL continue from a
-view of its own, with the same bytes. Link targets are resolved once: by the pass at
-its end, or by a `members()` call beside it, whichever comes first, through the
-materialization election. `ListingLimits` keep the rule every listing call has: the
-pass and a `members()` call beside it each raise `ResourceLimitError` at the member
-that crosses a cap.
-
-**Independence.** Each admitted call or pass opens its own streams, as concurrent
-random opens do; it SHALL NOT move another pass's position or read through another
-pass's decoder (a 7z pass offers its folder decoder for a link's bytes only to the
-thread that ran the pass step). Streams from different passes and random opens read
-correct bytes when interleaved. On a compressed TAR they share the one decoder under
-the handle lock, so interleaving costs re-decoding, not correctness. The walk is
-shared; member data is not: each pass decodes the data it reads on its own.
-
-**Ownership.** The state machine keeps one root pass and the passes beside it; when the
-root ends, one of those takes its place. A library-internal scope (an extraction's own
-`stream_members()` pass and opens, link-data reads) is filed under the pass of the
-thread that opened it, never under another thread's pass, which can end first.
-
-A call that arrives on another thread while a pass is reading the next member's headers
-waits for the walk lock, and one that arrives while another call publishes the list
-waits in the materialization election, as concurrent first-touch callers do, rather
-than raising.
-
-**Reports.** An `ExtractionReport`'s diagnostics are the ones its own call emitted, on
-its own thread, and a member stream's `diagnostics` are the ones its own `read`, `seek`
-and `close` calls emitted; diagnostics another thread emits meanwhile, or the reader
-emits between those calls (a walk reading further headers), go to `reader.diagnostics`
-and to that call's own result, not to this one. A link several threads follow at once
-is read and reported once. `members_report_if_available()` holds a worker token like
-`members()`, so `close()` waits for its walk. A member stream that `close()` on another
-thread closes under a read in flight raises the closed-file `ValueError`, never an
-error that reads as archive damage.
-
-**Close.** `close()` with suspended passes and in-flight workers waits for the
-workers, then decides again: a pass that resumed meanwhile and is executing makes that
-`close()` raise `ArchiveyUsageError` with the reader left open. Otherwise every
-suspended pass is wound down, each once; several wind-down failures surface as one
-`ExceptionGroup`.
-
-#### Scenario: calls beside a pass
+#### Scenario: close matrix
 
 | Case | Expected |
 | --- | --- |
-| `CONCURRENT` TAR over `ListingLimits`, `members()` in the loop | `members()` → `ResourceLimitError`; the pass yields every member; memory bounded by the caps |
-| Another thread calls `read()` while a `CONCURRENT` pass is reading a header | Waits for the walk, then reads; no `ArchiveyUsageError` |
-| `members()` while a TAR pass stream is half read | The stream's remaining bytes are correct |
-| `CONCURRENT` pass over a `.tar.gz` with no other caller | Reads the archive once; no `STREAM_REWIND_REDECOMPRESSES` |
-| `CONCURRENT`, any format, loop body calls `open()`/`read()`/`get()`/`members()`/iteration, first pass, no prior `members()` | Correct answers and bytes; pass unaffected |
-| Same from another thread while the pass is suspended or reading | Same |
-| Random stream held open, read interleaved with the pass's streams | Both correct |
-| Second `stream_members()` beside the first, same thread or another | Both yield every member with correct bytes |
-| `extract_all()` inside the loop, or from another thread | Extracts every member; the pass yields every member with correct bytes |
-| Two `extract_all()` calls, a pass and `read()` calls start together on a fresh reader | All correct; each report lists only its own diagnostics |
-| Two `extract_all()` calls into one folder holding one of the files, `OverwritePolicy.ERROR` | Each raises `ExtractionError` "Destination already exists"; the file there stays |
-| Reader without `concurrent_operations=True` | Every overlap → `ArchiveyUsageError`; pass usable |
-| Worker in flight on another thread, `stream_members()` starts | Admitted |
-| `close()` with two suspended passes | Both wound down; resuming either → `ArchiveyUsageError` |
-| `close()` with a suspended pass and an in-flight worker | Waits for the worker; pass wound down; reader closed |
-| The pass resumes while that `close()` waits | `close()` → `ArchiveyUsageError`; reader stays open |
-| 7z pass on a link (`read_link_targets=False`), another thread `open()`s it | The other thread decodes on its own; the pass's decoder is untouched |
+| `close()` while a lookup call runs on another thread | Returns at once; the call raises the closed error at its next checkpoint; teardown once after it |
+| `close()` from `on_progress` during `extract_all()` | `extract_all()` raises the closed error at its next checkpoint; members already moved into place stay |
+| Member stream read running on another thread when `close()` comes | The read raises the closed-file `ValueError`; its inner close runs after it |
+| Member stream still open, idle, when `close()` runs | `closed` is True at once; its next call raises `ValueError`; inner close once |
+| `reader.read()` overtaken by `close()` | The closed error naming `read()`, not the stream's `ValueError`; a caller's own `ValueError` from a callback escapes as raised |
+| A stream's `close()` from `on_source_read` inside a read of the same reader | `ArchiveyUsageError`; the read completes; the stream stays usable |
+| A callback drops the last reference to an idle sibling during a read | No deadlock; the sibling closes once, after the read releases the handle |
+| Teardown fails on the last call out, which raises the closed error | The teardown error is its `__cause__` |
+| Two threads `close()` / `__exit__` | Stream shutdown once **and** teardown once; both return |
+| Op after `close()` returned | `ArchiveyUsageError` |
+
+### Requirement: A pass has the reader to itself
+
+A pass (`stream_members()`, `extract_all()`, `verify_all()`, and the list-only passes:
+iteration and `members_report()` of a streaming reader) SHALL have the reader to itself
+from its admission to its last cleanup step, in both modes (maintainer, 2026-11-24,
+superseding the rulings of 2026-10-13 and 2026-10-17). While a pass runs, from its loop
+body, a callback, or another thread, `open()`, `read()`, `get()`, `members()`,
+`members_report()`, iteration and another pass SHALL raise `ArchiveyUsageError`. A
+pass started while one of those calls runs on another thread SHALL raise too. Metadata
+stays readable beside a pass: `format`, `info`, `cost`, `diagnostics`, `m in reader`,
+and `members_report_if_available()`.
+
+**Why.** Consistency (maintainer, 2026-10-13, kept): a call beside a pass raises on
+every format, every time, so the misuse shows during development. The plugin contract's
+rule 2 rests on it: while a pass runs, nothing else reads the archive.
+
+**A data pass refuses open streams when it starts.** `stream_members()` (at its first
+`next()`), `extract_all()` (before its progress totals or the destination) and
+`verify_all()` (before its first member) SHALL raise `ArchiveyUsageError` while a stream
+from `open()` is still open, in both modes. The check runs after the garbage-collection
+retry, so a stream nothing references does not block. `members()`,
+`members_report()` and random-access iteration are not data passes and do not run this
+check.
+
+**One admission per public pass.** `extract_all()` takes its pass first and its progress
+totals inside it. `verify_all()` holds one pass from its stream pass through its
+spanning passes and its report. Their internal children run under the root pass through
+its execution context only.
+
+**The peek while a pass is open.** `members_report_if_available()` while a pass is open
+SHALL return the report published when the pass started, or `None`, take no token and
+read nothing. Outside a pass it is a lookup call. Every streaming pass over a reader
+with an upfront member list drains that list when it starts (reading the index from the
+source where it is not in memory, never member data), so the answer is the same before
+the pass and inside it. Admission, startup and pinning run in that order: the pass takes
+its lease before any source read or callback, its startup drains, and it pins the report
+before its first member.
+
+**Callbacks.** The library's internal-open scope is suspended around every user callback
+(`filter`, `on_progress`, `on_diagnostic`, a password provider, `on_source_read`, a
+logging handler): a callback's call on its reader is refused as re-entry, `close()`
+excepted. Inside a callback, `info` answers the last published `ArchiveInfo` snapshot
+and never enters the backend (maintainer, 2026-11-25).
+
+#### Scenario: pass exclusivity matrix
+
+| Case | Expected |
+| --- | --- |
+| Loop body calls `open()`/`read()`/`get()`/`members()`/iteration, either mode | `ArchiveyUsageError`; the pass goes on |
+| Same from another thread while a `CONCURRENT` pass runs or is suspended | `ArchiveyUsageError` |
+| `stream_members()` or `extract_all()` while a lookup call runs on another thread | `ArchiveyUsageError` |
+| Second pass beside the first, same thread or another | `ArchiveyUsageError` |
+| `extract_all()` beside a held `open()` stream, default reader | `ArchiveyUsageError` before the destination exists |
+| Directory-only `stream_members()` beside a held stream | `ArchiveyUsageError` at its first `next()` |
+| `members()` beside a held stream, default reader | Works |
+| `members_report_if_available()` in a `stream_members()` loop | The answer a call before the loop gives; reads nothing |
+| `info` in a loop body | Live |
+| `info` from `on_source_read` | The last published snapshot |
+| `on_progress` calls `reader.open()` during `extract_all()` | `ArchiveyUsageError` |
 
 ### Requirement: Distinct passes and shared streams remain single-owner
 
-Overlapping *distinct* reader-wide passes or concurrent access to a single
-stream object SHALL remain rejected or caller-synchronized. Coordination under
-`CONCURRENT` is bounded to materialization, draining close, and random-access calls,
-`stream_members()` passes and `extract_all()` beside one another — it does not make
+Overlapping reader-wide passes or concurrent access to a single stream object SHALL
+remain rejected or caller-synchronized. Coordination under `CONCURRENT` is bounded to
+materialization, random-access lookup calls and open member streams: it does not make
 every reader method thread-safe.
 
 #### Scenario: single-owner matrix
 
 | Case | Expected |
 | --- | --- |
-| Active `extract_all()` + another pass, or active `stream_members()` + `extract_all()`, default reader | Later → `ArchiveyUsageError` |
-| Active `stream_members()` or `extract_all()` + random calls or another such pass, `CONCURRENT` | Admitted (see "Random-access calls beside a pass") |
+| Active pass + another pass or a lookup call, either mode | Later → `ArchiveyUsageError` |
 | Concurrent ops on same `ArchiveStream` | Caller's responsibility; no per-stream locking added |
 | `seekable() is False` + seek | `io.UnsupportedOperation` (no synthetic seek) |
 | `extract_all()` drives `stream_members` + hardlink recovery | Token-bearing child scopes permitted; unrelated public op rejected |
@@ -404,11 +404,11 @@ outside lifecycle locks.
 
 If explicit reader/member close triggers final teardown and teardown fails, the
 closer SHALL be irrevocably closed and the translated error SHALL propagate
-once; repeated closes SHALL not retry or re-raise it. A member stream has no
-finalizer of its own: when it is dropped unclosed, `IOBase.__del__` calls its
-`close()`, which releases the lease in its `finally`. That close SHALL use the
-same once-guards, and an error from it MAY reach `sys.unraisablehook` only
-outside all Archivey locks. Native accelerator finalizers retain their
+once; repeated closes SHALL not retry or re-raise it. A member stream dropped
+unclosed is closed by its finalizer, which releases the lease (see "Collector closes"
+under "Reader close marks the reader closed"). That close SHALL use the same
+once-guards, and an error from it MAY reach `sys.unraisablehook` only outside all
+Archivey locks. Native accelerator finalizers retain their
 close-before-free guarantee.
 
 Member close SHALL release its lease in `finally` even when inner close fails.
@@ -430,7 +430,7 @@ from racing a call on them.
 | `close()` under a suspended `stream_members()` pass: wind-down + member-stream close both fail | Both steps run; teardown runs; `ExceptionGroup` of both ("winding down the pass and closing member streams both failed") |
 | `close()` under a suspended `stream_members()` pass: wind-down (or member-stream close) + teardown both fail | Teardown runs once; `TEARDOWN_COMPLETE`; `ExceptionGroup` of the close-time failure and the teardown failure ("close-time cleanup and archive teardown both failed") |
 | `close()` under a suspended `stream_members()` pass interrupted inside its wind-down step | `READER_CLOSED`; the next `close()`, or else closing or collecting the pass generator, finishes the step; pass wound down once; `TEARDOWN_COMPLETE`; source closed. A failure in the recovered step or its teardown comes out of that `close()`, out of the generator's `close()`, or, for a collected generator, through `sys.unraisablehook` |
-| Leased stream after `reader.close()`, idle or mid-read on another thread | `reader.close()` closed it; later I/O raises the closed-file `ValueError` (a read already running may first return what it had) |
+| Leased stream after `reader.close()`, idle or mid-read on another thread | `closed` is True; a read already running and every later call raise the closed-file `ValueError`; the inner close runs once, after the last running call |
 
 ### Requirement: Caller code runs on the calling thread
 
