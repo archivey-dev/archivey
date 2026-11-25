@@ -1108,9 +1108,10 @@ class _DataErrorOnRead(io.RawIOBase):
 def test_a_typed_error_after_a_takeover_leaves_no_reference_cycle() -> None:
     """The typed error a switched takeover raises in place of the standard library's
     raw one frees the stream with its last reference, with no garbage collection
-    (``kept_errors``). A generator context manager that raised it would not, on
-    CPython 3.12: the raw error's traceback holds the generator's frame, whose
-    ``f_back`` is contextlib's ``__exit__`` frame, which holds the raw error."""
+    (``kept_errors``). A generator context manager that raised it would not: on every
+    version its local for the typed error is in that error's traceback, and on CPython
+    3.12 the raw error's traceback also holds the generator's frame, whose ``f_back``
+    is contextlib's ``__exit__`` frame, which holds the raw error."""
 
     def translate(exc: Exception) -> TruncatedError | None:
         return TruncatedError("cut") if isinstance(exc, EOFError) else None
