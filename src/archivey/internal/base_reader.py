@@ -1384,10 +1384,11 @@ class BaseArchiveReader(ArchiveReader):
         do not come here: the pass winds them down itself.
 
         The gate also records the stream, weakly and in open order, for ``close()``
-        to close if the caller has not (stdlib parity: ``ZipFile.close()`` and
-        ``TarFile.close()`` invalidate member streams too). A stream the caller drops
-        without closing needs no finalizer of its own: ``IOBase.__del__`` calls
-        ``close()`` on it, and ``close()`` runs the hook below in its ``finally``.
+        to close if the caller has not (``TarFile.close()`` invalidates its member
+        streams too; ``ZipFile.close()`` leaves them readable). A stream the caller
+        drops without closing is closed by its finalizer
+        (``ArchiveStreamImpl.__del__``), and ``close()`` runs the hook below in its
+        ``finally``.
         """
         # Capture the identity token, not the stream. The stream holds this hook, so a
         # hook that referenced the stream would make a cycle, and a dropped stream would
@@ -5215,7 +5216,14 @@ class BaseArchiveReader(ArchiveReader):
     @override
     def read(self, member: str | ArchiveMember) -> bytes:
         """Read member data as bytes."""
-        with self.open(member) as f:
+        f = self.open(member)
+        # Not ``with``: a stream of a reader closed since the open is closed, and
+        # ``IOBase.__enter__`` would raise its closed-file error first.
+        try:
+            # The stream is this call's: a close() that overtakes it raises the
+            # reader's closed error naming read(), not the closed-file ValueError,
+            # also once the shutdown has closed the stream (below).
+            f._checkpoint = partial(self._state.check_open, "read()")  # type: ignore[attr-defined]
             # One completing read, not bounded chunks: a codec may decide where the
             # member ends only on the read that completes it (the zlib accelerator
             # hands a second concatenated stream to the standard library there, and a
@@ -5230,6 +5238,11 @@ class BaseArchiveReader(ArchiveReader):
                 # every level, as its contract says.
                 f.read()
             return data
+        except ValueError:
+            self._state.check_open("read()")
+            raise
+        finally:
+            f.close()
 
     # --- Public API: verify_all() and checks that span members ------------------------
 
@@ -5805,8 +5818,8 @@ class BaseArchiveReader(ArchiveReader):
         checkpoint (the end of a ``read()``, a chunk of a pass's member read, a batch of a
         listing, the next member of a pass, the return of an ``extract_all()``
         progress callback, before a member is moved into place) with the same error.
-        Still-open member streams are closed, matching ``zipfile.ZipFile.close()`` /
-        ``tarfile.TarFile.close()``: a stream's next call raises ``ValueError``.
+        Still-open member streams are closed, as ``tarfile.TarFile.close()`` closes
+        its own: a stream's next call raises ``ValueError``.
         A ``stream_members()`` pass suspended at a yield is wound down; one that is
         running winds itself down.
 

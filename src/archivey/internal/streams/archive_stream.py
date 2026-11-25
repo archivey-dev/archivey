@@ -43,7 +43,7 @@ from archivey.exceptions import (
 from archivey.internal.diagnostics_collector import leave_scope, resolve_collector
 from archivey.internal.logs import streams as logger
 from archivey.internal.overrides import override
-from archivey.internal.reader_state import REFUSED
+from archivey.internal.reader_state import REFUSED, closed_stream_error
 from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.checked_spans import LevelRefresh
 from archivey.internal.streams.decompressor_stream import (
@@ -1624,14 +1624,16 @@ class ArchiveStreamImpl(ArchiveStream):
 
     def _stop_if_closed(self, calls: ReaderState, op: str) -> None:
         """The checkpoint before a counted call returns success: a ``close()`` that
-        came while it ran makes it raise the reader's closed error (a pass's stream
-        names the pass's call, ``_checkpoint``), not return its result."""
+        came while it ran makes it raise instead of return its result. The stream is
+        closed by then, so the closed-file ``ValueError``; a stream with a
+        ``_checkpoint`` (a pass's, ``reader.read()``'s) raises the reader's closed
+        error naming its call instead."""
         if not calls.closing():
             return
         checkpoint = self._checkpoint
         if checkpoint is not None:
             checkpoint()
-        calls.check_open(op)
+        raise closed_stream_error()
 
     def _counted_query(self, fn: Callable[[], _T], *, verifiable: bool) -> _T:
         """A proof query: counted while the reader is open. Once it is closed, the

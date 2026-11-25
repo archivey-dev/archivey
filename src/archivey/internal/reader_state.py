@@ -44,8 +44,9 @@ only one caller acts on it. Teardown always follows the streams, never runs unde
          (drops the reader's lease)                 (lease count 0; succeeds once)
     TEARDOWN_RUNNING --complete_teardown()--> TEARDOWN_COMPLETE
 
-A running call holds teardown back too, without a lease: a worker, a child scope, or a
-pass that is not suspended at a yield (``_running_locked``). ``close()`` never waits for
+A running call holds teardown back too, without a lease: a worker, a child scope, a
+live ``info``, a member-stream call, or a pass that is not suspended at a yield
+(``_running_locked``). ``close()`` never waits for
 one and never refuses because of one, in either mode: it marks the reader closed and
 returns. The running call stops at its next checkpoint with the closed error, and the
 last call out runs the reader's teardown (``teardown_hook``).
@@ -109,6 +110,15 @@ def closed_reader_error(op: str) -> ArchiveyUsageError:
     exc = ArchiveyUsageError(
         f"{op} is not available after the archive reader has been closed."
     )
+    setattr(exc, _CLOSED_MARK, True)
+    return exc
+
+
+def closed_stream_error() -> ValueError:
+    """The closed-file error a member-stream call raises when ``close()`` overtook
+    it, marked as :func:`closed_reader_error` is, so a teardown failure on its way
+    out becomes its ``__cause__``."""
+    exc = ValueError("I/O operation on closed file.")
     setattr(exc, _CLOSED_MARK, True)
     return exc
 

@@ -272,9 +272,10 @@ def test_close_beside_a_blocked_read_defers_every_close(gated: Path) -> None:
     closes = [e for e in after if "close" in e]
     assert sorted(closes[:2]) == ["stream close b.bin", "stream close docs/a.txt"]
     assert closes[2:] == ["plugin close"]
-    # The read was running when close() came: it stops before it returns its bytes.
-    assert isinstance(out[0], ArchiveyUsageError), out
-    assert CLOSED in str(out[0])
+    # The read was running when close() came: it stops before it returns its bytes,
+    # with the closed-file error a stream raises once closed.
+    assert isinstance(out[0], ValueError), out
+    assert "closed file" in str(out[0])
     with pytest.raises(ValueError, match="closed file"):
         a.read(1)
 
@@ -495,3 +496,23 @@ def test_a_stream_close_from_a_callback_inside_open_raises(gated: Path) -> None:
         assert not idle.closed
         assert idle.read(1) == b"\x00"
         out[0].close()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_reader_read_overtaken_after_its_open_raises_the_closed_error(
+    gated: Path, concurrent: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``reader.read()`` whose reader closes between its ``open()`` and its read
+    raises the reader's closed error naming ``read()``, not the stream's
+    closed-file ``ValueError``."""
+    reader = open_archive(gated, concurrent_operations=concurrent)
+    real_open = reader.open
+
+    def open_then_close(member: object) -> object:
+        stream = real_open(member)  # type: ignore[arg-type]
+        reader.close()
+        return stream
+
+    monkeypatch.setattr(reader, "open", open_then_close)
+    with pytest.raises(ArchiveyUsageError, match=r"read\(\) is not available"):
+        reader.read("docs/a.txt")

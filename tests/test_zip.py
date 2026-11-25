@@ -370,8 +370,8 @@ def test_encryption_header_larger_than_declared_size_is_corruption(
 @pytest.mark.usefixtures("zip_general_path")
 def test_archive_close_defers_teardown_past_an_in_flight_member_read() -> None:
     """Closing beside a member stream's read that is inside the archive's source
-    returns at once; the read finishes on the open handle, then raises the closed
-    error instead of returning its bytes, and the archive is torn down when it is
+    returns at once; the read finishes on the open handle, then raises the
+    closed-file error instead of returning its bytes, and the archive is torn down when it is
     out (the last call out)."""
     import threading
 
@@ -399,7 +399,7 @@ def test_archive_close_defers_teardown_past_an_in_flight_member_read() -> None:
     def read() -> None:
         try:
             got.append(stream.read())
-        except ArchiveyUsageError as exc:
+        except ValueError as exc:
             got.append(exc)
 
     source.armed = True
@@ -419,8 +419,8 @@ def test_archive_close_defers_teardown_past_an_in_flight_member_read() -> None:
         release.set()
     reader.join(5)
     closer.join(5)
-    assert len(got) == 1 and isinstance(got[0], ArchiveyUsageError), got
-    assert "closed" in str(got[0])
+    assert len(got) == 1 and isinstance(got[0], ValueError), got
+    assert "closed file" in str(got[0])
     assert stream.closed
     assert ar._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
@@ -433,7 +433,7 @@ def test_archive_closed_before_the_overrun_probe() -> None:
     waits on is re-entrant, so this is the threaded race above, made deterministic).
     The verifier's probe past the declared size then meets the member's closed view,
     which is "no more data", not a damage error. The read was running when close()
-    came, so it raises the reader's closed error before it returns.
+    came, so it raises the closed-file error before it returns.
     """
     data = b"data" * 10
     buf = io.BytesIO()
@@ -456,7 +456,7 @@ def test_archive_closed_before_the_overrun_probe() -> None:
     ar = open_archive(source, concurrent_operations=True)
     with ar.open("a.txt") as stream:
         source.armed = True
-        with pytest.raises(ArchiveyUsageError, match=r"read\(\) is not available"):
+        with pytest.raises(ValueError, match="closed file"):
             stream.read()
     assert source.fired  # the close happened inside the member's read
 
