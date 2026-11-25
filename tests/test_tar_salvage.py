@@ -1780,3 +1780,29 @@ def _gnu_extracts(path: Path, tmp_path: Path) -> set[str]:
         timeout=_GNU_TAR_TIMEOUT,
     )
     return {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()}
+
+
+def test_an_on_source_read_error_during_the_search_escapes_unchanged(
+    tmp_path: Path,
+) -> None:
+    """An exception ``on_source_read`` raises is the caller's own, even a
+    ``CorruptionError``: the search does not take it for damage and go on, and the
+    listing raises that same exception, not the error that ended the default walk."""
+    tar = _build(80, seed=5, max_size=100_000)
+    damage = tar.offsets[10] + _INTO_BLOCK
+    path = tmp_path / "damaged.tar"
+    path.write_bytes(_zeroed(tar.data, damage, BLOCKSIZE))
+    assert len(tar.data) > 3 * (1 << 20)
+    mine = CorruptionError("raised by the caller's callback")
+
+    def on_read(progress: object) -> None:
+        if getattr(progress, "position", 0) > 2 * (1 << 20):
+            raise mine
+
+    config = ArchiveyConfig(on_source_read=on_read)
+    with (
+        open_archive(path, salvage=True, config=config) as reader,
+        pytest.raises(CorruptionError) as raised,
+    ):
+        reader.members()
+    assert raised.value is mine

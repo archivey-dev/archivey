@@ -141,6 +141,7 @@ from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
     MemberStreamParts,
 )
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.checked_spans import find_checked_spans
 from archivey.internal.streams.decompressor_stream import StreamChecksumError
 from archivey.internal.streams.resume import (
@@ -1311,7 +1312,7 @@ class TarReader(BaseArchiveReader):
             with self._translated_errors():
                 return self._step(walker)
         except CorruptionError as exc:
-            if salvage.default_end is None:
+            if salvage.default_end is None or from_source_callback(exc):
                 raise
             return TarEnd(TarEndKind.REJECTED, walker.position, reason=str(exc))
 
@@ -1337,7 +1338,9 @@ class TarReader(BaseArchiveReader):
             with self._translated_errors(), self._walk_guard():
                 walker.resume_after_zero_end()
                 clean = walker.zeros_to_end(end.offset + BLOCKSIZE)
-        except CorruptionError:
+        except CorruptionError as exc:
+            if from_source_callback(exc):
+                raise
             return None
         if clean:
             salvage.clean_end = end.offset
@@ -1375,7 +1378,9 @@ class TarReader(BaseArchiveReader):
                         layer=self._salvage_layer,
                         end=end,
                     )
-            except CorruptionError:
+            except CorruptionError as exc:
+                if from_source_callback(exc):
+                    raise
                 return None
             if result.found is None:
                 salvage.limit_reached = result.limit_reached
@@ -1384,7 +1389,9 @@ class TarReader(BaseArchiveReader):
             try:
                 with self._translated_errors():
                     entry = self._step(walker)
-            except CorruptionError:
+            except CorruptionError as exc:
+                if from_source_callback(exc):
+                    raise
                 entry = None
             if isinstance(entry, TarEntry):
                 salvage.found_at = found
@@ -1427,7 +1434,9 @@ class TarReader(BaseArchiveReader):
                 looked = walker.salvage_confirms(
                     v7=salvage.v7, far_to=None if gap is None else gap[1]
                 )
-        except CorruptionError:
+        except CorruptionError as exc:
+            if from_source_callback(exc):
+                raise
             looked = False
         far = walker.looked_far
         # The second pass, past its gap and the hold: what the first pass listed
