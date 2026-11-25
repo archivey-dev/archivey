@@ -106,10 +106,8 @@ as the parameter that would have allowed the operation.
 `ArchiveyUsageError` SHALL also cover:
 
 - reader-wide exclusive pass overlap (`__iter__`, `stream_members`,
-  `extract_all`, materialization, active worker calls), except the calls and passes
-  `reader-concurrency` admits beside a `stream_members()` pass under
-  `concurrent_operations=True`;
-- close overlapping an active worker call without declared concurrency;
+  `extract_all`, materialization, active worker calls), in both modes;
+- a pass started while a member stream from `open()` is still open;
 - any reader operation/property after `close()` except repeated `close()` /
   `__exit__`;
 - same-reader password-provider reentry into password-requiring work;

@@ -149,6 +149,7 @@ from archivey.internal.streams.resume import (
     restarts_follow_decoding,
 )
 from archivey.internal.streams.streamtools import (
+    HandleLock,
     LockedStream,
     ReadAheadStream,
     ReadOnlyIOStream,
@@ -778,7 +779,7 @@ class TarReader(BaseArchiveReader):
         # uncontended) so the same critical-section shape covers the walk, member
         # reads, the end check and close.
         self._handle_lock = (
-            threading.Lock()
+            HandleLock()
             if MemberStreams.CONCURRENT in member_streams or streaming
             else None
         )

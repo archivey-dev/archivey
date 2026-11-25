@@ -415,10 +415,10 @@ where the reads had reached completes a paused digest, maintainer 2026-10-13.
   what `open_archive` opens).
 - **When and where a call is made.** A call that works on one archive, or at one point in
   a reader's life, works on every archive and at every point, or raises on all of them.
-  That holds across threads too: a reader opened with `concurrent_operations=True` can be
-  handed to several threads that each do what they need, whatever the others are doing.
-  A call that raised only sometimes would ship bugs that never showed during development
-  (2026-10-13).
+  That holds across threads too: a call beside a pass raises on every format, every
+  time, with or without `concurrent_operations=True`, so the misuse shows during
+  development. A call that raised only sometimes would ship bugs that never showed
+  during development (2026-10-13; scope narrowed 2026-11-24, below).
 
 **Why.** "Consistency between formats is a core promise of the library" (PR 290).
 "Consistent behavior unless we have a good reason not to" (2026-10-07). A field
@@ -444,11 +444,13 @@ that is right on one format and wrong on another breaks callers silently.
 - `streaming=True` refuses out-of-order reads on every format, ZIP included, although a
   ZIP could serve them cheaply, so the mistake shows on the first archive tested
   (2026-09-29, `docs/reading.md` §"Why these aren't on by default").
-- Under `concurrent_operations=True`, `open`, `read`, `get` and `members()` work during a
-  `stream_members` pass, on every format and from any thread, because they share one lazy
-  walk of the archive with the pass (2026-10-13; applied by PR 786). `extract_all` joined
-  them on 2026-10-17: under the flag every operation works as if it ran on a reader of its
-  own.
+- ~~Under `concurrent_operations=True`, `open`, `read`, `get` and `members()` work
+  during a `stream_members` pass (2026-10-13, PR 786), and `extract_all` too
+  (2026-10-17).~~ Superseded 2026-11-24 (concurrency cut, PR 1830): a pass has the
+  reader to itself in both modes, so any other call beside it raises on every format;
+  the flag keeps several open member streams and lookup calls from several threads.
+  `close()` marks the reader closed and returns in both modes; the last running call
+  tears down.
 - A pass or member stream that nothing can reach any more never blocks the next call, on
   any interpreter: a call refused for an overlap runs `gc.collect()` and tries once more
   (`reader_state._retry_after_collecting`). Without it, the refusal depended on when the

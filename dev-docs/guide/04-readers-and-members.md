@@ -187,9 +187,10 @@ Without `concurrent_operations`, a second overlapping operation raises
 `ArchiveyUsageError` with a message that says what is already running. Each token records
 its thread, so a callback that re-enters the reader on the same thread gets a message
 about the callback, not about a "second caller". With `concurrent_operations=True`,
-passes and workers may run side by side: the first touch of the member list is
-coordinated (one thread builds, the others wait and share), and every operation then
-works as if it had a reader of its own.
+workers may run side by side, and the first touch of the member list is coordinated (one
+thread builds, the others wait and share). A root pass still runs alone, in both modes:
+a worker or another pass beside it raises, and a data pass raises when it starts beside
+a live `open()` stream.
 
 ### Live streams
 
@@ -201,10 +202,13 @@ holds one slot for all the streams it hands out.
 
 Marking a reader closed does not close the file. A **lease** is held by everything that
 still reads through the source: the reader itself, each live `open()` stream, and a pass
-suspended at a `yield` when `close()` arrives. `close()` drops the reader's lease, then
-closes the member streams still open. Whoever drops the **last** lease runs the teardown
-(the file handle, the `unrar` process, a temp file), and `claim_teardown` makes sure only
-one caller does:
+suspended at a `yield` when `close()` arrives. `close()` marks the reader closed and
+returns; it never waits. Every call still running (a worker, a pass, `info`, a read on a
+member stream) holds the physical cleanup back and stops at its next checkpoint. The
+last call out closes the member streams still open and winds down a suspended pass,
+which drops their leases. Whoever drops the **last** lease runs the teardown (the file
+handle, the `unrar` process, a temp file), and `claim_teardown` makes sure only one
+caller does:
 
 ```
 OPEN ──mark_reader_closed()──► READER_CLOSED ──claim_teardown()──► TEARDOWN_RUNNING

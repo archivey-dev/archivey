@@ -57,11 +57,12 @@ class MemberStreams(Flag):
 
     ``CONCURRENT``
         Multiple overlapping ``open()`` calls are allowed. First-touch member
-        materialization is coordinated (one build; waiters share the snapshot);
-        ``close()`` drains in-flight worker calls. Callers still synchronize any
-        *shared* stream objects they hand around. ``__iter__`` and
-        ``stream_members`` and ``extract_all`` run beside random access and beside
-        one another.
+        materialization is coordinated (one build; waiters share the snapshot).
+        ``close()`` does not wait for calls in flight: they raise
+        ``ArchiveyUsageError`` at their next checkpoint. Callers still synchronize
+        any *shared* stream objects they hand around. A pass (``__iter__``,
+        ``stream_members``, ``extract_all``, ``verify_all``) has the reader to
+        itself, as without the flag.
         Does **not** remove solid open-order cost — see :class:`~archivey.AccessCost`.
 
     ``SEEKABLE``

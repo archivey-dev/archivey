@@ -60,9 +60,11 @@ slow rewinds included (amended in PR #299). Seek indexes and accelerators are bu
 on demand. A `stream_members()` stream never seeks, with or without the flag (maintainer,
 2026-09-26): a pass reads forward, and that is what keeps it cheap.
 
-`concurrent_operations=True` makes every operation work as if it ran on a reader of its
-own: several threads can open members, run passes and extract at once. Combined with
-`streaming=True` it is refused, because a single forward pass cannot fan out.
+`concurrent_operations=True` lets several threads open and read members and list at
+once. A pass (`stream_members()`, `extract_all()`, `verify_all()`) still has the reader
+to itself (amended 2026-11-24: from 2026-10-17 the flag also let passes run beside other
+calls). Combined with `streaming=True` it is refused, because a single forward pass
+cannot fan out.
 
 ### No silent buffering (ADR 0010)
 

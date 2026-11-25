@@ -29,7 +29,7 @@ from fsspec.core import OpenFile
 
 from archivey.core import open_archive
 from archivey.diagnostics import DiagnosticCode, PathRefusedContext
-from archivey.exceptions import FilterRejectionError
+from archivey.exceptions import DiagnosticRaisedError, FilterRejectionError
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.internal.enum_args import coerce_enum
 from archivey.internal.extraction import hardlink_chain_end
@@ -41,6 +41,7 @@ from archivey.internal.filters import (
     resolve_or_raise_on_loop,
 )
 from archivey.internal.overrides import override
+from archivey.internal.reader_state import LifecycleState, closed_reader_error
 from archivey.terminal import quoted
 from archivey.types import ArchiveMember, ExtractionPolicy, MemberType
 
@@ -610,11 +611,20 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         )
         self.reader: ArchiveReader = reader
         # Closes the reader when the instance is collected. The callback holds the
-        # reader, never ``self``, so it does not keep the instance alive.
+        # reader, not ``self``. The reader's own callbacks may still hold ``self``, so
+        # the finalizer is dropped once the reader's teardown completes, on whichever
+        # path runs it: this close, or the last call out after it. Until then (an
+        # interrupted close, or a peer's close still in progress) it stays.
         self._finalizer = weakref.finalize(self, reader.close)
+        cast("BaseArchiveReader", reader)._after_teardown.append(self._finalizer.detach)
         # The tree extraction writes, built at the first listing; ``close`` drops it.
         self._tree: _Tree | None = None
+        # Elects the one thread that builds the tree. ``close`` never takes it, so it
+        # does not wait for a first listing.
         self._tree_lock = threading.Lock()
+        # Short: publishing a built tree, and ``close``, which drops it.
+        self._publish_lock = threading.Lock()
+        self._closed = False
 
     @classmethod
     @override
@@ -625,12 +635,28 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
 
     def close(self) -> None:
         """Close the reader and drop the tree. After this, a call that lists or opens
-        raises ``ArchiveyUsageError``, as the closed reader does."""
-        # Under the lock, so a listing that builds the tree now either finishes
-        # first or finds the reader closed, and no tree is kept after the close.
-        with self._tree_lock:
-            self._finalizer()
+        raises ``ArchiveyUsageError``, as the closed reader does. It returns at once,
+        also while another thread lists for the first time or reads. A listing, or a
+        call on ``fs.reader``, then raises ``ArchiveyUsageError`` at its next check. A
+        file from ``fs.open()`` raises the closed-file ``ValueError`` on its next
+        read."""
+        # Not under ``_tree_lock``: a first listing on another thread may hold it for
+        # the whole build. The reader's close returns at once and stops that build at
+        # its next check; the publish lock keeps it from storing a tree after this.
+        with self._publish_lock:
+            self._closed = True
             self._tree = None
+        # The reader's own close, on every call: it is idempotent and marks the reader
+        # closed before it returns, also on a second thread while the first is still
+        # inside it, and after an interrupted first call. The finalizer runs only once,
+        # so a second ``fs.close()`` through it could return with the reader still open.
+        # The reader's teardown drops the finalizer (see ``__init__``). An interrupt
+        # after teardown completed and before that hook ran leaves it registered, and
+        # teardown never runs twice: this call, or a retry, drops it here instead.
+        reader = cast("BaseArchiveReader", self.reader)
+        reader.close()
+        if reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE:
+            self._finalizer.detach()
 
     def __enter__(self) -> Self:
         return self
@@ -653,11 +679,23 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         if tree is not None:
             return tree
         # Two threads can list at once (``concurrent_operations=True``): one builds the
-        # tree and reports each refusal once. After ``close``, ``members()`` raises.
+        # tree and reports each refusal once. After ``close``, a listing raises at once:
+        # it neither waits for a build still running nor starts one.
+        if self._closed:
+            raise closed_reader_error("listing")
         with self._tree_lock:
-            if self._tree is None:
-                self._tree = self._build_tree()
-            return self._tree
+            if self._closed:
+                raise closed_reader_error("listing")
+            tree = self._tree
+            if tree is not None:
+                return tree
+            built = self._build_tree()
+            with self._publish_lock:
+                if not self._closed:
+                    self._tree = built
+                    return built
+        # Closed while the tree was built from what the reader had already listed.
+        raise closed_reader_error("listing")
 
     @override
     def ls(self, path: str, detail: bool = True, **kwargs: Any) -> list[Any]:
@@ -812,6 +850,10 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         with tempfile.TemporaryDirectory(prefix="archivey-fsspec-") as tmp:
             root = resolve_or_raise_on_loop(Path(tmp))
             for member in self.reader.members():
+                # ``members()`` has listed everything by now; a close from here on
+                # stops the build at the next member, before it reports a refusal.
+                if self._closed:
+                    raise closed_reader_error("listing")
                 if not member.is_current:
                     continue
                 try:
@@ -946,6 +988,19 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     def _report_refused(
         self, member: ArchiveMember, reason: str, unmodelled: bool = False
     ) -> None:
+        """Report a member left out of the tree, unless the file system is closed.
+
+        A close stops the reports of every member after the one being checked. That one
+        member's refusal can still be reported once, after the close, if its closed
+        check passed first: the check and the report are not atomic. The listing raises
+        the closed error either way, also when the policy raises on this refusal: a
+        closed check runs after the report is delivered and before the policy's raise,
+        and the raise is replaced if a close lands after that check. An error out of
+        the log handler or the callback comes before the check and propagates
+        unchanged. The report is not made under ``_publish_lock``: a
+        callback that closes the file system would wait for itself."""
+        if self._closed:
+            raise closed_reader_error("listing")
         reader = cast("BaseArchiveReader", self.reader)
         why = (
             reason
@@ -953,18 +1008,38 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
             else f"extraction under the {self.policy.value} policy would not write "
             f"it ({reason})"
         )
-        reader._diagnostics_collector.emit(
-            code=DiagnosticCode.MEMBER_PATH_REFUSED,
-            message=f"{quoted(member.name)} is not in the archivey:// tree: {why}",
-            context=PathRefusedContext(
-                archive_name=reader._archive_name,
-                member_name=member.name,
-                member_id=member.member_id,
-                policy=self.policy.value,
-                reason=reason,
-            ),
-            member=member,
+        context = PathRefusedContext(
+            archive_name=reader._archive_name,
+            member_name=member.name,
+            member_id=member.member_id,
+            policy=self.policy.value,
+            reason=reason,
         )
+        checked: list[bool] = []
+
+        def checkpoint() -> None:
+            self._raise_if_closed()
+            checked.append(True)
+
+        try:
+            reader._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_PATH_REFUSED,
+                message=f"{quoted(member.name)} is not in the archivey:// tree: {why}",
+                context=context,
+                member=member,
+                checkpoint=checkpoint,
+            )
+        except DiagnosticRaisedError as exc:
+            # Past the checkpoint, the only error is the emit's own escalation: the
+            # log handler and the callback ran before it. A close that landed since
+            # the check (from another thread) still makes it the closed error.
+            if checked and self._closed:
+                raise closed_reader_error("listing") from exc
+            raise
+
+    def _raise_if_closed(self) -> None:
+        if self._closed:
+            raise closed_reader_error("listing")
 
     # fsspec annotates ``_open`` as returning its own buffered file; any binary file
     # object is what callers of ``open`` get, and a member stream is one.
