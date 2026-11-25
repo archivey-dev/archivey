@@ -51,17 +51,17 @@
   `stream_members()` loop body gives the answer a call before the loop gives and reads
   nothing; a held stream makes `extract_all()` raise before the destination exists, and
   a directory-only `stream_members()` raise at its first `next()`
-- [ ] 3.3 `archivey.fsspec`: threads read several member streams at once, then the file
-  system closes cleanly (`test_two_threads_read_two_members`); a close under open
-  streams makes their later reads raise `ValueError` (open)
+- [x] 3.3 `archivey.fsspec`: threads read several member streams at once, then the file
+  system closes cleanly; a close under open streams makes their later reads raise
+  `ValueError`
 - [x] 3.4 Remove or rewrite the tests of passes beside calls and of the draining close;
   keep the held-stream mirror test of `verify_all` by rewriting it (design.md §7)
-- [ ] 3.5 `archivey.fsspec`: `fs.close()` beside a pass executing on another thread
+- [x] 3.5 `archivey.fsspec`: `fs.close()` beside a pass executing on another thread
   returns at once and the reader is released after that thread returns (red on main,
   design.md §7)
 - [x] 3.6 The §7 cases for the shared handle, entry points, wind-down owner, publication
   at the bind, cancellation precedence, pass admission and report publication
-- [ ] 3.7 `archivey.fsspec`: `fs.close()` beside a cold `fs.ls()` returns at once
+- [x] 3.7 `archivey.fsspec`: `fs.close()` beside a cold `fs.ls()` returns at once
   (`close()` no longer takes `_tree_lock`)
 
 ## 4. Specs and docs
@@ -71,4 +71,4 @@
 - [x] 4.2 `docs/reading.md`, `dev-docs/design-rules.md`, `dev-docs/threat-model.md`,
   ADR 0003 amendment, the guide pages (design.md §8)
 - [x] 4.3 `CHANGELOG.md` **Breaking:** line (design.md §4)
-- [ ] 4.4 `openspec validate --strict concurrency-cut`, then archive the change
+- [x] 4.4 `openspec validate --strict concurrency-cut`, then archive the change
