@@ -75,16 +75,17 @@ whether another round is asked for, so match it to what you actually wrote:
 - "approved" for a plain ✅ Approve: nothing is left for the implementer to
   fix. ("clean" is narrower: block 2 empty, so a plain ✅ Approve over
   💡/📚/🎉 annotations is "approved", not "clean".)
-- "conditional" for ✅ Approve conditional on the listed fixes: every
-  remaining fix leaves the program's behaviour as it is (docs, comments,
-  specs, tests, names, the PR body), and you do not need to see the result.
+- "conditional" for ✅ Approve conditional on the listed fixes: no 🔴,
+  and every remaining 🟡 fix leaves the program's behaviour as it is (docs,
+  comments, specs, tests, names, the PR body); 🟢 fixes never count against
+  it. You do not need to see the result.
 
   Neither asks for another round; the findings are still posted in full and
   the implementer still works through them. The two differ only in the
   label the pull request is left with, so pick the one that matches your
   verdict line.
-- "findings" for 🔄 Request Changes — a 🔴 stands, or a remaining fix changes
-  what code does, whatever its severity. That is what asks for the next
+- "findings" for 🔄 Request Changes — a 🔴 stands, or a 🟡's fix changes what
+  code does. A 🟢 never makes it "findings". That is what asks for the next
   round. There is no 💬 Comment verdict (code-review-skill §4).
 
 Pick "findings" only when you need to see the fixes, not to be safe: if what
