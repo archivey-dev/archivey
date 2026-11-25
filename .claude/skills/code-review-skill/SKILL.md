@@ -38,7 +38,7 @@ prose in the three-block shape (§3), never a host-specific findings tool.
 
 ## Stop rules
 
-A short form of five §6 sections, kept at the top because the compound-engineering plugin
+A short form of six §6 sections, kept at the top because the compound-engineering plugin
 reports that a long session may keep only the start of a skill (not measured here). Where
 this list and §6 disagree, §6 wins; edit both together.
 
@@ -54,6 +54,10 @@ this list and §6 disagree, §6 wins; edit both together.
   approval on your own PR (§6 "You cannot post a GitHub approval").
 - End every review body, inline comment and reply with the attribution footer (§6
   "Attribution footer").
+- **Post the review to the pull request yourself**: inline comments first, then the body
+  (§6, opening paragraph). A review that exists only in your chat answer is not done,
+  whatever host you run in. Posting is not editing, so "edit nothing" does not stop it.
+  Say in your answer what you posted, with the review's link.
 
 ## How to spend turns
 
@@ -121,11 +125,11 @@ its list, live in that script.
   lowers it. A standard pull request that you think should be deep is a 🟢 that asks for
   the trailer, like a wrong tier line. Workflows, the release script and the review
   loop's files are not deep on their own: they are standard with the security pass. A
-  deep pull request needs a Codex or Cursor review that approves, after the Opus pass,
-  before it merges (maintainer, 2026-11-22). This tier is not a commissioned deep
-  review: `deep-reviews.md` does not apply. Everything in Standard, plus
-  [`threat-model.md`](../../../dev-docs/threat-model.md) and
-  [`security-review-guide.md`](reference/security-review-guide.md), and the security
+  deep pull request needs a Codex, Cursor or Antigravity review that approves, after the
+  Opus pass, before it merges (maintainer, 2026-11-22; Antigravity added 2026-11-24).
+  This tier is not a commissioned deep review: `deep-reviews.md` does not apply.
+  Everything in Standard, plus [`threat-model.md`](../../../dev-docs/threat-model.md)
+  and [`security-review-guide.md`](reference/security-review-guide.md), and the security
   pass below. On a fix round, trace every fix outward (`fix-round.md`), not only the
   ones that moved a contract.
 
@@ -304,14 +308,15 @@ For the maintainer skimming without the code open. Half a screen unless the chan
   earlier description wrong: then give one line on what changed. (Fix-diff scope stays
   per *reviewer*: a reviewer new to the PR reads `main...HEAD`.)
 - **Findings** — the index, and the only list of findings in the body. One bullet each,
-  ranked by severity then confidence, including 🟢 and 💡: ID, severity, confidence, the
-  gist in one sentence, the location, and a link to the thread. Nothing else. The full
-  finding is in the thread, and a body that repeats it is the length problem this shape
-  exists to fix. **Post the inline comments first, then the body**, because a review
-  submitted in one call creates both at once and the body would have no URLs to link to
-  (`POST .../pulls/{n}/comments` returns each comment's `html_url`, and §6 records that
-  a review body cannot be edited afterwards through the MCP tools). A finding whose thread
-  URL you genuinely cannot get is listed with its `file:line` alone rather than held back.
+  ranked by severity then confidence, including 🟢 and 💡: ID, severity, confidence, reach
+  (on a 🔴 or 🟡), the gist in one sentence, the location, and a link to the thread.
+  Nothing else. The full finding is in the thread, and a body that repeats it is the
+  length problem this shape exists to fix. **Post the inline comments first, then the
+  body**, because a review submitted in one call creates both at once and the body would
+  have no URLs to link to (`POST .../pulls/{n}/comments` returns each comment's
+  `html_url`, and §6 records that a review body cannot be edited afterwards through the
+  MCP tools). A finding whose thread URL you genuinely cannot get is listed with its
+  `file:line` alone rather than held back.
 - **Snapshot** — one line: size (approx. lines / small|medium|large), the tier (§1), who
   merges (the script's `merge:` line), the scope you reviewed, and gates (CI status,
   §6). The verdict is already in the header, so the Snapshot does not restate it.
@@ -412,15 +417,36 @@ so use these meanings and no others:
 
 - **✅ Approve** — nothing left to change. Every finding is `DISPROVEN`, already fixed in a
   later commit, or a 💡 / 📚 / 🎉 annotation that carries no action.
-- **✅ Approve, conditional on the listed fixes** — the only remaining findings are 🟢 nits
-  (or a 🟡 that small) whose fix is *obvious*, and you would not need to see the result. Say
-  which IDs the approval is conditioned on, in the heading itself. This is the one
-  verdict that approves with work outstanding; the conditioned findings are still posted in
-  full (block 2, inline threads, IDs) — approving is not shorthand for dropping them.
-- **💬 Comment** — findings the implementor should act on, but nothing the maintainer must
-  decide and nothing you need to re-review.
-- **🔄 Request Changes** — a 🔴 stands, or a fix needs a look once it lands. On a light
-  PR (§1), only a 🔴.
+- **✅ Approve, conditional on the listed fixes** — no 🔴 stands, and every remaining 🟡
+  fix is either behaviour-neutral (a docstring, a comment, a spec or doc line, the PR
+  body, a test, a name, a line wrap) or a **local behaviour fix**: you can write the
+  exact change ("raise `X` instead of `Y` at line N", "add `if x is None: raise …`"),
+  it stays inside one function, and none of the 🔄 triggers below applies. Any 🟢
+  qualifies. Say which IDs the approval is conditioned on, in the heading itself.
+  This is the one verdict that approves with work outstanding; the conditioned findings
+  are still posted in full (block 2, inline threads, IDs) — approving is not shorthand
+  for dropping them.
+- **🔄 Request Changes** — a 🔴 stands, or a 🟡's fix changes what code does and is not a
+  local behaviour fix: it touches locking, close or teardown, shared state or an index,
+  or a loop's end condition; the same pattern exists at other call sites; or you cannot
+  spell out the exact change. A 🟢 never makes the verdict 🔄, whatever its fix touches:
+  that is the one exception, and it is what the reach rule and the round budget below
+  rely on. On #1834, #1783 and #1782 every fix that caused a later finding was of one of
+  these kinds, while single-function guards and error swaps caused none. Fixes that
+  change behaviour are where later rounds' findings come from: about 20 of the findings
+  after round 1 in the week to 2026-11-25 were caused by an earlier fix or merge
+  (`dev-docs/review-eval/multi-model-2026-11-25.md`). On a light PR (§1), only a 🔴.
+- **⏸️ Maintainer decision needed** — block 3 is not empty (§3).
+
+There is no 💬 Comment verdict (removed 2026-11-25). It meant "act on these, I do not
+need to look", which is the conditional approval when no 🟡 fix changes behaviour,
+and 🔄 when one does. Rounds that used it (#1728, #1782) let behaviour fixes land
+without a re-read.
+
+**A finding's reach does not set the verdict by itself.** Tag every 🔴 / 🟡 with what
+reaches it (§5 "Reach"). A `caller-misuse` finding whose worst outcome is a clean
+`ArchiveyError`, or the wrong `ArchiveyError` subclass, is 🟢: it is fixed on this PR,
+so by the 🔄 rule above it never makes the verdict 🔄 alone.
 
 **"Only nits left" is not a reason to merge.** In this repo a 🟢 nit is *small*, not
 *optional*: it gets fixed before merge, on this PR. "Leave it for a follow-up" is not an
@@ -453,9 +479,9 @@ binds only the case where the remainder is nits.
 **Under the automated loop the verdict is what stops the loop**, not a suggestion it
 weighs — and unlike the budget above it, that is not a round-3 rule: a conditional
 approval at round 1 ends the loop at round 1. The round's verdict file maps 🔄 Request
-Changes to a closing comment that asks for another round, and the three "I do not need
-to see the result" verdicts — a plain approval, the conditional approval above, and
-💬 Comment — to one that asks for none, whatever rounds the cap has left
+Changes to a closing comment that asks for another round, and the two "I do not need
+to see the result" verdicts — a plain approval and the conditional approval above —
+to one that asks for none, whatever rounds the cap has left
 ([`dev-docs/review-loop.md`](../../../dev-docs/review-loop.md) §Stopping it). So the
 verdict line is a decision about spending another review, and writing 🔄 to keep a round
 in hand spends one on wording you have already described.
@@ -477,14 +503,43 @@ Pair each finding with a confidence tag — `CONFIRMED` / `PLAUSIBLE` / `DISPROV
 When unsure whether something is 🔴 vs 🟡: **does it undercut a VISION claim or the
 error/safety contract?** If yes → 🔴.
 
+### Reach: who can trigger it
+
+Every 🔴 and 🟡 names its reach after the confidence tag, in the inline heading
+(`` ### K3 · 🟡 `[important]` · `CONFIRMED` · reach: `normal-use` ``, §6) and in the
+index line (§3 block 1). Put the trigger first in the finding.
+
+- **`hostile-bytes`** — an archive's bytes trigger it. Always counts in full: this is
+  the threat model, however unusual the bytes.
+- **`normal-use`** — ordinary calls, threads used as the docs allow, real file-likes,
+  real platforms and filesystems.
+- **`caller-misuse`** — only the caller's own code doing something the docs do not
+  invite: a callback (password provider, `on_progress`, `on_source_read`, a filter, a
+  logging handler) that re-enters the reader or closes its streams; a retry after the
+  caller's own callback raised; `__index__` objects or wrong types passed to a kernel;
+  garbage-collector timing; a platform corner stacked on `TRUSTED` (8.3 names plus hard
+  links).
+
+A `caller-misuse` finding is 🟡 only when its outcome is a hang, deadlock, crash, bare
+`AssertionError`, data loss or a write outside the destination; otherwise 🟢 (§4). Say
+what one guard would make the whole class impossible, not only your example: a second
+`caller-misuse` finding of the same class asks for that guard, not another case
+(`address-review-findings` §2).
+
 ## 6. Posting the review to a pull request
 
-The usual workflow here is that **a second agent posts this review to the PR, and the
-implementing agent then works through it** (`.claude/skills/address-review-findings/`).
+**When you review a pull request, you post the review to it yourself**, in every host
+(Claude Code, Codex, Cursor, Antigravity or any other), without being asked again. Then
+the implementing agent works through it (`.claude/skills/address-review-findings/`).
+Your chat answer is a short pointer to what you posted, not the review. Only a review
+the user asked for in chat, of something that is not a pull request, stays in chat. If
+posting fails, say so and give the error. Do not paste the review into chat in its place
+(Codex did this on 2026-11-24/25 until told to post).
+
 That handoff is the reason for the rules below: a review that reads well in a terminal but
 cannot be dispositioned finding-by-finding costs the next round more than it saved.
 
-Five of these sections have a short form in §Stop rules at the top of this file; change
+Six of these sections have a short form in §Stop rules at the top of this file; change
 both together.
 
 ### Stable IDs, one thread per finding
@@ -533,7 +588,7 @@ Conditional approval names what it is conditioned on in the heading itself:
 **Inline finding:**
 
 ```
-### K6 · 🟡 `[important]` · `CONFIRMED`
+### K6 · 🟡 `[important]` · `CONFIRMED` · reach: `normal-use`
 
 **Claude Code** · `code-review-skill` · round 2 · `3060ac51`
 ```
