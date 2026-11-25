@@ -5223,7 +5223,7 @@ class BaseArchiveReader(ArchiveReader):
             # The stream is this call's: a close() that overtakes it raises the
             # reader's closed error naming read(), not the closed-file ValueError,
             # also once the shutdown has closed the stream (below).
-            f._checkpoint = partial(self._state.check_open, "read()")  # type: ignore[attr-defined]
+            f._checkpoint = partial(self._state.check_open, "read()")
             # One completing read, not bounded chunks: a codec may decide where the
             # member ends only on the read that completes it (the zlib accelerator
             # hands a second concatenated stream to the standard library there, and a
