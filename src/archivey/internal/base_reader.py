@@ -98,6 +98,7 @@ if TYPE_CHECKING:
     from archivey.internal.bomb_tracker import ReadRatioTally
     from archivey.internal.password import _PasswordCandidates
     from archivey.internal.registry import ContentProbe
+    from archivey.internal.streams.streamtools import HandleLock
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -1061,7 +1062,7 @@ class BaseArchiveReader(ArchiveReader):
         # also under streaming). Backends acquire it via ``_handle_guard()`` so the "lock
         # when present, no-op otherwise" branch lives in one place. ``None`` = no shared
         # handle to serialize (default readers, path-per-open backends).
-        self._handle_lock: threading.Lock | None = None
+        self._handle_lock: HandleLock | None = None
 
         # --- The member walk (see ``_pull_member``) ------------------------------
         # There is one walk per reader. Every listing method and every pass reads

@@ -134,6 +134,7 @@ from archivey.internal.streams.read_hints import mark_read_span, read_span_hint
 from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
     FullCountStream,
+    HandleLock,
     LockedStream,
     OneReadEachStream,
     ReadAheadStream,
@@ -287,7 +288,7 @@ class _PluginAdapter(BaseArchiveReader):
         # plugin, and the pass has the reader to itself. Decoded member data
         # (``MemberSpan.data``) is the plugin's stream, so it takes this lock too.
         if MemberStreams.CONCURRENT in member_streams:
-            self._handle_lock = threading.Lock()
+            self._handle_lock = HandleLock()
         # Views over a seekable source, when the reader shape uses them.
         self._shared: SharedSource | None = None
         # The member decoder config, as ZIP builds its own: the compressed bytes a
@@ -2528,7 +2529,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         it (random access), over the decoded bytes when the format is compressed."""
         if self._streaming:
             # The walk and the member windows read one stream, as a TAR pass does.
-            self._handle_lock = self._handle_lock or threading.Lock()
+            self._handle_lock = self._handle_lock or HandleLock()
         if self._compressed:
             codec = self._codec_stream = self._open_outer_codec_stream(
                 source,

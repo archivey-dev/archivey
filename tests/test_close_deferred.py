@@ -581,7 +581,7 @@ def test_a_sibling_dropped_inside_a_read_closes_after_the_read(gated: Path) -> N
     """A callback inside a member-stream read drops the last reference to an idle
     sibling, with the reader still open. Under the flag the read holds the plugin's
     handle lock, which the sibling's inner close also takes: the collector's close
-    is queued instead of waiting on that lock, and runs once the read is out."""
+    is queued instead of waiting on that lock, and runs once the read lets it go."""
     import gc
 
     held: list[object] = []
@@ -601,7 +601,11 @@ def test_a_sibling_dropped_inside_a_read_closes_after_the_read(gated: Path) -> N
         thread.join(TIMEOUT)
         assert not thread.is_alive(), "the collector's close waited on the read"
         assert out == [b"\x00"]
-        assert [e for e in _HOOKS.events if e != "archive_info"] == [
+        # Once, and not under the read's handle lock. Where the collector finalizes
+        # each layer of the dropped stream on its own (a free-threaded build, or a
+        # cycle), the plugin's own stream may close itself before the callback
+        # returns; archivey's layers wait for the lock's release.
+        assert sorted(e for e in _HOOKS.events if e != "archive_info") == [
             "dropped",
             "stream close docs/a.txt",
         ]

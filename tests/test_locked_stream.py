@@ -136,3 +136,18 @@ def test_locked_stream_close_closes_inner_once() -> None:
     assert s.closed
     s.close()
     assert inner.close_calls == 1
+
+
+def test_a_close_under_its_own_handle_lock_waits_for_the_release() -> None:
+    """A close on the thread that holds the shared-handle lock (the collector
+    finalizing a dropped stream's layer inside a read through that handle) cannot
+    wait for the lock: it runs when that thread lets the lock go."""
+    from archivey.internal.streams.streamtools import HandleLock
+
+    lock = HandleLock()
+    stream = LockedStream(io.BytesIO(b"abc"), lock)
+    with lock:
+        stream.close()
+        assert not stream.closed
+    assert stream.closed
+    assert not lock.locked()

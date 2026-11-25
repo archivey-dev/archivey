@@ -12,8 +12,10 @@ For independent logical positions over one file, prefer
 
 from __future__ import annotations
 
+import contextlib
 import io
 import threading
+from collections.abc import Callable
 from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.internal.overrides import override
@@ -27,6 +29,58 @@ if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
 
+class HandleLock:
+    """A reader's shared-handle lock: a non-reentrant lock that knows its holder.
+
+    A close that comes while this thread holds the lock (the collector freeing a
+    dropped stream inside a call that reads through the handle, where every layer of
+    that stream is finalized on its own) cannot wait for it. :meth:`defer` keeps
+    such a close, and the release that frees the lock runs it.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._owner: int | None = None
+        self._deferred: list[Callable[[], None]] = []
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        acquired = self._lock.acquire(blocking, timeout)
+        if acquired:
+            self._owner = threading.get_ident()
+        return acquired
+
+    def release(self) -> None:
+        self._owner = None
+        self._lock.release()
+        if self._deferred:
+            self._run_deferred()
+
+    def __enter__(self) -> bool:
+        return self.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    def held_by_current_thread(self) -> bool:
+        return self._owner == threading.get_ident()
+
+    def defer(self, close: Callable[[], None]) -> None:
+        """Keep ``close`` for the release of the lock this thread holds."""
+        self._deferred.append(close)
+
+    def _run_deferred(self) -> None:
+        # Only the holder appends, and it runs them after its release, outside the
+        # lock: each close takes the lock again.
+        while self._deferred and not self.held_by_current_thread():
+            close = self._deferred.pop(0)
+            # A collector's close: a failure belongs to no call the caller made.
+            with contextlib.suppress(Exception):
+                close()
+
+
 class LockedStream(DelegatingStream):
     """Hold ``lock`` across each shared-handle operation on ``inner``.
 
@@ -35,7 +89,9 @@ class LockedStream(DelegatingStream):
     sit *outside* this layer.
     """
 
-    def __init__(self, inner: BinaryIO, lock: threading.Lock | threading.RLock) -> None:
+    def __init__(
+        self, inner: BinaryIO, lock: HandleLock | threading.Lock | threading.RLock
+    ) -> None:
         super().__init__(inner)
         self._lock = lock
 
@@ -71,5 +127,12 @@ class LockedStream(DelegatingStream):
     def close(self) -> None:
         if self.closed:
             return
-        with self._lock:
+        lock = self._lock
+        if isinstance(lock, HandleLock) and lock.held_by_current_thread():
+            # Only the collector closes a stream here (a caller's close inside a
+            # call of the reader is refused before it reaches this layer): it runs
+            # once this thread lets the lock go.
+            lock.defer(self.close)
+            return
+        with lock:
             super().close()

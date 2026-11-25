@@ -78,7 +78,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     underlying_stream,
 )
 from archivey.internal.streams.streamtools.fullcount import FullCountStream
-from archivey.internal.streams.streamtools.locked import LockedStream
+from archivey.internal.streams.streamtools.locked import HandleLock, LockedStream
 from archivey.internal.streams.streamtools.readahead import ReadAheadStream
 from archivey.internal.streams.streamtools.shared import SharedSource
 from archivey.internal.streams.streamtools.slice import (
@@ -97,6 +97,7 @@ __all__ = [
     "BinaryIOWrapper",
     "DelegatingStream",
     "FullCountStream",
+    "HandleLock",
     "LockedStream",
     "OneReadEachStream",
     "ReadAheadStream",
