@@ -179,17 +179,20 @@ def test_close_while_the_pass_is_suspended_takes_its_closer() -> None:
     assert not teardowns  # nobody released: close() claims teardown itself
 
 
-def test_internal_open_window_still_admits_children() -> None:
+def test_internal_open_window_admits_no_pass_and_no_worker() -> None:
+    """The window exempts only the live-stream gate: a pass or a worker call from
+    inside it is refused as re-entry, like any call beside the running pass."""
     state = _state()
     root = state.acquire_pass("extract_all")
     state.begin_internal_opens()
     try:
-        child = state.acquire_pass("stream_members")
-        worker = state.acquire_worker("open")
+        with pytest.raises(ArchiveyUsageError, match="re-entered"):
+            state.acquire_pass("stream_members")
+        with pytest.raises(ArchiveyUsageError, match="re-entered"):
+            state.acquire_worker("open")
     finally:
         state.end_internal_opens()
-    assert child.parent is root
-    assert worker.parent is root
+        state.release_pass(root)
 
 
 def _zip_with_bidi_name() -> bytes:
