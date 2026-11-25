@@ -42,7 +42,7 @@ def _zip(zip64_data: bytes | None) -> bytes:
 def _contexts(archive: bytes, *, streaming: bool) -> list[HeaderAmbiguityContext]:
     """The ``zip64_unused`` reports, after the member is read through."""
     source = NonSeekableBytesIO(archive) if streaming else io.BytesIO(archive)
-    with open_archive(source, streaming=streaming) as ar:
+    with open_archive(source, pipe=streaming) as ar:
         if streaming:
             for member, stream in ar.stream_members():
                 assert member.name == "a.txt"
@@ -117,7 +117,7 @@ def test_strict_refuses_the_member(streaming: bool) -> None:
     archive = _zip(struct.pack("<QQ", 10**12, 10**12))
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     source = NonSeekableBytesIO(archive) if streaming else io.BytesIO(archive)
-    with open_archive(source, streaming=streaming, config=config) as ar:
+    with open_archive(source, pipe=streaming, config=config) as ar:
         if streaming:
             # A pipe applies the directory after the member is yielded, so the
             # refusal comes when the pass reaches it.

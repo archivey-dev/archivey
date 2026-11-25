@@ -8,9 +8,12 @@ sparse files and clones, and the damage no tool writes.
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import io
 import struct
+import sysconfig
+import tracemalloc
 import unicodedata
 from array import array
 from collections.abc import Callable
@@ -36,7 +39,7 @@ from archivey.formats import ReaderSource
 from archivey.internal.backends import apfs
 from archivey.terminal import escape_control_chars, quoted
 from tests import apfs_build as a, dmg_build as d
-from tests.conftest import requires
+from tests.conftest import CPYTHON, requires
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "external" / "dmg_hdiutil"
 
@@ -1402,6 +1405,187 @@ def test_max_metadata_bytes_applies_to_the_filesystem_tree() -> None:
         pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
     ):
         reader.members()
+
+
+# ── What the kept records weigh ──────────────────────────────────────────────────────
+
+# Ids and values past CPython's small-int cache, as an archive sets them, and names
+# and values of two bytes: CPython keeps one shared object for each of one byte.
+_HUGE = 1 << 40
+
+
+def _key(oid: int, kind: int) -> bytes:
+    return struct.pack("<Q", oid | kind << 60)
+
+
+def _inode_record(i: int, same: int | None) -> tuple[bytes, bytes]:
+    n = _HUGE + i
+    value = apfs._INODE.pack(
+        n, n, n, n, 0, 0, 0, 1000 + i, 0, 0, 1000 + i, 1000 + i, 1000 + i,
+        300 + i % 60000, 0, 0,
+    )  # fmt: skip
+    return _key(n, apfs.INODE), value
+
+
+def _drec_record(i: int, same: int | None) -> tuple[bytes, bytes]:
+    parent = _HUGE + i if same is None else same
+    key = _key(parent, apfs.DIR_REC) + struct.pack("<H", 3) + b"ab\0"
+    return key, struct.pack("<QQH", _HUGE + i, 0, 8)
+
+
+def _xattr_record(i: int, same: int | None, wide: bytes = b"") -> tuple[bytes, bytes]:
+    oid = _HUGE + i if same is None else same
+    name = b"%07d" % i + wide + b"\0"
+    key = _key(oid, apfs.XATTR) + struct.pack("<H", len(name)) + name
+    return key, struct.pack("<HH", 0x2, 2) + b"xy"  # embedded
+
+
+def _extent_record(i: int, same: int | None, crypto: int = 0) -> tuple[bytes, bytes]:
+    oid = _HUGE + i if same is None else same
+    key = _key(oid, apfs.EXTENT) + struct.pack("<Q", _HUGE + i)
+    return key, struct.pack("<QQQ", _HUGE + i, _HUGE + i, crypto and _HUGE + i)
+
+
+def _sibling_record(i: int, same: int | None) -> tuple[bytes, bytes]:
+    oid = _HUGE + i if same is None else same
+    return _key(oid, apfs.SIBLING_LINK) + struct.pack("<Q", _HUGE + i), b""
+
+
+# A long ASCII name with one character that makes CPython keep it wider: an astral
+# character (4 bytes a character), or a byte that is not UTF-8 (a lone surrogate
+# after ``surrogateescape``, 2 bytes a character).
+_ASTRAL = b"x" * 3000 + "\U0001f600".encode()
+_NOT_UTF8 = b"x" * 3000 + b"\xff"
+
+_KEPT_CASES: dict[
+    str, tuple[Callable[[int, int | None], tuple[bytes, bytes]], int | None]
+]
+_KEPT_CASES = {
+    "inode": (_inode_record, None),
+    "first attribute, astral name": (
+        lambda i, s: _xattr_record(i, s, _ASTRAL),
+        None,
+    ),
+    "further attribute, astral name": (
+        lambda i, s: _xattr_record(i, s, _ASTRAL),
+        _HUGE - 1,
+    ),
+    "first attribute, name not UTF-8": (
+        lambda i, s: _xattr_record(i, s, _NOT_UTF8),
+        None,
+    ),
+    "first directory record": (_drec_record, None),
+    "further directory record": (_drec_record, _HUGE - 1),
+    "first attribute": (_xattr_record, None),
+    "further attribute": (_xattr_record, _HUGE - 1),
+    "first extent": (_extent_record, None),
+    "further extent": (_extent_record, _HUGE - 1),
+    "first encrypted extent": (lambda i, s: _extent_record(i, s, crypto=1), None),
+    "first sibling link": (_sibling_record, None),
+    "further sibling link": (_sibling_record, _HUGE - 1),
+}
+
+
+def _within(charged: float, measured: float) -> bool:
+    # A weight is the measurement rounded up: never below it, and not far above.
+    # The measurement moves by about 30 bytes with how full a dict's table is.
+    measured = max(measured, 0)
+    return measured <= charged <= 1.1 * measured + 40
+
+
+@pytest.mark.skipif(
+    not CPYTHON or bool(sysconfig.get_config_var("Py_GIL_DISABLED")),
+    reason="the weights are measured on CPython with the GIL",
+)
+@pytest.mark.parametrize("case", sorted(_KEPT_CASES))
+def test_a_kept_record_is_charged_what_tracemalloc_measures_it_keeps(case: str) -> None:
+    make, same = _KEPT_CASES[case]
+    count = 1_000 if "name" in case else 20_000  # the long names hold 3 KB each
+    records = [make(i, same) for i in range(count)]
+    read = sum(len(k) + len(v) for k, v in records)
+    volume = apfs.ApfsVolume.__new__(apfs.ApfsVolume)
+    volume.container = _Context()
+    volume.hashed = False
+    tree = apfs.FsTree()
+    charged: list[int] = []
+
+    def add() -> None:
+        for at in range(0, count, 100):
+            volume._add(tree, records[at : at + 100], charged.append)
+
+    # What the tree still holds after the walk: the current traced size, not the
+    # peak, with the collector kept out of the window as traced_peak does.
+    gc.collect()
+    gc.disable()
+    tracemalloc.start()
+    try:
+        add()
+        kept = tracemalloc.get_traced_memory()[0]
+    finally:
+        tracemalloc.stop()
+        gc.enable()
+    measured = (kept - read) / count
+    assert _within(sum(charged) / count, measured), (sum(charged) / count, measured)
+
+
+@pytest.mark.skipif(
+    not CPYTHON or bool(sysconfig.get_config_var("Py_GIL_DISABLED")),
+    reason="the weights are measured on CPython with the GIL",
+)
+def test_an_object_map_entry_is_charged_what_tracemalloc_measures_it_keeps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    count = 20_000
+    entry = apfs._OMAP_VALUE
+    leaves = [
+        apfs._Leaf(
+            [
+                (
+                    struct.pack("<QQ", _HUGE + i, _HUGE + i),
+                    entry.pack(1000 + i, 4096, _HUGE + i),
+                )
+                for i in range(at, at + 100)
+            ],
+            None,
+            None,
+            1,
+        )
+        for at in range(0, count, 100)
+    ]
+    charged: list[int] = []
+
+    class _Head:
+        def object(self, *args: object, **kwargs: object) -> bytes:
+            return bytes(64)  # an object map whose tree is at block 0
+
+    def build() -> apfs._Omap:
+        return apfs._Omap(_Head(), 1, 1 << 62, "map", lambda n, what: charged.append(n))
+
+    # The real ``_Omap``, its walk yielding the leaves built above.
+    monkeypatch.setattr(apfs, "_walk", lambda *args, **kwargs: iter(leaves))
+
+    gc.collect()
+    gc.disable()
+    tracemalloc.start()
+    try:
+        omap = build()
+        kept = tracemalloc.get_traced_memory()[0]
+    finally:
+        tracemalloc.stop()
+        gc.enable()
+    assert len(omap.entries) == count
+    measured = kept / count
+    assert _within(sum(charged) / count, measured), (sum(charged) / count, measured)
+
+
+class _Context:
+    """The volume's container, for ``_add``: it decodes attribute names."""
+
+    def __init__(self) -> None:
+        self.context = self
+
+    def decode_name(self, raw: bytes) -> str:
+        return raw.decode("utf-8", "surrogateescape")
 
 
 def test_max_metadata_bytes_counts_the_kept_trees_with_the_members() -> None:

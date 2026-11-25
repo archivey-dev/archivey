@@ -207,7 +207,7 @@ def test_stream_members_reads_past_a_damaged_member(
     data = case.source()
     source = NonSeekableBytesIO(data) if case.pipe else io.BytesIO(data)
     seen: dict[str, Outcome | None] = {}
-    with open_archive(source, streaming=streaming) as reader:
+    with open_archive(source, streaming=streaming, pipe=case.pipe) as reader:
         # A plain ``for``: the pass must end with StopIteration, not raise.
         for member, stream in reader.stream_members():
             assert stream is not None

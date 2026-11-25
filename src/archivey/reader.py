@@ -371,7 +371,12 @@ class ArchiveStream(ReadOnlyIOStream):
     @override
     def close(self) -> None:
         """Close the stream and release what it holds in the reader. Closing it
-        again does nothing."""
+        again does nothing.
+
+        Raises ``ArchiveyUsageError`` from a callback that runs inside a call on the
+        same reader (an ``on_source_read`` inside a read of this stream or another
+        one): the call may be using what this close releases. To stop that call,
+        close the reader."""
         super().close()
 
 
@@ -397,8 +402,8 @@ class MemberPass(Iterator[_T_co]):
     the loop's frame while an error is handled. It also outlives the loop on an
     interpreter that does not free it at once, such as PyPy. Close it yourself in
     those cases. While a paused :meth:`~ForwardArchiveReader.stream_members` pass is
-    alive, a default reader refuses its other calls; a pass from iterating a
-    random-access reader holds nothing between members::
+    alive, the reader refuses its other calls; a pass from iterating a random-access
+    reader holds nothing between members::
 
         with reader.stream_members() as members:
             for member, stream in members:
@@ -494,7 +499,12 @@ class ForwardArchiveReader(ABC):
     @property
     @abstractmethod
     def info(self) -> ArchiveInfo:
-        """Archive-level metadata (format, solidity, counts, encryption, cost)."""
+        """Archive-level metadata (format, solidity, counts, encryption, cost).
+
+        Read from a callback that runs inside a call on this reader (``on_progress``,
+        ``on_diagnostic``, ``on_source_read``, a password provider, ``filter=``), it
+        is the last value read before, and reads nothing: a reader that fills its
+        ``extra`` as it lists shows there what it had learned by then."""
         ...
 
     @property
@@ -575,7 +585,12 @@ class ForwardArchiveReader(ABC):
     def members_report_if_available(self) -> MemberListReport | None:
         """A member-list report if available without scanning, else ``None``.
         Never scans or consumes the forward pass, so it is safe to call on any reader
-        (including a streaming one)."""
+        (including a streaming one).
+
+        Inside a pass (a :meth:`stream_members` loop, :meth:`extract_all`,
+        :meth:`verify_all`) it answers what it answered before the pass started and
+        reads nothing. After a pass that reached its end it returns the full report;
+        after one left part-way it returns what it returned before that pass."""
         ...
 
     @abstractmethod
@@ -656,26 +671,31 @@ class ForwardArchiveReader(ABC):
         ``seekable_members=True``: ``seekable()`` is ``False``, ``seek()`` raises
         ``io.UnsupportedOperation``, and ``tell()`` works. A nested archive read from
         it is a non-seekable source: ``open_archive()`` accepts it only with
-        ``streaming=True``, and only for a format that reads forward
+        ``pipe=True``, and only for a format that reads forward
         (``format_availability(format).required_source`` is ``FORWARD_ONLY``). For a
         member you need to seek, nested archives included, use
         :meth:`~ArchiveReader.open` under ``seekable_members=True``.
 
-        On a default reader the pass owns the reader while it runs:
-        :meth:`~ArchiveReader.open`, :meth:`~ArchiveReader.read`,
-        :meth:`~ArchiveReader.get`, :meth:`~ArchiveReader.members`,
-        :meth:`members_report`, iteration and another pass raise
-        ``ArchiveyUsageError`` inside the loop. On a reader opened with
-        ``concurrent_operations=True`` they all work, from the loop body or from
-        another thread, on every format, so the answer does not depend on the
-        format. They share the pass's walk of the archive's headers, and a call that
-        needs members the pass has not reached yet reads ahead for it.
-        :meth:`extract_all` works beside a pass too.
+        The pass has the reader to itself while it runs, with or without
+        ``concurrent_operations=True``: :meth:`~ArchiveReader.open`,
+        :meth:`~ArchiveReader.read`, :meth:`~ArchiveReader.get`,
+        :meth:`~ArchiveReader.members`, :meth:`members_report`, iteration and another
+        pass raise ``ArchiveyUsageError``, from the loop body or from another thread.
+        ``info``, ``format``, ``cost``, ``diagnostics`` and
+        :meth:`members_report_if_available` stay readable; the last answers what it
+        answered before the loop.
+
+        On a format with an upfront member index (a ZIP's central directory, 7z, RAR,
+        ISO, CAB and others), a pass on a streaming reader reads the whole index before
+        its first member, as :meth:`~ArchiveReader.members` would: a ``break`` after the
+        first member has still paid for it.
 
         Raises:
             ArchiveyUsageError: The reader is closed; it is a streaming reader whose one
-                pass has already started; or, without ``concurrent_operations=True``,
-                another pass or a random-access call is running.
+                pass has already started; another pass or call is running; or a member
+                stream from :meth:`~ArchiveReader.open` is still open. On a closed
+                reader it raises at the call; otherwise the pass raises it at its
+                first ``next()``.
             ResourceLimitError: The listing exceeds :class:`~archivey.ListingLimits`.
             CorruptionError: Damage to the archive's structure stops the pass from
                 finding the next member.
@@ -734,15 +754,17 @@ class ForwardArchiveReader(ABC):
         On a random-access reader a second call reads again the members that failed
         (asking the password input again), the members whose ``verifiable`` is
         ``NONE``, and a ``.zst``, ``.lz4`` or ``.xz`` member read only past a jump whose
-        frames may still prove ``CHECKSUM``; the others are skipped. It does not touch
-        streams the caller holds. On a streaming reader it is the one pass.
+        frames may still prove ``CHECKSUM``; the others are skipped. On a streaming
+        reader it is the one pass.
 
         Experimental: any release, a patch included, may change or remove this method,
         its arguments or what it returns.
 
         Raises:
-            ArchiveyUsageError: The reader is closed; another pass or call is running;
-                or it is a streaming reader whose one pass has already started.
+            ArchiveyUsageError: The reader is closed, also when ``close()`` comes while
+                the call runs; another pass or call is running; a member stream from
+                :meth:`~ArchiveReader.open` is still open; or it is a streaming reader
+                whose one pass has already started.
             ResourceLimitError: The listing exceeds :class:`~archivey.ListingLimits`.
             DiagnosticRaisedError: A diagnostic that the
                 :class:`~archivey.DiagnosticPolicy` in the config raises on.
@@ -823,27 +845,38 @@ class ForwardArchiveReader(ABC):
                 :class:`~archivey.DiagnosticPolicy` in the config raises on, whatever
                 ``on_error`` says.
             ArchiveyUsageError: One argument has a type or value the call cannot use
-                (then also a ``TypeError`` or ``ValueError``), or the reader is closed.
+                (then also a ``TypeError`` or ``ValueError``); the reader is closed,
+                also when ``close()`` comes while the call runs (from another thread, or
+                from ``on_progress`` or ``filter`` to cancel it); another pass or call
+                is running; or a member stream from :meth:`~ArchiveReader.open` is still
+                open, which raises before ``dest`` is created.
             OSError: ``dest`` cannot be created or written to.
         """
         ...
 
     @abstractmethod
     def close(self) -> None:
-        """Release resources held by the reader. Idempotent.
+        """Close the reader and release what it holds. Closing it again does nothing.
 
-        **Member streams do not outlive the reader.** Any still open when ``close()``
-        runs are closed with it, in the order they were opened, the same way
-        ``zipfile.ZipFile.close()`` and ``tarfile.TarFile.close()`` behave — reading one
-        afterwards fails as it would for any closed file, and closing it again is a
-        no-op. The archive's own source is released after the last of them, never
+        ``close()`` marks the reader closed and returns. It never waits for another
+        thread and never raises because of one. From then on every call on the reader
+        raises ``ArchiveyUsageError``. A call already running, on another thread or
+        the one whose callback (``on_progress``, ``on_diagnostic``, a password
+        provider) called ``close()``, stops at its next check and raises it too: this
+        is how to cancel a long :meth:`extract_all` or :meth:`verify_all`. The archive
+        file and helper processes are released when ``close()`` returns if no call was
+        running, and otherwise when the last running call returns.
+
+        **Member streams do not outlive the reader.** Any still open are closed with
+        it, as ``tarfile.TarFile.close()`` closes its member files: ``closed`` is
+        ``True`` at once, a call on one raises ``ValueError`` as on any closed file,
+        also a read already running on another thread, and closing it again does
+        nothing. The archive's own source is released after the last of them, never
         underneath a stream still reading through it.
 
         A :class:`MemberPass`, from :meth:`stream_members` or from iterating a
         streaming reader, that is still alive does not stop the close: the reader
-        closes, and advancing that pass afterwards raises ``ArchiveyUsageError``.
-
-        Using the *reader* itself after ``close()`` raises ``ArchiveyUsageError``."""
+        closes, and advancing that pass afterwards raises ``ArchiveyUsageError``."""
         ...
 
     @abstractmethod

@@ -169,7 +169,7 @@ def test_a_member_stream_carries_its_name_into_detection() -> None:
     buf.seek(0)
     with archivey.open_archive(buf) as outer, outer.open("dir/inner.zz") as member:
         assert member.name == "dir/inner.zz"
-        with archivey.open_archive(member, streaming=True) as inner:
+        with archivey.open_archive(member, pipe=True) as inner:
             assert inner.format_info.format == ArchiveFormat.ZLIB
             seen = {m.name: s.read() for m, s in inner.stream_members() if s}
             assert seen == {"inner": _PAYLOAD}

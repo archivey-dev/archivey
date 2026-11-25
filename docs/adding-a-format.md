@@ -467,9 +467,9 @@ the walk yielded before it.
 
 What archivey does with the spans:
 
-- **Pipes and passes.** Opened with `streaming=True`, the walk is the reader's one
-  forward pass, so `stream_members()`, iteration and `extract_all()` each read the
-  archive once, from a pipe too. The listing limits count members as they arrive.
+- **Pipes and passes.** Opened with `streaming=True` (or `pipe=True`, for a pipe), the
+  walk is the reader's one forward pass, so `stream_members()`, iteration and
+  `extract_all()` each read the archive once. The listing limits count members as they arrive.
 - **Random access on a file.** Opened from a file or a seekable stream without
   `streaming=True`, archivey walks the archive once to list it and records where each
   member's data starts. `open()` and `read()` then read a member directly, in any order.
@@ -629,12 +629,19 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
   the archive once more, not once per member. With `seekable_members=True`, a seek
   back walks again too. Have `archive_info()` return
   `ReaderArchiveInfo(is_solid=True)` so the cost receipt says so.
-- **Walking again.** Because of that, `walk()` is called again while an earlier walk
-  is still open, and with `concurrent_operations=True` from several threads (archivey
-  holds one lock across each call into the reader and each read of its streams). Keep
-  a walk's state in the generator, not on the reader. A second walk must yield the
-  same members in the same order: archivey finds a member again by its place, and
-  raises `ValueError` if another member is there.
+- **Walking again.** Because of that, outside a pass each open member stream that
+  reads its data through a walk has a walk of its own, so `walk()` is called again
+  while an earlier walk is still open, and with `concurrent_operations=True` from
+  several threads. A pass has the reader to itself: while one runs, nothing else reads
+  the archive. Keep a walk's state in the generator, not on the reader. A second walk
+  must yield the same members in the same order: archivey finds a member again by its
+  place, and raises `ValueError` if another member is there.
+- **Threads.** archivey calls your reader's methods from one thread at a time, and
+  holds one lock per reader across each call into it and each read of the streams it
+  returns, so you need no lock of your own. It never closes a stream while one of its
+  reads runs, and never closes your reader while one of its methods runs.
+  `translate_exception()` is the one method called without that lock: map the
+  exception you are given, and read no state of the reader or its library there.
 - **Link targets.** With `link_target_in_data = True`, a symlink's target is read from
   its decoded data.
 

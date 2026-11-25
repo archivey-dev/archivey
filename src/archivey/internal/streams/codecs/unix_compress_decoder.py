@@ -14,9 +14,9 @@ from collections.abc import Callable, Sequence
 from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError, UnsupportedFeatureError
-from archivey.internal import native
+from archivey.internal import kernels
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.native import NativeLzw
+from archivey.internal.kernels import LzwDecompressor
 from archivey.internal.overrides import override
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
@@ -222,6 +222,16 @@ class LzwState:
         self._buf.extend(data)
         return self._process(eof=False, max_length=max_length)
 
+    def queue(self, data: bytes) -> None:
+        """Take ``data`` as input without decoding any of it yet."""
+        if not self._finished:
+            self._buf.extend(data)
+
+    @property
+    def held_input(self) -> int:
+        """Input bytes taken and not decoded yet."""
+        return len(self._buf)
+
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
         out, units = self._process(eof=True, max_length=-1)
         if self._pending_skip and self._pending_skip != self._skip_may_end_at:
@@ -248,7 +258,9 @@ class LzwState:
         return out, units
 
     def is_finished(self) -> bool:
-        return self._finished
+        # The final pass may hand back bytes and hold the error it met after them:
+        # the stream is not finished until that error has raised.
+        return self._finished and self._raise_after is None
 
     @property
     def needs_input(self) -> bool:
@@ -686,101 +698,103 @@ class LzwState:
 
 
 class UnixCompressDecoder(BaseDecoder):
-    """LZW decoder: CLEAR seek points (after-placement) + deferred truncation."""
+    """One pass of an LZW stream through ``lzw.Decompressor``
+    (:func:`archivey.internal.kernels.lzw`), its CLEAR codes as seek points."""
 
     @property
     @override
     def holds_back_errors(self) -> bool:
-        # A bad code raises only once the bytes before it are handed out
-        # (``LzwState._raise_after``).
+        # A bad code raises only once the bytes before it are handed out.
         return True
 
     def __init__(
         self,
-        state: LzwState | NativeLzw,
+        make: Callable[..., LzwDecompressor],
         *,
         comp_cursor: int,
         decomp_cursor: int,
         max_width: int | None = None,
         block_mode: bool | None = None,
-        header_committed: bool = False,
-        make_state: Callable[..., LzwState | NativeLzw] = LzwState,
+        nine_bit_widens: bool | None = None,
     ) -> None:
-        self._state = state
-        self._make_state = make_state
-        self._comp_cursor = comp_cursor
-        self._decomp_cursor = decomp_cursor
+        self._make = make
+        # A decoder made at a CLEAR is given the header's parameters and starts after
+        # the header; one made at the start reads the header.
+        self._header_committed = max_width is not None
+        self._d = make(
+            max_width=max_width, block_mode=block_mode, nine_bit_widens=nine_bit_widens
+        )
+        # The decoder counts from where it starts.
+        self._comp_origin = comp_cursor
+        self._decomp_origin = decomp_cursor
         self._max_width = max_width
         self._block_mode = block_mode
-        self._header_committed = header_committed
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> UnixCompressDecoder:
         del inner
         if self._max_width is not None and self._block_mode is not None:
-            state = self._make_state(
+            return UnixCompressDecoder(
+                self._make,
+                comp_cursor=point.compressed_offset,
+                decomp_cursor=point.decompressed_offset,
                 max_width=self._max_width,
                 block_mode=self._block_mode,
-                nine_bit_widens=self._state.nine_bit_widens,
+                nine_bit_widens=self._d.nine_bit_widens,
             )
-            header_committed = True
-        else:
-            state = self._make_state()
-            header_committed = False
         return UnixCompressDecoder(
-            state,
+            self._make,
             comp_cursor=point.compressed_offset,
             decomp_cursor=point.decompressed_offset,
-            max_width=self._max_width,
-            block_mode=self._block_mode,
-            header_committed=header_committed,
-            make_state=self._make_state,
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
-        data, units = self._state.feed(chunk, max_length=max_length)
-        points = self._commit_header_points()
-        points.extend(self._points_for_units(units))
-        return DecodeOut(data, points)
+        data = self._d.decompress(chunk, max_length)
+        return DecodeOut(data, self._points())
 
     def flush(self) -> DecodeOut:
-        data, units = self._state.flush()
-        points = self._commit_header_points()
-        points.extend(self._points_for_units(units))
-        if self._state.truncation is not None:
+        data = self._d.flush()
+        points = self._points()
+        if not self._d.eof:
+            # The final pass met a bad code after these bytes, and the decoder raises
+            # it from its next call: keep it for after them.
+            try:
+                more = self._d.flush()
+            except Exception as exc:  # noqa: BLE001 - the decoder's error, raised later
+                self._pending_error = exc
+            else:
+                data += more
+                points += self._points()
+        truncation = self._d.truncation
+        if truncation is not None:
             self._pending_error = TruncatedError(
-                f"{truncated_message('unix-compress (.Z)')} ({self._state.truncation})"
+                f"{truncated_message('unix-compress (.Z)')} ({truncation})"
             )
         return DecodeOut(data, points)
 
     @property
     def finished(self) -> bool:
-        return self._state.is_finished()
+        return self._d.eof
 
     @property
     @override
     def needs_input(self) -> bool:
-        return self._state.needs_input
+        # At its end the decoder takes no more calls (``decompress`` raises
+        # ``EOFError``), so the stream must not feed it ``b""``: it counts as needing
+        # input, and the stream reads its own end and finishes.
+        return self._d.eof or self._d.needs_input
 
-    def _commit_header_points(self) -> list[SeekPoint]:
-        if self._header_committed:
-            return []
-        params = self._state.header_params
-        if params is None:
-            return []
-        self._max_width, self._block_mode = params
-        self._comp_cursor = _HEADER_SIZE
-        self._decomp_cursor = 0
-        self._header_committed = True
-        # Refine origin: resume after the 3-byte header (same decompressed offset).
-        return [SeekPoint(0, _HEADER_SIZE)]
-
-    def _points_for_units(self, units: list[tuple[int, int]]) -> list[SeekPoint]:
+    def _points(self) -> list[SeekPoint]:
         points: list[SeekPoint] = []
-        for decomp_size, comp_size in units:
-            # After-placement: advance past CLEAR realignment, then emit the point.
-            self._comp_cursor += comp_size
-            self._decomp_cursor += decomp_size
-            point = SeekPoint(self._decomp_cursor, self._comp_cursor)
+        if not self._header_committed:
+            params = self._d.header_params
+            if params is None:
+                return points
+            self._max_width, self._block_mode = params
+            self._header_committed = True
+            # Refine origin: resume after the 3-byte header (same decompressed offset).
+            points.append(SeekPoint(0, _HEADER_SIZE))
+        for comp, decomp in self._d.clear_offsets:
+            point = SeekPoint(self._decomp_origin + decomp, self._comp_origin + comp)
             # Consecutive CLEARs (zero decompressed output between them) share a
             # decompressed_offset; keep the later compressed resume point only.
             if points and points[-1].decompressed_offset == point.decompressed_offset:
@@ -800,22 +814,17 @@ def UnixCompressDecompressorStream(
 ) -> DecompressorStream:
     """Seekable unix-compress stream: CLEAR → :class:`SeekPoint` when indexing is on.
 
-    The LZW decoder is archivey-codecs' when :func:`archivey.internal.native.lzw`
-    allows it (``excluded`` is the call's excluded libraries, ``isolated`` is
-    ``ProcessIsolation.NATIVE_DECODERS``), else :class:`LzwState`. The two give the
-    same bytes, errors and CLEAR seek points.
+    The LZW decoder is :func:`archivey.internal.kernels.lzw`'s for ``excluded`` (the
+    call's excluded libraries) and ``isolated`` (``ProcessIsolation.NATIVE_DECODERS``).
     """
-    make_state: Callable[..., LzwState | NativeLzw] = (
-        native.lzw(excluded, isolated=isolated) or LzwState
-    )
+    make = kernels.lzw(excluded, isolated=isolated).Decompressor
 
     def make_decoder(point: SeekPoint, inner: BinaryIO) -> UnixCompressDecoder:
         del inner
         return UnixCompressDecoder(
-            make_state(),
+            make,
             comp_cursor=point.compressed_offset,
             decomp_cursor=point.decompressed_offset,
-            make_state=make_state,
         )
 
     return DecompressorStream(

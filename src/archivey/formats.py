@@ -742,6 +742,11 @@ class ReaderContext:
     # error ``verify_all()`` returns for every covered file) and keeps its result, so
     # a second call decodes nothing. Internal, set by the adapter; not for plugins.
     _spanning_pass: Callable[[Callable[[], None]], None] | None = None
+    # ``_checkpoint()`` raises the closed error when the reader was closed while a
+    # ``_spanning_pass`` runs; the pass calls it between the bounded reads it makes
+    # (each run, each slice), so a close() stops it within one of them. Internal,
+    # set by the adapter; not for plugins.
+    _checkpoint: Callable[[], None] | None = None
     # ``_decompress_coder(data, stream_format, size)`` decodes ``data``, a container
     # coder's whole data in ``stream_format``, as ``decompress`` does, except that a
     # byte after the end raises ``CorruptionError`` (as for a ZIP member) instead of
@@ -1174,7 +1179,25 @@ class ReaderContext:
 
 class FormatReader(ABC):
     """One open archive. Subclass :class:`IndexedReader` or :class:`SequentialReader`,
-    not this class."""
+    not this class.
+
+    Threads, in three rules:
+
+    1. archivey calls the methods of one reader from one thread at a time.
+    2. A pass has the reader to itself from its start to its last cleanup step:
+       nothing else reads the archive while it runs. Outside a pass, each open member
+       stream that reads its data through a walk has a walk of its own, so ``walk()``
+       may run again while an earlier walk is open; keep a walk's state in the
+       generator.
+    3. A stream that ``open_member`` returned may be read while other streams of the
+       same reader are open, each by one thread at a time.
+
+    archivey serializes your reader's methods and the reads of the streams it returns
+    with one lock per reader; you need no lock of your own. In both modes archivey
+    never calls a stream's ``close()`` while one of its reads runs, and never tears
+    your reader down while one of its methods runs. :meth:`translate_exception` is the
+    one method called without that lock: map the exception you are given, and read no
+    state of the reader or its library there."""
 
     def archive_info(self) -> ReaderArchiveInfo:
         """Archive-level details. The default says nothing beyond the defaults."""
@@ -1201,7 +1224,8 @@ class IndexedReader(FormatReader, Generic[LocatorT]):
     type checker matches what :meth:`iter_members` yields with what
     :meth:`open_member` receives. archivey never looks inside a locator.
 
-    archivey calls the methods of one reader from one thread at a time.
+    archivey calls the methods of one reader from one thread at a time (see
+    :class:`FormatReader` for the thread rules).
     """
 
     member_list_upfront: ClassVar[bool] = True
@@ -1241,7 +1265,8 @@ class SequentialReader(FormatReader):
     seekable source archivey records where each member's data starts, so
     ``open_archive(path).open(name)`` reads it directly, with no walk.
 
-    archivey calls the methods of one reader from one thread at a time.
+    archivey calls the methods of one reader from one thread at a time (see
+    :class:`FormatReader` for the thread rules).
     """
 
     link_target_in_data: ClassVar[bool] = False

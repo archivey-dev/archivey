@@ -147,7 +147,7 @@ def test_short_prefix_budget_records_the_header_check(
 def test_v7_tar_opens_without_a_name(pipe: bool) -> None:
     data = _v7_tar()
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
-    with open_archive(source, streaming=pipe) as archive:
+    with open_archive(source, pipe=pipe) as archive:
         assert archive.format == ArchiveFormat.TAR
         read = {
             member.name: stream.read()

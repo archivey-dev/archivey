@@ -1426,7 +1426,7 @@ unexpected programming exceptions are always-stop and are not swallowed.
 
 ### Requirement: A ZIP extracted from a non-seekable source is settled at the end of the pass
 
-A ZIP read from a non-seekable source (`streaming=True`) gives each member's type, mode,
+A ZIP read from a non-seekable source (`pipe=True`) gives each member's type, mode,
 host and comment, and the order that decides `is_current`, only in its central
 directory, after the last member. During the pass, `extract_all` SHALL write the data of
 each member the selection may take into one staging directory, named `.archivey-tmp-`

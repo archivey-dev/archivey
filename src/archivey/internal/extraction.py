@@ -83,6 +83,7 @@ from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
     BombTracker,
 )
+from archivey.internal.callback_scope import user_callback
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.dry_run import DryRun, scratch_for
 from archivey.internal.file_copy_pass import FileCopyPass
@@ -100,6 +101,7 @@ from archivey.internal.filters import (
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, make_dirs, plain
+from archivey.internal.member_pass import MemberPassImpl
 from archivey.internal.overrides import override
 from archivey.internal.placements import Claim as _Claim, Placements
 from archivey.internal.selection import CollectionSelector
@@ -132,6 +134,7 @@ if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
     from archivey.internal.base_reader import BaseArchiveReader
+    from archivey.internal.reader_state import OperationToken
     from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
 
@@ -950,6 +953,14 @@ class ExtractionCoordinator:
         self._current = _MemberState()
         # Set for the length of a dry run; ``None`` on a real run.
         self._dry: DryRun | None = None
+        # The reader's extract_all() pass, set by the reader before run(): this run's
+        # own passes are filed under it by name, so a callback of the run (a filter,
+        # on_progress, a password provider) is refused as re-entry if it calls the
+        # reader, instead of running as the library's own call.
+        self.pass_token: OperationToken | None = None
+        # Set by the reader with ``pass_token``: raises the closed error once the
+        # reader is closed (``_checkpoint``).
+        self.checkpoint: Callable[[], None] | None = None
         # ``_parent``'s one-entry cache: the last path asked for, and its parent.
         self._parent_of: Path | None = None
         self._parent_path: Path | None = None
@@ -1116,7 +1127,8 @@ class ExtractionCoordinator:
         # estimate matches the selected output. The user `filter` runs only during
         # extraction and cannot be pre-applied, so members it skips still count as
         # processed below. Streaming readers with no free list report None totals.
-        members_report = reader.members_report_if_available()
+        # Inside this call's own pass, where the public peek reads nothing.
+        members_report = reader._pass_totals_report()
         all_members = list(members_report) if members_report is not None else None
         # A free list that ends in damage holds only the members before it. What it
         # says no selected entry matches is not known, and the pass has to reach the
@@ -1275,7 +1287,9 @@ class ExtractionCoordinator:
                 current_by_name: dict[str, int] = {}
                 pairs = _until_listing_damage(
                     reader,
-                    reader._stream_members(stream_selector, copies),
+                    reader._stream_members(
+                        stream_selector, copies, parent=self.pass_token
+                    ),
                     listing_damage,
                 )
                 with _closing_pass(pairs):
@@ -1462,7 +1476,9 @@ class ExtractionCoordinator:
         staging: list[_Staging] = []
         members_done = 0
         pairs = _until_listing_damage(
-            reader, reader._stream_members(walk_selector, copies), listing_damage
+            reader,
+            reader._stream_members(walk_selector, copies, parent=self.pass_token),
+            listing_damage,
         )
         with _closing_pass(pairs):
             for original, stream in pairs:
@@ -2110,7 +2126,10 @@ class ExtractionCoordinator:
             # The filter is told, as a predicate is, when the walk can still change
             # the member (``member_state_final``): it may see the member again.
             transformed._listing_pending = original._listing_pending
-            filtered = self._filter(transformed)
+            with user_callback():
+                filtered = self._filter(transformed)
+            # The filter is user code, so it may have closed the reader.
+            self._checkpoint()
             if filtered is None:
                 return None, None, frozenset()
             if not isinstance(filtered, ArchiveMember):
@@ -2447,6 +2466,9 @@ class ExtractionCoordinator:
         is tracked in ``links``, so a later member that moves what it resolves through
         gets it rechecked."""
         written_paths = self._state.written_paths
+        # Directories and links are placed directly, with no stream read and no
+        # swap, so this is their last chance to see a close() from a callback.
+        self._checkpoint()
         if transformed.type == MemberType.DIRECTORY:
             return self._write_directory(original, transformed, dest_path)
 
@@ -3966,7 +3988,11 @@ class ExtractionCoordinator:
         selector = CollectionSelector(
             [held.source for held in needed.values()], record=False
         )
-        passing = reader.stream_members(selector)
+        passing = MemberPassImpl(
+            reader._stream_members(
+                selector, FileCopyPass(streams=True), parent=self.pass_token
+            )
+        )
         with _closing_pass(passing):
             for member, stream in passing:
                 held = left.pop(member.member_id, None)
@@ -5297,6 +5323,9 @@ class ExtractionCoordinator:
         for another reason, in a sticky directory where someone else owns the entry;
         elsewhere POSIX ``os.replace`` replaces the entry, which is why those policies
         land with ``_land_on_free_name`` first."""
+        # A close() since the member's data was written: the run stops, and the
+        # caller's BaseException cleanup removes the temp, so the member is not placed.
+        self._checkpoint()
         with self._readonly_cleared(dest):
             if self._overwrite is not OverwritePolicy.REPLACE and (
                 dest not in self._current.parked
@@ -5586,18 +5615,19 @@ class ExtractionCoordinator:
             return
         state = self._state
         try:
-            self._on_progress(
-                ExtractionProgress(
-                    member=member,
-                    bytes_written=state.tracker.total_bytes,
-                    total_bytes_estimated=state.total_estimate,
-                    members_done=members_done,
-                    members_total=state.members_total,
-                    member_bytes_written=member_bytes_written,
-                    members_extracted=state.members_extracted,
-                    members_blocked=state.members_blocked,
+            with user_callback():
+                self._on_progress(
+                    ExtractionProgress(
+                        member=member,
+                        bytes_written=state.tracker.total_bytes,
+                        total_bytes_estimated=state.total_estimate,
+                        members_done=members_done,
+                        members_total=state.members_total,
+                        member_bytes_written=member_bytes_written,
+                        members_extracted=state.members_extracted,
+                        members_blocked=state.members_blocked,
+                    )
                 )
-            )
         except BaseException as exc:
             # The caller's own exception, raised from inside a member's copy loop:
             # it says nothing about the member's data, so it never keeps a partial
@@ -5605,6 +5635,15 @@ class ExtractionCoordinator:
             # may refuse new attributes.
             self._progress_error = exc
             raise
+        # A callback is where a caller cancels the run: close() from on_progress
+        # stops it here, not at the next read.
+        self._checkpoint()
+
+    def _checkpoint(self) -> None:
+        """Raise the reader's closed error if ``close()`` has come during the run."""
+        checkpoint = self.checkpoint
+        if checkpoint is not None:
+            checkpoint()
 
     @staticmethod
     def _close(stream: BinaryIO | None) -> None:

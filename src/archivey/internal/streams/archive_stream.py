@@ -27,7 +27,7 @@ import io
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, BinaryIO, NoReturn, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, NoReturn, TypeVar, cast
 
 from archivey.config import REWIND_REDECODE_WARN_BYTES
 from archivey.diagnostics import (
@@ -43,6 +43,7 @@ from archivey.exceptions import (
 from archivey.internal.diagnostics_collector import leave_scope, resolve_collector
 from archivey.internal.logs import streams as logger
 from archivey.internal.overrides import override
+from archivey.internal.reader_state import REFUSED, closed_stream_error
 from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.checked_spans import LevelRefresh
 from archivey.internal.streams.decompressor_stream import (
@@ -77,6 +78,8 @@ from archivey.reader import ArchiveStream
 from archivey.terminal import quoted
 from archivey.types import HashAlgorithm, Verification
 
+_T = TypeVar("_T")
+
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
@@ -85,6 +88,7 @@ if TYPE_CHECKING:
         DiagnosticCollector,
         DiagnosticScope,
     )
+    from archivey.internal.reader_state import ReaderState
     from archivey.types import ArchiveMember
 
 # A translator maps a raw exception to an ArchiveyError, or returns None to signal "not
@@ -391,6 +395,20 @@ class ArchiveStreamImpl(ArchiveStream):
     _seekable_hint: bool | None = False
     _verifier: MemberVerifier | None = None
     _on_close: CloseHook | None = None
+    # Set by ``stream_members()`` on a pass's streams: raises the reader's closed error
+    # once ``close()`` has come, so a read running on another thread (or the
+    # extract_all()/verify_all() copy loop) stops within one chunk.
+    _checkpoint: Callable[[], None] | None = None
+    # Set on a reader's member streams (``open()`` and ``stream_members()``): the
+    # reader's state, which counts each call that may reach the inner layers, so
+    # ``reader.close()`` closes no inner stream under one; once the reader is closed it
+    # refuses new calls (``_refuse_call``).
+    _calls: ReaderState | None = None
+    # Set under the reader state's lock by the one ``close()`` that does the inner
+    # close (``ReaderState.claim_stream_close``).
+    _close_claimed = False
+    # Set by ``__del__``: the close is the collector's, not a callback's.
+    _finalizing = False
     # Set by ``_hold_inner``: wraps the inner stream when a lazy handle opens it.
     _inner_wrap: Callable[[BinaryIO], BinaryIO] | None = None
     # Set by ``_hold_ratio``: the ratio check every read and seek of the inner goes
@@ -608,7 +626,7 @@ class ArchiveStreamImpl(ArchiveStream):
         return None
 
     def _ensure_open(self) -> BinaryIO:
-        if self.closed:
+        if self._inner_closed():
             raise ValueError("I/O operation on closed file.")
         if self._inner is not None:
             return self._inner
@@ -620,7 +638,7 @@ class ArchiveStreamImpl(ArchiveStream):
             if self._inner is not None:
                 return self._inner
             if self._open_fn is None:
-                if self.closed:
+                if self._inner_closed():
                     raise ValueError("I/O operation on closed file.")
                 failed = self._open_error
                 if failed is not None:
@@ -666,7 +684,7 @@ class ArchiveStreamImpl(ArchiveStream):
                 self._open_interrupted_by = type(e)
             raise
         with self._open_lock:
-            if self.closed:
+            if self._inner_closed():
                 try:
                     opened.close()
                 except Exception:  # noqa: BLE001, S110 - best-effort; stream already closing
@@ -786,7 +804,7 @@ class ArchiveStreamImpl(ArchiveStream):
         ``stamp`` / ``rewind_warning`` keeps BadGzipFile / zlib.error / etc. typed
         after the collapse.
         """
-        if nested.closed:
+        if nested._inner_closed():
             raise ValueError("I/O operation on closed file.")
 
         nested_translate = nested._translate
@@ -868,7 +886,7 @@ class ArchiveStreamImpl(ArchiveStream):
         as damage. Raise the closed-file error a read after ``close()`` raises.
         """
         try:
-            if self._closing or self.closed:
+            if self._closing or self._inner_closed():
                 raise ValueError("I/O operation on closed file.") from e
             self._fail(e)
         finally:
@@ -946,6 +964,20 @@ class ArchiveStreamImpl(ArchiveStream):
 
     @override
     def read(self, n: int | None = -1, /) -> bytes:
+        calls = self._calls
+        if calls is None:
+            return self._read_scoped(n)
+        entry = calls.enter_stream_call()
+        if entry is REFUSED:
+            self._refuse_call()
+        try:
+            out = self._read_scoped(n)
+            self._stop_if_closed(calls, "read()")
+            return out
+        finally:
+            calls.exit_stream_call(entry)
+
+    def _read_scoped(self, n: int | None) -> bytes:
         scope = self._diagnostics_scope
         if scope is None:
             return self._read(n)
@@ -966,7 +998,7 @@ class ArchiveStreamImpl(ArchiveStream):
         n = check_read_size(n)
         # A closed stream's ValueError first, and ``read(0)`` stays a no-op that
         # leaves a waiting error for the next read that asks for bytes.
-        if self._returns_failed_chunks and not self.closed:
+        if self._returns_failed_chunks and not self._inner_closed():
             pending = self._pending_failure
             if pending is not None:
                 if n == 0:
@@ -990,6 +1022,9 @@ class ArchiveStreamImpl(ArchiveStream):
         # mid-stream needs a full-count layer in front (the ``ArchiveSource`` at the
         # boundary is one), not a loop here.
         inner = self._ensure_open()  # a closed stream's ValueError comes first
+        checkpoint = self._checkpoint
+        if checkpoint is not None:
+            checkpoint()
         if self._consumed_by_verify:
             raise _consumed_by_verify_error()
         verdict = self._verdict
@@ -1044,6 +1079,9 @@ class ArchiveStreamImpl(ArchiveStream):
 
     @override
     def read_ahead(self, need: int, n: int, /) -> bytes:
+        return self._counted("read_ahead()", self._read_ahead_scoped, need, n)
+
+    def _read_ahead_scoped(self, need: int, n: int) -> bytes:
         scope = self._diagnostics_scope
         if scope is None:
             return self._read_ahead(need, n)
@@ -1107,6 +1145,9 @@ class ArchiveStreamImpl(ArchiveStream):
 
     @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        return self._counted("seek()", self._seek_scoped, offset, whence)
+
+    def _seek_scoped(self, offset: int, whence: int) -> int:
         scope = self._diagnostics_scope
         if scope is None:
             return self._seek(offset, whence)
@@ -1280,6 +1321,9 @@ class ArchiveStreamImpl(ArchiveStream):
     @property
     @override
     def verified(self) -> Verification:
+        return self._counted_query(self._verified, verifiable=False)
+
+    def _verified(self) -> Verification:
         # No high-water mark is kept: every input to ``_level_now`` moves one way. The
         # stream's end flag and the verifier's and the HMAC stage's match flags are
         # only ever set, ``_inner`` is never cleared, and a password watch's doubt
@@ -1293,6 +1337,9 @@ class ArchiveStreamImpl(ArchiveStream):
     @property
     @override
     def verifiable(self) -> Verification:
+        return self._counted_query(self._verifiable, verifiable=True)
+
+    def _verifiable(self) -> Verification:
         member = self._level_member
         if member is None:
             return max(self._ceiling_now(), self._level_now())
@@ -1362,7 +1409,9 @@ class ArchiveStreamImpl(ArchiveStream):
     @override
     def nearest_resume_offset(self, target: int) -> int | None:
         # Asked of the inner: streams nest over each other.
-        return ask_resume_offset(self._inner, target)
+        return self._counted(
+            "nearest_resume_offset()", ask_resume_offset, self._inner, target
+        )
 
     def _maybe_warn_rewind(self, before: int, after: int) -> None:
         """Report a backward seek that discards an expensive amount of decoded progress.
@@ -1465,7 +1514,10 @@ class ArchiveStreamImpl(ArchiveStream):
 
     @override
     def tell(self, /) -> int:
-        if self.closed:
+        return self._counted("tell()", self._tell)
+
+    def _tell(self) -> int:
+        if self._inner_closed():
             raise ValueError("I/O operation on closed file.")
         inner = self._inner
         if inner is None:
@@ -1522,6 +1574,20 @@ class ArchiveStreamImpl(ArchiveStream):
 
     @override
     def seekable(self) -> bool:
+        calls = self._calls
+        if calls is None:
+            return self._seekable()
+        entry = calls.enter_stream_call()
+        if entry is REFUSED:
+            # The reader is closed: answer without the inner, which its last call
+            # out closes.
+            return bool(self._seekable_hint)
+        try:
+            return self._seekable()
+        finally:
+            calls.exit_stream_call(entry)
+
+    def _seekable(self) -> bool:
         # readable()/writable()/write() come from ReadOnlyIOStream.
         # Undeclared SEEKABLE forces forward-only even when the inner handle could seek
         # (directory uniformity / declared-capabilities contract).
@@ -1535,9 +1601,138 @@ class ArchiveStreamImpl(ArchiveStream):
         return True
 
     @override
-    def close(self) -> None:
-        if self.closed:
+    def verify(self, *, password_only: bool = False) -> Verification:
+        # One counted call, so its position restore and proof refresh stay inside it.
+        return self._counted("verify()", super().verify, password_only=password_only)
+
+    def _counted(self, op: str, fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
+        """``fn(*args)`` as one counted call ``op`` on a reader's stream
+        (``ReaderState.enter_stream_call``). A call that ``close()`` overtook raises
+        the closed error before it returns (``_stop_if_closed``)."""
+        calls = self._calls
+        if calls is None:
+            return fn(*args, **kwargs)
+        entry = calls.enter_stream_call()
+        if entry is REFUSED:
+            self._refuse_call()
+        try:
+            out = fn(*args, **kwargs)
+            self._stop_if_closed(calls, op)
+            return out
+        finally:
+            calls.exit_stream_call(entry)
+
+    def _stop_if_closed(self, calls: ReaderState, op: str) -> None:
+        """The checkpoint before a counted call returns success: a ``close()`` that
+        came while it ran makes it raise instead of return its result. The stream is
+        closed by then, so the closed-file ``ValueError``; a stream with a
+        ``_checkpoint`` (a pass's, ``reader.read()``'s) raises the reader's closed
+        error naming its call instead."""
+        if not calls.closing():
             return
+        checkpoint = self._checkpoint
+        if checkpoint is not None:
+            checkpoint()
+        raise closed_stream_error()
+
+    def _counted_query(self, fn: Callable[[], _T], *, verifiable: bool) -> _T:
+        """A proof query: counted while the reader is open. Once it is closed, the
+        shutdown may be closing the inner, so the query answers what the member
+        stored and touches neither the inner nor the reader's level refresh."""
+        calls = self._calls
+        if calls is None:
+            return fn()
+        entry = calls.enter_stream_call()
+        if entry is REFUSED:
+            member = self._level_member
+            if member is None:
+                return fn()
+            return cast("_T", member.verifiable if verifiable else member.verified)
+        try:
+            return fn()
+        finally:
+            calls.exit_stream_call(entry)
+
+    def _refuse_call(self) -> NoReturn:
+        """A call on a stream of a closed reader: a pass's stream raises the
+        reader's closed error naming the pass's call (``_checkpoint``), any other the
+        closed-file error."""
+        checkpoint = self._checkpoint
+        if checkpoint is not None and not self._inner_closed():
+            checkpoint()
+        raise closed_stream_error()
+
+    @property
+    @override
+    def closed(self) -> bool:
+        """Closed once the stream is, or once its reader is: ``reader.close()``
+        closes every open member stream to the caller at once, though the inner
+        close of one waits for the last running call (``_inner_closed``)."""
+        if super().closed:
+            return True
+        calls = self._calls
+        return calls is not None and calls.closing()
+
+    def _inner_closed(self) -> bool:
+        """Whether this stream's own close has run (the inner close is done)."""
+        return super().closed
+
+    @override
+    def close(self) -> None:
+        if self._inner_closed():
+            return
+        calls = self._calls
+        if calls is None:
+            self._close_scoped()
+            return
+        if self._finalizing and calls.defer_implicit_close(self):
+            # The collector's close inside a call of this reader on this thread,
+            # which may hold the shared handle lock the inner close takes: it runs
+            # when the thread's last call is out.
+            return
+        # A counted call, so a reader.close() meanwhile defers its shutdown to it.
+        # Raises from a callback inside a read of a stream of this reader.
+        entry = calls.enter_stream_close(finalizing=self._finalizing)
+        if entry is REFUSED:
+            # The reader is closed: its shutdown owns this stream's inner close,
+            # now or when the last running call is out. A stream the collector
+            # finalizes may have been missed by it (the cycle collector clears the
+            # reader's weak reference first): handed over, or closed here.
+            if self._finalizing and calls.finalized_after_close(self):
+                self._close_owned()
+            return
+        try:
+            if calls.claim_stream_close(self):
+                self._close_scoped()
+        finally:
+            calls.exit_stream_call(entry)
+
+    def _close_owned(self) -> None:
+        """Close the stream for the reader's shutdown or its pass's wind-down, which
+        own the inner close once the reader is closed: no count, no refusal. A close
+        that another call already claimed is left to it."""
+        if self._inner_closed():
+            return
+        calls = self._calls
+        if calls is None or calls.claim_stream_close(self):
+            self._close_scoped()
+
+    @override
+    def __del__(self) -> None:
+        # A dropped stream may be collected on a thread inside another stream's call:
+        # that is not a callback's close, so close() does not refuse it; it queues
+        # the close for that thread's last call out (``defer_implicit_close``).
+        # After reader.close() ``closed`` is True, so the base finalizer would skip
+        # the close: the stream's own check (``_inner_closed``) decides instead, as
+        # the cycle collector may have hidden the stream from the reader's shutdown.
+        self._finalizing = True
+        try:
+            if not self._inner_closed():
+                self.close()
+        finally:
+            super().__del__()
+
+    def _close_scoped(self) -> None:
         scope = getattr(self, "_diagnostics_scope", None)
         if scope is None:
             self._close()

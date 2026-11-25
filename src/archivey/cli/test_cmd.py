@@ -231,8 +231,8 @@ def run_test(
                 print(f"skip {escape_member_name(link.name)}", file=err)
         if members_total is not None:
             members_total += len(unverified)
-        # Only 7z and RAR4 leave a link to verify, and neither opens in the streaming
-        # mode the CLI uses for a pipe, so ``reader`` is open for random access here.
+        # Only 7z and RAR4 leave a link to verify, and neither opens in the pipe mode
+        # the CLI uses for a pipe, so ``reader`` is open for random access here.
         # The cast states that for the type checker only. If that stops holding,
         # ``open()`` on the streaming reader raises ``ArchiveyUsageError``, which
         # ``_verify_links`` catches so the link counts as a FAIL instead of ending the

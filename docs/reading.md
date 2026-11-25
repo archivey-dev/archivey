@@ -58,7 +58,7 @@ costs, but it never allows or refuses one: the options below do that.
 ```python
 import sys
 
-with archivey.open_archive(sys.stdin.buffer, streaming=True) as archive:
+with archivey.open_archive(sys.stdin.buffer, pipe=True) as archive:
     for member, stream in archive.stream_members():
         ...
 ```
@@ -67,22 +67,38 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as archive:
 and `members()` raise, so an out-of-order read fails right away instead of quietly costing time. If
 you plan to read an archive in one pass, setting it catches that mistake, even on an ordinary file.
 You get one pass, through `stream_members`, `for member in archive` or `extract_all`, and it is used
-up even if you leave the loop early. Inside a `stream_members` loop, `open`, `read` and `members()`
-raise even without `streaming=True`, since the pass is still using the archive. A pass you leave
-with `break` ends at once on CPython. One your code still refers to, such as one kept in a variable,
-holds the archive until you close it, so use it in a `with` block when the loop can stop early:
-`with archive.stream_members() as members:` ends the pass at the end of the block, and `with
-iter(archive) as members:` does the same for a loop over members. A pass or member stream that
-nothing refers to any more never blocks the next call, on any Python: when a call finds the archive
-held, archivey runs a garbage collection and tries once more before it raises. With
-[`concurrent_operations=True`](#several-members-at-once) they work, from any thread, on every
-format, and so does `extract_all`. Streams from the pass never seek.
+up even if you leave the loop early. On a format with an index, such as a ZIP's central directory, a
+7z, RAR, ISO or CAB, the pass reads the whole index before its first member, as `members()` would,
+so a loop you leave after the first member has still paid for it. Inside a `stream_members` loop,
+`open`, `read` and `members()` raise even without `streaming=True`, since the pass is still using
+the archive. A pass you leave with `break` ends at once on CPython. One your code still refers to,
+such as one kept in a variable, holds the archive until you close it, so use it in a `with` block
+when the loop can stop early: `with archive.stream_members() as members:` ends the pass at the end
+of the block, and `with iter(archive) as members:` does the same for a loop over members. A pass or
+member stream that nothing refers to any more never blocks the next call, on any Python: when a call
+finds the archive held, archivey runs a garbage collection and tries once more before it raises.
+They raise with [`concurrent_operations=True`](#several-members-at-once) too: a pass has the archive
+to itself. Streams from the pass never seek.
 
-A pipe, a socket or an HTTP response can only be read this way. TAR, ZIP, cpio, ar, deb, RPM and
-makeself archives and single compressed files can come from one, and so can a RAR archive when
-RARLAB `unrar` 7.00 or later is installed ([RAR](formats.md#rar)). 7z, ISO,
-SquashFS, CAB, XAR, LHA and ARJ archives need a file or another source that can seek.
-`archivey.format_availability(format).required_source` says which a format needs.
+### Reading from a pipe
+
+A pipe, a socket or an HTTP response can be read only once, so open it with `pipe=True`, as in the
+example above. Without it, `open_archive` raises `StreamNotSeekableError`. Detection has
+already read the start of the stream by then, so open the source again for the retry, unless you
+passed `format=`, which skips detection and leaves the stream unread. `pipe=True` reads the
+archive in one pass, as `streaming=True` does, and reads it the way a pipe is read: from where
+the source is to its end, without going back, even if the source can seek. So the same call gives
+the same result on a pipe and on a file carrying the same bytes under the same name, and you can
+test code meant for a pipe on a file.
+
+What a pipe gives isn't always what a file gives, and that is why archivey doesn't switch to it on
+its own. TAR, ZIP, cpio, ar, deb, RPM and makeself archives and single compressed files can come
+from a pipe, and so can a RAR archive when RARLAB `unrar` 7.00 or later is installed
+([RAR](formats.md#rar)), in one volume. 7z, ISO, SquashFS, CAB, XAR, LHA and ARJ archives need a
+file or another source that can seek. So does a set of volumes, such as a split ZIP or a RAR in
+several parts, because a pipe carries one stream: open the set without `pipe=True`.
+`archivey.format_availability(format).required_source` says which a format
+needs. [Reading from a pipe](formats.md#reading-from-a-pipe) lists what changes for each format.
 
 A ZIP keeps the full details of its members, such as permissions, symlinks and comments, in an
 index at its end. From a pipe, archivey finds each member by the short header in front of it, and
@@ -154,31 +170,44 @@ where each jump to a new position is costly, such as a member of another archive
 over the network. There, streams that
 take turns make the source jump back and forth, and each jump throws away what it had buffered.
 
-With `concurrent_operations=True`, threads can also share the rest of the reader. They can list
-members, iterate, run `stream_members()` passes and `extract_all()` at the same time, and if several
-need the member list at once, one builds it while the others wait. Each member stream still belongs
-to one thread. Opening the archive once per thread is also safe, as long as each thread opens it
-from its own path or file: one file object belongs to one reader. `close()` waits for an `open()`
-or `get()` running in another thread, then closes the streams still open on it. It does not wait
-for reads on those streams: a read running in another thread returns what it already had or
-raises `ValueError`, as a closed file does.
+With `concurrent_operations=True`, threads can also share the lookups: `open()`, `read()`, `get()`,
+`members()`, `members_report()` and iteration can run at the same time, and if several need the
+member list at once, one builds it while the others wait. Each member stream still belongs to one
+thread. `stream_members()`, `extract_all()` and `verify_all()` work as they do without the flag: a
+pass has the reader to itself, so while one runs, any of those calls and any other pass raises
+`ArchiveyUsageError`, and a pass raises when it starts if another call is running or a stream from
+`open()` is still open. `info`, `format`, `cost` and `members_report_if_available()` stay readable
+beside a pass. Opening the archive once per thread is also safe, as long as each thread opens it
+from its own path or file: one file object belongs to one reader.
 
-Without `concurrent_operations=True` the reader belongs to one thread. If another thread is inside
-a reader call, such as `members()`, `open()`, or a `stream_members()` or `extract_all()` pass,
-`close()` raises `ArchiveyUsageError` and the reader stays open. Otherwise the close goes ahead, and
-the next `read()` on a member stream it closed raises `ValueError`, as a closed file does. Once a
-`close()` has returned, calling it again does nothing; after one that raised, the reader is still
-open and you still have to close it.
+Without `concurrent_operations=True` the reader and its open stream belong to one thread at a time.
+
+`close()` marks the reader closed and returns, with or without the flag. It never waits for
+another thread. A call still running on another thread raises `ArchiveyUsageError` at its next
+check: the next chunk it reads, the next member of `extract_all()`, the next step of a
+`stream_members()` loop. A member stream still open is closed at once, and a call on it raises
+`ValueError`, as on a closed file, also a read already running. The archive file and any helper
+process are released when `close()` returns if nothing was running, and otherwise when the last
+running call returns, so join your threads before you delete the archive file. Calling `close()`
+again does nothing.
+
+`close()` is also how you stop a long `extract_all()` or `verify_all()`: call it from another
+thread, or from your `on_progress` function, and the call raises `ArchiveyUsageError` at its next
+member or chunk. Members already extracted stay; the one being written is removed.
 
 The functions you give archivey, such as `on_diagnostic`, `on_progress`, a password provider, or a
 `members=` or `filter=` function, run on the thread whose call to archivey needs them, before that
-call returns. When several threads wait for the member list, the thread that builds it runs the
-functions that listing calls. One case falls outside your calls: a member stream or a
-`stream_members()` pass that you don't close is closed when Python frees it, on whatever thread
-Python frees it on, and a diagnostic that this close reports reaches `on_diagnostic` on that
-thread. That is usually the thread that drops the last reference to it, but for an object caught
-in a reference cycle it is the thread where the garbage collector happens to run. Close streams and passes yourself, or use `with`, to keep every call on your own
-threads. Archivey never calls your code from a thread it started.
+call returns. They may read `format`, `cost`, `diagnostics` and `members_report_if_available()`,
+and `info`, which there gives the value it had before the call reached them. They may also call
+`close()`. A call that reads the archive, such as `open()`, `read()`, `get()`, `members()`,
+iteration or a pass, raises `ArchiveyUsageError`. When several
+threads wait for the member list, the thread that builds it runs the functions that listing calls.
+One case falls outside your calls: a member stream or a `stream_members()` pass that you don't close
+is closed when Python frees it, on whatever thread Python frees it on, and a diagnostic that this
+close reports reaches `on_diagnostic` on that thread. That is usually the thread that drops the last
+reference to it, but for an object caught in a reference cycle it is the thread where the garbage
+collector happens to run. Close streams and passes yourself, or use `with`, to keep every call on
+your own threads. Archivey never calls your code from a thread it started.
 
 ## Showing progress
 
@@ -209,9 +238,11 @@ The callback runs inside the read that called it, on your thread. To stop a slow
 exception there: the call to archivey that read raises it unchanged, and so does every later read
 of the file, also in an `extract_all(on_error="continue")`. An archive opened from a member with
 `parent=` reports to the same callback with `nest_level` 1, so keep level 0 for the file you
-opened. `ArchiveyConfig(source_read_step=0)` calls it for every read, and `read_start` to
-`position` is then the part of the file that read took. With `on_source_read` unset, nothing is
-counted.
+opened. To log each part of the file archivey reads, set `ArchiveyConfig(source_read_step=0)`:
+the callback then runs for every read, and `read_start` to `position` is the part of the file that
+read took. For a RAR archive opened from a stream, archivey's own thread may copy the volumes to
+`unrar`; you get only the latest of those reads, so the log has gaps there, though `bytes_read`
+counts every byte. With `on_source_read` unset, nothing is counted.
 
 ## The same result everywhere
 
@@ -257,7 +288,7 @@ format, and the mistake shows up during development.
 |---|---|---|
 | Read a few members by name, or list and then read | nothing | Out-of-order reads can be slow on [solid archives](#solid-archives) |
 | Read everything once | `streaming=True` | [One pass only](#reading-once); no reads by name |
-| Read from a pipe | `streaming=True` | [TAR, ZIP, cpio, ar, deb, RPM, makeself and single compressed files](#reading-once) |
+| Read from a pipe | `pipe=True` | [TAR, ZIP, cpio, ar, deb, RPM, makeself and single compressed files](#reading-from-a-pipe); [some results differ from a file](formats.md#reading-from-a-pipe) |
 | Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and a seek that [jumps over data](errors-and-diagnostics.md#damaged-archives) stops the checksum check |
 | Read members from several threads | `concurrent_operations=True` | [Slow on sources where each jump is costly](#several-members-at-once) |
 | Get the same result as other tools, on every machine | `use_rapidgzip` and `use_indexed_bzip2` set to `OFF` in `ArchiveyConfig` | [Large gzip and bzip2 reads are slower](#the-same-result-everywhere) |

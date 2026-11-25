@@ -21,7 +21,7 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from tests.memory_util import traced_peak
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, open_mode
 from tests.tar_build import END, block, data, field, pax, pax_body, pax_record
 
 # ``pipe`` reads a stream that cannot seek, so a ZIP is read by its local headers.
@@ -30,7 +30,9 @@ _MODES = pytest.mark.parametrize("mode", ["random", "stream", "pipe"])
 
 def _open(data: bytes, mode: str, config: ArchiveyConfig | None = None):
     source = NonSeekableBytesIO(data) if mode == "pipe" else io.BytesIO(data)
-    return open_archive(source, streaming=mode != "random", config=config)
+    return open_archive(
+        source, **open_mode(source, streaming=mode != "random"), config=config
+    )
 
 
 def _read_everything(

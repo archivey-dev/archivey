@@ -63,7 +63,12 @@ from archivey.internal.format_adapter import registration_scope
 from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.measurement import enable_measurement
 from archivey.internal.streams.streamtools import ReadAheadStream
-from tests.streams_util import CountingBytesIO, NonSeekableBytesIO, ShortReadBytesIO
+from tests.streams_util import (
+    CountingBytesIO,
+    NonSeekableBytesIO,
+    ShortReadBytesIO,
+    open_mode,
+)
 
 _MAGIC = b"TS"
 _HEADER = struct.Struct("<2scHII")  # magic, type, name length, data length, CRC-32
@@ -218,7 +223,7 @@ def test_random_access_from_a_file(toys: ArchiveFormat, tmp_path: Path) -> None:
 def test_stream_members(toys: ArchiveFormat, tmp_path: Path, pipe: bool) -> None:
     data = build_toys(_ENTRIES)
     source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
-    with open_archive(source, streaming=True) as reader:
+    with open_archive(source, **open_mode(source, streaming=True)) as reader:
         seen = {
             m.name: (s.read() if s is not None else m.link_target)
             for m, s in reader.stream_members()
@@ -237,7 +242,7 @@ def test_stream_members(toys: ArchiveFormat, tmp_path: Path, pipe: bool) -> None
 
 def test_a_member_left_part_read_is_skipped(toys: ArchiveFormat) -> None:
     source = NonSeekableBytesIO(build_toys(_ENTRIES))
-    with open_archive(source, streaming=True) as reader:
+    with open_archive(source, pipe=True) as reader:
         got = {}
         for member, stream in reader.stream_members():
             if stream is not None:
@@ -247,7 +252,7 @@ def test_a_member_left_part_read_is_skipped(toys: ArchiveFormat) -> None:
 
 def test_a_stream_kept_past_its_member_is_refused(toys: ArchiveFormat) -> None:
     source = NonSeekableBytesIO(build_toys(_ENTRIES))
-    with open_archive(source, streaming=True) as reader:
+    with open_archive(source, pipe=True) as reader:
         it = reader.stream_members()
         kept = None
         for member, stream in it:
@@ -265,7 +270,7 @@ def test_extract_all(toys: ArchiveFormat, tmp_path: Path, pipe: bool) -> None:
     data = build_toys(_ENTRIES)
     source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
     dest = tmp_path / "out"
-    with open_archive(source, streaming=pipe) as reader:
+    with open_archive(source, pipe=pipe) as reader:
         reader.extract_all(dest)
     assert (dest / "docs" / "a.txt").read_bytes() == b"alpha\n"
     assert (dest / "b.bin").read_bytes() == _DATA["b.bin"]
@@ -291,7 +296,7 @@ def test_a_wrong_crc_raises(toys: ArchiveFormat, tmp_path: Path) -> None:
     with open_archive(path) as reader, pytest.raises(CorruptionError):
         reader.read("docs/a.txt")
     with (
-        open_archive(NonSeekableBytesIO(path.read_bytes()), streaming=True) as reader,
+        open_archive(NonSeekableBytesIO(path.read_bytes()), pipe=True) as reader,
         pytest.raises(CorruptionError),
     ):
         for _, stream in reader.stream_members():
@@ -313,7 +318,7 @@ def test_a_cut_member_keeps_the_members_before_it(
     data = build_toys(_ENTRIES)
     cut = data[: data.index(b"b.bin") + 5 + 1000]
     source = NonSeekableBytesIO(cut) if pipe else _write(tmp_path, cut)
-    with open_archive(source, streaming=pipe) as reader:
+    with open_archive(source, pipe=pipe) as reader:
         names = []
         with pytest.raises(TruncatedError):
             for member, stream in reader.stream_members():
@@ -356,12 +361,12 @@ def test_a_cut_member_with_no_digest_raises_at_the_cut(
     def source() -> BinaryIO | Path:
         return NonSeekableBytesIO(cut) if pipe else _write(tmp_path, cut)
 
-    with open_archive(source(), format=fmt, streaming=pipe) as reader:
+    with open_archive(source(), format=fmt, pipe=pipe) as reader:
         _it, stream = first_bin(reader)
         assert stream.read(4096) == _DATA["b.bin"][:1000]
         with pytest.raises(TruncatedError, match="truncated inside a member's data"):
             stream.read(4096)
-    with open_archive(source(), format=fmt, streaming=pipe) as reader:
+    with open_archive(source(), format=fmt, pipe=pipe) as reader:
         _it, stream = first_bin(reader)
         with pytest.raises(TruncatedError, match="truncated inside a member's data"):
             stream.read()
@@ -370,9 +375,9 @@ def test_a_cut_member_with_no_digest_raises_at_the_cut(
 def test_a_cut_member_read_after_the_walk_left_it_raises_at_the_cut(
     toys: ArchiveFormat, tmp_path: Path
 ) -> None:
-    """The view a pass's stream falls back to once the walk has moved on (the
-    handoff's ``reopen``) raises at a cut itself, as the window does: with no digest
-    there is no verifier above it.
+    """The view a pass's open falls back to once the walk has moved past the member
+    (``_open_member_in_walk``, ``_span_view``) raises at a cut itself, as the window
+    does: with no digest there is no verifier above it.
 
     Fails when the fallback is a plain view, which returns a short read as a clean
     end."""
@@ -380,28 +385,19 @@ def test_a_cut_member_read_after_the_walk_left_it_raises_at_the_cut(
     data = build_toys(_ENTRIES)
     path = _write(tmp_path, data[: data.index(b"b.bin") + 5 + 1000])
 
-    def detached_bin(reader: ArchiveReader) -> tuple[Iterator[object], BinaryIO]:
-        # The pass is kept: closing it would close the stream it handed out.
-        it = iter(reader.stream_members())
-        for member, stream in it:
-            if member.name == "b.bin":
-                assert stream is not None
-                # A first read opens the stream through the walk. The listing then
-                # walks on past b.bin, which detaches the stream from the walk; the
-                # walk stops at the cut.
-                assert stream.read(10) == _DATA["b.bin"][:10]
-                with pytest.raises(TruncatedError):
-                    reader.members()
-                return it, stream
-        raise AssertionError("b.bin not reached")
+    def walked_past_bin(reader: ArchiveReader) -> BinaryIO:
+        report = reader.members_report()
+        assert isinstance(report.error, TruncatedError)
+        member = next(m for m in report.members if m.name == "b.bin")
+        return reader._span_view(member._raw)  # type: ignore[attr-defined]
 
-    with open_archive(path, format=fmt, concurrent_operations=True) as reader:
-        _it, stream = detached_bin(reader)
-        assert stream.read(4096) == _DATA["b.bin"][10:1000]
+    with open_archive(path, format=fmt) as reader:
+        stream = walked_past_bin(reader)
+        assert stream.read(4096) == _DATA["b.bin"][:1000]
         with pytest.raises(TruncatedError, match="truncated inside a member's data"):
             stream.read(4096)
-    with open_archive(path, format=fmt, concurrent_operations=True) as reader:
-        _it, stream = detached_bin(reader)
+    with open_archive(path, format=fmt) as reader:
+        stream = walked_past_bin(reader)
         with pytest.raises(TruncatedError, match="truncated inside a member's data"):
             stream.read()
 
@@ -433,7 +429,7 @@ def test_an_empty_link_target_in_the_data_is_reported_once(
     entries = [("empty", MemberType.SYMLINK, b""), *_ENTRIES[1:2]]
     data = build_toys(entries)
     source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
-    with open_archive(source, streaming=pipe) as reader:
+    with open_archive(source, pipe=pipe) as reader:
         listed = {m.name: m.link_target for m, _ in reader.stream_members()}
         counts = reader.diagnostics.counts
     assert listed == {"empty": None, "docs/a.txt": None}
@@ -548,7 +544,7 @@ def test_a_directory_with_data_is_reported(
         [("d", MemberType.DIRECTORY, b"junk"), ("f", MemberType.FILE, b"ok")]
     )
     source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
-    with open_archive(source, streaming=pipe) as reader:
+    with open_archive(source, pipe=pipe) as reader:
         seen = [
             (m.name, m.type, m.size, s.read() if s is not None else None)
             for m, s in reader.stream_members()
@@ -580,7 +576,7 @@ def test_a_directory_listing_a_size_it_does_not_store_raises_on_read(
     fmt = _variant(_SizedEmptyDirectoryReader, ToysContainer.SIZED_EMPTY_DIRECTORY)
     data = build_toys([("d", MemberType.DIRECTORY, b"")])
     source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
-    with open_archive(source, format=fmt, streaming=pipe) as reader:
+    with open_archive(source, format=fmt, pipe=pipe) as reader:
         for member, stream in reader.stream_members():
             assert member.size == 5
             assert stream is not None
@@ -926,7 +922,7 @@ def test_an_os_pipe(toys: ArchiveFormat, tmp_path: Path) -> None:
     try:
         with (
             open(read_fd, "rb", buffering=0) as pipe,
-            open_archive(pipe, streaming=True) as reader,
+            open_archive(pipe, pipe=True) as reader,
         ):
             assert reader.format == toys
             reader.extract_all(dest)
@@ -1121,7 +1117,7 @@ def test_extract_past_a_listing_limit_writes_the_members_before_it(
     )
     dest = tmp_path / "out"
     with (
-        open_archive(source, config=config, streaming=mode == "pipe") as reader,
+        open_archive(source, config=config, pipe=mode == "pipe") as reader,
         pytest.raises(archivey.ResourceLimitError),
     ):
         reader.extract_all(dest)
@@ -1130,34 +1126,13 @@ def test_extract_past_a_listing_limit_writes_the_members_before_it(
     assert not (dest / "three.bin").exists()
 
 
-@pytest.mark.parametrize("shape", ["gzip", "part-way"])
-def test_random_access_pass_member_survives_the_walk_moving_on(
-    toys: ArchiveFormat, rpmish: ArchiveFormat, shape: str
-) -> None:
-    """A member the pass is reading through the walk reads on from a view of its own
-    when another call moves the walk on."""
-    fmt = _TOYS_GZ if shape == "gzip" else rpmish
-    with open_archive(
-        io.BytesIO(_one_pass_archive(shape)), format=fmt, concurrent_operations=True
-    ) as reader:
-        for member, stream in reader.stream_members():
-            if member.name != "two.bin":
-                continue
-            assert stream is not None
-            head = stream.read(1000)
-            # Walks to the end of the archive, past this member.
-            assert len(reader.members()) == 4
-            assert head + stream.read() == _INCOMPRESSIBLE[2][2]
-            break
-
-
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
 def test_stream_members_inside_a_compression_stream(
     toys: ArchiveFormat, tmp_path: Path, pipe: bool
 ) -> None:
     data = _gz(build_toys(_ENTRIES))
     source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data, "t.toys.gz")
-    with open_archive(source, streaming=True) as reader:
+    with open_archive(source, **open_mode(source, streaming=True)) as reader:
         assert reader.format == _TOYS_GZ
         seen = {
             m.name: (s.read() if s is not None else m.link_target)
@@ -1174,7 +1149,7 @@ def test_extract_all_inside_a_compression_stream(
     data = _gz(build_toys(_ENTRIES))
     source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data, "t.toys.gz")
     dest = tmp_path / "out"
-    with open_archive(source, streaming=pipe) as reader:
+    with open_archive(source, pipe=pipe) as reader:
         reader.extract_all(dest)
     assert (dest / "b.bin").read_bytes() == _DATA["b.bin"]
     assert os.readlink(dest / "link") == os.path.join("docs", "a.txt")
@@ -1196,7 +1171,7 @@ def test_an_os_pipe_inside_a_compression_stream(
     try:
         with (
             open(read_fd, "rb", buffering=0) as pipe,
-            open_archive(pipe, streaming=True) as reader,
+            open_archive(pipe, pipe=True) as reader,
         ):
             assert reader.format == _TOYS_GZ
             reader.extract_all(dest)
@@ -1235,7 +1210,7 @@ def test_a_cut_compression_stream_keeps_the_members_before_it(
     source = NonSeekableBytesIO(cut) if pipe else _write(tmp_path, cut, "t.toys.gz")
     names = []
     with (
-        open_archive(source, streaming=pipe) as reader,
+        open_archive(source, pipe=pipe) as reader,
         pytest.raises(TruncatedError),
     ):
         for member, stream in reader.stream_members():
@@ -1402,7 +1377,7 @@ def test_decompress_part_way_on_a_pipe_held_open(
     def read() -> None:
         with (
             open(read_fd, "rb", buffering=0) as pipe,
-            open_archive(pipe, streaming=True, format=rpmish) as reader,
+            open_archive(pipe, pipe=True, format=rpmish) as reader,
         ):
             for member, stream in reader.stream_members():
                 if stream is not None:
@@ -1447,7 +1422,9 @@ def test_decompress_part_way_nested(
     got: dict[str, bytes | str | None] = {}
 
     def read(source: object) -> None:
-        with open_archive(source, streaming=mode != "file", format=rpmish) as reader:
+        with open_archive(
+            source, **open_mode(source, streaming=mode != "file"), format=rpmish
+        ) as reader:
             if mode == "file":
                 # Random access, out of order, into both layers.
                 got["empty"] = reader.read("empty")
@@ -1535,7 +1512,7 @@ def test_decompress_part_way_ratio_guard(
         )
     )
     with (
-        open_archive(source, streaming=pipe, format=rpmish, config=config) as reader,
+        open_archive(source, pipe=pipe, format=rpmish, config=config) as reader,
         pytest.raises(ResourceLimitError, match="ratio"),
     ):
         reader.extract_all(tmp_path / "out")
@@ -1596,6 +1573,7 @@ def test_decompress_part_way_listing_is_held_to_the_ratio(
         open_archive(
             _ratio_source(data, tmp_path, mode),
             streaming=mode not in _RANDOM_ACCESS,
+            pipe=mode == "pipe",
             format=rpmish,
             config=_RATIO_CONFIG,
         ) as reader,
@@ -1643,7 +1621,9 @@ def test_decompress_part_way_streaming(
 ) -> None:
     data = build_rpmish()
     source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
-    with open_archive(source, streaming=True, format=rpmish) as reader:
+    with open_archive(
+        source, **open_mode(source, streaming=True), format=rpmish
+    ) as reader:
         seen = {
             m.name: (s.read() if s is not None else m.link_target)
             for m, s in reader.stream_members()
@@ -1660,7 +1640,7 @@ def test_decompress_part_way_extract_all(
     data = build_rpmish()
     source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
     dest = tmp_path / "out"
-    with open_archive(source, streaming=pipe, format=rpmish) as reader:
+    with open_archive(source, pipe=pipe, format=rpmish) as reader:
         reader.extract_all(dest)
     assert (dest / "docs" / "a.txt").read_bytes() == b"alpha\n"
     assert (dest / "b.bin").read_bytes() == _DATA["b.bin"]
@@ -1708,7 +1688,7 @@ def test_decompress_part_way_cut_short(
     source = NonSeekableBytesIO(cut) if pipe else _write(tmp_path, cut)
     names = []
     with (
-        open_archive(source, streaming=pipe, format=rpmish) as reader,
+        open_archive(source, pipe=pipe, format=rpmish) as reader,
         pytest.raises(TruncatedError),
     ):
         for member, stream in reader.stream_members():
@@ -2112,7 +2092,7 @@ def test_decoded_stream_members(
     fmt, reader_type = decoded
     data = build_decoded(_DECODED_ENTRIES)
     source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
-    with open_archive(source, format=fmt, streaming=pipe) as reader:
+    with open_archive(source, format=fmt, pipe=pipe) as reader:
         seen = {
             m.name: (s.read(3) if partial else s.read())
             for m, s in reader.stream_members()
@@ -2128,7 +2108,7 @@ def test_decoded_stream_kept_past_its_member_is_refused(
 ) -> None:
     fmt, _ = decoded
     source = NonSeekableBytesIO(build_decoded(_DECODED_ENTRIES))
-    with open_archive(source, format=fmt, streaming=True) as reader:
+    with open_archive(source, format=fmt, pipe=True) as reader:
         it = reader.stream_members()
         kept = None
         for member, stream in it:
@@ -2149,7 +2129,7 @@ def test_decoded_extract_all(
     data = build_decoded(_DECODED_ENTRIES)
     source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
     dest = tmp_path / "out"
-    with open_archive(source, format=fmt, streaming=pipe) as reader:
+    with open_archive(source, format=fmt, pipe=pipe) as reader:
         reader.extract_all(dest)
     for name, content in _DECODED_DATA.items():
         assert (dest / name).read_bytes() == content
@@ -2166,7 +2146,7 @@ def test_decoded_data_longer_than_its_size(
     data = build_decoded(_DECODED_ENTRIES, sizes={3: 1000})
     source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
     with (
-        open_archive(source, format=fmt, streaming=pipe) as reader,
+        open_archive(source, format=fmt, pipe=pipe) as reader,
         pytest.raises(CorruptionError),
     ):
         for member, stream in reader.stream_members():
@@ -2197,7 +2177,7 @@ def test_decoded_data_shorter_than_its_size(
     data = build_decoded(_DECODED_ENTRIES, sizes={3: 200_000})
     source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
     with (
-        open_archive(source, format=fmt, streaming=pipe) as reader,
+        open_archive(source, format=fmt, pipe=pipe) as reader,
         pytest.raises(TruncatedError),
     ):
         for member, stream in reader.stream_members():
@@ -2216,7 +2196,7 @@ def test_decoded_data_with_no_size(decoded: _DecodedFixture, tmp_path: Path) -> 
         assert reader.read("b.bin") == _DECODED_DATA["b.bin"]
         assert reader.read("c.bin") == _DECODED_DATA["c.bin"]
     source = NonSeekableBytesIO(build_decoded(_DECODED_ENTRIES, sizes={3: -1}))
-    with open_archive(source, format=fmt, streaming=True) as reader:
+    with open_archive(source, format=fmt, pipe=True) as reader:
         got = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
     assert got == _DECODED_DATA
 
@@ -2276,24 +2256,6 @@ def test_decoded_concurrent_reads(decoded: _DecodedFixture, tmp_path: Path) -> N
         for thread in threads:
             thread.join()
     assert results == {n: _DECODED_DATA[n] for n in ("c.bin", "docs/a.txt", "b.bin")}
-
-
-def test_decoded_pass_member_survives_the_walk_moving_on(
-    decoded: _DecodedFixture, tmp_path: Path
-) -> None:
-    """A member the pass reads through the walk reads on from a walk of its own when
-    another call moves the listing walk on."""
-    fmt, _ = decoded
-    path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
-    with open_archive(path, format=fmt, concurrent_operations=True) as reader:
-        for member, stream in reader.stream_members():
-            if member.name != "b.bin":
-                continue
-            assert stream is not None
-            head = stream.read(1000)
-            assert len(reader.members()) == 6
-            assert head + stream.read() == _DECODED_DATA["b.bin"]
-            break
 
 
 def test_decoded_seekable_members(decoded: _DecodedFixture, tmp_path: Path) -> None:
@@ -2461,6 +2423,7 @@ def test_decoded_data_drained_by_listing_is_held_to_the_ratio(
         open_archive(
             _ratio_source(data, tmp_path, mode),
             streaming=mode not in _RANDOM_ACCESS,
+            pipe=mode == "pipe",
             format=fmt,
             config=_RATIO_CONFIG,
         ) as reader,

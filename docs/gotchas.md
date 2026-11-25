@@ -74,9 +74,14 @@ archive, archivey records `SOLID_OPEN_REDECOMPRESSES` the first time it decompre
 **Open with `streaming=True` when you process each member once.** It's a promise to read the
 archive once, from start to end. `open()`, `read()` and `members()` then raise, so a read out of
 order fails during development, instead of quietly decompressing data again in production. It
-works on an ordinary file too, not only a pipe. You get one pass, through `stream_members()`, `for
-member in archive` or `extract_all`, and it is used up even if you leave the loop with `break`.
-[Reading once](reading.md#reading-once)
+works on any file. You get one pass, through `stream_members()`, `for member in archive` or
+`extract_all`, and it is used up even if you leave the loop with `break`. [Reading
+once](reading.md#reading-once)
+
+**Pass `pipe=True` for a pipe, a socket or an HTTP response.** `streaming=True` alone raises
+`StreamNotSeekableError` for a source that can't seek, because a pipe gives different results from
+a file for some formats: a ZIP's symlinks and permissions, for example, arrive only at its end.
+[Reading from a pipe](formats.md#reading-from-a-pipe)
 
 **Pass an `ArchiveMember` to pick one copy of a repeated name.** An archive can hold several
 members with the same name. `get`, `open` and `read` with a name use the last one, which is the

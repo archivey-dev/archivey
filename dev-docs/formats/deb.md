@@ -13,7 +13,7 @@ own TAR reader, in the one forward pass.
 | --- | --- |
 | Read | Yes. `internal/backends/deb_reader.py`, a `DebHandler` (`SequentialFormatHandler`) and a `DebReader` (`SequentialReader`), registered with `register_builtin_format` before ar |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
-| Source | A file, a stream that can seek, or a pipe (`streaming=True`) |
+| Source | A file, a stream that can seek, or a pipe (`pipe=True`) |
 | Listing cost | `REQUIRES_DECOMPRESSION`: listing reads both tars (`is_solid=True`) |
 | Access cost | `SOLID`: a member is reached by walking the package, and its tar, from the start |
 | Core dependencies | None for xz, gzip, bzip2 and LZMA tars; a Zstandard tar needs what a `.zst` file needs |

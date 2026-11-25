@@ -161,7 +161,7 @@ def test_a_data_pass_refuses_an_excluded_member_without_decoding_it(
     data = _legacy_zip(descriptor=descriptor)
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
     seen: dict[str, bytes | str] = {}
-    with open_archive(source, config=_NO_LEGACY, streaming=pipe) as reader:
+    with open_archive(source, config=_NO_LEGACY, pipe=pipe) as reader:
         for member, stream in reader.stream_members():
             assert stream is not None
             try:
@@ -568,7 +568,7 @@ def test_the_blocks_before_an_excluded_xz_block_still_read() -> None:
     for pipe in (False, True):
         source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
         got = b""
-        with open_archive(source, config=config, streaming=pipe) as reader:
+        with open_archive(source, config=config, pipe=pipe) as reader:
             for _member, stream in reader.stream_members():
                 assert stream is not None
                 with pytest.raises(UnsupportedFeatureError, match=r"BCJ"):

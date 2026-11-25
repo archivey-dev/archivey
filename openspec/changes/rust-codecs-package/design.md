@@ -55,6 +55,12 @@ multiple of 4, no literal overrun, the distance check on every triple, nothing a
 the Python decoder on every DMG fixture and the DMG fuzz corpus. ADC (DMG's other
 codec) follows the same shape if measurement shows it is slow.
 
+Built 2026-11-22 as `lzfse.decompress` and `lzvn.decompress` (raw LZVN, which HFS+
+compressed files store), one kernel each in `KERNELS`; the `lzfse` revision also covers
+the LZVN decoder inside `bvxn` blocks, so a change to LZVN raises both. Like LZO, each
+takes `out_size=` (exact) or `max_size=` (a bound): archivey's callers pass the most a
+run may decode to and check the length themselves, with their own message.
+
 Later, by value: LHA/ARJ static-Huffman and LHarc `-lh1-`; PPMd and Deflate64 as
 in-process decoders (new decoders, each needs the DR-20 damaged-input evaluation); the
 DOS-era ZIP methods and ARJ method 4.
@@ -63,24 +69,16 @@ DOS-era ZIP methods and ARJ method 4.
 
 ```python
 archivey_codecs.crc16_arc(data, value=0) -> int     # function, like zlib.crc32
-c = archivey_codecs.Crc16Arc(b"optional initial data")  # type, like hashlib.sha256
-c.update(chunk); c.digest(); c.hexdigest(); c.copy()
-c.name, c.digest_size, c.block_size                 # "crc16_arc", 2, 1
 ```
 
-- Every hash is a type, named in CamelCase (`Crc16Arc`), with `update`, `digest`,
-  `hexdigest`, `copy`, `name`, `digest_size`, `block_size`, and a constructor taking
-  optional initial data. That type is the name to use in annotations.
-- A CRC also has a function in snake case (`crc16_arc`), the `zlib.crc32` form. A PyO3
-  function cannot carry attributes, so the two are separate names.
-- CRC names follow the CRC catalogue (`crc16_arc`), since "CRC-16" names over twenty
-  algorithms.
-- A CRC's `digest()` is big-endian (question 6), matching the `crc32c` package and
-  archivey's `MemberDigest`.
-- `update()` releases the GIL above a threshold (64 KiB), as `hashlib` does, but only
+- A CRC is a function in snake case (`crc16_arc`), the `zlib.crc32` form, named after
+  its CRC catalogue entry ("CRC-16" names over twenty algorithms).
+- The function releases the GIL above a threshold (64 KiB), as `hashlib` does, but only
   for immutable `bytes` input. A `bytearray` or writable `memoryview` is copied first,
   or hashed with the GIL held, so no other thread can write the buffer while Rust
   reads it. The same rule applies to every `decompress()` and `decrypt()`.
+- The `hashlib`-shaped `Crc16Arc` type of the first design was cut before the first
+  release (2026-11-24, D9): archivey calls only the function.
 
 ## D3. Decoder API
 
@@ -96,15 +94,16 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
 
 | Kernel | `KERNELS` key | Python name | Constructor or call |
 | --- | --- | --- | --- |
-| LZX | `"lzx"` | `lzx.Decompressor` | `(window_bits, *, output_size=None)`; `set_output_size(n)`; `reset(output_size=None)` at a CAB folder start |
+| LZX | `"lzx"` | `lzx.Decompressor` | `(window_bits, *, output_size=None)`; `set_output_size(n)` between frames |
 | Unix `compress` | `"lzw"` | `lzw.Decompressor` | `(*, max_width=None, block_mode=None, nine_bit_widens=None)`; `flush(max_length=-1)`, `truncation`; `header_params`, `clear_offsets` |
 | LZO1X | `"lzo1x"` | `lzo1x.decompress` | `(block, *, out_size)` or `(block, *, max_size)` |
 | ZipCrypto | `"zipcrypto"` | `zipcrypto.Decryptor` | `(password: bytes)`; `decrypt(data) -> bytes` |
 | BCJ2 | `"bcj2"` | `bcj2.Decompressor` | `(main, call, jump, rc, *, out_size)`, four readable binary streams |
 | ARM64 filter | `"arm64"` | `filters.Arm64Decoder` | `(start_offset=0)`; `decode(data) -> bytes`, `flush()` |
 | RISC-V filter | `"riscv"` | `filters.RiscvDecoder` | `(start_offset=0)`; `decode(data) -> bytes`, `flush()` |
-| CRC-16/ARC | `"crc16_arc"` | `crc16_arc`, `Crc16Arc` | `(data, value=0) -> int`; `Crc16Arc(data=b"")` |
-| LZFSE/LZVN (later) | `"lzfse"` | `lzfse.decompress` | `(chunk, *, out_size)` |
+| CRC-16/ARC | `"crc16_arc"` | `crc16_arc` | `(data, value=0) -> int` |
+| LZFSE | `"lzfse"` | `lzfse.decompress` | `(data, *, out_size)` or `(data, *, max_size)` |
+| LZVN (raw, decmpfs) | `"lzvn"` | `lzvn.decompress` | `(data, *, out_size)` or `(data, *, max_size)` |
 
 - ZipCrypto is a cipher, so its object is a `Decryptor` with `decrypt()`, not a
   decompressor. It has `copy()`, `getstate()` and `from_state()` (the header and 12
@@ -113,11 +112,10 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
   length sets where the input realigns and where the Intel E8 scan stops, so the kernel
   must know it whatever `max_length` the caller asks for. The caller gives the folder's
   declared output size with `output_size=` or, when the CAB reader learns it later,
-  with `set_output_size(n)` before the last frame ends. A late size that ends the output
-  where a frame or a block header started gives back what the decoder read from there,
-  and drops an error met in it. It cannot give that input back once the decoder has
-  dropped it from its buffer, or when the decoder was restored from a state saved after
-  it read it: the input then stays consumed and the error stays. The kernel decodes one
+  with `set_output_size(n)` before the last frame ends. A late size is taken only
+  between frames: while a frame waits for input, or after a decode error, it raises
+  `ValueError`. The CAB reader sets it before each frame, to that frame's end, while
+  the folder's block table is incomplete. The kernel decodes one
   whole frame into an internal buffer of at most 32 KiB and returns it in `max_length`
   slices. `eof` turns true when `total_out`, the bytes returned so far, reaches the
   output size. Without an output size, every frame is 32 KiB, and `eof` turns true at
@@ -217,11 +215,11 @@ f.seek(stream_start + point[1])         # feed input from total_in; output resum
   the same message.
 - Panics: a missed check in a kernel panics, and PyO3 raises
   `pyo3_runtime.PanicException`, a `BaseException` that gets past `except Exception`.
-  `internal/native.py` catches it around every kernel call and raises archivey's
+  `internal/kernels/rust.py` catches it around every kernel call and raises archivey's
   `CorruptionError` with the panic as `__cause__`, so the caller sees a typed error as
   with the Python twin. The decoder object is then unusable (its state may be half
-  updated): every later call raises the same error. Fuzzing and parity treat any panic
-  as a bug to fix.
+  updated): every later method call raises the same error. Its counters still read.
+  Fuzzing and parity treat any panic as a bug to fix.
 - Memory: every allocation is bounded by a constructor argument or by `max_length` /
   `out_size`; input data alone cannot make a kernel allocate much.
 - Threads: one thread at a time per object. A concurrent call into the same object
@@ -235,7 +233,7 @@ f.seek(stream_start + point[1])         # feed input from total_in; output resum
 
 `archivey_codecs.KERNELS` maps each kernel name to a revision, raised whenever the
 kernel's observable behaviour changes (output, error kind or message, seek points).
-archivey's `internal/native.py` holds the minimum revision it needs per kernel and uses
+archivey's `internal/kernels/_select.py` holds the minimum revision it needs per kernel and uses
 a kernel only at that revision or newer; otherwise it uses the Python decoder and logs
 once at DEBUG. The dependency range is `archivey-codecs>=0.1,<1` (question 7).
 
@@ -256,9 +254,46 @@ gets a new `KERNELS` key (for example `"lzx2"`) next to the old one, or waits fo
 Before 1.0, and within a major version after it, a release removes no kernel and lowers
 no revision.
 
+Revisions count from the first release. Until a version is on PyPI no build has a
+revision to keep, so changes before it, such as the LZW `from_state()` fix that accepts
+a CLEAR's pending group padding, stay at revision 1.
+
 The "change it twice" rule stays: a fix to a twinned Python decoder is made in Rust in
 the same PR, and the kernel's revision goes up. Users get the fixed Python version
 until the next codecs release turns the kernel back on.
+
+## D4a. archivey's side: one API, one switch
+
+The maintainer asked (2026-11-22) that call sites never mention the native package:
+each kernel has a Python version with the package's exact API and one switch between
+the two. `src/archivey/internal/kernels/` holds it:
+
+- `kernels/python/`: the Python twins, one module per package module
+  (`zipcrypto.Decryptor`, `filters.Arm64Decoder`, `lzo1x.decompress`,
+  `lzw.Decompressor`, `lzx.Decompressor`, `bcj2.Decompressor`, and `crc16_arc`). Each
+  has the subset of the package's API that archivey's call sites use, with the same
+  names, arguments, attributes and errors (archivey's, as the wrappers raise them).
+  They leave out the state methods (`getstate`, `from_state`, and `copy` except
+  ZipCrypto's), and LZX's `unused_data` and `total_in`: the Python decoder's bit
+  buffer reads its input ahead of the output, and no call site needs any of them.
+  The package's stubs give its whole API.
+- `kernels/rust.py`: the package's objects wrapped to raise archivey's errors and latch
+  panics, with the same API.
+- `kernels/__init__.py`: the switch. `kernels.lzx(excluded, isolated=...)` (and one
+  function per kernel) returns a namespace with that module's names, the package's or
+  the twin's, and `library`: archivey-codecs when the package decodes, for a call site
+  that records its backend (LZO does). `kernels.filters` has `arm64_library` and
+  `riscv_library` instead, one for each kernel. Under `isolated`, `kernels.bcj2` always
+  gives the twin until the decoder child can carry BCJ2's four inputs (task 2.7), so
+  under `NATIVE_DECODERS` the package's BCJ2 stays out of the process (D5).
+  `kernels/_select.py` holds the revision table and error mapping, and
+  `kernels/child.py` the stand-in module whose objects live in a decoder child.
+
+Each call site builds through the switch and then uses one API. LZO is the exception:
+compress-utils sits between the package and Python (question 11), so its call site
+takes only the package from the switch and falls back to compress-utils, then to the
+Python decoder the twin wraps. The package's parity tests run the same driver code over
+the twins and the package.
 
 ## D5. How archivey installs and turns it off
 
@@ -280,16 +315,18 @@ until the next codecs release turns the kernel back on.
   knows the package; `[recommended]` gains it one archivey release later (question 9).
 - `OptionalLibrary.ARCHIVEY_CODECS` (question 8), passed through every call site (the
   prototype reached only LZO). It is the only switch: tests that need the Python path
-  pass `exclude_libraries`, or use a fixture that patches `internal/native.py`. No
+  pass `exclude_libraries`, or use a fixture that patches the switch in
+  `internal/kernels` (`tests/kernels_util.use_python_twin`). No
   environment variable turns the kernels off.
 - `[free-threaded]` includes the package (the module declares `gil_used = false`, and
   CI's GIL assertion over that extra covers it). `[all]` gets it through
   `[recommended]`.
 - Isolation: under `ProcessIsolation.KNOWN_CRASHES` (the default) and `NONE` the kernels
   run in the caller's process. Under `NATIVE_DECODERS`, which promises that no native
-  decoder runs in the caller's process, the decoding kernels (LZX, LZW, LZO, BCJ2,
-  ARM64, RISC-V, later LZFSE) run in archivey's decoder child, like zlib, lzma and
-  compress-utils today (question 13). CRC-16/ARC and ZipCrypto run in the caller's
+  decoder runs in the caller's process, the decoding kernels (LZX, LZW, LZO, ARM64,
+  RISC-V, LZFSE, LZVN) run in archivey's decoder child, like zlib, lzma and
+  compress-utils today (question 13); BCJ2 uses its Python twin until the child carries
+  its four inputs. CRC-16/ARC and ZipCrypto run in the caller's
   process under every setting, as checksums and AES decryption do now. Each decoder in
   the child costs about 0.6 to 1 ms (the `NATIVE_DECODERS` docstring in
   `src/archivey/config.py`, measured with
@@ -297,7 +334,9 @@ until the next codecs release turns the kernel back on.
   the pipe twice; at 8x to 38x the Python speed the kernels still win on anything but
   tiny members. A panic in the child reaches the caller as `CorruptionError`, as
   in-process. The streaming kernels push input as the child protocol already expects;
-  BCJ2's four input streams need the protocol to carry four inputs (task 2.7). If no
+  BCJ2's four input streams need the protocol to carry four inputs (task 2.7); until
+  then BCJ2 runs as the Python twin in the caller's process under `NATIVE_DECODERS`
+  (D4a). If no
   child can start, archivey uses the Python twin in the caller's process, as if
   `ARCHIVEY_CODECS` were excluded: a Python decoder is not native, so the promise holds,
   and the read gives the same bytes as without the package. LZO then goes to
@@ -357,6 +396,26 @@ arm64 and x86_64, Windows x86_64 and arm64. About 300 KB each.
 5. `scripts/release.py` support only if releases become frequent.
 
 Release when a kernel is added or its revision changes, or for a security fix.
+
+## D9. What the API holds
+
+Cut 2026-11-24, before the first release: the package's API holds what archivey calls,
+plus what a planned archivey feature needs. Seek points are the one planned feature, so
+`copy()`, `getstate()`, `from_state()`, `total_in` and `total_out` stay on every
+streaming object although no call site uses them yet. A name with neither reason is
+not added, and parity tests cover only what the API holds.
+
+The cut removed the `Crc16Arc` hash type (D2), LZX's `reset()` and `window_bits`, and
+LZX's late `set_output_size()` inside a frame or after an error, with the rewind it
+needed: the decoder kept a copy of itself at every frame start and block header to go
+back to. The CAB reader gives a late size only between frames.
+
+An int argument outside its parameter's range raises `ValueError` with a fixed
+message that names the parameter and the range (LZX's `window_bits` raises
+`CorruptDataError`, as for any window it does not know); a `max_length` past 64 bits
+means no limit. PyO3's own `OverflowError` text differs by platform. A non-int raises
+PyO3's `TypeError`. The Python twins need no matching checks: archivey's call sites
+pass only sizes they read and checked.
 
 ## Risks
 

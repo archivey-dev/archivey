@@ -78,7 +78,7 @@ def test_named_file_and_non_seekable_source(tmp_path: Path) -> None:
     with open_archive(path) as ar:
         assert ar.members()[0].name == "vmlinux"
         assert ar.read(ar.members()[0]) == data
-    with open_archive(NonSeekableBytesIO(_legacy(data)), streaming=True) as ar:
+    with open_archive(NonSeekableBytesIO(_legacy(data)), pipe=True) as ar:
         for _member, stream in ar.stream_members():
             assert stream is not None
             assert stream.read() == data

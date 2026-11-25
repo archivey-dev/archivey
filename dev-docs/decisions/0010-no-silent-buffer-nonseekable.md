@@ -19,3 +19,10 @@ source.
 
 - Honest failure mode for pipes + ZIP/ISO/etc.
 - Streaming mode remains the supported non-seekable path where the backend can adapt.
+
+## Update (2026-11-21)
+
+The maintainer made reading a non-seekable source opt-in: only `open_archive(pipe=True)`
+reads one, and without it such a source raises `StreamNotSeekableError` at open in both
+`streaming=False` and `streaming=True`. `pipe=True` also reads a seekable source the way
+a pipe is read. The decision above still holds: nothing buffers a pipe to make it work.

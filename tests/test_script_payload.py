@@ -52,7 +52,7 @@ def _contents(source: Path | io.BytesIO) -> dict[str, bytes]:
 
 
 def _piped(data: bytes) -> dict[str, bytes]:
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
         return {m.name: s.read() for m, s in reader.stream_members() if s is not None}
 
 
