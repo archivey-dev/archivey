@@ -383,11 +383,13 @@ class _PluginAdapter(BaseArchiveReader):
 
     @override
     def _info_unpublished_in_callback(self) -> ArchiveInfo:
-        # The plugin's archive_info() takes the handle lock, which the call that ran
-        # this callback may hold: never call it here. Nothing is published only when
-        # it failed at open, so raise that failure again.
+        # Never call the plugin's archive_info() here, in either mode: the call that
+        # ran this callback may hold the plugin's handle lock, or be inside a plugin
+        # method (an archive_info() whose source read runs the callback) that is not
+        # re-entrant. Nothing is published only when it failed at open, so raise
+        # that failure again.
         kept = self._info_open_error
-        if kept is not None and self._handle_lock is not None:
+        if kept is not None:
             kept.raise_again()
         return self._get_archive_info()
 

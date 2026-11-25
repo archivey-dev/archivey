@@ -48,6 +48,14 @@ class _Hooks:
     block_read: bool = False
     entered: threading.Event = dataclasses.field(default_factory=threading.Event)
     go: threading.Event = dataclasses.field(default_factory=threading.Event)
+    # Set to make the next member-stream ``close()`` signal ``close_entered`` and
+    # wait on ``close_go`` before it records itself.
+    block_close: bool = False
+    close_entered: threading.Event = dataclasses.field(default_factory=threading.Event)
+    close_go: threading.Event = dataclasses.field(default_factory=threading.Event)
+    # Set to make the next member-stream ``read()`` read the source first, so
+    # ``on_source_read`` runs inside the stream's read.
+    read_in_read: bool = False
 
 
 _HOOKS = _Hooks()
@@ -56,14 +64,18 @@ _HOOKS = _Hooks()
 class _GatedStream(io.RawIOBase):
     """A plugin's member stream that records its close and can block a read."""
 
-    def __init__(self, data: bytes, name: str) -> None:
+    def __init__(self, data: bytes, name: str, source: ReaderSource) -> None:
         self._data = io.BytesIO(data)
         self._name = name
+        self._source = source
 
     def readable(self) -> bool:
         return True
 
     def readinto(self, b: bytearray) -> int:  # type: ignore[override]
+        if _HOOKS.read_in_read:
+            _HOOKS.read_in_read = False
+            self._source.read_at(0, 1)
         if _HOOKS.block_read:
             _HOOKS.block_read = False
             _HOOKS.entered.set()
@@ -72,6 +84,10 @@ class _GatedStream(io.RawIOBase):
         return self._data.readinto(b)
 
     def close(self) -> None:
+        if _HOOKS.block_close:
+            _HOOKS.block_close = False
+            _HOOKS.close_entered.set()
+            assert _HOOKS.close_go.wait(TIMEOUT)
         if not self.closed:
             _HOOKS.events.append(f"stream close {self._name}")
         super().close()
@@ -85,7 +101,7 @@ class _GatedReader(ToyReader):
             self._source.read_at(0, 1)
         offset, size = locator
         data = self._source.read_at(offset, size)
-        return MemberData(_GatedStream(data, member.name))
+        return MemberData(_GatedStream(data, member.name, self._source))
 
     def archive_info(self) -> ReaderArchiveInfo:
         if _HOOKS.block_info:
@@ -236,7 +252,7 @@ def test_close_beside_a_blocked_read_defers_every_close(gated: Path) -> None:
     a = reader.open("b.bin")
     b = reader.open("docs/a.txt")
     _HOOKS.block_read = True
-    thread, _out = _run(lambda: a.read(16))
+    thread, out = _run(lambda: a.read(16))
     assert _HOOKS.entered.wait(TIMEOUT)
     closer, closed = _run(reader.close)
     closer.join(TIMEOUT)
@@ -252,6 +268,9 @@ def test_close_beside_a_blocked_read_defers_every_close(gated: Path) -> None:
     closes = [e for e in after if "close" in e]
     assert sorted(closes[:2]) == ["stream close b.bin", "stream close docs/a.txt"]
     assert closes[2:] == ["plugin close"]
+    # The read was running when close() came: it stops before it returns its bytes.
+    assert isinstance(out[0], ArchiveyUsageError), out
+    assert CLOSED in str(out[0])
     with pytest.raises(ValueError, match="closed file"):
         a.read(1)
 
@@ -269,28 +288,37 @@ def test_close_beside_a_blocked_yielded_stream_defers_the_wind_down(
     while stream is None:
         member, stream = next(passes)
     _HOOKS.block_read = True
-    thread, _out = _run(lambda: stream.read(1))
+    thread, out = _run(lambda: stream.read(1))
     assert _HOOKS.entered.wait(TIMEOUT)
     closer, closed = _run(reader.close)
     closer.join(TIMEOUT)
     assert not closer.is_alive(), "close() waited for the blocked read"
     assert closed == [None]
     assert not [e for e in _HOOKS.events if "close" in e]
+    # Dropping the pass while the read still runs closes nothing under it either: the
+    # wind-down stays with the last call out.
+    dropper, dropped = _run(passes.close)
+    dropper.join(TIMEOUT)
+    assert not dropper.is_alive(), "closing the pass waited for the blocked read"
+    assert dropped == [None]
+    assert not [e for e in _HOOKS.events if "close" in e]
     _HOOKS.go.set()
     thread.join(TIMEOUT)
     assert not thread.is_alive()
+    assert isinstance(out[0], ArchiveyUsageError), out
     closes = [e for e in _HOOKS.events if "close" in e]
     assert closes == [f"stream close {member.name}", "plugin close"]
-    passes.close()
-    assert [e for e in _HOOKS.events if "close" in e] == closes
 
 
+@pytest.mark.parametrize("concurrent", [False, True])
 def test_info_from_a_callback_with_nothing_published_does_not_deadlock(
-    tmp_path: Path,
+    tmp_path: Path, concurrent: bool
 ) -> None:
     """A plugin whose ``archive_info()`` failed at open has no snapshot. ``info``
     from a callback under ``open_member()`` (which holds the handle lock) then raises
-    that failure again instead of calling the plugin and waiting on the lock."""
+    that failure again instead of calling the plugin and waiting on the lock, in both
+    modes: without the flag there is no lock, but the callback may still run inside
+    a plugin method."""
 
     class _FailsAtOpen(_GatedReader):
         calls = 0
@@ -323,9 +351,12 @@ def test_info_from_a_callback_with_nothing_published_does_not_deadlock(
     config = ArchiveyConfig(on_source_read=on_read, source_read_step=0)
     with registration_scope():
         register_format(_Handler)
-        with open_archive(path, config=config, concurrent_operations=True) as reader:
+        with open_archive(
+            path, config=config, concurrent_operations=concurrent
+        ) as reader:
             holder.append(reader)
             reader.members()
+            calls = _FailsAtOpen.calls
             _HOOKS.read_in_open = True
             thread, out = _run(lambda: reader.read("docs/a.txt"))
             thread.join(TIMEOUT)
@@ -333,3 +364,100 @@ def test_info_from_a_callback_with_nothing_published_does_not_deadlock(
             assert out == [b"alpha\n"]
             assert len(seen) == 1
             assert "archive_info failed at open" in str(seen[0])
+            assert _FailsAtOpen.calls == calls, "the callback called the plugin"
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_a_proof_query_after_close_touches_nothing_under_the_shutdown(
+    gated: Path, concurrent: bool
+) -> None:
+    """While the shutdown is closing a stream's inner, ``verified`` and
+    ``verifiable`` on that stream answer what its member stored: they refresh no
+    reader state and ask the inner nothing."""
+    reader = open_archive(gated, concurrent_operations=concurrent)
+    stream = reader.open("b.bin")
+    stream.read(1)
+    refreshes: list[str] = []
+    real_refresh = stream._level_refresh  # type: ignore[attr-defined]
+
+    def refresh() -> None:
+        if _HOOKS.close_entered.is_set():
+            refreshes.append(threading.current_thread().name)
+        real_refresh()
+
+    stream._level_refresh = refresh  # type: ignore[attr-defined]
+    _HOOKS.block_close = True
+    closer, closed = _run(reader.close)
+    assert _HOOKS.close_entered.wait(TIMEOUT)
+    member = stream._level_member  # type: ignore[attr-defined]
+    assert stream.verified == member.verified
+    assert stream.verifiable == member.verifiable
+    assert refreshes == []
+    _HOOKS.close_go.set()
+    closer.join(TIMEOUT)
+    assert not closer.is_alive()
+    assert closed == [None]
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_reader_close_beside_a_blocked_stream_close_closes_it_once(
+    gated: Path, concurrent: bool
+) -> None:
+    """A stream's own ``close()`` blocked in the plugin's cleanup is a running
+    call: ``reader.close()`` returns at once, closes nothing under it, and the plugin
+    is closed after the stream's close returns, each once."""
+    reader = open_archive(gated, concurrent_operations=concurrent)
+    stream = reader.open("b.bin")
+    _HOOKS.block_close = True
+    stream_closer, stream_closed = _run(stream.close)
+    assert _HOOKS.close_entered.wait(TIMEOUT)
+    closer, closed = _run(reader.close)
+    closer.join(TIMEOUT)
+    assert not closer.is_alive(), "reader close waited for the stream close"
+    assert closed == [None]
+    assert not [e for e in _HOOKS.events if "close" in e]
+    _HOOKS.close_go.set()
+    stream_closer.join(TIMEOUT)
+    assert not stream_closer.is_alive()
+    assert stream_closed == [None]
+    assert [e for e in _HOOKS.events if "close" in e] == [
+        "stream close b.bin",
+        "plugin close",
+    ]
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+@pytest.mark.parametrize("which", ["same", "sibling"])
+def test_a_stream_close_from_a_callback_inside_a_read_raises(
+    gated: Path, concurrent: bool, which: str
+) -> None:
+    """A member stream's ``close()`` from a callback that runs inside a read (of
+    that stream, or of a sibling, which may hold the shared handle lock) raises
+    ``ArchiveyUsageError``; the read completes and the stream stays usable."""
+    if which == "sibling" and not concurrent:
+        pytest.skip("one open stream at a time without the flag")
+    seen: list[BaseException] = []
+    targets: list[object] = []
+
+    def on_read(_progress: object) -> None:
+        if targets:
+            target = targets.pop()
+            try:
+                target.close()  # type: ignore[attr-defined]
+            except BaseException as exc:  # noqa: BLE001 - the test inspects it
+                seen.append(exc)
+
+    config = ArchiveyConfig(on_source_read=on_read, source_read_step=0)
+    with open_archive(gated, config=config, concurrent_operations=concurrent) as reader:
+        a = reader.open("b.bin")
+        b = reader.open("docs/a.txt") if which == "sibling" else a
+        targets.append(b)
+        _HOOKS.read_in_read = True
+        thread, out = _run(lambda: a.read(1))
+        thread.join(TIMEOUT)
+        assert not thread.is_alive(), "the close in the callback deadlocked"
+        assert out == [b"\x00"]
+        assert len(seen) == 1, seen
+        assert isinstance(seen[0], ArchiveyUsageError), seen
+        assert not b.closed
+        assert b.read(1)

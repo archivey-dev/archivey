@@ -710,6 +710,49 @@ class ReaderState:
             calls[ident] = calls.get(ident, 0) + 1
         return sys.exception()
 
+    def enter_stream_close(
+        self, *, finalizing: bool
+    ) -> BaseException | None | _Refused:
+        """Count a member stream's own ``close()`` as a stream call
+        (:meth:`enter_stream_call`), so a ``reader.close()`` meanwhile defers its
+        shutdown to it. ``REFUSED`` once the reader is closed: the shutdown then owns
+        the stream's inner close.
+
+        A close from inside a stream call on this thread is a callback's (a source
+        read's ``on_source_read`` inside a read of this stream or of a sibling, which
+        may hold the shared handle lock): it raises ``ArchiveyUsageError`` before it
+        takes any lock, instead of closing the decoder under the read or deadlocking.
+        ``finalizing``: the collector's close of a dropped stream, never refused.
+        """
+        with self._lock:
+            ident = threading.get_ident()
+            if ident in self._stream_calls and not finalizing:
+                raise ArchiveyUsageError(
+                    "A member stream cannot be closed from a callback that runs inside "
+                    "a read of a stream of the same reader. To stop the read, close "
+                    "the reader."
+                )
+            if self.lifecycle is not LifecycleState.OPEN:
+                return REFUSED
+            calls = self._stream_calls
+            calls[ident] = calls.get(ident, 0) + 1
+        return sys.exception()
+
+    def claim_stream_close(self, stream: ArchiveStreamImpl) -> bool:
+        """True for the one caller that does ``stream``'s inner close: two
+        ``close()`` calls at once, or a ``close()`` and the reader's shutdown, never
+        both reach it."""
+        with self._lock:
+            if stream._close_claimed:
+                return False
+            stream._close_claimed = True
+            return True
+
+    def closing(self) -> bool:
+        """Whether ``close()`` has started, read without the lock: a checkpoint's
+        fast path (:meth:`check_open`), which a stale ``False`` only delays."""
+        return self.lifecycle is not LifecycleState.OPEN
+
     def exit_stream_call(self, entry_exc: BaseException | None) -> None:
         """End a call :meth:`enter_stream_call` counted. The last call out after a
         ``close()`` runs the teardown hook: the deferred stream closes, the pass

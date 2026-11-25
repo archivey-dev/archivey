@@ -4989,7 +4989,9 @@ class BaseArchiveReader(ArchiveReader):
                         self._settle_solid_open(judged[0], decoded=False)
                     if stream is not None:
                         try:
-                            stream.close()
+                            # open() owns the unbound stream: the reader's shutdown
+                            # never sees it, so its close may not leave it to that.
+                            stream._close_owned()
                         except Exception as close_exc:
                             # Don't replace the in-flight open/register error.
                             if pending is not None:
@@ -5582,7 +5584,7 @@ class BaseArchiveReader(ArchiveReader):
             stream, current = current, None
             try:
                 if stream is not None:
-                    stream.close()
+                    stream._close_owned()
             finally:
                 if source_closer is not None:
                     source_closer()
@@ -5654,17 +5656,16 @@ class BaseArchiveReader(ArchiveReader):
             if report is not None:
                 report.report_unmatched(self._diagnostics_collector, self._archive_name)
         finally:
-            if current is not None:
-                current.close()
-            # The backend's pass is closed here, not left to be dropped: what it holds
-            # (an unrar process for a solid RAR) then ends now, and not only when an
-            # interpreter without reference counting (PyPy) collects it. When close()
-            # found the pass suspended at a yield, its stream-shutdown step closes it
-            # instead (below).
+            # The stream the caller may still hold and the backend's pass are closed
+            # here, not left to be dropped: what the pass holds (an unrar process for a
+            # solid RAR) then ends now, and not only when an interpreter without
+            # reference counting (PyPy) collects it. When close() found the pass
+            # suspended at a yield, it took the wind-down: its stream-shutdown step
+            # closes both, after the last running call (a read of that stream on
+            # another thread) is out, so nothing here closes under that read.
             try:
-                # Unless close() found the pass suspended and took its wind-down.
-                if source_closer is not None and self._state.keep_own_closer(token):
-                    source_closer()
+                if self._state.keep_own_closer(token):
+                    wind_down()
             finally:
                 self._state.release_pass(token)
             # A close() interrupted inside its stream-shutdown step handed the step
@@ -5906,7 +5907,9 @@ class BaseArchiveReader(ArchiveReader):
             if stream.closed:
                 continue
             try:
-                stream.close()
+                # The shutdown owns the inner close: the reader is closed, so the
+                # stream's own close() would leave it to the shutdown.
+                stream._close_owned()
             except BaseException as exc:  # noqa: BLE001 - report every failure, not the first
                 failures.append(exc)
         if len(failures) == 1:

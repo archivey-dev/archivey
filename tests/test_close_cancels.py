@@ -220,13 +220,13 @@ def test_a_failing_close_of_the_unbound_stream_keeps_the_closed_error(
     real_bind = state.bind_live_stream
 
     def close_then_bind(token: object, stream: object) -> None:
-        real_close = stream.close  # type: ignore[attr-defined]
+        real_close = stream._close_scoped  # type: ignore[attr-defined]
 
         def failing_close() -> None:
             real_close()
             raise OSError("stream cleanup failed")
 
-        stream.close = failing_close  # type: ignore[attr-defined]
+        stream._close_scoped = failing_close  # type: ignore[attr-defined]
         reader.close()
         real_bind(token, stream)  # type: ignore[arg-type]
 
