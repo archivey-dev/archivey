@@ -909,3 +909,55 @@ def test_a_password_provider_during_a_link_data_read_cannot_call_the_reader(
     assert all(
         isinstance(e, ArchiveyUsageError) and "re-entered" in str(e) for e in seen
     ), seen
+
+
+@pytest.mark.parametrize("outer", ["extract_all", "verify_all"])
+def test_a_log_handler_for_a_link_resolution_diagnostic_cannot_call_the_reader(
+    tmp_path: Path, outer: str
+) -> None:
+    """The same diagnostic also goes to the ``archivey`` logger, whose handlers are
+    the caller's code too: a pass, a lookup or a listing started from one is refused
+    as re-entry, not admitted under the library's window."""
+    import logging
+
+    from tests.test_audit2_zip import _zip64_header_offset_zip
+
+    holder: list[object] = []
+    seen: dict[str, list[BaseException]] = {"verify_all": [], "members": [], "get": []}
+
+    class _Handler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if getattr(record, "diagnostic_code", None) is not (
+                DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+            ):
+                return
+            reader = holder[0]
+            calls: dict[str, Callable[[], object]] = {
+                "verify_all": reader.verify_all,  # type: ignore[attr-defined]
+                "members": reader.members,  # type: ignore[attr-defined]
+                "get": lambda: reader.get("x"),  # type: ignore[attr-defined]
+            }
+            for name, call in calls.items():
+                try:
+                    call()
+                except BaseException as exc:  # noqa: BLE001 - the test inspects it
+                    seen[name].append(exc)
+
+    handler = _Handler()
+    logger = logging.getLogger("archivey")
+    logger.addHandler(handler)
+    try:
+        blob = _zip64_header_offset_zip(2**63, symlink=True)
+        with open_archive(io.BytesIO(blob)) as reader:
+            holder.append(reader)
+            if outer == "extract_all":
+                reader.extract_all(tmp_path / "out", on_error="continue")
+            else:
+                reader.verify_all()
+    finally:
+        logger.removeHandler(handler)
+    for name, errors in seen.items():
+        assert errors, name
+        assert all(
+            isinstance(e, ArchiveyUsageError) and "re-entered" in str(e) for e in errors
+        ), (name, errors)

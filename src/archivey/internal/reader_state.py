@@ -282,8 +282,8 @@ class ReaderState:
         self._pass_wind_down: list[Callable[[], None]] = []
         self._pass_wind_down_lease = False
         # Library-internal open windows (first-touch link-data reads, the one user
-        # left), keyed BY THREAD: the exemption from the live-stream gate and from
-        # worker rejection applies only to the thread that entered the window. A plain
+        # left), keyed BY THREAD: the exemption from the live-stream gate (the window's
+        # only effect) applies only to the thread that entered the window. A plain
         # reader-wide depth counter would silently admit a *foreign* thread's open()
         # during the window on a non-CONCURRENT reader — and on backends without a
         # shared-handle lock the interleaved seek+read pairs then serve wrong member
@@ -303,10 +303,12 @@ class ReaderState:
     def begin_internal_opens(self) -> None:
         """Enter a library-internal open window on this thread; windows nest.
 
-        Inside one, this thread's opens pass the live-stream gate and the same-thread
-        re-entry check, and its worker calls go under the pass this thread works for,
-        when there is one (:meth:`_owner_pass_locked`; see ``_internal_open_threads``).
-        Leave it with :meth:`end_internal_opens`.
+        Inside one, this thread's opens pass the live-stream gate
+        (``_refuse_second_stream_locked``; see ``_internal_open_threads``), and
+        nothing else: admission (a pass, a worker call, a peek) never looks at the
+        window, so code the library runs inside it that is not its own (a callback, an
+        application's logging handler) gets no exemption from the re-entry and
+        overlap checks. Leave it with :meth:`end_internal_opens`.
         """
         tid = threading.get_ident()
         depth = callback_depth()
@@ -345,8 +347,7 @@ class ReaderState:
         kind: PassKind = PassKind.LOOKUP,
         report: Callable[[], MemberListReport | None] | None = None,
     ) -> OperationToken:
-        """Take the token for a reader-wide pass named ``name`` (or, inside this thread's
-        internal-open window, a child of the pass it works for), or raise the usage
+        """Take the token for a reader-wide pass named ``name``, or raise the usage
         error that says why it cannot start. Release it with :meth:`release_pass`.
 
         A pass has the reader to itself: it is refused beside another pass and beside a
@@ -367,14 +368,7 @@ class ReaderState:
         """Acquire a pass token: root when free, else a child under an internal owner."""
         with self._lock:
             self._require_admissible_locked(name)
-            internal = self._internal_opens_active_locked()
-            owner = self._owner_pass_locked() if internal else None
-            if owner is not None:
-                child = OperationToken(name=name, parent=owner, kind="child")
-                self._children.add(child)
-                return child
-            if not internal:
-                self._reject_same_thread_reentry_locked(f"start {name!r}")
+            self._reject_same_thread_reentry_locked(f"start {name!r}")
             if self._root is not None:
                 raise _overlap_refused(
                     f"Cannot start {name!r}: another reader operation "
@@ -536,28 +530,18 @@ class ReaderState:
     def _acquire_worker_once(self, name: str) -> OperationToken:
         """Short-lived token for random ``open()`` / ``read()``.
 
-        Rejected while a reader-wide pass is active, in both modes, unless under
-        library-internal opens. Idle open streams (leases only) do not block workers.
+        Rejected while a reader-wide pass is active, in both modes. Idle open
+        streams (leases only) do not block workers.
         Stream I/O after this token is released does not re-check the gate.
         """
         with self._lock:
             self._require_admissible_locked(name)
-            internal = self._internal_opens_active_locked()
-            if not internal:
-                self._reject_same_thread_reentry_locked(f"call {name!r}")
-            if self._root is not None and not internal:
+            self._reject_same_thread_reentry_locked(f"call {name!r}")
+            if self._root is not None:
                 raise _overlap_refused(
                     f"Cannot call {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
-            # Inside a library-internal window (a first-touch link-data read), the
-            # OWNING THREAD's worker opens are admitted as children of the pass it
-            # works for; other threads are rejected above.
-            owner = self._owner_pass_locked() if internal else None
-            if owner is not None:
-                token = OperationToken(name=name, parent=owner, kind="child")
-                self._children.add(token)
-                return token
             token = OperationToken(name=name, kind="worker")
             self._workers.add(token)
             return token
@@ -580,10 +564,7 @@ class ReaderState:
             root = self._root
             if root is not None and root.pass_kind is not PassKind.LOOKUP:
                 return None, root.report
-            if not self._internal_opens_active_locked():
-                # Inside a library-internal window (a first-touch link-data read), the
-                # library's own call is not re-entry.
-                self._reject_same_thread_reentry_locked(f"call {name!r}")
+            self._reject_same_thread_reentry_locked(f"call {name!r}")
             token = OperationToken(name=name, kind="worker")
             self._workers.add(token)
             return token, None

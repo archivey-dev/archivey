@@ -485,26 +485,24 @@ def test_concurrent_double_close_exception_group_on_dual_failure(
 
 
 def test_internal_open_exemption_is_thread_scoped() -> None:
-    """extract_all's internal-open window admits the owning thread's opens as children
-    of its root pass; a FOREIGN thread's open must still be rejected (pre-fix it was
-    silently admitted, and unlocked shared handles then served wrong bytes)."""
+    """A link-data read's internal-open window lets the owning thread open a second
+    stream on a default reader; a FOREIGN thread's stream is still refused (pre-fix it
+    was silently admitted, and unlocked shared handles then served wrong bytes)."""
     from archivey.internal.reader_state import ReaderState
 
     state = ReaderState(member_streams=MemberStreams(0), open_site=None)
-    root = state.acquire_pass("extract_all")
+    held = state.reserve_live_stream()
     state.begin_internal_opens()
     try:
-        # Owning thread: admitted as a child of the root.
-        token = state.acquire_worker("open")
-        assert token.parent is root
-        state.release_worker(token)
+        # Owning thread: past the live-stream gate.
+        state.release_reservation(state.reserve_live_stream())
 
-        # Foreign thread: rejected like during any active root pass.
+        # Foreign thread: refused like any second stream.
         outcome: list[object] = []
 
         def foreign() -> None:
             try:
-                outcome.append(state.acquire_worker("open"))
+                outcome.append(state.reserve_live_stream())
             except ArchiveyUsageError as exc:
                 outcome.append(exc)
 
@@ -515,7 +513,7 @@ def test_internal_open_exemption_is_thread_scoped() -> None:
         assert len(outcome) == 1 and isinstance(outcome[0], ArchiveyUsageError)
     finally:
         state.end_internal_opens()
-        state.release_pass(root)
+        state.release_reservation(held)
 
 
 @pytest.mark.concurrent_reader
