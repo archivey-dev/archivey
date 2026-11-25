@@ -171,7 +171,9 @@ fix before you push it:
    close", not "close during a read leaks").
 2. **List every place where that sentence can stop being true** — every path that runs
    the event (here: teardown runs from `close()`, from the last call out and from a
-   pass's end; the docstrings often list them). Fix all of them or fix where they meet.
+   pass's end; the docstrings often list them), and every other format, codec or shared
+   path with the same code ([DR-0](../../../dev-docs/design-rules.md)). Fix all of them,
+   or fix where they meet.
 3. **For each check, ask "what if the event lands just after it?"** A check followed by
    an act is not atomic: name what happens when another thread, or a callback, changes
    the state between the two.
