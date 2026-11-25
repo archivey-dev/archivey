@@ -155,7 +155,15 @@ The class SHALL set `cachable = False`, and the instance SHALL own its reader:
 `close()`, and leaving `with ArchiveyFileSystem(...)`, SHALL close it, and collecting an
 instance with no open member streams SHALL close it too. After `close()`, listing and
 opening SHALL raise `ArchiveyUsageError`, also when the tree was listed before the
-close.
+close. `close()` SHALL NOT wait for another thread: not for a first listing that is
+building the tree (that listing raises the closed error, and the file system keeps no
+tree), and not for a call on `fs.reader` (`reader-concurrency`, reader close). A listing
+after `close()` raises at once, also while a build from before the close is still
+running. A build overtaken by the close reports at most the one refusal it was already
+making; the listing still raises the closed error, also under a policy that raises on
+`MEMBER_PATH_REFUSED`. An interrupted `close()` leaves the reader to the next `close()`,
+or to collection. A member stream still open raises the closed-file `ValueError` on its
+next read.
 
 The tree SHALL be the name view of `extract_all(dest, policy=policy)`: each path SHALL
 be the relative path that policy's name transform gives the member, a duplicate name

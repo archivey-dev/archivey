@@ -1,8 +1,8 @@
 """Operations on one ``concurrent_operations=True`` reader stay independent of each other.
 
-Under the flag every call works as if it ran on a reader of its own: what one call
+Under the flag, calls that may overlap do not see each other's effects: what one call
 emits, or a close on another thread, does not show up in a different call's result
-as something that call did. ``test_concurrent_pass_workers.py`` covers which calls
+as something that call did. ``test_concurrent_pass_refusals.py`` covers which calls
 may overlap; this file covers what they see of each other.
 """
 
@@ -19,32 +19,9 @@ import pytest
 from archivey import ArchiveyConfig, open_archive
 from archivey.diagnostics import DiagnosticCode
 from archivey.internal.streams.archive_stream import ArchiveStreamImpl
-from tests.test_concurrent_pass_workers import _in_thread, _run_together
+from tests.test_concurrent_pass_refusals import _in_thread, _run_together
 
 pytestmark = pytest.mark.concurrent_reader
-
-
-def test_pass_stream_diagnostics_leave_out_another_threads_walk(
-    tmp_path: Path,
-) -> None:
-    """The names another thread's ``members()`` normalizes are not the stream's."""
-    path = tmp_path / "names.tar"
-    with tarfile.open(path, "w") as tf:
-        for name in ("a.txt", ".//b.txt", ".//c.txt"):
-            info = tarfile.TarInfo(name)
-            info.size = 3
-            tf.addfile(info, io.BytesIO(b"abc"))
-    normalized = DiagnosticCode.MEMBER_NAME_NORMALIZED
-    with open_archive(path, concurrent_operations=True) as reader:
-        it = reader.stream_members()
-        member, stream = next(it)
-        assert member.name == "a.txt"
-        assert stream is not None
-        _in_thread(reader.members)
-        assert stream.read() == b"abc"
-        assert stream.diagnostics.total_count == 0
-        assert reader.diagnostics.counts[normalized] == 2
-        it.close()
 
 
 def test_random_stream_diagnostics_are_its_own(tmp_path: Path) -> None:
@@ -126,8 +103,14 @@ def test_link_followed_on_several_threads_is_reported_once(tmp_path: Path) -> No
     assert errors == [type(single.value)] * 4
 
 
-def test_close_waits_for_members_report_if_available(tmp_path: Path) -> None:
-    """``close()`` waits for the walk, as it does for ``members()``."""
+def test_close_beside_members_report_if_available_cancels_the_walk(
+    tmp_path: Path,
+) -> None:
+    """``close()`` does not wait for the walk: it returns, the peek raises the closed
+    error at the walk's next checkpoint, and the archive is torn down after it."""
+    from archivey.exceptions import ArchiveyUsageError
+    from archivey.internal.reader_state import LifecycleState
+
     path = tmp_path / "a.zip"
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("a.txt", b"a")
@@ -142,24 +125,27 @@ def test_close_waits_for_members_report_if_available(tmp_path: Path) -> None:
         original()
 
     reader._ensure_walked = slow_walk  # type: ignore[attr-defined]
-    reports: list[object] = []
-    caller = threading.Thread(
-        target=lambda: reports.append(reader.members_report_if_available())
-    )
+    outcome: list[object] = []
+
+    def peek() -> None:
+        try:
+            outcome.append(reader.members_report_if_available())
+        except BaseException as exc:  # noqa: BLE001 - checked below
+            outcome.append(exc)
+
+    caller = threading.Thread(target=peek)
     caller.start()
-    walking.wait(5)
-    closer = threading.Thread(target=reader.close)
-    closer.start()
-    closer.join(0.2)
-    # Still waiting for the walk.
-    assert closer.is_alive()
+    assert walking.wait(5)
+    reader.close()  # returns at once
+    state = reader._state  # type: ignore[attr-defined]
+    assert state.lifecycle is LifecycleState.READER_CLOSED  # the peek holds teardown
     release.set()
     caller.join(5)
-    closer.join(5)
-    report = reports[0]
-    assert report is not None
-    assert [m.name for m in report.members] == ["a.txt"]  # type: ignore[attr-defined]
-    assert report.error is None  # type: ignore[attr-defined]
+    assert not caller.is_alive()
+    (result,) = outcome
+    assert isinstance(result, ArchiveyUsageError)
+    assert "closed" in str(result)
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
 def test_close_during_a_read_raises_the_closed_file_error() -> None:

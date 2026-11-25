@@ -169,7 +169,6 @@ from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import StreamConfig, stream_config_from_archivey
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.format_provenance import confirm_format, format_confirmed
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.logs import backends as logger, integrity as integrity_logger
@@ -2363,24 +2362,6 @@ class ZipReader(BaseArchiveReader):
             context=context,
             logger=logger,
         )
-
-    @override
-    def _iter_with_data(
-        self, copies: FileCopyPass = DEFAULT_FILE_COPY_PASS
-    ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
-        """Read the whole directory before the first member's data, then go forward.
-
-        The directory is read once and member data in file order after it, so the
-        only backward move after the tail reads is the seek to the first local header,
-        and the overlap guard's bounds are known before any member opens. The walk
-        reads the directory one chunk at a time, so pulling it alongside the data
-        would go back to the tail between members. The listing is final before the
-        first yield, ``is_current`` included. A source that cannot seek is read by
-        ``ZipForwardReader``, which overrides this.
-        """
-        if self._streaming:
-            self._walk_ahead()
-        yield from super()._iter_with_data(copies)
 
     def _emit_offset_wrapped(
         self, member: ArchiveMember, entry: CentralEntry, index: int

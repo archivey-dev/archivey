@@ -33,12 +33,23 @@ from archivey import (  # noqa: E402
     ArchiveyConfig,
     ArchiveyUsageError,
     DiagnosticCode,
+    DiagnosticPolicy,
     ExtractionPolicy,
     open_archive,
 )
+from archivey.exceptions import DiagnosticRaisedError  # noqa: E402
 from archivey.fsspec import ArchiveyFileSystem  # noqa: E402
+from archivey.internal.reader_state import LifecycleState  # noqa: E402
 from tests.conftest import case_sensitive  # noqa: E402
 from tests.memory_util import traced_peak  # noqa: E402
+
+
+def _collect() -> None:
+    """Collect garbage. PyPy can need more than one collection to free a cycle that
+    holds an object with a finalizer (a member stream), and to clear the weak
+    references to it."""
+    for _ in range(3):
+        gc.collect()
 
 
 @pytest.fixture
@@ -864,17 +875,14 @@ def test_dropped_urls_leave_no_reader_open(memfs: Any) -> None:
         file_systems.append(weakref.ref(of.fs))
         readers.append(of.fs.reader)
         del of, f
-    # PyPy can need more than one collection to clear weak references and run
-    # their callbacks.
-    for _ in range(3):
-        gc.collect()
+    _collect()
     assert all(ref() is None for ref in file_systems)
     assert all(reader._closed for reader in readers)
 
 
 def test_a_stream_keeps_its_file_system_alive(hostile: str) -> None:
     stream = fsspec.open("archivey://c.txt::" + hostile).open()
-    gc.collect()
+    _collect()
     try:
         assert stream.read() == b"plain"
     finally:
@@ -1018,3 +1026,567 @@ def test_dask_worker_processes_read_through_the_file_system(tmp_path: Path) -> N
     )
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip() == "ok"
+
+
+def test_close_beside_a_cold_listing_returns_at_once(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``fs.close()`` while another thread builds the tree for its first ``ls()``
+    returns at once; that listing then raises the closed error and keeps no tree."""
+    memfs.pipe("/d/cold.zip", _zip_bytes([("a", b"x"), ("b", b"y")]))
+    fs = ArchiveyFileSystem("memory://d/cold.zip")
+    entered, release = threading.Event(), threading.Event()
+    real_build = fs._build_tree
+
+    def slow_build() -> Any:
+        entered.set()
+        assert release.wait(10)
+        return real_build()
+
+    monkeypatch.setattr(fs, "_build_tree", slow_build)
+    outcome: list[BaseException | None] = []
+
+    def listing() -> None:
+        try:
+            fs.ls("")
+            outcome.append(None)
+        except BaseException as exc:  # noqa: BLE001 - checked below
+            outcome.append(exc)
+
+    lister = threading.Thread(target=listing)
+    lister.start()
+    assert entered.wait(10)
+    closer = threading.Thread(target=fs.close)
+    closer.start()
+    closer.join(2)
+    try:
+        assert not closer.is_alive(), "fs.close() waited for the listing"
+    finally:
+        release.set()
+        lister.join(10)
+        closer.join(10)
+    assert len(outcome) == 1 and isinstance(outcome[0], ArchiveyUsageError), outcome
+    assert fs._tree is None
+    with pytest.raises(ArchiveyUsageError):
+        fs.ls("")
+
+
+def test_close_after_the_tree_is_built_keeps_no_tree(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``fs.close()`` after another thread's first ``ls()`` has built the tree, but
+    before that listing stores it: the listing raises the closed error, and the
+    closed filesystem keeps no tree to answer later listings from."""
+    memfs.pipe("/d/late.zip", _zip_bytes([("a", b"x"), ("b", b"y")]))
+    fs = ArchiveyFileSystem("memory://d/late.zip")
+    built, release = threading.Event(), threading.Event()
+    real_build = fs._build_tree
+
+    def build_then_wait() -> Any:
+        tree = real_build()
+        built.set()
+        assert release.wait(10)
+        return tree
+
+    monkeypatch.setattr(fs, "_build_tree", build_then_wait)
+    outcome: list[BaseException | None] = []
+
+    def listing() -> None:
+        try:
+            fs.ls("")
+            outcome.append(None)
+        except BaseException as exc:  # noqa: BLE001 - checked below
+            outcome.append(exc)
+
+    lister = threading.Thread(target=listing)
+    lister.start()
+    closer = threading.Thread(target=fs.close)
+    try:
+        assert built.wait(10)
+        closer.start()
+        closer.join(2)
+        assert not closer.is_alive(), "fs.close() waited for the listing"
+    finally:
+        release.set()
+        lister.join(10)
+        if closer.ident is not None:
+            closer.join(10)
+    assert len(outcome) == 1 and isinstance(outcome[0], ArchiveyUsageError), outcome
+    assert fs._tree is None
+    with pytest.raises(ArchiveyUsageError):
+        fs.ls("")
+
+
+def test_close_beside_a_pass_on_another_thread_returns_at_once(memfs: Any) -> None:
+    """``fs.close()`` while a pass on ``fs.reader`` runs on another thread returns at
+    once; the pass raises the closed error at its next step, and once it has ended
+    the reader's teardown has run."""
+    memfs.pipe("/d/pass.zip", _zip_bytes([("a", b"x"), ("b", b"y")]))
+    fs = ArchiveyFileSystem("memory://d/pass.zip")
+    in_loop, release = threading.Event(), threading.Event()
+    outcome: list[BaseException | None] = []
+
+    def run() -> None:
+        try:
+            for _member, _stream in fs.reader.stream_members():
+                in_loop.set()
+                assert release.wait(10)
+            outcome.append(None)
+        except BaseException as exc:  # noqa: BLE001 - checked below
+            outcome.append(exc)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    assert in_loop.wait(10)
+    closer = threading.Thread(target=fs.close)
+    closer.start()
+    closer.join(2)
+    try:
+        assert not closer.is_alive(), "fs.close() waited for the pass"
+    finally:
+        release.set()
+        worker.join(10)
+        closer.join(10)
+    assert len(outcome) == 1 and isinstance(outcome[0], ArchiveyUsageError), outcome
+    # Teardown has run, from the close or from the pass's own end, whichever came
+    # last. It fails when teardown never runs (``_maybe_teardown`` made a no-op).
+    state = fs.reader._state  # type: ignore[attr-defined]
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE, state.lifecycle
+
+
+def test_a_second_close_returns_with_the_reader_closed(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two threads close at once. The second ``fs.close()`` does not return before
+    the reader is closed, even while the first is still inside the reader's close:
+    after it returns, a call on ``fs.reader`` and a read on an open stream raise."""
+    memfs.pipe("/d/two.zip", _zip_bytes([("a", b"x" * 10), ("b", b"y" * 10)]))
+    fs = ArchiveyFileSystem("memory://d/two.zip")
+    stream = fs.reader.open("a")
+    state = fs.reader._state  # type: ignore[attr-defined]
+    real_mark = state.mark_reader_closed
+    entered, release = threading.Event(), threading.Event()
+    first = threading.Lock()
+
+    def mark_then_wait() -> bool:
+        if first.acquire(blocking=False):
+            entered.set()
+            assert release.wait(10)
+        return real_mark()
+
+    monkeypatch.setattr(state, "mark_reader_closed", mark_then_wait)
+    closer_a = threading.Thread(target=fs.close)
+    closer_a.start()
+    try:
+        assert entered.wait(10)
+        fs.close()  # closer B
+        with pytest.raises(ArchiveyUsageError):
+            fs.reader.members()
+        with pytest.raises(ValueError, match="closed file"):
+            stream.read(1)
+    finally:
+        release.set()
+        closer_a.join(10)
+    assert not closer_a.is_alive()
+
+
+def test_a_listing_after_the_close_raises_at_once_beside_a_build(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A first listing is still building the tree when ``fs.close()`` returns. A new
+    ``ls()`` then raises the closed error at once: it does not wait for that build,
+    and it starts no build of its own."""
+    memfs.pipe("/d/wait.zip", _zip_bytes([("a", b"x"), ("b", b"y")]))
+    fs = ArchiveyFileSystem("memory://d/wait.zip")
+    entered, release = threading.Event(), threading.Event()
+    real_build = fs._build_tree
+    builds: list[int] = []
+
+    def slow_build() -> Any:
+        builds.append(1)
+        if len(builds) == 1:
+            entered.set()
+            assert release.wait(10)
+        return real_build()
+
+    monkeypatch.setattr(fs, "_build_tree", slow_build)
+    first: list[BaseException | None] = []
+
+    def first_listing() -> None:
+        try:
+            fs.ls("")
+            first.append(None)
+        except BaseException as exc:  # noqa: BLE001 - checked below
+            first.append(exc)
+
+    lister = threading.Thread(target=first_listing)
+    outcome: list[BaseException | None] = []
+
+    def late_listing() -> None:
+        try:
+            fs.ls("")
+            outcome.append(None)
+        except BaseException as exc:  # noqa: BLE001 - checked below
+            outcome.append(exc)
+
+    late = threading.Thread(target=late_listing)
+    lister.start()
+    try:
+        assert entered.wait(10)
+        fs.close()
+        late.start()
+        late.join(2)
+        assert not late.is_alive(), "a listing after the close waited for the build"
+        assert len(outcome) == 1 and isinstance(outcome[0], ArchiveyUsageError), outcome
+    finally:
+        release.set()
+        lister.join(10)
+        if late.ident is not None:
+            late.join(10)
+    assert len(first) == 1 and isinstance(first[0], ArchiveyUsageError), first
+    with pytest.raises(ArchiveyUsageError):
+        fs.ls("")
+    assert builds == [1]
+
+
+def test_a_build_overtaken_by_close_reports_no_more_refusals(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A close that lands while the tree is built from the listed members stops the
+    build at the next member: no refusal reaches ``on_diagnostic`` after the close,
+    and the listing raises the closed error, not a diagnostic."""
+    memfs.pipe("/d/late-refusal.zip", _zip_bytes([("ok", b"x"), ("../up", b"y")]))
+    seen: list[DiagnosticCode] = []
+    config = ArchiveyConfig(on_diagnostic=lambda d: seen.append(d.code))
+    fs = ArchiveyFileSystem("memory://d/late-refusal.zip", config=config)
+    real_view = fs._view
+
+    def close_on_first(member: Any, *args: Any) -> Any:
+        if member.name == "ok":
+            fs.close()  # what another thread's close does at this point
+        return real_view(member, *args)
+
+    monkeypatch.setattr(fs, "_view", close_on_first)
+    with pytest.raises(ArchiveyUsageError):
+        fs.ls("")
+    assert DiagnosticCode.MEMBER_PATH_REFUSED not in seen, seen
+
+
+def test_a_close_at_the_refusal_reports_nothing_and_raises_the_closed_error(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A close that lands after the build checked the member, before it reports that
+    member's refusal: nothing reaches ``on_diagnostic``, and a policy that raises
+    on the refusal does not turn the listing's closed error into its own."""
+    memfs.pipe("/d/at-refusal.zip", _zip_bytes([("ok", b"x"), ("../up", b"y")]))
+    seen: list[DiagnosticCode] = []
+    config = ArchiveyConfig(
+        on_diagnostic=lambda d: seen.append(d.code),
+        diagnostic_policy=DiagnosticPolicy(
+            raise_on={DiagnosticCode.MEMBER_PATH_REFUSED}
+        ),
+    )
+    fs = ArchiveyFileSystem("memory://d/at-refusal.zip", config=config)
+    real_view = fs._view
+
+    def close_inside_view(member: Any, *args: Any) -> Any:
+        if member.name == "../up":
+            fs.close()  # after the per-member check, before the refusal
+        return real_view(member, *args)
+
+    monkeypatch.setattr(fs, "_view", close_inside_view)
+    with pytest.raises(ArchiveyUsageError):
+        fs.ls("")
+    assert DiagnosticCode.MEMBER_PATH_REFUSED not in seen, seen
+
+
+def test_a_close_during_a_refusal_raises_the_closed_error(memfs: Any) -> None:
+    """A close that lands while a refusal is being reported (here from the
+    ``on_diagnostic`` callback itself): the listing raises the closed error, also
+    when the policy raises on that refusal."""
+    memfs.pipe("/d/in-refusal.zip", _zip_bytes([("ok", b"x"), ("../up", b"y")]))
+    holder: list[ArchiveyFileSystem] = []
+
+    def close_on_refusal(d: Any) -> None:
+        if d.code is DiagnosticCode.MEMBER_PATH_REFUSED:
+            holder[0].close()
+
+    config = ArchiveyConfig(
+        on_diagnostic=close_on_refusal,
+        diagnostic_policy=DiagnosticPolicy(
+            raise_on={DiagnosticCode.MEMBER_PATH_REFUSED}
+        ),
+    )
+    holder.append(ArchiveyFileSystem("memory://d/in-refusal.zip", config=config))
+    with pytest.raises(ArchiveyUsageError):
+        holder[0].ls("")
+
+
+def test_a_close_just_after_the_refusals_closed_check_raises_the_closed_error(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A close that lands after the refusal's closed check passed, before the
+    policy raises on that refusal (on another thread, in use): the listing still
+    raises the closed error, not the policy's ``DiagnosticRaisedError``."""
+    memfs.pipe("/d/after-check.zip", _zip_bytes([("ok", b"x"), ("../up", b"y")]))
+    config = ArchiveyConfig(
+        diagnostic_policy=DiagnosticPolicy(
+            raise_on={DiagnosticCode.MEMBER_PATH_REFUSED}
+        ),
+    )
+    fs = ArchiveyFileSystem("memory://d/after-check.zip", config=config)
+    real_check = fs._raise_if_closed
+
+    def check_then_close() -> None:
+        real_check()
+        fs.close()  # the check passed; the policy's raise comes next
+
+    monkeypatch.setattr(fs, "_raise_if_closed", check_then_close)
+    with pytest.raises(ArchiveyUsageError):
+        fs.ls("")
+
+
+def test_a_callbacks_own_error_is_not_replaced_by_the_closed_error(memfs: Any) -> None:
+    """An ``on_diagnostic`` callback closes its file system, then lists another one
+    that raises on the same refusal. That other file system's error comes out of the
+    first listing unchanged: only this file system's own escalation of the refusal
+    becomes the closed error."""
+    memfs.pipe("/d/outer.zip", _zip_bytes([("ok", b"x"), ("../up", b"y")]))
+    memfs.pipe("/d/inner.zip", _zip_bytes([("../in", b"z")]))
+    inner = ArchiveyFileSystem(
+        "memory://d/inner.zip",
+        config=ArchiveyConfig(
+            diagnostic_policy=DiagnosticPolicy(
+                raise_on={DiagnosticCode.MEMBER_PATH_REFUSED}
+            )
+        ),
+    )
+    holder: list[ArchiveyFileSystem] = []
+
+    def close_then_list_inner(d: Any) -> None:
+        if d.code is DiagnosticCode.MEMBER_PATH_REFUSED:
+            holder[0].close()
+            inner.ls("")
+
+    holder.append(
+        ArchiveyFileSystem(
+            "memory://d/outer.zip",
+            config=ArchiveyConfig(on_diagnostic=close_then_list_inner),
+        )
+    )
+    with pytest.raises(DiagnosticRaisedError) as caught:
+        holder[0].ls("")
+    assert caught.value.diagnostic.context.member_name == "../in"
+    inner.close()
+
+
+def test_a_callbacks_own_raise_of_its_diagnostic_is_not_replaced(memfs: Any) -> None:
+    """An ``on_diagnostic`` callback closes its file system, then raises a
+    ``DiagnosticRaisedError`` of its own that carries the diagnostic it received.
+    That exact error comes out of the listing: a callback's error propagates
+    unchanged, even when it looks like the policy's escalation."""
+    memfs.pipe("/d/own.zip", _zip_bytes([("ok", b"x"), ("../up", b"y")]))
+    holder: list[ArchiveyFileSystem] = []
+    mine: list[DiagnosticRaisedError] = []
+
+    def close_then_raise(d: Any) -> None:
+        if d.code is DiagnosticCode.MEMBER_PATH_REFUSED:
+            holder[0].close()
+            mine.append(DiagnosticRaisedError("the callback's own", diagnostic=d))
+            raise mine[0]
+
+    holder.append(
+        ArchiveyFileSystem(
+            "memory://d/own.zip",
+            config=ArchiveyConfig(on_diagnostic=close_then_raise),
+        )
+    )
+    with pytest.raises(DiagnosticRaisedError) as caught:
+        holder[0].ls("")
+    assert caught.value is mine[0]
+
+
+def test_a_file_system_closed_during_a_read_and_held_by_its_callback_is_collected(
+    memfs: Any,
+) -> None:
+    """A file system whose ``on_diagnostic`` callback refers to it, closed once
+    while a member read runs on another thread, so that the read's end runs the
+    teardown. Then it is dropped: collection frees it."""
+    memfs.pipe("/d/reading.zip", _zip_bytes([("a", b"x" * 10)]))
+
+    def make() -> tuple[weakref.ref[ArchiveyFileSystem], Any]:
+        # Returns the reader's state, not the reader: the reader's config holds the
+        # callback, which holds the file system.
+        box: dict[str, ArchiveyFileSystem] = {}
+        config = ArchiveyConfig(on_diagnostic=lambda _d: box)
+        fs = ArchiveyFileSystem("memory://d/reading.zip", config=config)
+        box["fs"] = fs  # the callback now keeps the file system alive
+        stream = fs.reader.open("a")
+        reading, release = threading.Event(), threading.Event()
+
+        checkpoint = stream._checkpoint
+
+        def held() -> None:  # the read waits here until released
+            reading.set()
+            assert release.wait(10)
+            if checkpoint is not None:
+                checkpoint()
+
+        stream._checkpoint = held
+
+        def read(target: Any) -> None:
+            with contextlib.suppress(ArchiveyUsageError, ValueError):
+                target.read(1)
+
+        worker = threading.Thread(target=read, args=(stream,))
+        worker.start()
+        assert reading.wait(10)
+        fs.close()  # the read still runs: its end runs the teardown
+        release.set()
+        worker.join(10)
+        assert not worker.is_alive()
+        return weakref.ref(fs), fs.reader._state  # type: ignore[attr-defined]
+
+    fs_ref, state = make()
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+    _collect()
+    assert fs_ref() is None
+
+
+def test_a_closed_file_system_held_by_its_callback_is_collected(memfs: Any) -> None:
+    """A file system whose ``on_diagnostic`` callback refers to it, closed, then
+    dropped: collection frees it. The close leaves nothing that keeps it alive."""
+    memfs.pipe("/d/cycle.zip", _zip_bytes([("a", b"x")]))
+
+    def make() -> weakref.ref[ArchiveyFileSystem]:
+        box: dict[str, ArchiveyFileSystem] = {}
+        config = ArchiveyConfig(on_diagnostic=lambda _d: box)
+        fs = ArchiveyFileSystem("memory://d/cycle.zip", config=config)
+        box["fs"] = fs  # the callback now keeps the file system alive
+        fs.close()
+        return weakref.ref(fs)
+
+    fs_ref = make()
+    _collect()
+    assert fs_ref() is None
+
+
+def test_an_interrupted_close_still_closes_the_reader_on_collection(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``fs.close()`` interrupted inside the reader's close (``KeyboardInterrupt``),
+    then the file system is collected: its reader is closed, as for a file system
+    collected without a close."""
+    memfs.pipe("/d/interrupted.zip", _zip_bytes([("a", b"x")]))
+    fs = ArchiveyFileSystem("memory://d/interrupted.zip")
+    reader = fs.reader
+    state = reader._state  # type: ignore[attr-defined]
+    real_mark = state.mark_reader_closed
+    calls: list[int] = []
+
+    def interrupt_first() -> bool:
+        calls.append(1)
+        if len(calls) == 1:
+            raise KeyboardInterrupt
+        return real_mark()
+
+    monkeypatch.setattr(state, "mark_reader_closed", interrupt_first)
+    with pytest.raises(KeyboardInterrupt):
+        fs.close()
+    del fs
+    _collect()
+    with pytest.raises(ArchiveyUsageError):
+        reader.members()
+
+
+def test_a_close_beside_a_peers_unfinished_close_keeps_the_finalizer(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second ``fs.close()`` while a peer's close still owns the stream shutdown,
+    with a member stream open, returns before teardown. If that peer is then
+    interrupted and the file system collected, collection closes the stream and
+    tears the reader down."""
+    memfs.pipe("/d/peer.zip", _zip_bytes([("a", b"x")]))
+    fs = ArchiveyFileSystem("memory://d/peer.zip")
+    reader = fs.reader
+    stream = reader.open("a")  # its lease holds teardown back
+    inside, release = threading.Event(), threading.Event()
+
+    def hold_then_interrupt() -> None:
+        inside.set()
+        release.wait(5)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(reader, "_close_public_streams", hold_then_interrupt)
+    # The exception's type only: its traceback would keep the file system alive.
+    outcome: list[type[BaseException]] = []
+
+    def first_close(target: ArchiveyFileSystem) -> None:
+        try:
+            target.close()
+        except BaseException as exc:  # noqa: BLE001 - the interrupt is the expected outcome
+            outcome.append(type(exc))
+
+    closer = threading.Thread(target=first_close, args=(fs,))
+    closer.start()
+    try:
+        assert inside.wait(5)
+        fs.close()  # the peer still owns the shutdown: the stream stays open
+        assert fs._finalizer.alive  # type: ignore[attr-defined]
+    finally:
+        release.set()
+        closer.join(5)
+    assert not closer.is_alive()
+    assert outcome == [KeyboardInterrupt]
+    monkeypatch.undo()
+    del fs
+    _collect()
+    assert reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match="closed file"):
+        stream.read(1)
+
+
+def test_a_close_retried_after_an_interrupt_past_teardown_frees_the_file_system(
+    memfs: Any,
+) -> None:
+    """``fs.close()`` interrupted after the reader's teardown completed, before the
+    finalizer was dropped, then called again: the file system, which its
+    ``on_diagnostic`` callback refers to, is freed on collection."""
+    memfs.pipe("/d/late.zip", _zip_bytes([("a", b"x")]))
+
+    def make() -> weakref.ref[ArchiveyFileSystem]:
+        box: dict[str, ArchiveyFileSystem] = {}
+        config = ArchiveyConfig(on_diagnostic=lambda _d: box)
+        fs = ArchiveyFileSystem("memory://d/late.zip", config=config)
+        box["fs"] = fs  # the callback now keeps the file system alive
+
+        def interrupt() -> None:  # lands after teardown completed, before the detach
+            raise KeyboardInterrupt
+
+        fs.reader._after_teardown.insert(0, interrupt)  # type: ignore[attr-defined]
+        try:
+            fs.close()
+        except KeyboardInterrupt:
+            pass
+        else:
+            raise AssertionError("the close was not interrupted")
+        state = fs.reader._state  # type: ignore[attr-defined]
+        assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+        fs.close()  # the retry
+        return weakref.ref(fs)
+
+    fs_ref = make()
+    _collect()
+    assert fs_ref() is None
+
+
+def test_close_under_open_streams_makes_their_reads_raise(memfs: Any) -> None:
+    """``fs.close()`` with member streams still open closes them: their next read
+    raises the closed-file ``ValueError``."""
+    memfs.pipe("/d/held.zip", _zip_bytes([("a", b"x" * 10), ("b", b"y" * 10)]))
+    fs = ArchiveyFileSystem("memory://d/held.zip")
+    first, second = fs.open("a"), fs.open("b")
+    fs.close()
+    for f in (first, second):
+        with pytest.raises(ValueError, match="closed file"):
+            f.read(1)

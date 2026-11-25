@@ -10,16 +10,16 @@ transition on, or a test of, four independent pieces of state:
   library-internal scopes under a pass (link reads, the extraction coordinator's own
   opens), and ``_workers`` are short ``open()`` / ``get()`` calls, and ``read()`` while
   it opens the member (and, on a ``CONCURRENT`` reader, ``members()`` /
-  ``members_report()``). On a ``CONCURRENT`` reader ``stream_members()`` and
-  ``extract_all()`` passes may run beside workers and beside one another
-  (``_side_passes``). Each is an :class:`OperationToken` that records the thread that
-  took it, so a callback that re-enters the reader on that thread gets a message about
-  the callback, not about a second caller.
+  ``members_report()``). A pass has the reader to itself in both modes: no worker and
+  no other pass runs beside it, and a data pass does not start beside a stream from
+  ``open()``. Each is an :class:`OperationToken` that records the thread that took it,
+  so a callback that re-enters the reader on that thread gets a message about the
+  callback, not about a second caller.
 - **Whether the member list exists yet** (``cache_state``). See :class:`ReaderState`.
 - **How many member streams are alive** (``_live_streams``, plus ``_reservations`` for
   an ``open()`` that has passed the gate but not built its stream yet). The streams a
-  ``stream_members()`` pass hands out are in neither: the pass holds the slot for all
-  of them (:meth:`ReaderState.admit_pass_streams`).
+  ``stream_members()`` pass hands out are in neither: the pass has the reader to
+  itself.
 - **How far the close has got** (``lifecycle`` and the leases), below.
 
 Leases, and why teardown is separate from close
@@ -44,27 +44,33 @@ only one caller acts on it. Teardown always follows the streams, never runs unde
          (drops the reader's lease)                 (lease count 0; succeeds once)
     TEARDOWN_RUNNING --complete_teardown()--> TEARDOWN_COMPLETE
 
-``_closing`` is set once a ``close()`` has passed its checks, and stays set while it drains
-in-flight workers (a wait that only happens under ``CONCURRENT``; a default reader has
-refused the close instead). New calls are refused from then on, and other closers wait
-for the transition.
+A running call holds teardown back too, without a lease: a worker, a child scope, a
+live ``info``, a member-stream call, or a pass that is not suspended at a yield
+(``_running_locked``). ``close()`` never waits for
+one and never refuses because of one, in either mode: it marks the reader closed and
+returns. The running call stops at its next checkpoint with the closed error, and the
+last call out runs the reader's teardown (``teardown_hook``).
 """
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import gc
+import sys
 import threading
 import weakref
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from archivey.exceptions import ArchiveyUsageError
+from archivey.internal.callback_scope import callback_depth
 from archivey.types import MemberStreams
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from archivey.diagnostics import MemberListReport
     from archivey.internal.open_site import OpenSite
     from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
@@ -95,8 +101,46 @@ def _overlap_refused(message: str) -> ArchiveyUsageError:
     return exc
 
 
+_CLOSED_MARK = "_archivey_reader_closed"
+
+
+def closed_reader_error(op: str) -> ArchiveyUsageError:
+    """The error a call on a closed reader raises, marked so the reader's teardown on
+    the way out can tell it from any other error (it becomes the teardown error's
+    ``__cause__`` holder, not a note)."""
+    exc = ArchiveyUsageError(
+        f"{op} is not available after the archive reader has been closed."
+    )
+    setattr(exc, _CLOSED_MARK, True)
+    return exc
+
+
+def closed_stream_error() -> ValueError:
+    """The closed-file error a member-stream call raises when ``close()`` overtook
+    it, marked as :func:`closed_reader_error` is, so a teardown failure on its way
+    out becomes its ``__cause__``."""
+    exc = ValueError("I/O operation on closed file.")
+    setattr(exc, _CLOSED_MARK, True)
+    return exc
+
+
+def is_closed_reader_error(exc: BaseException) -> bool:
+    return getattr(exc, _CLOSED_MARK, False)
+
+
+def _call_name(token: OperationToken) -> str:
+    """The public call ``token`` runs for, as an error names it: a nested pass is
+    named after the call it is filed under (``extract_all()``, ``verify_all()``), not
+    after its own ``stream_members``."""
+    root = token.parent if token.parent is not None else token
+    return f"{root.name}()"
+
+
 def _retry_after_collecting(
-    attempt: Callable[_P, T], *args: _P.args, **kwargs: _P.kwargs
+    collect: Callable[[], None],
+    attempt: Callable[_P, T],
+    *args: _P.args,
+    **kwargs: _P.kwargs,
 ) -> T:
     """``attempt(*args)``; refused for an overlap, ``attempt`` again after a collection
     has run the cleanup of passes and streams already dropped.
@@ -112,12 +156,21 @@ def _retry_after_collecting(
     except ArchiveyUsageError as exc:
         if not getattr(exc, _OVERLAP_MARK, False):
             raise
-    gc.collect()
+    collect()
     return attempt(*args, **kwargs)
 
 
-# Passes that may run beside workers and beside one another on a CONCURRENT reader.
-_OVERLAPPING_PASSES = frozenset({"stream_members", "extract_all"})
+class PassKind(enum.Enum):
+    """What a reader-wide token is for: see :meth:`ReaderState.acquire_pass`."""
+
+    # A default reader's lookup call (``members()``, a random-access listing): the
+    # token makes the list build single-owner. Not a pass in the sense of the docs.
+    LOOKUP = "lookup"
+    # A pass that lists only: streaming iteration, a streaming ``members_report()``.
+    LIST = "list"
+    # A pass that reads member data: ``stream_members()``, ``extract_all()``,
+    # ``verify_all()``. It also refuses to start beside a stream from ``open()``.
+    DATA = "data"
 
 
 class CacheState(enum.Enum):
@@ -138,6 +191,14 @@ class LifecycleState(enum.Enum):
     TEARDOWN_COMPLETE = "teardown_complete"
 
 
+class _Refused(enum.Enum):
+    REFUSED = enum.auto()
+
+
+# What :meth:`ReaderState.enter_stream_call` answers once the reader is closed.
+REFUSED = _Refused.REFUSED
+
+
 @dataclass(eq=False)
 class LiveStreamReservation:
     """Opaque live-stream slot reservation.
@@ -154,7 +215,7 @@ class OperationToken:
 
     name: str
     parent: OperationToken | None = None
-    kind: str = "root"  # "root" | "child" | "worker"
+    kind: str = "root"  # "root" | "child" | "worker" | "info"
     # The thread that acquired the token. Used to detect same-thread re-entry (a
     # diagnostic/progress callback driving the reader that is mid-operation on this very
     # thread), which must raise a usage error instead of deadlocking on a wait for itself.
@@ -183,6 +244,22 @@ class OperationToken:
     # hands it over together with a lease, so teardown waits until it has run. Set with
     # :meth:`ReaderState.set_pass_closer`, under the lock like ``suspended``.
     pass_closer: Callable[[], None] | None = field(default=None, repr=False)
+    # What a root token is for (:class:`PassKind`); ``None`` for a child or worker.
+    pass_kind: PassKind | None = field(default=None, repr=False)
+    # The member-list report a pass pinned (``pin_report``): what
+    # ``members_report_if_available()`` answers while the pass is open, or ``None``.
+    report: MemberListReport | None = field(default=None, repr=False)
+    # The exception the acquiring thread was handling when the token was taken (the
+    # caller's own ``except`` block around the call), or ``None``. The teardown hook
+    # tells "this call is raising" from "this call returns inside its caller's
+    # ``except``" by comparing it with the exception in flight at the release.
+    entry_exc: BaseException | None = field(
+        default_factory=sys.exception, repr=False, compare=False
+    )
+    # Set by the first startup pin (``pin_report``) under this root: a later pass
+    # filed under it (``extract_all()``'s held-source pass) runs after members were
+    # processed, so it pins nothing.
+    startup_pinned: bool = field(default=False, repr=False)
     _released: bool = field(default=False, repr=False)
 
 
@@ -201,11 +278,10 @@ class ReaderState:
     (``concurrent_operations=True``) this class mostly refuses: one live member stream, one
     reader-wide operation, no overlapping worker calls, and no shared-handle locks
     needed. ``CONCURRENT`` turns those refusals into waits: several live streams,
-    a second materializer waits for the first one's snapshot, and ``close()`` drains
-    in-flight worker calls, and a ``stream_members()`` or ``extract_all()`` pass admits
-    worker calls and other such passes beside it. Most methods therefore have two
-    behaviours, chosen by :attr:`concurrent`. Access to one stream stays single-owner
-    (caller-synchronized) either way.
+    and a second materializer waits for the first one's snapshot. ``close()`` never
+    waits, in either mode. A pass (``stream_members()``, ``extract_all()``,
+    ``verify_all()``, a streaming listing) has the reader to itself in both modes.
+    Access to one stream stays single-owner (caller-synchronized) either way.
     """
 
     def __init__(
@@ -227,19 +303,30 @@ class ReaderState:
         self.provider_reentry: Callable[[int | None], bool] | None = None
         self._lock = threading.RLock()
         self._materialization_cv = threading.Condition(self._lock)
-        self._workers_cv = threading.Condition(self._lock)
-        self._close_cv = threading.Condition(self._lock)
         self.cache_state = CacheState.UNMATERIALIZED
         self.lifecycle = LifecycleState.OPEN
-        self._closing = False
+        # Run, outside the lock, by the call that leaves last after a close: the
+        # reader sets it to a weak reference to its teardown
+        # (``BaseArchiveReader._teardown_after_call``), so the state does not keep the
+        # reader alive. Called, it gives the hook, or ``None`` once the reader is gone.
+        self.teardown_hook: (
+            Callable[[], Callable[[BaseException | None], None] | None] | None
+        ) = None
+        # The one reader-wide pass or default-reader lookup in progress, if any.
         self._root: OperationToken | None = None
-        # Further passes running beside ``_root``, all of kinds that admit overlap (see
-        # :meth:`_pass_admits_overlap_locked`), ``_root`` included. When
-        # ``_root`` ends, one of these takes its place, so ``_root`` is set whenever
-        # any pass is active.
-        self._side_passes: set[OperationToken] = set()
         self._children: set[OperationToken] = set()
         self._workers: set[OperationToken] = set()
+        # Live ``info`` calls (:meth:`enter_info`): counted like a worker, so teardown
+        # waits for them, but no worker token, so they are admitted wherever ``info``
+        # is (a pass's loop body, another thread beside a pass).
+        self._info_calls: set[OperationToken] = set()
+        # Member-stream calls running now (:meth:`enter_stream_call`), by thread
+        # ident: each one's depth. They hold teardown and the physical close of every
+        # stream back, as reader calls do: under the flag a plugin's streams share one
+        # handle lock, so closing an idle stream beside a running read would wait for
+        # that read (and deadlock, from a callback inside it). Idents, not threads:
+        # each entry is cleared on the thread that made it, in a ``finally``.
+        self._stream_calls: dict[int, int] = {}
         # Open public member streams: ``id(stream)`` to a weak reference, in the order
         # they were registered. ``reader.close()`` closes them in that order
         # (:meth:`live_streams`). Weak, so this map never keeps a dropped stream alive:
@@ -270,14 +357,24 @@ class ReaderState:
         # one, the suspended pass's own finally.
         self._pass_wind_down: list[Callable[[], None]] = []
         self._pass_wind_down_lease = False
-        # Library-internal open windows (extract_all's coordinator, first-touch link
-        # reads), keyed BY THREAD: the exemption from the live-stream gate and from
-        # worker rejection applies only to the thread that entered the window. A plain
+        # The live streams at the close transition, held strongly until the stream
+        # shutdown finishes (``mark_reader_closed``, ``finish_stream_shutdown``).
+        self._deferred_streams: list[ArchiveStreamImpl] = []
+        # Collector closes queued because they came inside a call of this reader on
+        # their thread (``defer_implicit_close``), with that thread's ident; held
+        # strongly until that thread's last call is out, or the stream shutdown.
+        self._implicit_closes: list[tuple[int, ArchiveStreamImpl]] = []
+        # Library-internal open windows (first-touch link-data reads, the one user
+        # left), keyed BY THREAD: the exemption from the live-stream gate (the window's
+        # only effect) applies only to the thread that entered the window. A plain
         # reader-wide depth counter would silently admit a *foreign* thread's open()
-        # during extract_all on a non-CONCURRENT reader — and on backends without a
+        # during the window on a non-CONCURRENT reader — and on backends without a
         # shared-handle lock the interleaved seek+read pairs then serve wrong member
         # bytes instead of the loud error this gate exists to raise.
-        self._internal_open_threads: dict[int, int] = {}
+        # Each thread's open windows, as the callback depth each was entered at
+        # (``callback_scope``): a window is active only at that depth, so a caller's
+        # callback run inside it does not inherit the exemption.
+        self._internal_open_threads: dict[int, list[int]] = {}
         # The thread that currently owns the materialization election, for same-thread
         # re-entry detection.
         self._materializing_thread: int | None = None
@@ -289,122 +386,159 @@ class ReaderState:
     def begin_internal_opens(self) -> None:
         """Enter a library-internal open window on this thread; windows nest.
 
-        Inside one, this thread's opens pass the live-stream gate and the same-thread
-        re-entry check, and its worker calls go under the pass this thread works for,
-        when there is one (:meth:`_owner_pass_locked`; see ``_internal_open_threads``).
-        Leave it with :meth:`end_internal_opens`.
+        Inside one, this thread's opens pass the live-stream gate
+        (``_refuse_second_stream_locked``; see ``_internal_open_threads``), and
+        nothing else: admission (a pass, a worker call, a peek) never looks at the
+        window, so code the library runs inside it that is not its own (a callback, an
+        application's logging handler) gets no exemption from the re-entry and
+        overlap checks. Leave it with :meth:`end_internal_opens`.
         """
         tid = threading.get_ident()
+        depth = callback_depth()
         with self._lock:
-            self._internal_open_threads[tid] = (
-                self._internal_open_threads.get(tid, 0) + 1
-            )
+            self._internal_open_threads.setdefault(tid, []).append(depth)
 
     def end_internal_opens(self) -> None:
         tid = threading.get_ident()
         with self._lock:
-            depth = self._internal_open_threads.get(tid, 0) - 1
-            if depth > 0:
-                self._internal_open_threads[tid] = depth
-            else:
+            windows = self._internal_open_threads.get(tid)
+            if windows:
+                windows.pop()
+            if not windows:
                 self._internal_open_threads.pop(tid, None)
 
     def _internal_opens_active_locked(self) -> bool:
-        """Whether the CURRENT thread is inside a library-internal open window."""
-        return self._internal_open_threads.get(threading.get_ident(), 0) > 0
-
-    def _pass_admits_overlap_locked(self, pass_name: str) -> bool:
-        """Whether a pass may overlap workers and other such passes.
-
-        Only on a ``CONCURRENT`` reader, and only ``stream_members()`` and
-        ``extract_all()`` (which drives its own ``stream_members()`` pass, or opens
-        members one by one). The overlapping calls and passes share the reader's one
-        member walk, each at its own position, under the walk lock
-        (``BaseArchiveReader._walk_lock``); link finalization goes through the
-        materialization election, so whichever of a pass's end or a ``members()``
-        call comes first publishes the list once. A TAR pass stream that reads
-        through the walk moves to a view of its own before the walk moves on for
-        another caller. So none of them can corrupt another's walk or stream.
-        The other passes (a default reader's listing, a streaming reader's only
-        pass) never overlap anything; ``open_archive`` refuses ``CONCURRENT`` on a
-        streaming reader.
-        """
-        return self.concurrent and pass_name in _OVERLAPPING_PASSES
+        """Whether the CURRENT thread is inside a library-internal open window, and
+        not inside a caller's callback the library ran from it."""
+        windows = self._internal_open_threads.get(threading.get_ident())
+        return bool(windows) and windows[-1] == callback_depth()
 
     def _owner_pass_locked(self) -> OperationToken | None:
-        """The pass a library-internal scope opened on this thread belongs to.
+        """The pass a library-internal scope opened on this thread belongs to: the one
+        pass, if any.
 
-        This thread's own executing pass when it holds one (an ``extract_all()``
-        whose coordinator opens members). Otherwise, on a ``CONCURRENT`` reader,
-        none: any pass there belongs to another thread and can end while this
-        thread's scope is still open, so a child must not be filed under it. The
-        scope then runs as what it is, a worker call (or no token at all for a
-        link-read scope). On a default reader at most one pass runs, and the
-        generator holding it may be resumed on a thread other than the one that
-        took it, so every scope there goes under ``_root``.
+        At most one pass runs, in both modes, and no other call runs beside it, so a
+        library-internal scope (a first-touch link-data read) can only be
+        working for it. The generator holding it may be resumed on a thread other than
+        the one that took it, so the thread is not checked.
         """
-        current = threading.current_thread()
-        for token in self._passes_locked():
-            if token.thread is current and not token.suspended:
-                return token
-        if self.concurrent:
-            return None
         return self._root
 
-    def acquire_pass(self, name: str) -> OperationToken:
-        """Take the token for a reader-wide pass named ``name`` (or, inside this thread's
-        internal-open window, a child of the pass it works for), or raise the usage
-        error that says why it cannot start. Release it with :meth:`release_pass`."""
-        return _retry_after_collecting(self._acquire_pass_once, name)
+    def acquire_pass(
+        self,
+        name: str,
+        kind: PassKind = PassKind.LOOKUP,
+        report: Callable[[], MemberListReport | None] | None = None,
+    ) -> OperationToken:
+        """Take the token for a reader-wide pass named ``name``, or raise the usage
+        error that says why it cannot start. Release it with :meth:`release_pass`.
 
-    def _acquire_pass_once(self, name: str) -> OperationToken:
-        """Acquire a data-pass token: root when free, else a child under an internal owner."""
+        A pass has the reader to itself: it is refused beside another pass and beside a
+        worker call in flight, in both modes, and a ``DATA`` pass also beside a member
+        stream from ``open()``. ``report`` builds what the pass pins at admission
+        (:meth:`pin_report`). It runs under the state lock once the pass is granted,
+        so nothing can publish between the snapshot and the grant (a publisher holds a
+        worker or pass token) and a refusal builds nothing. It must take no lock but
+        leaf locks (the diagnostics collector's), never the walk lock."""
+        return _retry_after_collecting(
+            self._collect_dropped, self._acquire_pass_once, name, kind, report
+        )
+
+    def _acquire_pass_once(
+        self,
+        name: str,
+        kind: PassKind,
+        report: Callable[[], MemberListReport | None] | None,
+    ) -> OperationToken:
+        """Acquire a root pass token, or raise why the pass cannot start."""
         with self._lock:
             self._require_admissible_locked(name)
-            internal = self._internal_opens_active_locked()
-            owner = self._owner_pass_locked() if internal else None
-            if owner is not None:
-                child = OperationToken(name=name, parent=owner, kind="child")
-                self._children.add(child)
-                return child
-            if not internal:
-                self._reject_same_thread_reentry_locked(f"start {name!r}")
-            overlap = self._pass_admits_overlap_locked(name)
-            if self._root is not None and not (
-                overlap and self._pass_admits_overlap_locked(self._root.name)
-            ):
+            self._reject_same_thread_reentry_locked(f"start {name!r}")
+            if self._root is not None:
                 raise _overlap_refused(
                     f"Cannot start {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
-            if self._workers and not overlap:
+            if self._workers:
                 raise _overlap_refused(
                     f"Cannot start {name!r}: a concurrent open()/get()/read() call is "
                     "still in progress."
                 )
-            token = OperationToken(name=name, kind="root")
-            if self._root is None:
-                self._root = token
-            else:
-                self._side_passes.add(token)
+            if kind is PassKind.DATA and (self._live_streams or self._reservations):
+                raise _overlap_refused(
+                    f"Cannot start {name!r}: a member stream from open() is still "
+                    "open on this reader. Close it first."
+                )
+            token = OperationToken(name=name, kind="root", pass_kind=kind)
+            self._root = token
+            if report is not None:
+                try:
+                    token.report = report()
+                except BaseException:
+                    self._root = None
+                    raise
             return token
 
+    def acquire_child(self, parent: OperationToken, name: str) -> OperationToken:
+        """A child scope named ``name`` under ``parent``, a pass the caller holds and
+        names: for a library call nested in its own pass (``verify_all()``'s stream
+        pass and report). Unlike an internal-open window, it covers that one call
+        only, so a callback on the thread is still refused as re-entry. Release it
+        with :meth:`release_pass`."""
+        with self._lock:
+            self._require_admissible_locked(name)
+            assert parent is self._root, (parent, self._root)
+            child = OperationToken(name=name, parent=parent, kind="child")
+            self._children.add(child)
+            return child
+
+    def pin_report(
+        self, token: OperationToken, report: MemberListReport | None
+    ) -> None:
+        """Set what ``members_report_if_available()`` answers while ``token``'s pass
+        is open, once its startup has run and before its first member (a pass also
+        pins at admission). A child token pins on the pass it is filed under
+        (``verify_all()``'s and ``extract_all()``'s nested passes): the peek answers
+        from the root. Only the first startup under a root pins: a later nested pass
+        runs after members were processed, and the peek answers the same throughout
+        the pass."""
+        with self._lock:
+            root = token if token.kind == "root" else token.parent
+            if (
+                root is not None
+                and root is self._root
+                and not root._released
+                and not root.startup_pinned
+            ):
+                root.report = report
+                root.startup_pinned = True
+
+    def pin_owner_report(self, report: MemberListReport | None) -> None:
+        """:meth:`pin_report` for the pass this thread works for, if any."""
+        with self._lock:
+            root = self._root
+            if root is not None and not root._released:
+                root.report = report
+
     def _passes_locked(self) -> tuple[OperationToken, ...]:
-        """Every active reader-wide pass: ``_root`` and the passes beside it."""
-        if self._root is None:
-            return ()
-        return (self._root, *self._side_passes)
+        """The active reader-wide pass, as a tuple of zero or one."""
+        return () if self._root is None else (self._root,)
 
     def _executing_pass_locked(self) -> OperationToken | None:
-        """An active pass that is not suspended at a yield, if any."""
-        for token in self._passes_locked():
-            if not token.suspended:
-                return token
-        return None
+        """The active pass if it is not suspended at a yield."""
+        root = self._root
+        return root if root is not None and not root.suspended else None
 
     def set_suspended(self, token: OperationToken, suspended: bool) -> None:
-        """Mark a generator-held pass as suspended at a yield, or running again."""
+        """Mark a generator-held pass as suspended at a yield, or running again.
+
+        Suspending is a checkpoint: on a closed reader it raises the closed error
+        instead, so a pass that was running when ``close()`` came stops before it hands
+        out another member, and its own ``finally`` winds it down. Unsuspending never
+        raises (it runs on the way out of a yield that raised)."""
         with self._lock:
+            if suspended:
+                self._require_lifecycle_open_locked(_call_name(token))
             token.suspended = suspended
 
     def resume(self, token: OperationToken, op: str) -> None:
@@ -413,7 +547,7 @@ class ReaderState:
         a pass runs this once per member."""
         with self._lock:
             token.suspended = False
-            self._require_admissible_locked(op)
+            self._require_admissible_locked(_call_name(token) if token.parent else op)
 
     def set_pass_closer(
         self, token: OperationToken, closer: Callable[[], None] | None
@@ -421,6 +555,16 @@ class ReaderState:
         """Record how ``close()`` winds down this pass if it is suspended at a yield."""
         with self._lock:
             token.pass_closer = closer
+
+    def keep_own_closer(self, token: OperationToken) -> bool:
+        """Whether the pass still winds itself down: ``close()`` did not take its
+        closer (the reader is open, or the pass was running when it closed). Takes the
+        closer, so it is decided once."""
+        with self._lock:
+            if token.pass_closer is None:
+                return False
+            token.pass_closer = None
+            return True
 
     def take_pass_wind_down(self) -> Callable[[], None] | None:
         """Winds down the passes the close transition found suspended, each once.
@@ -455,26 +599,37 @@ class ReaderState:
             raise ExceptionGroup("winding down several passes failed", errors)
 
     def release_pass(self, token: OperationToken) -> None:
-        """End a pass, once. A side pass takes the place of an ending ``_root``, and the
-        children filed under the pass go with it."""
+        """End a pass, once. The children filed under the pass go with it. The last
+        call out after a close runs the teardown hook."""
         with self._lock:
             if token._released:
                 return
             token._released = True
             if token.parent is not None or token.kind == "child":
                 self._children.discard(token)
-                return
-            self._side_passes.discard(token)
-            if self._root is token:
-                self._root = self._side_passes.pop() if self._side_passes else None
-            self._children = {c for c in self._children if c.parent is not token}
+            else:
+                if self._root is token:
+                    self._root = None
+                self._children = {c for c in self._children if c.parent is not token}
+            due = self._cleanup_due_locked()
+        self._drain_implicit_closes()
+        if due:
+            self._run_teardown_hook(token)
+
+    def _run_teardown_hook(self, token: OperationToken) -> None:
+        self._run_hook(token.entry_exc)
+
+    def _run_hook(self, entry_exc: BaseException | None) -> None:
+        ref = self.teardown_hook
+        hook = ref() if ref is not None else None
+        if hook is not None:
+            hook(entry_exc)
 
     def enter_child_scope(self, name: str) -> OperationToken | None:
         """A child scope under the pass this thread works for, or ``None`` if no pass.
 
-        Picks the pass and files the child in one lock hold: on a ``CONCURRENT``
-        reader another thread's pass can end at any moment, so a pass looked up in
-        one call could be gone by the next.
+        Picks the pass and files the child in one lock hold, so the pass cannot end
+        between the two.
         """
         with self._lock:
             owner = self._owner_pass_locked()
@@ -485,87 +640,271 @@ class ReaderState:
             return child
 
     def release_child(self, child: OperationToken) -> None:
-        with self._lock:
-            if child._released:
-                return
-            child._released = True
-            self._children.discard(child)
+        self.release_worker(child)
 
     def acquire_worker(self, name: str) -> OperationToken:
         """Take a short-lived token for one call: see :meth:`_acquire_worker_once`.
         Release it with :meth:`release_worker`."""
-        return _retry_after_collecting(self._acquire_worker_once, name)
+        return _retry_after_collecting(
+            self._collect_dropped, self._acquire_worker_once, name
+        )
 
     def _acquire_worker_once(self, name: str) -> OperationToken:
         """Short-lived token for random ``open()`` / ``read()``.
 
-        Rejected while a reader-wide root pass is active (unless under library-internal
-        opens), except a ``stream_members()`` or ``extract_all()`` pass on a
-        ``CONCURRENT`` reader (:meth:`_pass_admits_overlap_locked`). Idle open
-        streams (leases only) do not block workers. Stream I/O after this token is
-        released does not re-check the gate.
+        Rejected while a reader-wide pass is active, in both modes. Idle open
+        streams (leases only) do not block workers.
+        Stream I/O after this token is released does not re-check the gate.
         """
         with self._lock:
             self._require_admissible_locked(name)
-            internal = self._internal_opens_active_locked()
-            if not internal:
-                self._reject_same_thread_reentry_locked(f"call {name!r}")
-            if (
-                self._root is not None
-                and not internal
-                and not self._pass_admits_overlap_locked(self._root.name)
-            ):
-                # Side passes exist only beside a root that admits overlap, and they
-                # admit it too, so checking the root is enough.
+            self._reject_same_thread_reentry_locked(f"call {name!r}")
+            if self._root is not None:
                 raise _overlap_refused(
                     f"Cannot call {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
-            # Under an internal library owner (extract_all), the OWNING THREAD's worker
-            # opens are admitted as children of its pass; other threads are rejected
-            # above like during any root pass that does not admit overlap.
-            owner = self._owner_pass_locked() if internal else None
-            if owner is not None:
-                token = OperationToken(name=name, parent=owner, kind="child")
-                self._children.add(token)
-                return token
             token = OperationToken(name=name, kind="worker")
             self._workers.add(token)
             return token
 
-    def acquire_peek(self, name: str) -> OperationToken:
-        """Worker token for an index-only peek (``members_report_if_available()``).
+    def acquire_peek(
+        self, name: str
+    ) -> tuple[OperationToken | None, MemberListReport | None]:
+        """Admit ``members_report_if_available()``: ``(token, None)``, or
+        ``(None, report)`` while a pass is open.
 
-        Admitted beside any pass, as the peek is: it may run inside a streaming loop's
-        body. It still refuses a closed reader and a callback's re-entry, and while it
-        is held a close() is refused like during any worker call: from a callback on
-        this thread as re-entry, and from another thread as an overlap, so teardown
-        never runs under the walk the peek drains. Release it with
-        :meth:`release_worker`.
+        While a pass is open (from its loop body, a callback on its thread or, under
+        ``CONCURRENT``, another thread), the peek answers the report the pass pinned and
+        reads nothing, so it takes no token. Otherwise it is a lookup call: it refuses a
+        closed reader and a callback's re-entry, and takes a worker token, released
+        with :meth:`release_worker`. Both in one lock hold, so a pass cannot start or
+        end between the test and the token.
         """
         with self._lock:
             self._require_admissible_locked(name)
-            if not self._internal_opens_active_locked():
-                # The library's own call under its pass (extract_all) is not re-entry.
-                self._reject_same_thread_reentry_locked(f"call {name!r}")
+            root = self._root
+            if root is not None and root.pass_kind is not PassKind.LOOKUP:
+                return None, root.report
+            self._reject_same_thread_reentry_locked(f"call {name!r}")
             token = OperationToken(name=name, kind="worker")
             self._workers.add(token)
+            return token, None
+
+    def enter_info(self, op: str) -> OperationToken | None:
+        """Admit a live ``info`` call: its token, or ``None`` when this thread is
+        inside a call of the reader (a callback), where ``info`` answers the published
+        snapshot instead and enters no backend code.
+
+        A callback can run while a plugin method holds the plugin's handle lock (a
+        source read inside ``open_member()``, or under a member stream's read), and a
+        live ``archive_info()`` would wait for that lock. The running call it is
+        inside already holds teardown back. Raises the closed error after
+        ``close()``. Release with :meth:`release_worker`.
+        """
+        with self._lock:
+            self._require_admissible_locked(op)
+            current = threading.current_thread()
+            if (
+                self._same_thread_token_locked() is not None
+                or threading.get_ident() in self._stream_calls
+                or any(t.thread is current for t in self._info_calls)
+            ):
+                return None
+            token = OperationToken(name=op, kind="info")
+            self._info_calls.add(token)
             return token
 
+    def enter_stream_call(self) -> BaseException | None | _Refused:
+        """Count a member-stream call (a read, seek, ``verify()``...) that may touch
+        the stream's inner layers. ``REFUSED`` once ``close()`` has come: the stream
+        is closed to new calls, though its inner close waits for the last call out.
+        Otherwise the exception this thread is handling, for
+        :meth:`exit_stream_call`."""
+        with self._lock:
+            if self.lifecycle is not LifecycleState.OPEN:
+                return REFUSED
+            ident = threading.get_ident()
+            calls = self._stream_calls
+            calls[ident] = calls.get(ident, 0) + 1
+        return sys.exception()
+
+    def enter_stream_close(
+        self, *, finalizing: bool = False
+    ) -> BaseException | None | _Refused:
+        """Count a member stream's own ``close()`` as a stream call
+        (:meth:`enter_stream_call`), so a ``reader.close()`` meanwhile defers its
+        shutdown to it. ``REFUSED`` once the reader is closed: the shutdown then owns
+        the stream's inner close.
+
+        A close from a callback that runs inside a call of this reader on this thread
+        raises ``ArchiveyUsageError`` before it takes any lock, instead of closing a
+        decoder under that call or waiting on the shared handle lock the call may
+        hold: a stream call (an ``on_source_read`` inside a read of this stream or of
+        a sibling), or, from inside a caller's callback, any other call (``open()``,
+        a listing, ``info``, a pass). The pass's own closes of its streams come from
+        no callback. ``finalizing``: the collector's close of a dropped stream,
+        which may run on any thread inside any call, and is never refused.
+        """
+        with self._lock:
+            ident = threading.get_ident()
+            current = threading.current_thread()
+            if not finalizing and (
+                ident in self._stream_calls
+                or (
+                    callback_depth() > 0
+                    and (
+                        self._same_thread_token_locked() is not None
+                        or any(t.thread is current for t in self._info_calls)
+                    )
+                )
+            ):
+                raise ArchiveyUsageError(
+                    "A member stream cannot be closed from a callback that runs inside "
+                    "a call on the same reader. To stop the call, close the reader."
+                )
+            if self.lifecycle is not LifecycleState.OPEN:
+                return REFUSED
+            calls = self._stream_calls
+            calls[ident] = calls.get(ident, 0) + 1
+        return sys.exception()
+
+    def defer_implicit_close(self, stream: ArchiveStreamImpl) -> bool:
+        """Queue the collector's close of a dropped ``stream`` when it comes inside a
+        call of this reader on this thread: that call may hold the plugin's shared
+        handle lock, which the stream's inner close takes, and the lock is not
+        re-entrant. True when queued: the thread's last call out runs it
+        (:meth:`_drain_implicit_closes`), or the stream shutdown if the reader closes
+        first (:meth:`live_streams`). False on an open reader with no call running
+        on this thread, and on a closed reader, whose shutdown owns the inner close.
+        """
+        with self._lock:
+            if (
+                self.lifecycle is not LifecycleState.OPEN
+                or not self._inside_call_locked()
+            ):
+                return False
+            self._implicit_closes.append((threading.get_ident(), stream))
+            return True
+
+    def finalized_after_close(self, stream: ArchiveStreamImpl) -> bool:
+        """The collector finalizes ``stream`` after ``close()``: True when the
+        finalizer must close it itself.
+
+        The stream shutdown normally owns the inner close, from its snapshot of the
+        live streams, but the cycle collector clears the reader's weak reference to a
+        stream before its finalizer runs, so a snapshot taken in between misses it.
+        While the shutdown is still to come, the stream joins its queue
+        (:meth:`live_streams`); once it has started, the finalizer closes the
+        stream: no call is running by then.
+        """
+        with self._lock:
+            if self._stream_shutdown_owner is None and not self._stream_shutdown_done:
+                self._implicit_closes.append((threading.get_ident(), stream))
+                return False
+            return True
+
+    def _inside_call_locked(self) -> bool:
+        """Whether this thread is inside a running call of the reader."""
+        current = threading.current_thread()
+        return (
+            threading.get_ident() in self._stream_calls
+            or self._same_thread_token_locked() is not None
+            or any(t.thread is current for t in self._info_calls)
+        )
+
+    def _collect_dropped(self) -> None:
+        """The collection :func:`_retry_after_collecting` runs before it retries.
+
+        Admission runs no backend code, so this thread holds no handle lock here,
+        though it may be inside a call (``open()`` takes its live-stream lease under
+        its worker token): the closes the collection queued on this thread run now,
+        so the retry sees their leases gone."""
+        gc.collect()
+        self._drain_implicit_closes(at_admission=True)
+
+    def _drain_implicit_closes(self, *, at_admission: bool = False) -> None:
+        """Run the collector closes this thread queued, once its last call is out.
+
+        Counted as one stream close, so a ``close()`` meanwhile defers its shutdown
+        to it. On a closed reader they stay queued for the stream shutdown. A
+        failure is dropped, as the collector's own close would drop it: it belongs
+        to no call the caller made.
+        """
+        if not self._implicit_closes:
+            return
+        with self._lock:
+            if self.lifecycle is not LifecycleState.OPEN or (
+                not at_admission and self._inside_call_locked()
+            ):
+                return
+            ident = threading.get_ident()
+            mine = [stream for owner, stream in self._implicit_closes if owner == ident]
+            if not mine:
+                return
+            self._implicit_closes = [
+                entry for entry in self._implicit_closes if entry[0] != ident
+            ]
+            calls = self._stream_calls
+            calls[ident] = calls.get(ident, 0) + 1
+        entry_exc = sys.exception()
+        try:
+            for stream in mine:
+                if self.claim_stream_close(stream):
+                    with contextlib.suppress(Exception):
+                        stream._close_scoped()
+        finally:
+            self.exit_stream_call(entry_exc)
+
+    def claim_stream_close(self, stream: ArchiveStreamImpl) -> bool:
+        """True for the one caller that does ``stream``'s inner close: two
+        ``close()`` calls at once, or a ``close()`` and the reader's shutdown, never
+        both reach it."""
+        with self._lock:
+            if stream._close_claimed:
+                return False
+            stream._close_claimed = True
+            return True
+
+    def closing(self) -> bool:
+        """Whether ``close()`` has started, read without the lock: a checkpoint's
+        fast path (:meth:`check_open`), which a stale ``False`` only delays."""
+        return self.lifecycle is not LifecycleState.OPEN
+
+    def exit_stream_call(self, entry_exc: BaseException | None) -> None:
+        """End a call :meth:`enter_stream_call` counted. The last call out after a
+        ``close()`` runs the teardown hook: the deferred stream closes, the pass
+        wind-down, then teardown."""
+        with self._lock:
+            ident = threading.get_ident()
+            calls = self._stream_calls
+            depth = calls[ident] - 1
+            if depth:
+                calls[ident] = depth
+            else:
+                del calls[ident]
+            due = self._cleanup_due_locked()
+        self._drain_implicit_closes()
+        if due:
+            self._run_hook(entry_exc)
+
     def release_worker(self, token: OperationToken) -> None:
+        """Release a worker (or child) token, once. The last call out after a close
+        runs the teardown hook."""
         with self._lock:
             if token._released:
                 return
             token._released = True
             if token.kind == "child" or token.parent is not None:
                 self._children.discard(token)
-                return
-            self._workers.discard(token)
-            # Only a draining close() waits on this condition, and it sets ``_closing``
-            # before it waits. Every open() releases a worker, so the notify is skipped
-            # when no close can be waiting.
-            if not self._workers and self._closing:
-                self._workers_cv.notify_all()
+            elif token.kind == "info":
+                self._info_calls.discard(token)
+            else:
+                self._workers.discard(token)
+            due = self._cleanup_due_locked()
+        self._drain_implicit_closes()
+        if due:
+            self._run_teardown_hook(token)
 
     def begin_materialization(self) -> bool:
         """Elect a materialization owner or wait for a published snapshot.
@@ -583,9 +922,7 @@ class ReaderState:
         """
         with self._lock:
             while True:
-                # The lifecycle only, not ``_closing``: a caller here already holds
-                # its token, and a close() draining in-flight workers waits for this
-                # one to finish, so refusing it would turn that wait into an error.
+                # A checkpoint: after a close, a waiter stops here instead of building.
                 self._require_lifecycle_open_locked("materialization")
                 if self.cache_state is CacheState.MATERIALIZED:
                     return False
@@ -629,7 +966,9 @@ class ReaderState:
                 self._materialization_cv.notify_all()
 
     def reserve_live_stream(self) -> LiveStreamReservation:
-        return _retry_after_collecting(self._reserve_live_stream_once)
+        return _retry_after_collecting(
+            self._collect_dropped, self._reserve_live_stream_once
+        )
 
     def _reserve_live_stream_once(self) -> LiveStreamReservation:
         """Take a live-stream lease before the stream object exists.
@@ -644,27 +983,6 @@ class ReaderState:
             token = LiveStreamReservation()
             self._reservations.add(token)
             return token
-
-    def admit_pass_streams(self) -> None:
-        """A data pass is about to hand out its first stream: refused beside a live
-        member stream, under the gate's rule.
-
-        Contention only: the lifecycle was checked when the pass took its token
-        (``acquire_pass``), and a pass that is not suspended blocks ``close()``.
-
-        A pass's streams take the one live-stream slot together, not one by one: the
-        pass closes each before it opens the next and closes the last when it ends or
-        is wound down, so nothing it hands out outlives it, and while it runs no other
-        stream can be admitted (without ``CONCURRENT`` a pass refuses the worker calls
-        that would open one; with it, the gate admits every stream). So one check, at
-        the pass's first stream, is the check every one of its streams made, and its
-        streams take no lease and no entry of their own.
-        """
-        _retry_after_collecting(self._admit_pass_streams_once)
-
-    def _admit_pass_streams_once(self) -> None:
-        with self._lock:
-            self._refuse_second_stream_locked()
 
     def _admit_live_stream_locked(self) -> None:
         """The live-stream gate: refuse a second stream, or take a lease for one."""
@@ -688,14 +1006,22 @@ class ReaderState:
     def bind_live_stream(
         self, token: LiveStreamReservation, stream: ArchiveStreamImpl
     ) -> None:
-        """Consume ``token``, recording ``id(stream)`` as the live stream.
+        """Consume ``token``, recording ``id(stream)`` as the live stream: the point
+        where the stream is published.
 
-        Infallible: no lifecycle re-check. ``open()`` still holds a worker across
-        reserve → open → bind, so ``close()`` cannot complete in between. Does not
-        increment the lease — the reservation already holds it.
+        Re-checks the lifecycle: a ``close()`` that came after the reservation finds
+        no live stream to close, so here the reservation is dropped and the closed
+        error raised; the caller closes the new stream. A close after a bind closes
+        the registered stream like any other. Does not increment the lease — the
+        reservation already holds it.
         """
         ref = weakref.ref(stream)
         with self._lock:
+            if self.lifecycle is not LifecycleState.OPEN:
+                if token in self._reservations:
+                    self._reservations.discard(token)
+                    self._release_lease_locked()
+                raise closed_reader_error("open()")
             self._reservations.discard(token)
             self._live_streams[id(stream)] = ref
 
@@ -716,11 +1042,14 @@ class ReaderState:
         The gate and the record of reserve-then-bind, in one step, for a caller that
         has its stream already (the extraction coordinator re-opening a retyped
         member); the eager ``open()`` path reserves first. Both share the gate check
-        (``_admit_live_stream_locked``). A ``stream_members()`` pass does not come here:
-        see :meth:`admit_pass_streams`.
+        (``_admit_live_stream_locked``). A pass's streams do not come here: the pass
+        has the reader to itself, and a data pass refused to start beside a live
+        stream (:meth:`acquire_pass`).
         """
         ref = weakref.ref(stream)
-        _retry_after_collecting(self._acquire_live_stream_once, stream, ref)
+        _retry_after_collecting(
+            self._collect_dropped, self._acquire_live_stream_once, stream, ref
+        )
 
     def _acquire_live_stream_once(
         self, stream: ArchiveStreamImpl, ref: weakref.ref[ArchiveStreamImpl]
@@ -752,115 +1081,50 @@ class ReaderState:
         """The registered member streams not yet released, in registration order."""
         with self._lock:
             refs = list(self._live_streams.values())
-        return [stream for ref in refs if (stream := ref()) is not None]
+            queued = [stream for _owner, stream in self._implicit_closes]
+        streams = [stream for ref in refs if (stream := ref()) is not None]
+        # A queued stream the cycle collector found has lost its weak reference.
+        return streams + [s for s in queued if all(s is not t for t in streams)]
 
     def mark_reader_closed(self) -> bool:
-        """Mark reader closed and release the reader lease. True → run teardown now.
+        """Mark the reader closed and drop the reader's lease. True → run teardown now.
 
-        Under ``MemberStreams.CONCURRENT``, blocks until in-flight worker ``open()`` /
-        ``get()`` / ``members()`` calls return (``read()`` while it opens the member),
-        then transitions to closed. A member stream's own reads hold no worker token.
-        Escaped idle member streams keep their lifecycle leases and do not block close.
-        A worker that never returns is a caller bug (same as any lock); there is no
-        artificial timeout.
-
-        Without ``CONCURRENT``, overlapping worker calls still raise
-        :class:`~archivey.exceptions.ArchiveyUsageError`, as does a reader-wide pass
-        that is executing. A pass whose generator is suspended at a yield does not
-        block: the reader closes under it. Concurrent double-``close()`` is
-        idempotent: one thread drains and closes; others wait for that transition and
-        return without running teardown again.
+        Never waits and never refuses, in either mode, whoever is running a call and
+        from whatever thread (a callback of the reader's own call included). From here
+        on every new call raises the closed error, and a running call stops at its next
+        checkpoint (:meth:`set_suspended`, :meth:`resume`, :meth:`check_open`). A call
+        still running holds teardown back: the last one out runs the teardown hook
+        (:meth:`release_worker`, :meth:`release_pass`). A pass suspended at a yield is
+        not running; its closer is handed to ``close()`` with a lease, so the backend's
+        pass cleanup comes before teardown. A second call returns ``False`` unless an
+        interrupted first one left the reader's lease to drop.
         """
         with self._lock:
-            while True:
-                # First, before any wait: a thread closing from INSIDE one of its own
-                # calls (a diagnostic/progress callback calling close()) would wait
-                # forever for a call that cannot return until close() does, and the
-                # generic messages below would send the user looking for a second
-                # caller that does not exist.
-                token = self._same_thread_token_locked()
-                if token is not None:
-                    raise ArchiveyUsageError(
-                        "Cannot close the archive reader from inside one of its own "
-                        f"calls ({token.name!r}; e.g. from a diagnostic or progress "
-                        "callback). Callbacks must not close the reader that "
-                        "triggered them."
-                    )
-                # Before either wait below: from inside a password provider (its
-                # thread or a copied context), waiting for the operation that waits
-                # on the provider, or for a closer that waits on that operation,
-                # never ends.
-                for token in (*self._passes_locked(), *self._workers):
-                    self.refuse_wait_on_provider(token.thread.ident)
-                # Another closer is draining, or close already finished.
-                if self._closing or self.lifecycle is not LifecycleState.OPEN:
-                    while self.lifecycle is LifecycleState.OPEN and self._closing:
-                        self._close_cv.wait()
-                    if self.lifecycle is LifecycleState.READER_CLOSED:
-                        # A closer interrupted between the transition and its lease
-                        # drop left the reader's lease counted. Finish the drop here.
-                        return self._drop_reader_lease_locked()
-                    if self.lifecycle is LifecycleState.OPEN:
-                        # The draining closer was interrupted (its except arm below
-                        # reset ``_closing``), so nothing closed the reader. Returning
-                        # False would tell close() a peer had, and it would then mark
-                        # itself closed with teardown never run. Retry as the closer.
-                        # Invariant: False is returned only when lifecycle is not OPEN.
-                        continue
-                    return False
-                # A pass suspended at a yield is not running: the caller holds its
-                # iterator. Close anyway, as zipfile.ZipFile.close() does with member
-                # handles open; resuming that iterator then raises. Only a pass that
-                # is executing refuses the close.
-                running = self._executing_pass_locked()
-                if running is not None:
-                    raise ArchiveyUsageError(
-                        "Cannot close the archive reader while another reader "
-                        f"operation ({running.name!r}) is active."
-                    )
-                if self._workers and not self.concurrent:
-                    raise ArchiveyUsageError(
-                        "Cannot close the archive reader while an open()/get()/read() call "
-                        "is still in progress."
-                    )
-                self._closing = True
-                try:
-                    if self._workers:
-                        while self._workers:
-                            self._workers_cv.wait()
-                        # The wait let go of the lock. On a CONCURRENT reader workers
-                        # can run beside stream_members() passes (see
-                        # _pass_admits_overlap_locked), and a pass may have resumed
-                        # meanwhile. Decide again, now that nothing can wait between
-                        # this check and the take below.
-                        running = self._executing_pass_locked()
-                        if running is not None:
-                            raise ArchiveyUsageError(
-                                "Cannot close the archive reader while another reader "
-                                f"operation ({running.name!r}) is active."
-                            )
-                    # Notify last. If an interrupt lands after the transition but
-                    # before the lease drop, the retry branch above finishes the drop.
-                    self.lifecycle = LifecycleState.READER_CLOSED
-                    # In the same lock hold as the decision above (taken again after
-                    # any wait), so a suspended pass cannot resume and release
-                    # itself in between. The lease keeps teardown back until
-                    # close() has run the closers: the backend's pass cleanup must
-                    # come before the source is closed.
-                    for token in self._passes_locked():
-                        if token.pass_closer is not None:
-                            # Lease first: an interrupt between the stores leaves a
-                            # lease that close() drops, never a closer without a lease.
-                            self._pass_wind_down_lease = True
-                            self._pass_wind_down.append(token.pass_closer)
-                            token.pass_closer = None
-                    run_teardown = self._drop_reader_lease_locked()
-                    self._close_cv.notify_all()
-                    return run_teardown
-                except BaseException:
-                    self._closing = False
-                    self._close_cv.notify_all()
-                    raise
+            if self.lifecycle is LifecycleState.OPEN:
+                self.lifecycle = LifecycleState.READER_CLOSED
+                # Strong references to the streams the shutdown will close: one the
+                # caller drops meanwhile is not collected (and closed by its
+                # finalizer, beside a call still running) before the shutdown runs.
+                self._deferred_streams = [
+                    stream
+                    for ref in self._live_streams.values()
+                    if (stream := ref()) is not None
+                ]
+                root = self._root
+                if root is not None and root.suspended and root.pass_closer is not None:
+                    # Lease first: an interrupt between the stores leaves a lease that
+                    # close() drops, never a closer without a lease.
+                    self._pass_wind_down_lease = True
+                    self._pass_wind_down.append(root.pass_closer)
+                    root.pass_closer = None
+            return self._drop_reader_lease_locked()
+
+    def check_open(self, op: str) -> None:
+        """A checkpoint inside a running call: raise the closed error if ``close()``
+        has come since the call started."""
+        if self.lifecycle is not LifecycleState.OPEN:
+            with self._lock:
+                self._require_lifecycle_open_locked(op)
 
     def claim_stream_shutdown(self, ticket: object) -> bool:
         """True for the one caller that should wind the pass down and close live streams.
@@ -887,6 +1151,10 @@ class ReaderState:
         with self._lock:
             if self._stream_shutdown_done or self._stream_shutdown_owner is not None:
                 return False
+            if self._running_locked():
+                # Deferred: no inner close runs beside a running call. The last call
+                # out claims it (:meth:`_cleanup_due_locked`).
+                return False
             self._stream_shutdown_owner = ticket
             return True
 
@@ -903,6 +1171,8 @@ class ReaderState:
                 return
             self._pass_wind_down = []
             self._pass_wind_down_lease = False
+            self._deferred_streams = []
+            self._implicit_closes = []
             self._stream_shutdown_done = True
 
     def stream_shutdown_done(self) -> bool:
@@ -938,7 +1208,7 @@ class ReaderState:
             # a claim can succeed from.
             if self.lifecycle is not LifecycleState.READER_CLOSED:
                 return False
-            if self._outstanding_leases_locked() > 0:
+            if self._outstanding_leases_locked() > 0 or self._running_locked():
                 return False
             self._teardown_claimed = True
             self.lifecycle = LifecycleState.TEARDOWN_RUNNING
@@ -972,10 +1242,34 @@ class ReaderState:
             + (1 if self._pass_wind_down_lease else 0)
         )
 
+    def _running_locked(self) -> bool:
+        """Whether a call is still running: a worker, a child scope, a live ``info``,
+        a member-stream call, or a pass that is not suspended at a yield. Each holds
+        teardown and the stream closes back."""
+        root = self._root
+        return bool(
+            self._workers
+            or self._children
+            or self._info_calls
+            or self._stream_calls
+            or (root is not None and not root.suspended)
+        )
+
+    def _cleanup_due_locked(self) -> bool:
+        """Whether the call leaving now is the last one out after a ``close()``: it
+        then runs the hook, which does what ``close()`` deferred (the stream closes and
+        the pass wind-down, :meth:`claim_stream_shutdown`) and then teardown."""
+        return (
+            self.lifecycle is LifecycleState.READER_CLOSED
+            and not self._running_locked()
+            and not self._teardown_claimed
+        )
+
     def _teardown_due_locked(self) -> bool:
         return (
             self.lifecycle is LifecycleState.READER_CLOSED
             and self._outstanding_leases_locked() == 0
+            and not self._running_locked()
             and not self._teardown_claimed
         )
 
@@ -1022,15 +1316,10 @@ class ReaderState:
             )
 
     def _require_lifecycle_open_locked(self, op: str) -> None:
-        """Lifecycle is still OPEN (including during draining close)."""
+        """Raise the closed error unless the lifecycle is still OPEN."""
         if self.lifecycle is not LifecycleState.OPEN:
-            raise ArchiveyUsageError(
-                f"{op} is not available after the archive reader has been closed."
-            )
+            raise closed_reader_error(op)
 
     def _require_admissible_locked(self, op: str) -> None:
-        """Reject new public admissions after close started or finished."""
-        if self.lifecycle is not LifecycleState.OPEN or self._closing:
-            raise ArchiveyUsageError(
-                f"{op} is not available after the archive reader has been closed."
-            )
+        """Reject new public admissions after close."""
+        self._require_lifecycle_open_locked(op)

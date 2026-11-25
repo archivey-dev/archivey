@@ -20,6 +20,31 @@ line. How to write the entry: see
   lists what it finds (`MEMBER_FOUND_BY_SCAN`); every other format reads as before and
   records `SALVAGE_UNAVAILABLE`.
 
+### Changed
+
+- **Breaking:** with `concurrent_operations=True`, `stream_members()`, `extract_all()`
+  and `verify_all()` no longer run beside other calls: while a pass runs, `open()`,
+  `read()`, `get()`, `members()`, `members_report()`, iteration or another pass raises
+  `ArchiveyUsageError`, as without the flag, and a pass started while one of those calls
+  runs or a member stream from `open()` is open raises too. `info`, `format`, `cost`
+  and `members_report_if_available()` stay readable beside a pass. Without the flag,
+  `extract_all()` and `verify_all()` beside an open member stream now raise too, as
+  `stream_members()` did. Several open member streams, and `open()`, `read()`, `get()`
+  and `members()` from several threads, work as before.
+- **Breaking:** `reader.close()` never waits for another thread and never raises
+  because of one: it marks the reader closed and returns. A reader call still running
+  raises `ArchiveyUsageError` at its next check, and a member stream still open reports
+  `closed` at once and raises `ValueError` on its next call, also a read already
+  running; an error a call was already raising is kept. The archive is released when
+  the last running call returns. `close()` from a callback of the reader's own call
+  (`on_progress`, `on_diagnostic`, a password provider) no longer raises: it stops that
+  call, which is how to cancel an `extract_all()`. Closing a member stream from such a
+  callback raises `ArchiveyUsageError`, and `info` read there gives its last value
+  without reading the archive.
+- A streaming pass over a format with an index (a ZIP, 7z, RAR, ISO, CAB and others)
+  reads the whole index before its first member, so `members_report_if_available()`
+  gives the same answer inside the loop as before it.
+
 ## [0.5.1] - 2026-11-20
 
 A patch release with fixes for reading archives from a URL.

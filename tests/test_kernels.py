@@ -371,6 +371,75 @@ def test_a_latch_raises_a_fresh_copy_each_time(panic: type[BaseException]) -> No
     assert raised[1][0] == raised[2][0]
 
 
+class _CodecWrapper:
+    """A wrapper whose call goes through ``rust.py``'s guards and raises a new
+    ``error``: the package's data error, or a panic. (A raised instance the wrapper
+    held would tie it to the raising frame by itself.)"""
+
+    def __init__(self, error: type[BaseException]) -> None:
+        self._latch = _select.Latch("lzw")
+        self._module = types.SimpleNamespace(
+            TruncatedDataError=_PackageTruncated,
+            CorruptDataError=_PackageCorrupt,
+            UnsupportedDataError=_PackageUnsupported,
+        )
+        self._error = error
+
+    def latched(self) -> None:
+        with self._latch.guard(), _select.codec_errors(self._module, "lzw"):
+            raise self._error("failed")
+
+    def unlatched(self) -> None:
+        with _select.panic_to_corruption("CRC-16"):
+            raise self._error("failed")
+
+
+class _PackageTruncated(ValueError):
+    pass
+
+
+class _PackageCorrupt(ValueError):
+    pass
+
+
+class _PackageUnsupported(ValueError):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("error", "method"),
+    [
+        (_PackageCorrupt, "latched"),
+        (_PackageTruncated, "latched"),
+        (PanicException, "latched"),
+        (PanicException, "unlatched"),
+    ],
+    ids=["data-error", "truncated", "panic", "panic-unlatched"],
+)
+@pytest.mark.skipif(not CPYTHON, reason="PyPy frees nothing without a collection")
+def test_a_guarded_call_s_error_leaves_no_reference_cycle(
+    error: type[BaseException], method: str
+) -> None:
+    """An error raised through the guards frees the wrapper with its last reference,
+    with no garbage collection. A generator context manager that raises a new error
+    in place of the one thrown into it does not: on CPython 3.12 the thrown error's
+    traceback holds the generator's frame, whose ``f_back`` is contextlib's
+    ``__exit__`` frame, which holds the thrown error."""
+    wrapper = _CodecWrapper(error)
+    ref = weakref.ref(wrapper)
+    gc.disable()
+    try:
+        try:
+            getattr(wrapper, method)()
+        except ArchiveyError as exc:
+            del exc
+        del wrapper
+        alive = ref() is not None
+    finally:
+        gc.enable()
+    assert not alive
+
+
 class _NestedLatched:
     """A wrapper whose call raises a ``CorruptionError`` caused by another that a
     panic caused, as a BCJ2 input callback can."""

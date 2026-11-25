@@ -211,15 +211,22 @@ def test_verify_all_with_the_password_reaches_checksum() -> None:
 
 
 def test_a_held_stream_mirrors_what_verify_all_proved(tmp_path: Path) -> None:
+    """A held stream's levels mirror its member: a second stream of the same member
+    that proves it (``ArchiveStream.verify()``) raises the held one too, and the held
+    one has not moved. ``verify_all()`` itself refuses to start beside a held
+    stream."""
     with open_archive(
         _zip(tmp_path), seekable_members=True, concurrent_operations=True
     ) as reader:
         stream = reader.open("a.txt")
         assert (stream.verified, stream.verifiable) == (UNLOCKED, CHECKSUM)
         stream.read(10)
-        assert reader.verify_all().failures == ()
+        with pytest.raises(ArchiveyUsageError, match="Close it first"):
+            reader.verify_all()
+        with reader.open("a.txt") as other:
+            other.verify()
         assert (stream.verified, stream.verifiable) == (CHECKSUM, CHECKSUM)
-        # 10. verify_all() did not touch it.
+        # 10. Proving the member did not touch the held stream.
         assert stream.tell() == 10
         assert stream.read() == _DATA[10:]
         stream.close()
@@ -374,6 +381,34 @@ def test_a_second_call_retries_the_members_that_failed() -> None:
         assert reader.verify_all().failures == ()
         assert len(asked) > first
         assert set(_levels(reader.members()).values()) == {(CHECKSUM, CHECKSUM)}
+
+
+@pytest.mark.parametrize("concurrent", [False, True], ids=["default", "concurrent"])
+def test_a_callback_during_verify_all_cannot_call_the_reader(concurrent: bool) -> None:
+    """A password provider that runs inside ``verify_all()`` is a callback, not the
+    library's own call under its pass: a lookup call or a pass from it raises."""
+    outcomes: list[object] = []
+
+    def provider(request: PasswordRequest) -> str | None:
+        for call in (
+            reader.members,
+            lambda: reader.read(name),
+            lambda: list(reader.stream_members()),
+        ):
+            try:
+                outcomes.append(call())
+            except ArchiveyUsageError as exc:
+                outcomes.append(exc)
+        return "secret"
+
+    with open_archive(_COLLISION) as plain:
+        name = plain.members()[0].name
+    with open_archive(
+        _COLLISION, password=provider, concurrent_operations=concurrent
+    ) as reader:
+        assert reader.verify_all().failures == ()
+    assert outcomes
+    assert all(isinstance(o, ArchiveyUsageError) for o in outcomes), outcomes
 
 
 def test_a_second_call_skips_proved_members(tmp_path: Path) -> None:

@@ -63,9 +63,10 @@ a source that cannot seek (a pipe, a socket, a `stream_members()` stream).
 from `open()`. Off by default, because seeking backwards in compressed data can mean
 decompressing again from the start.
 
-**Concurrent operations.** `concurrent_operations=True` lets reader calls overlap, from
-one thread or several. Off by default: then one member stream is open at a time, and a
-second `open()` while one is live is a usage error.
+**Concurrent operations.** `concurrent_operations=True` lets several member streams be
+open at once and lookup calls (`open()`, `read()`, `get()`, `members()`) run from
+several threads. A pass still has the reader to itself. Off by default: then one member
+stream is open at a time, and a second `open()` while one is live is a usage error.
 
 These three are explained, with their history, on [page 7](07-pipes-and-files.md).
 
