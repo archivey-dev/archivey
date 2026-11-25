@@ -280,11 +280,11 @@ class ReaderState:
         # one, the suspended pass's own finally.
         self._pass_wind_down: list[Callable[[], None]] = []
         self._pass_wind_down_lease = False
-        # Library-internal open windows (extract_all's coordinator, first-touch link
-        # reads), keyed BY THREAD: the exemption from the live-stream gate and from
+        # Library-internal open windows (first-touch link-data reads, the one user
+        # left), keyed BY THREAD: the exemption from the live-stream gate and from
         # worker rejection applies only to the thread that entered the window. A plain
         # reader-wide depth counter would silently admit a *foreign* thread's open()
-        # during extract_all on a non-CONCURRENT reader — and on backends without a
+        # during the window on a non-CONCURRENT reader — and on backends without a
         # shared-handle lock the interleaved seek+read pairs then serve wrong member
         # bytes instead of the loud error this gate exists to raise.
         self._internal_open_threads: dict[int, int] = {}
@@ -328,7 +328,7 @@ class ReaderState:
         pass, if any.
 
         At most one pass runs, in both modes, and no other call runs beside it, so a
-        library-internal scope (an extraction's member opens, a link read) can only be
+        library-internal scope (a first-touch link-data read) can only be
         working for it. The generator holding it may be resumed on a thread other than
         the one that took it, so the thread is not checked.
         """
@@ -545,9 +545,9 @@ class ReaderState:
                     f"Cannot call {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
-            # Under an internal library owner (extract_all), the OWNING THREAD's worker
-            # opens are admitted as children of its pass; other threads are rejected
-            # above.
+            # Inside a library-internal window (a first-touch link-data read), the
+            # OWNING THREAD's worker opens are admitted as children of the pass it
+            # works for; other threads are rejected above.
             owner = self._owner_pass_locked() if internal else None
             if owner is not None:
                 token = OperationToken(name=name, parent=owner, kind="child")
@@ -576,7 +576,8 @@ class ReaderState:
             if root is not None and root.pass_kind is not PassKind.LOOKUP:
                 return None, root.report
             if not self._internal_opens_active_locked():
-                # The library's own call under its pass (extract_all) is not re-entry.
+                # Inside a library-internal window (a first-touch link-data read), the
+                # library's own call is not re-entry.
                 self._reject_same_thread_reentry_locked(f"call {name!r}")
             token = OperationToken(name=name, kind="worker")
             self._workers.add(token)
