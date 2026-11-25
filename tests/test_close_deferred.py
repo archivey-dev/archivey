@@ -652,6 +652,7 @@ def test_a_sibling_dropped_inside_a_read_then_reader_closed_closes_once(
 def _forget_registration(reader: object, stream: object) -> None:
     """What the cycle collector does before it finalizes a stream in a cycle: the
     reader's weak reference to it is cleared first."""
+    import gc
     import weakref
 
     class _Gone:
@@ -659,6 +660,8 @@ def _forget_registration(reader: object, stream: object) -> None:
 
     live = reader._state._live_streams  # type: ignore[attr-defined]
     dead = weakref.ref(_Gone())
+    gc.collect()  # PyPy frees the object only on a collection
+    assert dead() is None
     for sid, ref in list(live.items()):
         if ref() is stream:
             live[sid] = dead
