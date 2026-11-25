@@ -254,7 +254,6 @@ def test_a_verifying_stream_reports_the_proofs_of_the_layer_below() -> None:
     assert proofs.content_possible
 
 
-
 def test_an_error_in_the_overrun_probe_is_raised_on_every_later_read() -> None:
     # The read that reaches the declared size probes one byte past it. An error
     # there (a caller's on_source_read stop, which its source raises on every read)
