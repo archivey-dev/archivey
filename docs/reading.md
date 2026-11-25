@@ -197,8 +197,10 @@ member or chunk. Members already extracted stay; the one being written is remove
 
 The functions you give archivey, such as `on_diagnostic`, `on_progress`, a password provider, or a
 `members=` or `filter=` function, run on the thread whose call to archivey needs them, before that
-call returns. They may read `info`, which there gives the value it had before the call reached them,
-and they may call `close()`; any other call on the reader raises `ArchiveyUsageError`. When several
+call returns. They may read `format`, `cost`, `diagnostics` and `members_report_if_available()`,
+and `info`, which there gives the value it had before the call reached them. They may also call
+`close()`. A call that reads the archive, such as `open()`, `read()`, `get()`, `members()`,
+iteration or a pass, raises `ArchiveyUsageError`. When several
 threads wait for the member list, the thread that builds it runs the functions that listing calls.
 One case falls outside your calls: a member stream or a `stream_members()` pass that you don't close
 is closed when Python frees it, on whatever thread Python frees it on, and a diagnostic that this

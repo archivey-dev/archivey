@@ -67,8 +67,12 @@
 ## 4. Specs and docs
 
 - [x] 4.1 `reader-concurrency`, `archive-reading`, `access-mode-and-cost`, `format-tar`,
-  `fsspec-integration` edited in place
+  `fsspec-integration` and `error-handling` edited in place
 - [x] 4.2 `docs/reading.md`, `dev-docs/design-rules.md`, `dev-docs/threat-model.md`,
   ADR 0003 amendment, the guide pages (design.md §8)
 - [x] 4.3 `CHANGELOG.md` **Breaking:** line (design.md §4)
-- [x] 4.4 `openspec validate --strict concurrency-cut`, then archive the change
+- [x] 4.4 `openspec validate --strict concurrency-cut`, then archive the change.
+  The change has no spec deltas, so the edited specs were validated instead:
+  `openspec validate --strict --type spec` (CLI 2.2.0) on the six of them reports no
+  errors, and the same warnings as on main (table scenarios without WHEN/THEN, long
+  requirement text).

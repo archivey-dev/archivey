@@ -693,8 +693,9 @@ class ForwardArchiveReader(ABC):
         Raises:
             ArchiveyUsageError: The reader is closed; it is a streaming reader whose one
                 pass has already started; another pass or call is running; or a member
-                stream from :meth:`~ArchiveReader.open` is still open. The pass raises
-                it at its first ``next()``.
+                stream from :meth:`~ArchiveReader.open` is still open. On a closed
+                reader it raises at the call; otherwise the pass raises it at its
+                first ``next()``.
             ResourceLimitError: The listing exceeds :class:`~archivey.ListingLimits`.
             CorruptionError: Damage to the archive's structure stops the pass from
                 finding the next member.

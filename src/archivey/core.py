@@ -496,8 +496,9 @@ def open_archive(
       the reader and its open stream belong to one thread at a time.
 
     In both modes ``stream_members()``, ``extract_all()`` and ``verify_all()`` have the
-    reader to themselves: while one runs, any other of the calls above and any other
-    pass raises ``ArchiveyUsageError``, and a pass raises when it starts if another
+    reader to themselves: while one runs, ``open()``, ``read()``, ``get()``,
+    ``members()``, ``members_report()``, iteration and any other pass raise
+    ``ArchiveyUsageError``, and a pass raises when it starts if another
     call is running or a stream from ``open()`` is still open. ``format``, ``info``,
     ``cost``, ``diagnostics``, ``member in reader`` and
     ``members_report_if_available()`` stay readable beside a pass.

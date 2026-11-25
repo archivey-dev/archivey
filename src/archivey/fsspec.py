@@ -632,8 +632,10 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     def close(self) -> None:
         """Close the reader and drop the tree. After this, a call that lists or opens
         raises ``ArchiveyUsageError``, as the closed reader does. It returns at once,
-        also while another thread lists for the first time or reads: that call raises
-        the same error at its next check."""
+        also while another thread lists for the first time or reads. A listing, or a
+        call on ``fs.reader``, then raises ``ArchiveyUsageError`` at its next check. A
+        file from ``fs.open()`` raises the closed-file ``ValueError`` on its next
+        read."""
         # Not under ``_tree_lock``: a first listing on another thread may hold it for
         # the whole build. The reader's close returns at once and stops that build at
         # its next check; the publish lock keeps it from storing a tree after this.

@@ -1063,6 +1063,47 @@ def test_close_beside_a_cold_listing_returns_at_once(
         fs.ls("")
 
 
+def test_close_after_the_tree_is_built_keeps_no_tree(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``fs.close()`` after another thread's first ``ls()`` has built the tree, but
+    before that listing stores it: the listing raises the closed error, and the
+    closed filesystem keeps no tree to answer later listings from."""
+    memfs.pipe("/d/late.zip", _zip_bytes([("a", b"x"), ("b", b"y")]))
+    fs = ArchiveyFileSystem("memory://d/late.zip")
+    built, release = threading.Event(), threading.Event()
+    real_build = fs._build_tree
+
+    def build_then_wait() -> Any:
+        tree = real_build()
+        built.set()
+        assert release.wait(10)
+        return tree
+
+    monkeypatch.setattr(fs, "_build_tree", build_then_wait)
+    outcome: list[BaseException | None] = []
+
+    def listing() -> None:
+        try:
+            fs.ls("")
+            outcome.append(None)
+        except BaseException as exc:  # noqa: BLE001 - checked below
+            outcome.append(exc)
+
+    lister = threading.Thread(target=listing)
+    lister.start()
+    try:
+        assert built.wait(10)
+        fs.close()
+    finally:
+        release.set()
+        lister.join(10)
+    assert len(outcome) == 1 and isinstance(outcome[0], ArchiveyUsageError), outcome
+    assert fs._tree is None
+    with pytest.raises(ArchiveyUsageError):
+        fs.ls("")
+
+
 def test_close_beside_a_pass_on_another_thread_returns_at_once(memfs: Any) -> None:
     """``fs.close()`` while a pass on ``fs.reader`` runs on another thread returns at
     once; the pass raises the closed error at its next step, and the reader is

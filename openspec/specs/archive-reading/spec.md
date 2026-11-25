@@ -128,9 +128,10 @@ Handoff mechanics (one shared collector/budget, no copy/re-seed): see
 
 `open_archive()` SHALL accept two keyword-only booleans, both defaulting to `False`:
 
-- `concurrent_operations=True` — reader operations may overlap: any number of member
-  streams may be open simultaneously, and passes and `extract_all()` run beside random
-  access and one another (full contract: `reader-concurrency`)
+- `concurrent_operations=True` — random-access operations may overlap: any number of
+  member streams may be open simultaneously, and lookup calls may run from several
+  threads. A pass (`stream_members()`, `extract_all()`, `verify_all()`) still has the
+  reader to itself in both modes (full contract: `reader-concurrency`)
 - `seekable_members=True` — every member stream from random `open()` is seekable;
   `stream_members()` yields stay forward-only (below)
 
@@ -939,10 +940,10 @@ advancing a closed pass SHALL end the iteration. Closing a pass that is executin
 | `stream_members(lambda m: m.name.endswith(".txt"))` | Only `.txt`; unselected never opened, except data-stored symlink targets when `read_link_targets=True`; original mutable members |
 | Fully read stream, then inspect member | Late-bound fields (e.g. size/CRC) visible on same object |
 | Advance after one yield | Prior stream closed/invalidated first |
-| Random `open()` during active pass | `ArchiveyUsageError`; pass remains usable. Under `concurrent_operations=True`: admitted |
+| Random `open()` during active pass | `ArchiveyUsageError`, in both modes; pass remains usable |
 | Close/abandon partial generator | Current stream closed; pass ownership released once |
 | `reader.close()` / `with`-exit while the pass is suspended at a yield | Reader closed; yielded stream closed; next `next()` → `ArchiveyUsageError`; a body exception propagates unchanged |
-| `reader.close()` while the pass is executing (another thread inside `next()`) | `ArchiveyUsageError`; reader stays open; pass remains usable |
+| `reader.close()` while the pass is executing (another thread inside `next()`) | `close()` returns; the pass raises `ArchiveyUsageError` at its next checkpoint; teardown after it |
 | Random `open()` into solid block | Re-decode from block start + skip; no diagnostic, no warning — discoverable via `reader.cost.access_cost` and the `open()` docstring |
 | Unencrypted solid 7z, selector excludes a symlink, pass to the end (default config), either access mode | The link's target is resolved; its folder is decoded up to the link once |
 | Pass to the end without `members()`, either access mode, over a ZIP, 7z, RAR4 or RAR5 holding symlinks (default config) | Each yielded symlink ends with the same `link_target` a `members()` call would set, unset where that read cannot produce one |

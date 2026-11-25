@@ -291,9 +291,12 @@ before its first member.
 
 **Callbacks.** The library's internal-open scope is suspended around every user callback
 (`filter`, `on_progress`, `on_diagnostic`, a password provider, `on_source_read`, a
-logging handler): a callback's call on its reader is refused as re-entry, `close()`
-excepted. Inside a callback, `info` answers the last published `ArchiveInfo` snapshot
-and never enters the backend (maintainer, 2026-11-25).
+logging handler): a callback's call that reads the archive (`open()`, `read()`, `get()`,
+`members()`, `members_report()`, iteration, a pass) is refused as re-entry. `close()`
+is allowed, and so is the metadata that stays readable beside a pass: `format`,
+`cost`, `diagnostics`, `member in reader` and `members_report_if_available()`. Inside a
+callback, `info` answers the last published `ArchiveInfo` snapshot and never enters the
+backend (maintainer, 2026-11-25).
 
 #### Scenario: pass exclusivity matrix
 

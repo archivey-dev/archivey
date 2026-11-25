@@ -410,9 +410,10 @@ for it. On ISO this is about 0.65 s per 20,000 members (maintainer, 2026-11-24).
 | --- | --- |
 | `streaming=True` or `pipe=True` + `concurrent_operations=True` | `ArchiveyUsageError` at open; no reader |
 | RA + `concurrent_operations=True` (or without) | Concurrent-open / single-live-stream rules per `reader-concurrency` / `archive-reading` |
-| Active pass + conflicting pass/open, or close while the pass executes | Later → `ArchiveyUsageError`; original pass usable |
+| Active pass + conflicting pass/open | Later → `ArchiveyUsageError`; original pass usable |
+| Close while the pass executes | `close()` returns; the pass raises `ArchiveyUsageError` at its next checkpoint |
 | Pass suspended at a yield + `close()` | Reader closed; resuming the pass → `ArchiveyUsageError` |
-| RA `stream_members` active + `open()` or another `stream_members` | `ArchiveyUsageError`, unless `concurrent_operations=True` |
+| RA `stream_members` active + `open()` or another `stream_members` | `ArchiveyUsageError`, in both modes |
 | `extract_all` drives child `stream_members` | Permitted composition; unrelated public pass rejected |
 
 ### Requirement: Concurrent-stream cost is informational
