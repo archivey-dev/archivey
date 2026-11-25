@@ -281,11 +281,12 @@ before you post, and put what you found in the same finding:
    it.
 2. **Where else it can break**, and what you found there: every other path that runs the
    same event (the docstrings often list them), the same code in other formats, codecs
-   and shared paths ([DR-0](../../../dev-docs/design-rules.md#dr-0-fix-the-class-not-the-instance)),
-   and the window just after each check on the same state (another thread, a callback).
-   Send the wide searches to subagents (§How to spend turns). Each other site you
-   confirm goes into this finding's list of sites, not into a finding of its own (one
-   finding per cause, above); a site you checked and found safe is named as checked.
+   and shared paths
+   ([DR-0](../../../dev-docs/design-rules.md#dr-0-fix-the-class-not-the-instance)), and
+   the window just after each check on the same state (another thread, a callback). Send
+   the wide searches to subagents (§How to spend turns). Each other site you confirm
+   goes into this finding's list of sites, not into a finding of its own (one finding
+   per cause, above); a site you checked and found safe is named as checked.
 3. **The guard that fixes the class**: where the condition is decided, not a stand-in
    check at the caller that approximates it. If you see no single guard, say so.
 
@@ -380,7 +381,8 @@ block 3 below).
 
 **Evidence, not prose.** Each finding carries severity, confidence, location (`file:line`),
 what's wrong, why it matters, fix direction, and a trigger / repro note where possible
-(`CONFIRMED` + trigger ⇒ red–green candidate, `CONTRIBUTING.md` §Testing standards). Don't
+(`CONFIRMED` + trigger ⇒ red–green candidate, `CONTRIBUTING.md` §Testing standards). A 🔴
+or 🟡 marked `CONFIRMED` also carries a **Class:** line (§2 Report the class). Don't
 restate the diff, narrate your process, or pad with transitions. Terse is not thin:
 cutting evidence to look brief violates the brevity fence, cutting prose does not.
 

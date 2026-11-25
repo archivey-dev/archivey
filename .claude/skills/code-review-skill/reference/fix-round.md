@@ -83,11 +83,11 @@ suggestion coming back.
 
 **Then check each fix for the class** (SKILL.md §2 Report the class). A fix is a new
 check, so ask of it what you ask of a finding: does it guard where the condition is
-decided, or a stand-in for it ("this call finished" for "teardown completed")? Does every
-other path that runs the event pass through it? What happens if the event lands just
-after it? And what did the code it removed guarantee: a dropped branch or `except` arm
-also drops the case it covered. On #1839 each of these questions found a bug that a fix
-had brought in.
+decided, or a stand-in for it ("this call finished" for "teardown completed")? Does
+every other path that runs the event pass through it? What happens if the event lands
+just after it? And what did the code it removed guarantee: a dropped branch or `except`
+arm also drops the case it covered. On #1839 each of these questions found a bug that a
+fix had brought in.
 
 Two exceptions to the scope itself, both narrow: the head was rebased or force-pushed, so
 the previous SHA is no longer an ancestor; or the trace above sent you to callers outside
