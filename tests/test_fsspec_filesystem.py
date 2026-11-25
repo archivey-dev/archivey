@@ -44,6 +44,14 @@ from tests.conftest import case_sensitive  # noqa: E402
 from tests.memory_util import traced_peak  # noqa: E402
 
 
+def _collect() -> None:
+    """Collect garbage. PyPy can need more than one collection to free a cycle that
+    holds an object with a finalizer (a member stream), and to clear the weak
+    references to it."""
+    for _ in range(3):
+        gc.collect()
+
+
 @pytest.fixture
 def memfs() -> Iterator[Any]:
     fs = fsspec.filesystem("memory")
@@ -867,17 +875,14 @@ def test_dropped_urls_leave_no_reader_open(memfs: Any) -> None:
         file_systems.append(weakref.ref(of.fs))
         readers.append(of.fs.reader)
         del of, f
-    # PyPy can need more than one collection to clear weak references and run
-    # their callbacks.
-    for _ in range(3):
-        gc.collect()
+    _collect()
     assert all(ref() is None for ref in file_systems)
     assert all(reader._closed for reader in readers)
 
 
 def test_a_stream_keeps_its_file_system_alive(hostile: str) -> None:
     stream = fsspec.open("archivey://c.txt::" + hostile).open()
-    gc.collect()
+    _collect()
     try:
         assert stream.read() == b"plain"
     finally:
@@ -1444,7 +1449,7 @@ def test_a_file_system_closed_during_a_read_and_held_by_its_callback_is_collecte
 
     fs_ref, state = make()
     assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
-    gc.collect()
+    _collect()
     assert fs_ref() is None
 
 
@@ -1462,7 +1467,7 @@ def test_a_closed_file_system_held_by_its_callback_is_collected(memfs: Any) -> N
         return weakref.ref(fs)
 
     fs_ref = make()
-    gc.collect()
+    _collect()
     assert fs_ref() is None
 
 
@@ -1489,7 +1494,7 @@ def test_an_interrupted_close_still_closes_the_reader_on_collection(
     with pytest.raises(KeyboardInterrupt):
         fs.close()
     del fs
-    gc.collect()
+    _collect()
     with pytest.raises(ArchiveyUsageError):
         reader.members()
 
@@ -1535,7 +1540,7 @@ def test_a_close_beside_a_peers_unfinished_close_keeps_the_finalizer(
     assert outcome == [KeyboardInterrupt]
     monkeypatch.undo()
     del fs
-    gc.collect()
+    _collect()
     assert reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE  # type: ignore[attr-defined]
     with pytest.raises(ValueError, match="closed file"):
         stream.read(1)
@@ -1571,7 +1576,7 @@ def test_a_close_retried_after_an_interrupt_past_teardown_frees_the_file_system(
         return weakref.ref(fs)
 
     fs_ref = make()
-    gc.collect()
+    _collect()
     assert fs_ref() is None
 
 
