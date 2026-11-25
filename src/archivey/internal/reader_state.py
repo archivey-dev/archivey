@@ -385,6 +385,19 @@ class ReaderState:
             self._root = token
             return token
 
+    def acquire_child(self, parent: OperationToken, name: str) -> OperationToken:
+        """A child scope named ``name`` under ``parent``, a pass the caller holds and
+        names: for a library call nested in its own pass (``verify_all()``'s stream
+        pass and report). Unlike an internal-open window, it covers that one call
+        only, so a callback on the thread is still refused as re-entry. Release it
+        with :meth:`release_pass`."""
+        with self._lock:
+            self._require_admissible_locked(name)
+            assert parent is self._root, (parent, self._root)
+            child = OperationToken(name=name, parent=parent, kind="child")
+            self._children.add(child)
+            return child
+
     def pin_report(
         self, token: OperationToken, report: MemberListReport | None
     ) -> None:

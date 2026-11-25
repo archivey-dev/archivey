@@ -383,6 +383,34 @@ def test_a_second_call_retries_the_members_that_failed() -> None:
         assert set(_levels(reader.members()).values()) == {(CHECKSUM, CHECKSUM)}
 
 
+@pytest.mark.parametrize("concurrent", [False, True], ids=["default", "concurrent"])
+def test_a_callback_during_verify_all_cannot_call_the_reader(concurrent: bool) -> None:
+    """A password provider that runs inside ``verify_all()`` is a callback, not the
+    library's own call under its pass: a lookup call or a pass from it raises."""
+    outcomes: list[object] = []
+
+    def provider(request: PasswordRequest) -> str | None:
+        for call in (
+            reader.members,
+            lambda: reader.read(name),
+            lambda: list(reader.stream_members()),
+        ):
+            try:
+                outcomes.append(call())
+            except ArchiveyUsageError as exc:
+                outcomes.append(exc)
+        return "secret"
+
+    with open_archive(_COLLISION) as plain:
+        name = plain.members()[0].name
+    with open_archive(
+        _COLLISION, password=provider, concurrent_operations=concurrent
+    ) as reader:
+        assert reader.verify_all().failures == ()
+    assert outcomes
+    assert all(isinstance(o, ArchiveyUsageError) for o in outcomes), outcomes
+
+
 def test_a_second_call_skips_proved_members(tmp_path: Path) -> None:
     with open_archive(_zip(tmp_path)) as reader:
         reader.verify_all()

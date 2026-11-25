@@ -2988,8 +2988,8 @@ class BaseArchiveReader(ArchiveReader):
         is at the start of the member's data, else through a view of its own (a pass
         started after an earlier one was left part-way finds the walk past the members
         the list holds). The pass has the reader to itself and closes the stream before
-        anything
-        else reads the walk, so nothing moves the walk under a stream still read."""
+        anything else reads the walk, so nothing moves the walk under a stream still
+        read."""
         raise NotImplementedError
 
     # --- Registering each member the walk yields, and its presentation checks ---------
@@ -4616,7 +4616,22 @@ class BaseArchiveReader(ArchiveReader):
 
     @override
     def members_report(self) -> MemberListReport:
+        return self._members_report()
+
+    def _members_report(
+        self, *, parent: OperationToken | None = None
+    ) -> MemberListReport:
+        """``members_report()``; with ``parent``, under a pass the caller holds
+        (``verify_all()``), instead of a token of its own."""
         self._state.require_open("members_report()")
+        if parent is not None:
+            child = self._state.acquire_child(parent, "members_report")
+            try:
+                if not self._streaming:
+                    return self._materialize_members().report
+                return self._finish_forward_report()
+            finally:
+                self._state.release_pass(child)
         if not self._streaming:
             if self._state.concurrent:
                 token = self._state.acquire_worker("members_report")
@@ -4632,25 +4647,33 @@ class BaseArchiveReader(ArchiveReader):
 
         token = self._acquire_pass("members_report", PassKind.LIST)
         try:
-            published = self._published_within_limits()
-            if published is not None:
-                return published.report
-            self._forward_pass_started = True
-            gen = self._begin_forward_pass()
-            self._pin_pass(token)
-            while True:
-                try:
-                    next(gen)
-                except StopIteration:
-                    break
-                except CorruptionError:
-                    assert self._materialized is not None
-                    break
-            published = self._published_within_limits()
-            assert published is not None
-            return published.report
+            return self._finish_forward_report(token)
         finally:
             self._state.release_pass(token)
+
+    def _finish_forward_report(
+        self, token: OperationToken | None = None
+    ) -> MemberListReport:
+        """A streaming reader's report: the published one, or the rest of the forward
+        pass walked to its end. ``token``, when given, pins what the startup built."""
+        published = self._published_within_limits()
+        if published is not None:
+            return published.report
+        self._forward_pass_started = True
+        gen = self._begin_forward_pass()
+        if token is not None:
+            self._pin_pass(token)
+        while True:
+            try:
+                next(gen)
+            except StopIteration:
+                break
+            except CorruptionError:
+                assert self._materialized is not None
+                break
+        published = self._published_within_limits()
+        assert published is not None
+        return published.report
 
     @override
     def members_report_if_available(self) -> MemberListReport | None:
@@ -5093,17 +5116,16 @@ class BaseArchiveReader(ArchiveReader):
         # The report covers only the emits this call makes, on its own thread, as
         # extract_all's does.
         # One pass from admission to the report: neither open() nor another pass can
-        # start between the stream pass, the spanning passes and the report, which run
-        # under it as children.
+        # start between the stream pass, the spanning passes and the report. The
+        # nested stream pass and report are filed under it by name (``parent``), not
+        # through an internal-open window, so a callback that runs meanwhile (a
+        # password provider, ``on_diagnostic``) is still refused as re-entry.
         self._state.require_open("verify_all()")
         token = self._acquire_pass("verify_all", PassKind.DATA)
         try:
-            with (
-                self._internal_member_opens(),
-                self._diagnostics_collector.scoped() as scope,
-            ):
-                failures = self._verify_all_failures()
-                structure_error = self.members_report().error
+            with self._diagnostics_collector.scoped() as scope:
+                failures = self._verify_all_failures(token)
+                structure_error = self._members_report(parent=token).error
         finally:
             self._state.release_pass(token)
         return VerifyReport(
@@ -5112,7 +5134,9 @@ class BaseArchiveReader(ArchiveReader):
             diagnostics=scope.summary(),
         )
 
-    def _verify_all_failures(self) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]:
+    def _verify_all_failures(
+        self, parent: OperationToken
+    ) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]:
         """Read every member that has something left to prove; the ones that failed."""
         failures: list[tuple[ArchiveMember, ArchiveyError]] = []
         spanning: list[SpanningCheckError] = []
@@ -5135,7 +5159,10 @@ class BaseArchiveReader(ArchiveReader):
                 ceiling is Verification.NONE or m.verified < ceiling or id(m) in retry
             )
 
-        with self.stream_members(selector) as members:
+        passing = self._stream_members(
+            selector, FileCopyPass(streams=True), hold_to_ratio=True, parent=parent
+        )
+        with MemberPassImpl(passing) as members:
             it = iter(members)
             while True:
                 try:
@@ -5357,8 +5384,12 @@ class BaseArchiveReader(ArchiveReader):
         copies: FileCopyPass,
         *,
         hold_to_ratio: bool = False,
+        parent: OperationToken | None = None,
     ) -> Generator[tuple[ArchiveMember, ArchiveStreamImpl | None], None, None]:
         """``stream_members()`` with the file-copy handling given whole.
+
+        ``parent`` files the pass under a pass the caller already holds
+        (``verify_all()``), instead of taking a pass of its own.
 
         The extraction coordinator calls this directly, to pass ``keep_source``, and
         leaves ``hold_to_ratio`` off: its own tracker holds what it writes to the limits
@@ -5385,7 +5416,7 @@ class BaseArchiveReader(ArchiveReader):
                 copies, wanted=lambda m: collection.would_select(m, (m.name,))
             )
         return self._iter_stream_members(
-            selector, report, copies, hold_to_ratio=hold_to_ratio
+            selector, report, copies, hold_to_ratio=hold_to_ratio, parent=parent
         )
 
     def _iter_stream_members(
@@ -5395,6 +5426,7 @@ class BaseArchiveReader(ArchiveReader):
         copies: FileCopyPass = DEFAULT_FILE_COPY_PASS,
         *,
         hold_to_ratio: bool = False,
+        parent: OperationToken | None = None,
     ) -> Generator[tuple[ArchiveMember, ArchiveStreamImpl | None], None, None]:
         """The ``stream_members()`` pass around the backend's :meth:`_iter_with_data`.
 
@@ -5410,7 +5442,11 @@ class BaseArchiveReader(ArchiveReader):
         # A data pass: refused beside another call, and beside a stream from open(), at
         # its first next(). Its streams are not registered for close() to find: the
         # pass winds them down.
-        token = self._acquire_pass("stream_members", PassKind.DATA)
+        token = (
+            self._acquire_pass("stream_members", PassKind.DATA)
+            if parent is None
+            else self._state.acquire_child(parent, "stream_members")
+        )
         current: ArchiveStreamImpl | None = None
         source_closer: Callable[[], None] | None = None
         pinned = False
