@@ -273,7 +273,7 @@ def test_close_closes_every_live_stream(tmp_path: Path) -> None:
         s.close()  # idempotent
 
 
-# --- Coordinated first-touch materialization + draining close ----------------------------
+# --- Coordinated first-touch materialization + close ------------------------------------
 
 
 @pytest.mark.concurrent_reader

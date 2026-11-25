@@ -1,6 +1,6 @@
 """Operations on one ``concurrent_operations=True`` reader stay independent of each other.
 
-Under the flag every call works as if it ran on a reader of its own: what one call
+Under the flag, calls that may overlap do not see each other's effects: what one call
 emits, or a close on another thread, does not show up in a different call's result
 as something that call did. ``test_concurrent_pass_refusals.py`` covers which calls
 may overlap; this file covers what they see of each other.
