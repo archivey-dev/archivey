@@ -611,7 +611,8 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         )
         self.reader: ArchiveReader = reader
         # Closes the reader when the instance is collected. The callback holds the
-        # reader, never ``self``, so it does not keep the instance alive.
+        # reader, not ``self``. The reader's own callbacks may still hold ``self``, so
+        # ``close()`` detaches the finalizer once the reader's close has finished.
         self._finalizer = weakref.finalize(self, reader.close)
         # The tree extraction writes, built at the first listing; ``close`` drops it.
         self._tree: _Tree | None = None
