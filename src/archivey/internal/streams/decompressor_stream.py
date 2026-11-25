@@ -69,6 +69,7 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.logs import streams as logger
 from archivey.internal.overrides import override
+from archivey.internal.streams.callers_source import from_callers_source
 from archivey.internal.streams.checked_spans import CheckedSpans
 from archivey.internal.streams.child_process import is_no_verdict
 from archivey.internal.streams.kept_errors import KeptError
@@ -281,8 +282,11 @@ def _is_data_verdict(exc: Exception) -> bool:
 
     Not a verdict: an ``OSError`` (the caller's source), a ``MemoryError``, an error
     marked by ``child_process.mark_no_verdict`` (a decoder child ended from outside,
-    most often by the out-of-memory killer, or one that could not start), and a
-    ``ReadError`` that is not a ``CorruptionError``. A ``ResourceLimitError`` is
+    most often by the out-of-memory killer, or one that could not start), a
+    ``ReadError`` that is not a ``CorruptionError``, and any exception the caller's
+    source or ``on_source_read`` raised (:func:`from_callers_source`): a stop raised
+    during the second decode of :meth:`DecompressorStream._redecode_to_error` must reach
+    the caller as itself, not give way to the data error. A ``ResourceLimitError`` is
     otherwise a verdict: inside a decode it is a ``DecoderLimits`` refusal of a size a
     header declared (``check_decoder_memory``), and those bytes are what the index
     pointed at.
@@ -295,7 +299,11 @@ def _is_data_verdict(exc: Exception) -> bool:
     ``SEEK_INDEX_DEGRADED`` with the exception's text and decodes from the start,
     where an error that is not specific to the resume raises again.
     """
-    if isinstance(exc, (OSError, MemoryError)) or is_no_verdict(exc):
+    if (
+        isinstance(exc, (OSError, MemoryError))
+        or is_no_verdict(exc)
+        or from_callers_source(exc)
+    ):
         return False
     return not isinstance(exc, ReadError) or isinstance(exc, CorruptionError)
 
@@ -312,7 +320,12 @@ def _may_recover(exc: Exception) -> bool:
     decode is the source's: reading the source again for it could fail the same way,
     or cost a second read of a remote file for nothing.
     """
-    if type(exc) is OSError and exc.errno is None and exc.args == _BZ2_DATA_ERROR:
+    if (
+        type(exc) is OSError
+        and exc.errno is None
+        and exc.args == _BZ2_DATA_ERROR
+        and not from_callers_source(exc)
+    ):
         return True
     return _is_data_verdict(exc)
 
@@ -1604,7 +1617,8 @@ class DecompressorStream(ReadOnlyIOStream):
         """Replace the decoder with a new one that resumes at ``point``.
 
         The buffer, the kept errors and the end state go with the old decoder: the
-        stream stands at ``point`` with nothing decoded yet.
+        stream stands at ``point`` with nothing decoded yet. A kept stop from
+        ``on_source_read`` stays: it holds for the whole file.
         """
         self._inner.seek(point.compressed_offset)
         self._compressed_read = point.compressed_offset
@@ -1622,7 +1636,13 @@ class DecompressorStream(ReadOnlyIOStream):
         self._fresh_index_point = point if point.from_index else None
         self._decoder_pos = point.decompressed_offset
         self._decoder.clear_pending_error()
-        self._spent = None
+        # A stop from ``on_source_read`` survives the restart: it holds for the whole
+        # file, and the restarted decoder may be fed from a buffer below this stream
+        # without a source read that would raise it again. Any other kept error (the
+        # decoder's, or the caller's source failing) clears on a seek, and the
+        # restarted decoder tries again.
+        if self._spent is not None and not self._spent.source_callback:
+            self._spent = None
         self._surplus = None
         self._buffer.clear()
         self._eof = False
@@ -1699,14 +1719,22 @@ class DecompressorStream(ReadOnlyIOStream):
         is, since a pipe held open must not wait for bytes nobody asked for
         (:meth:`read_ahead`). The next feed ends at the same boundary."""
         want = _FEED_SLICE - (self._compressed_read - self._feed_origin) % _FEED_SLICE
-        return self._inner.read(want)
+        try:
+            return self._inner.read(want)
+        except BaseException as exc:
+            # A stop from ``on_source_read`` on this read, outside any decoder call:
+            # kept, so a later read raises it before any bytes already decoded.
+            if from_callers_source(exc):
+                self._spent = KeptError.of(exc)
+            raise
 
     def _read_decompressed_chunk(self, max_length: int = -1) -> bytes:
         """One decoder call's output, at most ``max_length`` bytes when bounded, and
         never more than ``_call_output``."""
         if self._spent is not None:
-            # Only after a re-decode handed back the bytes before an error
-            # (_redecode_to_error): the decoder is not fed again until a seek.
+            # An error kept in ``_spent``: a decoder error (after a re-decode handed
+            # back the bytes before it, _redecode_to_error) until a seek; a failed
+            # feed read until a seek; a stop from ``on_source_read`` for good.
             self._raise_spent()
         bounded = max_length >= 0
         if bounded:
@@ -1797,12 +1825,28 @@ class DecompressorStream(ReadOnlyIOStream):
             return call()
         except ResumeReachedStreamEnd:
             raise
-        except Exception as exc:
+        except BaseException as exc:
+            if not isinstance(exc, Exception):
+                # A ``KeyboardInterrupt`` from ``on_source_read`` on a read the
+                # decoder made itself (Brotli's replay) is kept like any other stop;
+                # an interrupt from elsewhere just raises.
+                if from_callers_source(exc):
+                    self._spent = KeptError.of(exc)
+                raise
             if self._drop_index_at_failed_point(exc):
                 return None
             self._spent = KeptError.of(exc)
             if bounded and _may_recover(exc):
-                recovered = self._redecode_to_error(before)
+                try:
+                    recovered = self._redecode_to_error(before)
+                except BaseException as stop:
+                    # A stop from the caller's source or ``on_source_read`` during
+                    # the second decode (a ``KeyboardInterrupt`` included) replaces
+                    # the data error: the stream keeps raising it, as a stop on any
+                    # other read would.
+                    if from_callers_source(stop):
+                        self._spent = KeptError.of(stop)
+                    raise
                 if recovered:
                     return DecodeOut(recovered)
             raise
@@ -2037,6 +2081,9 @@ class DecompressorStream(ReadOnlyIOStream):
 
     @override
     def readall(self) -> bytes:
+        # A kept stop raises before ``_settle``, as in ``_read``.
+        if self._spent is not None and self._spent.source_callback:
+            self._raise_spent()
         self._settle()
         if self._spent is not None:
             # The caller asked for the whole stream, which cannot be had: raise now,
@@ -2107,8 +2154,15 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def _read(self, need: int, n: int) -> bytes:
         """At least ``need`` bytes, or fewer only at the end, and at most ``n``."""
+        # A kept stop from ``on_source_read`` raises before ``_settle``: a seek target
+        # waiting there would otherwise seek the source and restart the decoder on
+        # every retry, only to raise the same stop. Inlined: every read pays for it.
+        if self._spent is not None and self._spent.source_callback:
+            self._raise_spent()
         self._settle()
-        if self._spent is not None and not self._buffer:
+        if self._spent is not None and (not self._buffer or self._spent.callers_source):
+            # A decoder error waits behind the bytes buffered before it; the caller's
+            # own exception (a stop from ``on_source_read``) does not.
             self._raise_spent()
         with self._deferring_raises() as pending:
             if not self._buffer and not self._eof:
@@ -2166,6 +2220,8 @@ class DecompressorStream(ReadOnlyIOStream):
                     return data
             # A decoder that raised mid-read is not fed again (see _decoding): what it
             # produced before the error is handed back, and the read after that raises.
+            # An exception from the caller's source or ``on_source_read``
+            # (``from_callers_source``) raises at once, before the buffered bytes.
             while True:
                 if self._restart_pending:
                     self._restart_at_position()
@@ -2175,8 +2231,8 @@ class DecompressorStream(ReadOnlyIOStream):
                     self._buffer.extend(
                         self._read_decompressed_chunk(n - len(self._buffer))
                     )
-                except Exception:
-                    if not self._returns_before_spent():
+                except Exception as exc:
+                    if from_callers_source(exc) or not self._returns_before_spent():
                         raise
             held = pending()
             if held is not None:
@@ -2228,8 +2284,13 @@ class DecompressorStream(ReadOnlyIOStream):
         except BaseException as exc:
             self._stage(parts)
             # Only a decode error waits behind the bytes it gathered: an interrupt
-            # (KeyboardInterrupt, SystemExit) raises now.
-            if not isinstance(exc, Exception) or not self._returns_before_spent():
+            # (KeyboardInterrupt, SystemExit) and the caller's own exception (a stop
+            # from ``on_source_read``) raise now.
+            if (
+                not isinstance(exc, Exception)
+                or from_callers_source(exc)
+                or not self._returns_before_spent()
+            ):
                 raise
             return None
         if not got or self._restart_pending or pending() is not None:
@@ -2257,7 +2318,9 @@ class DecompressorStream(ReadOnlyIOStream):
         later read, so bytes left buffered behind a raise never reach the caller. A
         source error from this stream's own feed read raises at once; one raised
         inside a decoder call (xz's resume hand-off seeks the source) is kept like
-        the decoder's. Every error in a probe's stream raises at once
+        the decoder's. An exception from the caller's source or ``on_source_read``
+        (``from_callers_source``) raises at once too: the callers raise it before
+        they ask this. Every error in a probe's stream raises at once
         (:func:`probe_streams`): a probe judges the source by whether its read raises.
         """
         return not self._probe and self._spent is not None and bool(self._buffer)
@@ -2298,7 +2361,9 @@ class DecompressorStream(ReadOnlyIOStream):
 
         Raising the stored instance would tie this stream into a cycle through the
         raise's frames (``kept_errors``), and append each raise's frames to one
-        traceback that grows with every retry.
+        traceback that grows with every retry. A stop from ``on_source_read`` is the
+        exception: it is the caller's own instance, raised with the traceback it had
+        when it was kept (``KeptError.stop``), so it does not grow either.
         """
         assert self._spent is not None
         self._spent.raise_again()
@@ -2437,7 +2502,8 @@ class DecompressorStream(ReadOnlyIOStream):
         """Move to ``new_pos`` if that decodes nothing; return whether it moved.
 
         A stream whose decoder raised (``_spent``) never moves here: only a restart
-        from a seek point gets it going again, and that waits for the next read.
+        from a seek point gets it going again, and that waits for the next read. A
+        restart does not clear a kept stop from ``on_source_read``.
         """
         if self._spent is not None:
             return False

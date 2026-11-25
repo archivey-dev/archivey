@@ -2412,7 +2412,10 @@ class SourceProgress:
     """For a local file or stream, where in the file the latest read started: that
     read took the bytes from here to :attr:`position`. With
     ``ArchiveyConfig(source_read_step=0)`` every read is reported, so these ranges are
-    every read of the file. ``None`` for a URL source, whose ``request_*`` fields give
+    every read of the file, except where archivey's own thread reads (the RAR volume
+    feeder): those reports merge, and only the latest range is kept, while
+    :attr:`bytes_read` still counts every byte. ``None`` for a URL source, whose
+    ``request_*`` fields give
     each request's range."""
 
     nest_level: int = 0

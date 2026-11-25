@@ -1188,9 +1188,11 @@ class ArchiveyConfig:
     """Bytes taken from a local file or stream between two ``on_source_read`` calls
     (1 MiB). ``0`` calls it for every read, so :attr:`SourceProgress.read_start
     <archivey.SourceProgress.read_start>` and ``position`` give the range of each read:
-    a log of every region of the file read. A URL source reports every request
-    whatever this is; over HTTP a request also reports about once per MiB of its
-    answer, a gap this step does not set.
+    a log of the regions of the file read. The log has gaps where archivey's own thread
+    reads (the RAR volume feeder): those reports merge as ``on_source_read`` says, and
+    only the latest range is kept, while ``bytes_read`` still counts every byte. A URL
+    source reports every request whatever this is; over HTTP a request also reports
+    about once per MiB of its answer, a gap this step does not set.
     """
 
     salvage_limits: SalvageLimits = SalvageLimits()
