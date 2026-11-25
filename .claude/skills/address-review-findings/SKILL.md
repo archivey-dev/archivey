@@ -157,9 +157,11 @@ another project's review loop one block took 24 findings over 9 rounds this way.
 breaks an invariant (a stale path after one alias, a lock skipped on one error path),
 find the one guard that makes every such input impossible and fix that, with a test for
 the class. A point fix invites the next reviewer to find the next variant: in the week
-to 2026-11-25, #1715 took four Codex rounds of narrower variants of one finding,
-and #1833, #1757 and #1767 each had a fix reopened the same way. If no single guard
-exists, say so in the reply and ask whether the rest is a follow-up.
+to 2026-11-25
+([evidence](../../../dev-docs/review-eval/multi-model-2026-11-25.md)), #1715 took four
+Codex rounds of narrower variants of one finding, and #1833, #1757 and #1767 each had a
+fix reopened the same way. If no single guard exists, say so in the reply and fix the
+remaining cases here, or, for a 🟡/🔴, Split them into their own PR or escalate (§6).
 
 **After a second model's review, Opus checks your fixes first.** Fix everything from the
 Codex or Antigravity round, then run the `review` label loop until Opus approves the

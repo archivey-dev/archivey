@@ -38,7 +38,7 @@ prose in the three-block shape (§3), never a host-specific findings tool.
 
 ## Stop rules
 
-A short form of five §6 sections, kept at the top because the compound-engineering plugin
+A short form of six §6 sections, kept at the top because the compound-engineering plugin
 reports that a long session may keep only the start of a skill (not measured here). Where
 this list and §6 disagree, §6 wins; edit both together.
 
@@ -55,9 +55,9 @@ this list and §6 disagree, §6 wins; edit both together.
 - End every review body, inline comment and reply with the attribution footer (§6
   "Attribution footer").
 - **Post the review to the pull request yourself**: inline comments first, then the body
-  (§6). A review that exists only in your chat answer is not done, whatever host you run
-  in. Posting is not editing, so "edit nothing" does not stop it. Say in your answer
-  what you posted, with the review's link.
+  (§6, opening paragraph). A review that exists only in your chat answer is not done,
+  whatever host you run in. Posting is not editing, so "edit nothing" does not stop it.
+  Say in your answer what you posted, with the review's link.
 
 ## How to spend turns
 
@@ -308,14 +308,15 @@ For the maintainer skimming without the code open. Half a screen unless the chan
   earlier description wrong: then give one line on what changed. (Fix-diff scope stays
   per *reviewer*: a reviewer new to the PR reads `main...HEAD`.)
 - **Findings** — the index, and the only list of findings in the body. One bullet each,
-  ranked by severity then confidence, including 🟢 and 💡: ID, severity, confidence, the
-  gist in one sentence, the location, and a link to the thread. Nothing else. The full
-  finding is in the thread, and a body that repeats it is the length problem this shape
-  exists to fix. **Post the inline comments first, then the body**, because a review
-  submitted in one call creates both at once and the body would have no URLs to link to
-  (`POST .../pulls/{n}/comments` returns each comment's `html_url`, and §6 records that
-  a review body cannot be edited afterwards through the MCP tools). A finding whose thread
-  URL you genuinely cannot get is listed with its `file:line` alone rather than held back.
+  ranked by severity then confidence, including 🟢 and 💡: ID, severity, confidence, reach
+  (on a 🔴 or 🟡), the gist in one sentence, the location, and a link to the thread.
+  Nothing else. The full finding is in the thread, and a body that repeats it is the
+  length problem this shape exists to fix. **Post the inline comments first, then the
+  body**, because a review submitted in one call creates both at once and the body would
+  have no URLs to link to (`POST .../pulls/{n}/comments` returns each comment's
+  `html_url`, and §6 records that a review body cannot be edited afterwards through the
+  MCP tools). A finding whose thread URL you genuinely cannot get is listed with its
+  `file:line` alone rather than held back.
 - **Snapshot** — one line: size (approx. lines / small|medium|large), the tier (§1), who
   merges (the script's `merge:` line), the scope you reviewed, and gates (CI status,
   §6). The verdict is already in the header, so the Snapshot does not restate it.
@@ -429,7 +430,7 @@ so use these meanings and no others:
   round budget below rely on. Fixes that change
   behaviour are where later rounds' findings come from: about 20 of the findings after
   round 1 in the week to 2026-11-25 were caused by an earlier fix or merge
-  (`dev-docs/review-loop.md` §Second-model reviews). On a light PR (§1), only a 🔴.
+  (`dev-docs/review-eval/multi-model-2026-11-25.md`). On a light PR (§1), only a 🔴.
 - **⏸️ Maintainer decision needed** — block 3 is not empty (§3).
 
 There is no 💬 Comment verdict (removed 2026-11-25). It meant "act on these, I do not
@@ -499,8 +500,9 @@ error/safety contract?** If yes → 🔴.
 
 ### Reach: who can trigger it
 
-Every 🔴 and 🟡 names its reach after the confidence tag, e.g.
-`K3 · 🟡 · CONFIRMED · reach: normal-use`. Put the trigger first in the finding.
+Every 🔴 and 🟡 names its reach after the confidence tag, in the inline heading
+(`` ### K3 · 🟡 `[important]` · `CONFIRMED` · reach: `normal-use` ``, §6) and in the
+index line (§3 block 1). Put the trigger first in the finding.
 
 - **`hostile-bytes`** — an archive's bytes trigger it. Always counts in full: this is
   the threat model, however unusual the bytes.
@@ -532,7 +534,7 @@ posting fails, say so and give the error. Do not paste the review into chat in i
 That handoff is the reason for the rules below: a review that reads well in a terminal but
 cannot be dispositioned finding-by-finding costs the next round more than it saved.
 
-Five of these sections have a short form in §Stop rules at the top of this file; change
+Six of these sections have a short form in §Stop rules at the top of this file; change
 both together.
 
 ### Stable IDs, one thread per finding
@@ -581,7 +583,7 @@ Conditional approval names what it is conditioned on in the heading itself:
 **Inline finding:**
 
 ```
-### K6 · 🟡 `[important]` · `CONFIRMED`
+### K6 · 🟡 `[important]` · `CONFIRMED` · reach: `normal-use`
 
 **Claude Code** · `code-review-skill` · round 2 · `3060ac51`
 ```

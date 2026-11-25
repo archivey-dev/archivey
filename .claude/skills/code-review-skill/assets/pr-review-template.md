@@ -58,8 +58,8 @@ included. Post the inline comments **before** the body, so their URLs exist to l
 ```markdown
 ### Findings
 
-- **K6** 🔴 `CONFIRMED` — [gist in one sentence] · [`path/to/file.py:123`]([thread url])
-- **K7** 🟡 `PLAUSIBLE` — [gist] · [`path/to/other.py:45`]([thread url])
+- **K6** 🔴 `CONFIRMED` · reach: `hostile-bytes` — [gist in one sentence] · [`path/to/file.py:123`]([thread url])
+- **K7** 🟡 `PLAUSIBLE` · reach: `normal-use` — [gist] · [`path/to/other.py:45`]([thread url])
 - **K8** 🟢 `[nit]` — [gist] · [`path/to/third.py:9`]([thread url])
 ```
 
@@ -137,7 +137,7 @@ One per finding, anchored on the line it concerns. Written to be read months lat
 someone who has only this thread open: no "see the briefing", no "as in K3".
 
 ```markdown
-### K6 · 🔴 `[blocking]` · `CONFIRMED`
+### K6 · 🔴 `[blocking]` · `CONFIRMED` · reach: `hostile-bytes`
 
 **Claude Code** · `code-review-skill` · round [N] · `[head-sha]`
 

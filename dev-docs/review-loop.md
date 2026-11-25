@@ -224,8 +224,8 @@ or Antigravity) before merge (`AGENTS.md`). Codex and Antigravity run by hand, o
 the label loop. Cursor, when the workflow requests it (below, "Cursor reviews a deep
 pull request's Opus round"), reviews during step 1; its findings join step 3, and it
 counts as one of the second models. The order below comes from a pass over every
-multi-model PR in the week to 2026-11-25 (evidence:
-`/mnt/project-files/investigations/multi-model-reviews-2026-11-25/`).
+multi-model PR in the week to 2026-11-25 (evidence, with the PR list behind each count:
+[`review-eval/multi-model-2026-11-25.md`](review-eval/multi-model-2026-11-25.md)).
 
 1. **Opus first.** Run the label loop until Opus approves.
 2. **Then the second models together, on one head.** Codex and Antigravity (or whichever
