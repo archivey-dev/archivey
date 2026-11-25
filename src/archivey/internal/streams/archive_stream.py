@@ -1660,7 +1660,7 @@ class ArchiveStreamImpl(ArchiveStream):
         checkpoint = self._checkpoint
         if checkpoint is not None and not self._inner_closed():
             checkpoint()
-        raise ValueError("I/O operation on closed file.")
+        raise closed_stream_error()
 
     @property
     @override
@@ -1684,6 +1684,11 @@ class ArchiveStreamImpl(ArchiveStream):
         calls = self._calls
         if calls is None:
             self._close_scoped()
+            return
+        if self._finalizing and calls.defer_implicit_close(self):
+            # The collector's close inside a call of this reader on this thread,
+            # which may hold the shared handle lock the inner close takes: it runs
+            # when the thread's last call is out.
             return
         # A counted call, so a reader.close() meanwhile defers its shutdown to it.
         # Raises from a callback inside a read of a stream of this reader.
@@ -1711,7 +1716,8 @@ class ArchiveStreamImpl(ArchiveStream):
     @override
     def __del__(self) -> None:
         # A dropped stream may be collected on a thread inside another stream's call:
-        # that is not a callback's close, so close() does not refuse it. After
+        # that is not a callback's close, so close() does not refuse it; it queues
+        # the close for that thread's last call out (``defer_implicit_close``). After
         # reader.close() the base finalizer skips the close (``closed`` is True), and
         # nothing is left to do: the reader's shutdown held every stream it deferred
         # strongly (``ReaderState.mark_reader_closed``), so a stream collected now has

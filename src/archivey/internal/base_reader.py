@@ -1478,15 +1478,19 @@ class BaseArchiveReader(ArchiveReader):
         try:
             try:
                 try:
-                    # No call is running now, so nothing writes the listing any more: a
-                    # pass left early or a link never read is as final as it will get.
-                    # Inside the guarded steps: teardown is claimed and never retried,
-                    # so an interrupt here must still reach the releases below.
-                    _settle_listing(self._listed, links_too=True)
-                    # A walk stopped part-way: close it first, so the backend's
-                    # ``finally`` blocks run now, on an open archive, and not when a
-                    # collector gets to the generator (on PyPy, not on one collect).
-                    self._close_walk()
+                    try:
+                        # No call is running now, so nothing writes the listing any
+                        # more: a pass left early or a link never read is as final as
+                        # it will get. Inside the guarded steps: teardown is claimed
+                        # and never retried, so an interrupt here must still reach the
+                        # releases below.
+                        _settle_listing(self._listed, links_too=True)
+                    finally:
+                        # A walk stopped part-way: close it before the backend, so its
+                        # ``finally`` blocks run now, on an open archive, and not when
+                        # a collector gets to the generator (on PyPy, not on one
+                        # collect).
+                        self._close_walk()
                 finally:
                     self._close_archive()
             finally:
@@ -5238,8 +5242,11 @@ class BaseArchiveReader(ArchiveReader):
                 # every level, as its contract says.
                 f.read()
             return data
-        except ValueError:
-            self._state.check_open("read()")
+        except ValueError as exc:
+            # Only the stream's own closed-file error (marked): a caller's
+            # ValueError, from a callback that also closed the reader, escapes as is.
+            if is_closed_reader_error(exc):
+                self._state.check_open("read()")
             raise
         finally:
             f.close()

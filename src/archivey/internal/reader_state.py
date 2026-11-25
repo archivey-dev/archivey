@@ -54,6 +54,7 @@ last call out runs the reader's teardown (``teardown_hook``).
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import gc
 import sys
@@ -136,7 +137,10 @@ def _call_name(token: OperationToken) -> str:
 
 
 def _retry_after_collecting(
-    attempt: Callable[_P, T], *args: _P.args, **kwargs: _P.kwargs
+    collect: Callable[[], None],
+    attempt: Callable[_P, T],
+    *args: _P.args,
+    **kwargs: _P.kwargs,
 ) -> T:
     """``attempt(*args)``; refused for an overlap, ``attempt`` again after a collection
     has run the cleanup of passes and streams already dropped.
@@ -152,7 +156,7 @@ def _retry_after_collecting(
     except ArchiveyUsageError as exc:
         if not getattr(exc, _OVERLAP_MARK, False):
             raise
-    gc.collect()
+    collect()
     return attempt(*args, **kwargs)
 
 
@@ -356,6 +360,10 @@ class ReaderState:
         # The live streams at the close transition, held strongly until the stream
         # shutdown finishes (``mark_reader_closed``, ``finish_stream_shutdown``).
         self._deferred_streams: list[ArchiveStreamImpl] = []
+        # Collector closes queued because they came inside a call of this reader on
+        # their thread (``defer_implicit_close``), with that thread's ident; held
+        # strongly until that thread's last call is out, or the stream shutdown.
+        self._implicit_closes: list[tuple[int, ArchiveStreamImpl]] = []
         # Library-internal open windows (first-touch link-data reads, the one user
         # left), keyed BY THREAD: the exemption from the live-stream gate (the window's
         # only effect) applies only to the thread that entered the window. A plain
@@ -432,7 +440,9 @@ class ReaderState:
         so nothing can publish between the snapshot and the grant (a publisher holds a
         worker or pass token) and a refusal builds nothing. It must take no lock but
         leaf locks (the diagnostics collector's), never the walk lock."""
-        return _retry_after_collecting(self._acquire_pass_once, name, kind, report)
+        return _retry_after_collecting(
+            self._collect_dropped, self._acquire_pass_once, name, kind, report
+        )
 
     def _acquire_pass_once(
         self,
@@ -602,6 +612,7 @@ class ReaderState:
                     self._root = None
                 self._children = {c for c in self._children if c.parent is not token}
             due = self._cleanup_due_locked()
+        self._drain_implicit_closes()
         if due:
             self._run_teardown_hook(token)
 
@@ -634,7 +645,9 @@ class ReaderState:
     def acquire_worker(self, name: str) -> OperationToken:
         """Take a short-lived token for one call: see :meth:`_acquire_worker_once`.
         Release it with :meth:`release_worker`."""
-        return _retry_after_collecting(self._acquire_worker_once, name)
+        return _retry_after_collecting(
+            self._collect_dropped, self._acquire_worker_once, name
+        )
 
     def _acquire_worker_once(self, name: str) -> OperationToken:
         """Short-lived token for random ``open()`` / ``read()``.
@@ -756,6 +769,76 @@ class ReaderState:
             calls[ident] = calls.get(ident, 0) + 1
         return sys.exception()
 
+    def defer_implicit_close(self, stream: ArchiveStreamImpl) -> bool:
+        """Queue the collector's close of a dropped ``stream`` when it comes inside a
+        call of this reader on this thread: that call may hold the plugin's shared
+        handle lock, which the stream's inner close takes, and the lock is not
+        re-entrant. True when queued: the thread's last call out runs it
+        (:meth:`_drain_implicit_closes`), or the stream shutdown if the reader closes
+        first (:meth:`live_streams`). False on an open reader with no call running
+        on this thread, and on a closed reader, whose shutdown owns the inner close.
+        """
+        with self._lock:
+            if (
+                self.lifecycle is not LifecycleState.OPEN
+                or not self._inside_call_locked()
+            ):
+                return False
+            self._implicit_closes.append((threading.get_ident(), stream))
+            return True
+
+    def _inside_call_locked(self) -> bool:
+        """Whether this thread is inside a running call of the reader."""
+        current = threading.current_thread()
+        return (
+            threading.get_ident() in self._stream_calls
+            or self._same_thread_token_locked() is not None
+            or any(t.thread is current for t in self._info_calls)
+        )
+
+    def _collect_dropped(self) -> None:
+        """The collection :func:`_retry_after_collecting` runs before it retries.
+
+        Admission runs no backend code, so this thread holds no handle lock here,
+        though it may be inside a call (``open()`` takes its live-stream lease under
+        its worker token): the closes the collection queued on this thread run now,
+        so the retry sees their leases gone."""
+        gc.collect()
+        self._drain_implicit_closes(at_admission=True)
+
+    def _drain_implicit_closes(self, *, at_admission: bool = False) -> None:
+        """Run the collector closes this thread queued, once its last call is out.
+
+        Counted as one stream close, so a ``close()`` meanwhile defers its shutdown
+        to it. On a closed reader they stay queued for the stream shutdown. A
+        failure is dropped, as the collector's own close would drop it: it belongs
+        to no call the caller made.
+        """
+        if not self._implicit_closes:
+            return
+        with self._lock:
+            if self.lifecycle is not LifecycleState.OPEN or (
+                not at_admission and self._inside_call_locked()
+            ):
+                return
+            ident = threading.get_ident()
+            mine = [stream for owner, stream in self._implicit_closes if owner == ident]
+            if not mine:
+                return
+            self._implicit_closes = [
+                entry for entry in self._implicit_closes if entry[0] != ident
+            ]
+            calls = self._stream_calls
+            calls[ident] = calls.get(ident, 0) + 1
+        entry_exc = sys.exception()
+        try:
+            for stream in mine:
+                if self.claim_stream_close(stream):
+                    with contextlib.suppress(Exception):
+                        stream._close_scoped()
+        finally:
+            self.exit_stream_call(entry_exc)
+
     def claim_stream_close(self, stream: ArchiveStreamImpl) -> bool:
         """True for the one caller that does ``stream``'s inner close: two
         ``close()`` calls at once, or a ``close()`` and the reader's shutdown, never
@@ -784,6 +867,7 @@ class ReaderState:
             else:
                 del calls[ident]
             due = self._cleanup_due_locked()
+        self._drain_implicit_closes()
         if due:
             self._run_hook(entry_exc)
 
@@ -801,6 +885,7 @@ class ReaderState:
             else:
                 self._workers.discard(token)
             due = self._cleanup_due_locked()
+        self._drain_implicit_closes()
         if due:
             self._run_teardown_hook(token)
 
@@ -864,7 +949,9 @@ class ReaderState:
                 self._materialization_cv.notify_all()
 
     def reserve_live_stream(self) -> LiveStreamReservation:
-        return _retry_after_collecting(self._reserve_live_stream_once)
+        return _retry_after_collecting(
+            self._collect_dropped, self._reserve_live_stream_once
+        )
 
     def _reserve_live_stream_once(self) -> LiveStreamReservation:
         """Take a live-stream lease before the stream object exists.
@@ -943,7 +1030,9 @@ class ReaderState:
         stream (:meth:`acquire_pass`).
         """
         ref = weakref.ref(stream)
-        _retry_after_collecting(self._acquire_live_stream_once, stream, ref)
+        _retry_after_collecting(
+            self._collect_dropped, self._acquire_live_stream_once, stream, ref
+        )
 
     def _acquire_live_stream_once(
         self, stream: ArchiveStreamImpl, ref: weakref.ref[ArchiveStreamImpl]
@@ -975,7 +1064,10 @@ class ReaderState:
         """The registered member streams not yet released, in registration order."""
         with self._lock:
             refs = list(self._live_streams.values())
-        return [stream for ref in refs if (stream := ref()) is not None]
+            queued = [stream for _owner, stream in self._implicit_closes]
+        streams = [stream for ref in refs if (stream := ref()) is not None]
+        # A queued stream the cycle collector found has lost its weak reference.
+        return streams + [s for s in queued if all(s is not t for t in streams)]
 
     def mark_reader_closed(self) -> bool:
         """Mark the reader closed and drop the reader's lease. True → run teardown now.
@@ -1063,6 +1155,7 @@ class ReaderState:
             self._pass_wind_down = []
             self._pass_wind_down_lease = False
             self._deferred_streams = []
+            self._implicit_closes = []
             self._stream_shutdown_done = True
 
     def stream_shutdown_done(self) -> bool:

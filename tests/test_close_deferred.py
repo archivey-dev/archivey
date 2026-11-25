@@ -552,3 +552,94 @@ def test_a_stream_dropped_after_close_beside_a_running_read_closes_nothing(
     closes = [e for e in _HOOKS.events if "close" in e]
     assert sorted(closes[:2]) == ["stream close b.bin", "stream close docs/a.txt"]
     assert closes[2:] == ["plugin close"]
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_reader_read_keeps_a_callbacks_own_value_error(
+    gated: Path, concurrent: bool
+) -> None:
+    """A callback inside ``reader.read()`` that closes the reader and then raises
+    its own ``ValueError``: that same exception escapes, not the reader's closed
+    error that ``read()`` raises for a stream overtaken by ``close()``."""
+    sentinel = ValueError("the caller's own error")
+    reader: object = None
+
+    def on_read(_progress: object) -> None:
+        if _HOOKS.read_in_read is False and reader is not None:
+            reader.close()  # type: ignore[attr-defined]
+            raise sentinel
+
+    config = ArchiveyConfig(on_source_read=on_read, source_read_step=0)
+    reader = open_archive(gated, config=config, concurrent_operations=concurrent)
+    _HOOKS.read_in_read = True
+    with pytest.raises(ValueError) as info:
+        reader.read("docs/a.txt")  # type: ignore[attr-defined]
+    assert info.value is sentinel
+
+
+def test_a_sibling_dropped_inside_a_read_closes_after_the_read(gated: Path) -> None:
+    """A callback inside a member-stream read drops the last reference to an idle
+    sibling, with the reader still open. Under the flag the read holds the plugin's
+    handle lock, which the sibling's inner close also takes: the collector's close
+    is queued instead of waiting on that lock, and runs once the read is out."""
+    import gc
+
+    held: list[object] = []
+
+    def on_read(_progress: object) -> None:
+        if held:
+            held.clear()
+            gc.collect()
+            _HOOKS.events.append("dropped")
+
+    config = ArchiveyConfig(on_source_read=on_read, source_read_step=0)
+    with open_archive(gated, config=config, concurrent_operations=True) as reader:
+        a = reader.open("b.bin")
+        held.append(reader.open("docs/a.txt"))
+        _HOOKS.read_in_read = True
+        thread, out = _run(lambda: a.read(1))
+        thread.join(TIMEOUT)
+        assert not thread.is_alive(), "the collector's close waited on the read"
+        assert out == [b"\x00"]
+        assert [e for e in _HOOKS.events if e != "archive_info"] == [
+            "dropped",
+            "stream close docs/a.txt",
+        ]
+        assert a.read(1)
+        a.close()
+    assert [e for e in _HOOKS.events if "close" in e] == [
+        "stream close docs/a.txt",
+        "stream close b.bin",
+        "plugin close",
+    ]
+
+
+def test_a_sibling_dropped_inside_a_read_then_reader_closed_closes_once(
+    gated: Path,
+) -> None:
+    """The callback drops the sibling and then closes the reader: the queued close
+    is left to the reader's shutdown, which closes the sibling once, after the read
+    and before the plugin."""
+    import gc
+
+    held: list[object] = []
+    reader: object = None
+
+    def on_read(_progress: object) -> None:
+        if held:
+            held.clear()
+            gc.collect()
+            reader.close()  # type: ignore[attr-defined]
+
+    config = ArchiveyConfig(on_source_read=on_read, source_read_step=0)
+    reader = open_archive(gated, config=config, concurrent_operations=True)
+    a = reader.open("b.bin")  # type: ignore[attr-defined]
+    held.append(reader.open("docs/a.txt"))  # type: ignore[attr-defined]
+    _HOOKS.read_in_read = True
+    thread, out = _run(lambda: a.read(1))
+    thread.join(TIMEOUT)
+    assert not thread.is_alive(), "the collector's close waited on the read"
+    assert len(out) == 1 and isinstance(out[0], ValueError), out
+    closes = [e for e in _HOOKS.events if "close" in e]
+    assert sorted(closes[:2]) == ["stream close b.bin", "stream close docs/a.txt"]
+    assert closes[2:] == ["plugin close"]

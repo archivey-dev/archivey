@@ -369,7 +369,7 @@ def test_an_interrupt_while_settling_the_listing_still_releases_the_archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, last_out: bool
 ) -> None:
     """Teardown is claimed once and never retried, so an interrupt in its first step
-    (settling the listing) must still run the backend and source releases."""
+    (settling the listing) must still run the walk, backend and source releases."""
     from archivey.internal import base_reader as base_reader_module
 
     reader = open_archive(_plain_zip(tmp_path), concurrent_operations=last_out)
@@ -383,6 +383,13 @@ def test_an_interrupt_while_settling_the_listing_still_releases_the_archive(
         real_close_archive()
 
     monkeypatch.setattr(reader, "_close_archive", close_archive)
+    real_close_walk = reader._close_walk
+
+    def close_walk() -> None:
+        released.append(0)
+        real_close_walk()
+
+    monkeypatch.setattr(reader, "_close_walk", close_walk)
     real_settle = base_reader_module._settle_listing
 
     def interrupted_settle(*args: object, **kwargs: object) -> None:
@@ -423,7 +430,9 @@ def test_an_interrupt_while_settling_the_listing_still_releases_the_archive(
         release.set()
         worker.join(5)
         assert len(outcome) == 1 and isinstance(outcome[0], KeyboardInterrupt)
-    assert released == [1]
+    # The walk is closed too, before the backend: its ``finally`` blocks run on an
+    # open archive.
+    assert released == [0, 1]
     assert reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
