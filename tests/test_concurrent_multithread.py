@@ -273,47 +273,6 @@ def test_close_closes_every_live_stream(tmp_path: Path) -> None:
         s.close()  # idempotent
 
 
-@pytest.mark.concurrent_reader
-@pytest.mark.parametrize("compressed", [False, True])
-def test_multithread_reads_beside_stream_members(
-    tmp_path: Path, compressed: bool
-) -> None:
-    """Threads read members while the caller's thread drives a stream_members() pass.
-
-    The pass's streams and the threads' random opens interleave on the shared handle,
-    so on a tar.gz both move the one decoder back and forth under the handle lock.
-    """
-    name = "a.tar.gz" if compressed else "a.tar"
-    path = _make_tar(tmp_path / name, compressed=compressed, n=4)
-    expected = _expected(4)
-    with open_archive(path, concurrent_operations=True) as reader:
-        barrier = threading.Barrier(5)
-        errors: list[BaseException] = []
-        got: list[dict[str, bytes]] = []
-
-        def read_all() -> None:
-            try:
-                barrier.wait(timeout=5)
-                got.append({name: reader.read(name) for name in expected})
-            except BaseException as exc:  # noqa: BLE001
-                errors.append(exc)
-
-        threads = [threading.Thread(target=read_all) for _ in range(4)]
-        for t in threads:
-            t.start()
-        passed: dict[str, bytes] = {}
-        for member, stream in reader.stream_members():
-            if member.name == "f0.txt":
-                barrier.wait(timeout=5)
-            assert stream is not None
-            passed[member.name] = stream.read()
-        for t in threads:
-            t.join(timeout=30)
-        assert not errors
-        assert passed == expected
-        assert got == [expected] * 4
-
-
 # --- Coordinated first-touch materialization + draining close ----------------------------
 
 

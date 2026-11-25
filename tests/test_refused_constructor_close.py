@@ -261,9 +261,6 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.streamtools.locked.LockedStream": (
         "DelegatingStream.__init__, then a plain _lock assignment"
     ),
-    "archivey.internal.walk_handoff.WalkHandoffStream": (
-        "assigns _data and _view, all close() reads, before ReadOnlyIOStream.__init__"
-    ),
     "archivey.internal.format_adapter._DataWalkStream": (
         "assigns _adapter, _walk and _window, all close() reads, before "
         "ReadOnlyIOStream.__init__"

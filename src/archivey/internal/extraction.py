@@ -1116,7 +1116,8 @@ class ExtractionCoordinator:
         # estimate matches the selected output. The user `filter` runs only during
         # extraction and cannot be pre-applied, so members it skips still count as
         # processed below. Streaming readers with no free list report None totals.
-        members_report = reader.members_report_if_available()
+        # Inside this call's own pass, where the public peek reads nothing.
+        members_report = reader._pass_totals_report()
         all_members = list(members_report) if members_report is not None else None
         # A free list that ends in damage holds only the members before it. What it
         # says no selected entry matches is not known, and the pass has to reach the

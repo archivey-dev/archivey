@@ -1328,14 +1328,13 @@ trusted: archivey checks what it reports, not who wrote it. `unar`'s password is
 **Property.** On a reader declaring `MemberStreams.CONCURRENT`, after random-access
 materialization, concurrent `open()` and independent use of different member streams is
 data-race-free without the GIL. Otherwise a second overlapping open raises
-`ArchiveyUsageError`, so accidental sharing fails fast. On a `CONCURRENT` reader,
-random-access calls, further `stream_members()` passes and `extract_all()` also run
-beside a `stream_members()` or `extract_all()` pass: they share the reader's one member
-walk, each at its own position, and every pull, cursor step and link finalization holds
-the walk lock (`base_reader.py` `_walk_lock`). A TAR pass stream reading through the
-walk moves to a view of its own before the walk moves on for another caller
-(`_WalkHandoffStream`). A library-internal scope (an extraction's own opens, link-data
-reads) is filed under its own thread's pass, never another thread's. Close stays
+`ArchiveyUsageError`, so accidental sharing fails fast. Lookup calls share the reader's
+one member walk, each at its own position, and every pull, cursor step and link
+finalization holds the walk lock (`base_reader.py` `_walk_lock`). A pass
+(`stream_members()`, `extract_all()`, `verify_all()`) has the reader to itself in both
+modes: any other call beside it raises, so nothing moves the walk under a pass stream
+that reads through it. A library-internal scope (an extraction's own opens, link-data
+reads) is filed under that pass. Close stays
 single-owner, as does everything on a reader without `CONCURRENT`. Stream leases defer
 backend teardown until the last stream closes, because an accelerator must close before
 it is finalized
@@ -1343,7 +1342,7 @@ it is finalized
 §6).
 
 **Tests.** The required `free-threaded-concurrency` job (Linux CPython 3.13t,
-`.github/workflows/ci.yml`), which runs `tests/test_concurrent_pass_workers.py` among
+`.github/workflows/ci.yml`), which runs `tests/test_concurrent_pass_refusals.py` among
 the rest; optional backends are not claimed until a job runs them.
 Scope: [`docs/install.md`](../docs/install.md) §Free-threaded Python; design:
 [`investigations/parallel-reader.md`](investigations/parallel-reader.md) §4.

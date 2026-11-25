@@ -61,7 +61,6 @@ import contextlib
 import logging
 import sys
 import threading
-import time
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import (
@@ -198,6 +197,8 @@ from archivey.internal.password import is_unverified_data_error
 from archivey.internal.password_confirm import UnverifiedPasswordReadWatch
 from archivey.internal.reader_state import (
     LiveStreamReservation,
+    OperationToken,
+    PassKind,
     ReaderState,
 )
 from archivey.internal.remote import source_change
@@ -244,7 +245,6 @@ from archivey.internal.streams.verification import (
 )
 from archivey.internal.streams.verify import CustomDigests
 from archivey.internal.timestamps import TimestampIssue
-from archivey.internal.walk_handoff import WalkHandoffStream
 from archivey.internal.windows_reparse import (
     REPARSE_HEADER_BYTES,
     parse_reparse_data,
@@ -1076,19 +1076,14 @@ class BaseArchiveReader(ArchiveReader):
         self._walk_failure_unraised: bool = False
         self._walk_pulling: bool = False
         # Every pull, every pass cursor step and link finalization hold this lock, so
-        # the passes and listing calls a CONCURRENT reader runs side by side share the
-        # one walk: each reads ``_listed`` at its own position and pulls the next member
-        # when it reaches the end. Re-entrant, so a callback that re-enters the walk on
+        # the listing calls a CONCURRENT reader runs side by side share the one walk:
+        # each reads ``_listed`` at its own position and pulls the next member when it
+        # reaches the end. Re-entrant, so a callback that re-enters the walk on
         # the same thread reaches the ``_walk_pulling`` check instead of deadlocking.
         # It is taken after the materialization election, never before it. A wait for
         # it from inside a password provider that its holder is waiting for raises
         # (``ProviderAwareRLock``).
         self._walk_lock = ProviderAwareRLock(self._state)
-        # A random-access pass's member stream that reads through the walk
-        # (``_walk_handoff_locked``); the walk detaches it before its next pull
-        # (``_before_pull_locked``). Set only under ``_walk_lock``, so none appears
-        # during a batch of pulls.
-        self._walk_stream: WalkHandoffStream | None = None
         # Until a random-access walk ends, ``_walk_built`` keeps every member object it
         # produced and ``_walk_emits`` a log of what the backend emitted typing each
         # position (see ``_pull_replayable``): a walk started over after a failure
@@ -2572,45 +2567,6 @@ class BaseArchiveReader(ArchiveReader):
         with self._walk_lock:
             return self._pull_members_locked(1)
 
-    def _before_pull_locked(self) -> None:
-        """Hand off a pass's stream before the walk moves.
-
-        A random-access pass may still be reading the member the walk is at through
-        the walk (:meth:`_walk_handoff_locked`). That stream moves to a view of its own first
-        (:class:`WalkHandoffStream`), so a pull for another caller, such as
-        ``members()`` from another thread under ``CONCURRENT``, does not cut it off.
-        The pass's own next pull hands over a stream it is about to close, which costs
-        nothing.
-
-        Called under ``_walk_lock`` once per :meth:`_pull_members_locked` call, before
-        one or more pulls, so it must leave nothing for the walk to hand off for the
-        whole batch: whatever it hands off must only be set under ``_walk_lock``, so
-        nothing new appears until the lock is released."""
-        live = self._walk_stream
-        if live is not None:
-            self._walk_stream = None
-            live.detach()
-
-    def _walk_handoff_locked(
-        self, in_place: BinaryIO | None, reopen: Callable[[int], BinaryIO]
-    ) -> BinaryIO:
-        """A pass's member data, through the walk when the walk is at it.
-
-        Called under ``_walk_lock``. ``in_place`` reads the member's data through the
-        walk's own stream, or is ``None`` when the walk is not at the start of it;
-        ``reopen(start)`` opens a view of the data of its own from ``start``. Only one
-        stream reads through the walk at a time: any other open (a second pass behind
-        the first, or one in step with it) gets a view of its own.
-        """
-        live = self._walk_stream
-        if in_place is None or (live is not None and not live.closed):
-            if in_place is not None:
-                in_place.close()
-            return reopen(0)
-        stream = WalkHandoffStream(in_place, reopen, self._walk_lock)
-        self._walk_stream = stream
-        return stream
-
     def _pull_members_locked(self, count: int) -> ArchiveMember | None:
         """Pull up to ``count`` members (at least one), as ``_pull_member`` describes,
         and return the last one pulled, or ``None`` once the walk has ended. One hook
@@ -2618,7 +2574,6 @@ class BaseArchiveReader(ArchiveReader):
         members pulls each one through this loop, not through a call each. Called under
         ``_walk_lock``."""
         assert count >= 1, count
-        self._before_pull_locked()
         if self._walk_done:
             return None
         if self._walk_failure is not None:
@@ -2754,13 +2709,18 @@ class BaseArchiveReader(ArchiveReader):
         prefix would read every shadowed duplicate as current.
         """
         self._walk = None
-        self._walk_done = True
         self._walk_error = error
         self._walk_built = []
         self._walk_emits = {}
-        if error is not None:
-            self._stamp_error_context(error)
-        _apply_last_entry_wins_is_current(self._listed_in_index_order())
+        try:
+            if error is not None:
+                self._stamp_error_context(error)
+            _apply_last_entry_wins_is_current(self._listed_in_index_order())
+        finally:
+            # Last, in one store: what reads the walk's outcome without the walk lock
+            # (``_built_report``) sees ``_walk_done`` only with the error and the
+            # last-entry-wins stamps that go with it.
+            self._walk_done = True
 
     def _listed_in_index_order(self) -> list[ArchiveMember]:
         """``_listed`` in the order the archive's index lists them, which decides which
@@ -2827,30 +2787,22 @@ class BaseArchiveReader(ArchiveReader):
     def _drain_walk(self) -> None:
         """Pull to the end of the walk, in batches of ``_DRAIN_BATCH`` members.
 
-        Each batch takes ``_walk_lock`` once. On a ``CONCURRENT`` reader the drain also
-        yields between batches, so a pass on another thread waits about one batch for it,
-        not the whole listing."""
-        concurrent = self._state.concurrent
+        Each batch takes ``_walk_lock`` once."""
         while True:
             with self._walk_lock:
                 if self._pull_members_locked(_DRAIN_BATCH) is None:
                     return
-            if concurrent:
-                # Under the GIL a release alone is no hand-off: this thread keeps
-                # running and takes the lock again before a waiter gets to run. A short
-                # sleep gives the GIL up so a waiter can take the lock (``sleep(0)``
-                # hands over less reliably). It is a syscall, about 0.5 µs per member
-                # in wall time, so only a reader that can have such a waiter pays it.
-                time.sleep(1e-6)
 
     def _walk_ahead(self) -> None:
         """Drain a streaming walk before its pass reads data; a failure waits for it.
 
-        For a backend whose pass reads better with the whole listing first: ZIP on a
-        seekable source reads its directory once, then member data forward only. A
-        pull that fails poisons the walk as in any streaming pass, and the pass then
-        yields the members listed before it and raises it when it gets there, as it
-        would with the listing and the data interleaved. Terminal damage is kept in
+        Every streaming pass over a reader with an upfront list runs this at its start
+        (:meth:`_begin_forward_pass`), so ``members_report_if_available()`` answers the
+        same inside the pass as before it. It reads the index only, no member data:
+        ZIP on a seekable source reads its directory once, then member data forward
+        only. A pull that fails poisons the walk as in any streaming pass, and the pass
+        then yields the members listed before it and raises it when it gets there, as
+        it would with the listing and the data interleaved. Terminal damage is kept in
         ``_walk_error`` and raised at the end of the pass as usual, and the limit check
         at the end of the walk is left to the pass as well.
         """
@@ -3032,7 +2984,12 @@ class BaseArchiveReader(ArchiveReader):
 
     def _open_member_in_walk(self, member: ArchiveMember) -> MemberStreamParts:
         """``member``'s data for a pass that reads through the walk
-        (:meth:`_pass_reads_through_walk`), usually through :meth:`_walk_handoff_locked`."""
+        (:meth:`_pass_reads_through_walk`): through the walk's own stream when the walk
+        is at the start of the member's data, else through a view of its own (a pass
+        started after an earlier one was left part-way finds the walk past the members
+        the list holds). The pass has the reader to itself and closes the stream before
+        anything
+        else reads the walk, so nothing moves the walk under a stream still read."""
         raise NotImplementedError
 
     # --- Registering each member the walk yields, and its presentation checks ---------
@@ -4184,10 +4141,64 @@ class BaseArchiveReader(ArchiveReader):
     # --- A streaming reader's single forward pass -------------------------------------
 
     def _begin_forward_pass(self) -> Iterator[ArchiveMember]:
-        """Return the shared instance-held progressive pass, creating it if needed."""
+        """Return the shared instance-held progressive pass, creating it if needed.
+
+        A reader with an upfront list drains its walk first (:meth:`_walk_ahead`), so
+        the pass pins the whole index before its first member (:meth:`_pin_pass`)."""
         if self._progressive_gen is None:
+            if self._MEMBER_LIST_UPFRONT:
+                self._walk_ahead()
             self._progressive_gen = _ProgressivePassIterator(self)
         return self._progressive_gen
+
+    def _built_report(self) -> MemberListReport | None:
+        """The member-list report that exists without reading anything, or ``None``.
+
+        The published, link-resolved report if there is one; else, on a reader with an
+        upfront list whose walk has ended, the index-only report of what it listed (the
+        one :meth:`_members_report_if_available` builds), kept apart from
+        ``_materialized`` because its link targets may not be read yet. ``None`` when
+        neither exists, or when a listing limit stands in the way (a limit is never
+        stored on a report). Reads plain attributes only and takes no lock but the
+        diagnostics collector's, so a pass can pin it at any point
+        (:meth:`_pin_pass`).
+        """
+        materialized = self._materialized
+        if materialized is not None:
+            try:
+                self._listing_tracker.assert_within_limits()
+            except ResourceLimitError:
+                return None
+            return materialized.report
+        if (
+            not self._MEMBER_LIST_UPFRONT
+            or not self._walk_done
+            or self._walk_failure is not None
+        ):
+            return None
+        return MemberListReport(
+            members=tuple(self._listed),
+            error=self._walk_error,
+            diagnostics=self._diagnostics_collector.snapshot(),
+        )
+
+    def _acquire_pass(self, name: str, kind: PassKind) -> OperationToken:
+        """Take the pass token for ``name``, pinning what is built at admission."""
+        return self._state.acquire_pass(name, kind, self._built_report())
+
+    def _pin_pass(self, token: OperationToken) -> None:
+        """Pin what the pass's startup built, before its first member: what
+        ``members_report_if_available()`` answers until the pass ends."""
+        self._state.pin_report(token, self._built_report())
+
+    def _pass_totals_report(self) -> MemberListReport | None:
+        """``members_report_if_available()`` for the pass this thread runs: the
+        extraction coordinator's progress totals, taken inside its ``extract_all()``
+        pass. Builds the index-only report as a peek outside a pass does (the peek
+        inside one reads nothing), then pins it for the rest of the pass."""
+        report = self._members_report_if_available()
+        self._state.pin_owner_report(self._built_report())
+        return report
 
     def _guard_forward_pass_entry(self, op: str) -> None:
         """Refuse ``op`` once a streaming reader's one forward pass has started."""
@@ -4535,10 +4546,12 @@ class BaseArchiveReader(ArchiveReader):
         raises the damage the listing stopped at, if any."""
         self._state.require_open("__iter__")
         if self._streaming:
-            token = self._state.acquire_pass("__iter__")
+            token = self._acquire_pass("__iter__", PassKind.LIST)
             try:
                 self._enter_forward_pass("__iter__")
-                for member in self._begin_forward_pass():
+                members = self._begin_forward_pass()
+                self._pin_pass(token)
+                for member in members:
                     # Suspended at the yield: this thread runs the caller's loop body,
                     # which is not re-entry (see OperationToken.suspended).
                     self._state.set_suspended(token, True)
@@ -4617,13 +4630,14 @@ class BaseArchiveReader(ArchiveReader):
             finally:
                 self._state.release_pass(token)
 
-        token = self._state.acquire_pass("members_report")
+        token = self._acquire_pass("members_report", PassKind.LIST)
         try:
             published = self._published_within_limits()
             if published is not None:
                 return published.report
             self._forward_pass_started = True
             gen = self._begin_forward_pass()
+            self._pin_pass(token)
             while True:
                 try:
                     next(gen)
@@ -4655,19 +4669,16 @@ class BaseArchiveReader(ArchiveReader):
         member data. A walk that ends in terminal archive damage is returned as the
         incomplete report (prefix plus ``error``), not raised. After a streaming pass
         stopped by a listing limit, ``None``, as on a reader with no index.
+
+        While a pass is open (its loop body, a callback, or another thread), it answers
+        the report the pass pinned when it started, or ``None``, and reads nothing.
         """
-        if not self._state.concurrent:
-            # Admitted inside a pass's loop body, unlike a worker call, but held so a
-            # callback's close() during the drain is refused as re-entry instead of
-            # tearing the walk down under it.
-            token = self._state.acquire_peek("members_report_if_available()")
-            try:
-                return self._members_report_if_available()
-            finally:
-                self._state.release_worker(token)
+        token, pinned = self._state.acquire_peek("members_report_if_available()")
+        if token is None:
+            return pinned
         # A worker token, as members() takes: close() then waits for the walk below
-        # instead of closing the archive under it.
-        token = self._state.acquire_worker("members_report_if_available()")
+        # instead of closing the archive under it, and a callback's close() during the
+        # drain is refused as re-entry instead of tearing the walk down under it.
         try:
             return self._members_report_if_available()
         finally:
@@ -5081,9 +5092,20 @@ class BaseArchiveReader(ArchiveReader):
     def verify_all(self) -> VerifyReport:
         # The report covers only the emits this call makes, on its own thread, as
         # extract_all's does.
-        with self._diagnostics_collector.scoped() as scope:
-            failures = self._verify_all_failures()
-            structure_error = self.members_report().error
+        # One pass from admission to the report: neither open() nor another pass can
+        # start between the stream pass, the spanning passes and the report, which run
+        # under it as children.
+        self._state.require_open("verify_all()")
+        token = self._acquire_pass("verify_all", PassKind.DATA)
+        try:
+            with (
+                self._internal_member_opens(),
+                self._diagnostics_collector.scoped() as scope,
+            ):
+                failures = self._verify_all_failures()
+                structure_error = self.members_report().error
+        finally:
+            self._state.release_pass(token)
         return VerifyReport(
             failures=failures,
             structure_error=structure_error,
@@ -5376,21 +5398,22 @@ class BaseArchiveReader(ArchiveReader):
     ) -> Generator[tuple[ArchiveMember, ArchiveStreamImpl | None], None, None]:
         """The ``stream_members()`` pass around the backend's :meth:`_iter_with_data`.
 
-        What it adds, the same for every backend: the pass token, one live-stream slot
-        for all the pass's streams, a file copy's stream closed unopened (the member
+        What it adds, the same for every backend: the pass token, refused beside a
+        stream from ``open()``, the report pinned before the first member, a file
+        copy's stream closed unopened (the member
         comes through with ``None``) unless ``copies.streams``, the ``selector``,
         forward-only member streams, the ratio hold when ``hold_to_ratio``, and closing
         each stream when the pass moves on. When the pass reaches the end, ``report``
         records the selector's entries no member matched. A ``close()`` that finds the
         pass suspended at a yield winds it down (``wind_down``).
         """
-        token = self._state.acquire_pass("stream_members")
+        # A data pass: refused beside another call, and beside a stream from open(), at
+        # its first next(). Its streams are not registered for close() to find: the
+        # pass winds them down.
+        token = self._acquire_pass("stream_members", PassKind.DATA)
         current: ArchiveStreamImpl | None = None
         source_closer: Callable[[], None] | None = None
-        # The pass's streams hold the live-stream slot together (see
-        # ReaderState.admit_pass_streams): admitted once, at the first, and not
-        # registered for close() to find.
-        admitted = False
+        pinned = False
 
         def wind_down() -> None:
             # The pass's pass_closer, run by close() while the pass is suspended at a
@@ -5416,13 +5439,11 @@ class BaseArchiveReader(ArchiveReader):
                 if current is not None:
                     current.close()
                     current = None
-                if stream is not None and not admitted:
-                    # Held before the check, so a refusal closes it (never opened, so
-                    # the close reads and decodes nothing).
-                    current = stream
-                    self._state.admit_pass_streams()
-                    admitted = True
-                    current = None
+                if not pinned:
+                    # The pass's startup (an upfront drain, the random-access list
+                    # build) has run by its first member.
+                    self._pin_pass(token)
+                    pinned = True
                 if (
                     not copies.streams
                     and stream is not None
@@ -5578,7 +5599,9 @@ class BaseArchiveReader(ArchiveReader):
             ratio=self._ratio_limits(),
             dry_run=dry_run,
         )
-        token = self._state.acquire_pass("extract_all")
+        # A data pass, taken before anything reads the archive or touches dest: a
+        # refusal reads no index, runs no callback and creates nothing.
+        token = self._acquire_pass("extract_all", PassKind.DATA)
         try:
             # Library-internal member opens (including hardlink recovery) are ungated.
             # The report covers only the emits this call makes, on its own thread:

@@ -211,15 +211,22 @@ def test_verify_all_with_the_password_reaches_checksum() -> None:
 
 
 def test_a_held_stream_mirrors_what_verify_all_proved(tmp_path: Path) -> None:
+    """A held stream's levels mirror its member: a second stream of the same member
+    that proves it (``ArchiveStream.verify()``) raises the held one too, and the held
+    one has not moved. ``verify_all()`` itself refuses to start beside a held
+    stream."""
     with open_archive(
         _zip(tmp_path), seekable_members=True, concurrent_operations=True
     ) as reader:
         stream = reader.open("a.txt")
         assert (stream.verified, stream.verifiable) == (UNLOCKED, CHECKSUM)
         stream.read(10)
-        assert reader.verify_all().failures == ()
+        with pytest.raises(ArchiveyUsageError, match="Close it first"):
+            reader.verify_all()
+        with reader.open("a.txt") as other:
+            other.verify()
         assert (stream.verified, stream.verifiable) == (CHECKSUM, CHECKSUM)
-        # 10. verify_all() did not touch it.
+        # 10. Proving the member did not touch the held stream.
         assert stream.tell() == 10
         assert stream.read() == _DATA[10:]
         stream.close()

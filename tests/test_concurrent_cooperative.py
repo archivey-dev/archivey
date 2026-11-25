@@ -212,8 +212,8 @@ def test_close_while_stream_members_suspended_closes_reader(
     reader.close()  # idempotent
 
 
-# A pass's streams hold the live-stream slot together: the pass is checked once, at its
-# first stream, instead of each stream checking in and out of the gate.
+# A data pass is refused at its start beside a stream from open(); its own streams do
+# not check in and out of the gate.
 _RANDOM_ACCESS_READ_SOURCES = [p for p in _READ_SOURCES if not p.values[1]]
 
 
@@ -221,15 +221,12 @@ _RANDOM_ACCESS_READ_SOURCES = [p for p in _READ_SOURCES if not p.values[1]]
 def test_stream_members_beside_a_live_open_stream_is_refused(
     tmp_path: Path, make_source, streaming: bool
 ) -> None:
-    """Without ``concurrent_operations``, a pass is refused at its first stream while
-    a stream from ``open()`` is live, as each of its streams was when each checked in.
-
-    Fails when the pass's streams skip the gate altogether (no
-    ``admit_pass_streams``)."""
+    """Without ``concurrent_operations``, a pass is refused at its start while a stream
+    from ``open()`` is live."""
     with open_archive(make_source(tmp_path), streaming=streaming) as reader:
         first = next(m for m in reader.members() if m.is_file and m.size)
         handle = reader.open(first)
-        with pytest.raises(ArchiveyUsageError, match="already open"):
+        with pytest.raises(ArchiveyUsageError, match="Close it first"):
             for _member, _stream in reader.stream_members():
                 pass
         handle.close()
