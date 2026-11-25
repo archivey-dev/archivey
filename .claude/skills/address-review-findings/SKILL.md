@@ -153,6 +153,19 @@ its cases ("formats with a central directory", not "ZIP, 7z and ISO") rather tha
 one more case. A list of cases grows by one finding per round; in
 another project's review loop one block took 24 findings over 9 rounds this way.
 
+**Fix the class, not the instance — in code too.** When a finding shows one input that
+breaks an invariant (a stale path after one alias, a lock skipped on one error path),
+find the one guard that makes every such input impossible and fix that, with a test for
+the class. A point fix invites the next reviewer to find the next variant: in the week to
+2026-11-25, #1715 took four Codex rounds of narrower variants of one finding, and #1833,
+#1757 and #1767 each had a fix reopened the same way. If no single guard exists, say so in
+the reply and ask whether the rest is a follow-up.
+
+**After a second model's review, Opus checks your fixes first.** Fix everything from the
+Codex or Antigravity round, then run the `review` label loop until Opus approves the
+fixes, and only then ask that model for its recheck (`dev-docs/review-loop.md`
+§Second-model reviews).
+
 ---
 
 ## 3. Verify before you act

@@ -54,6 +54,10 @@ this list and §6 disagree, §6 wins; edit both together.
   approval on your own PR (§6 "You cannot post a GitHub approval").
 - End every review body, inline comment and reply with the attribution footer (§6
   "Attribution footer").
+- **Post the review to the pull request yourself**: inline comments first, then the body
+  (§6). A review that exists only in your chat answer is not done, whatever host you run
+  in. Posting is not editing, so "edit nothing" does not stop it. Say in your answer what
+  you posted, with the review's link.
 
 ## How to spend turns
 
@@ -412,15 +416,29 @@ so use these meanings and no others:
 
 - **✅ Approve** — nothing left to change. Every finding is `DISPROVEN`, already fixed in a
   later commit, or a 💡 / 📚 / 🎉 annotation that carries no action.
-- **✅ Approve, conditional on the listed fixes** — the only remaining findings are 🟢 nits
-  (or a 🟡 that small) whose fix is *obvious*, and you would not need to see the result. Say
-  which IDs the approval is conditioned on, in the heading itself. This is the one
-  verdict that approves with work outstanding; the conditioned findings are still posted in
-  full (block 2, inline threads, IDs) — approving is not shorthand for dropping them.
-- **💬 Comment** — findings the implementor should act on, but nothing the maintainer must
-  decide and nothing you need to re-review.
-- **🔄 Request Changes** — a 🔴 stands, or a fix needs a look once it lands. On a light
-  PR (§1), only a 🔴.
+- **✅ Approve, conditional on the listed fixes** — every remaining fix leaves the
+  program's behaviour as it is: a docstring, a comment, a spec or doc line, the PR body,
+  a test, a name, a line wrap. Its severity does not matter; a 🟡 doc-drift finding
+  qualifies. Say which IDs the approval is conditioned on, in the heading itself. This is
+  the one verdict that approves with work outstanding; the conditioned findings are still
+  posted in full (block 2, inline threads, IDs) — approving is not shorthand for dropping
+  them.
+- **🔄 Request Changes** — a 🔴 stands, or a remaining fix changes what code does (a new
+  branch, guard, lock, error type or bound), whatever its severity. Fixes that change
+  behaviour are where later rounds' findings come from: about 20 of the findings after
+  round 1 in the week to 2026-11-25 were caused by an earlier fix or merge
+  (`dev-docs/review-loop.md` §Second-model reviews). On a light PR (§1), only a 🔴.
+- **⏸️ Maintainer decision needed** — block 3 is not empty (§3).
+
+There is no 💬 Comment verdict (removed 2026-11-25). It meant "act on these, I do not
+need to look", which is the conditional approval when the fixes leave behaviour alone,
+and 🔄 when they do not. Rounds that used it (#1728, #1782) let behaviour fixes land
+without a re-read.
+
+**A finding's reach does not set the verdict by itself.** Tag every 🔴 / 🟡 with what
+reaches it (§5 "Reach"). A `caller-misuse` finding whose worst outcome is a clean
+`ArchiveyError`, or the wrong `ArchiveyError` subclass, is 🟢: it is fixed on this PR,
+but it never makes the verdict 🔄 alone.
 
 **"Only nits left" is not a reason to merge.** In this repo a 🟢 nit is *small*, not
 *optional*: it gets fixed before merge, on this PR. "Leave it for a follow-up" is not an
@@ -453,9 +471,9 @@ binds only the case where the remainder is nits.
 **Under the automated loop the verdict is what stops the loop**, not a suggestion it
 weighs — and unlike the budget above it, that is not a round-3 rule: a conditional
 approval at round 1 ends the loop at round 1. The round's verdict file maps 🔄 Request
-Changes to a closing comment that asks for another round, and the three "I do not need
-to see the result" verdicts — a plain approval, the conditional approval above, and
-💬 Comment — to one that asks for none, whatever rounds the cap has left
+Changes to a closing comment that asks for another round, and the two "I do not need
+to see the result" verdicts — a plain approval and the conditional approval above —
+to one that asks for none, whatever rounds the cap has left
 ([`dev-docs/review-loop.md`](../../../dev-docs/review-loop.md) §Stopping it). So the
 verdict line is a decision about spending another review, and writing 🔄 to keep a round
 in hand spends one on wording you have already described.
@@ -477,10 +495,38 @@ Pair each finding with a confidence tag — `CONFIRMED` / `PLAUSIBLE` / `DISPROV
 When unsure whether something is 🔴 vs 🟡: **does it undercut a VISION claim or the
 error/safety contract?** If yes → 🔴.
 
+### Reach: who can trigger it
+
+Every 🔴 and 🟡 names its reach after the confidence tag, e.g.
+`K3 · 🟡 · CONFIRMED · reach: normal-use`. Put the trigger first in the finding.
+
+- **`hostile-bytes`** — an archive's bytes trigger it. Always counts in full: this is the
+  threat model, however unusual the bytes.
+- **`normal-use`** — ordinary calls, threads used as the docs allow, real file-likes,
+  real platforms and filesystems.
+- **`caller-misuse`** — only the caller's own code doing something the docs do not
+  invite: a callback (password provider, `on_progress`, `on_source_read`, a filter, a
+  logging handler) that re-enters the reader or closes its streams; a retry after the
+  caller's own callback raised; `__index__` objects or wrong types passed to a kernel;
+  garbage-collector timing; a platform corner stacked on `TRUSTED` (8.3 names plus hard
+  links).
+
+A `caller-misuse` finding is 🟡 only when its outcome is a hang, deadlock, crash, bare
+`AssertionError`, data loss or a write outside the destination; otherwise 🟢 (§4). Say
+what one guard would make the whole class impossible, not only your example: a second
+`caller-misuse` finding of the same class asks for that guard, not another case
+(`address-review-findings` §2).
+
 ## 6. Posting the review to a pull request
 
-The usual workflow here is that **a second agent posts this review to the PR, and the
-implementing agent then works through it** (`.claude/skills/address-review-findings/`).
+**When you review a pull request, you post the review to it yourself**, in every host
+(Claude Code, Codex, Cursor, Antigravity or any other), without being asked again.
+Then the implementing agent works through it (`.claude/skills/address-review-findings/`).
+Your chat answer is a short pointer to what you posted, not the review. Only a review
+the user asked for in chat, of something that is not a pull request, stays in chat. If
+posting fails, say so and give the error. Do not paste the review into chat in its place
+(Codex did this on 2026-11-24/25 until told to post).
+
 That handoff is the reason for the rules below: a review that reads well in a terminal but
 cannot be dispositioned finding-by-finding costs the next round more than it saved.
 

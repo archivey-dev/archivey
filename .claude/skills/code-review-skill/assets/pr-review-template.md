@@ -18,7 +18,7 @@ Two things about the shape, because they are what people get wrong:
 ## A. The review body (blocks 1 and 3)
 
 ```markdown
-## Round [N] · [✅ Approve | ✅ Approve, conditional on K7, K9 | 💬 Comment | 🔄 Request Changes]
+## Round [N] · [✅ Approve | ✅ Approve, conditional on K7, K9 | 🔄 Request Changes | ⏸️ Maintainer decision needed]
 
 **Claude Code** · `code-review-skill` · `[head-sha]` · scope `[main...HEAD | last..HEAD]`
 

@@ -189,10 +189,12 @@ evidence for it.
 
 - **The verdict decides whether another round is asked for.** The reviewer writes one of
   five verdicts. `clean`, `approved` and `conditional` mean it does not need to see the
-  result: `approved` is a plain "✅ Approve", and `conditional` covers "✅ Approve,
-  conditional on the listed fixes" and "💬 Comment". The findings are still posted in
-  full and still fixed, but the closing comment does not ask for another round.
-  `findings` (🔄 Request Changes) asks for one.
+  result: `approved` is a plain "✅ Approve", and `conditional` is "✅ Approve,
+  conditional on the listed fixes", given only when every listed fix leaves behaviour
+  unchanged. The findings are still posted in full and still fixed, but the closing
+  comment does not ask for another round. `findings` (🔄 Request Changes) asks for one,
+  and is the verdict whenever any fix changes what code does. There is no "💬 Comment"
+  verdict ([`code-review-skill`](../.claude/skills/code-review-skill/SKILL.md) §4).
   `decision` stops until the maintainer answers. `VERDICT_STOPS` in
   [`scripts/review/review_loop_gate.py`](../scripts/review/review_loop_gate.py) holds the mapping.
 - **The verdict advises; it does not refuse.** After a verdict that needs no other
@@ -213,6 +215,31 @@ evidence for it.
   is the implementer's job.
 - **To stop a pull request from being reviewed**, do not label it, or add `no-review`
   to keep it out for good. Nothing else starts a round.
+
+## Second-model reviews
+
+Deep-tier pull requests also need a review from a second model (Codex, or Antigravity or
+Cursor) before merge (`AGENTS.md`). These reviews run by hand, outside the label loop.
+The order below comes from a pass over every multi-model PR in the week to 2026-11-25
+(evidence: `/mnt/project-files/investigations/multi-model-reviews-2026-11-25/`).
+
+1. **Opus first.** Run the label loop until Opus approves.
+2. **Then the second models together, on one head.** Codex and Antigravity each read the
+   whole PR cold, on the same commit. The first cold read is where they pay off: on 6 of
+   8 implementation PRs Codex found a real bug that Opus had approved past.
+3. **The implementer fixes everything from both**, and fixes the class, not the instance
+   ([`address-review-findings`](../.claude/skills/address-review-findings/SKILL.md) §2).
+4. **Opus reviews the fixes** in the label loop until it approves again. About 20 of the
+   findings after round 1 were bugs that an earlier fix or merge introduced; an Opus fix
+   round catches those sooner and cheaper than another external round.
+5. **One external recheck**, by the model that had blocking findings (Codex if both
+   did). Do not alternate models round by round.
+6. **At most two external rechecks per model.** After that, a finding that still turns up
+   goes to the maintainer as a decision or a follow-up issue, not another round.
+
+Do not ask for an external review of code whose design still waits on a maintainer
+decision: reviews of code that was later cut or redesigned were the largest waste that
+week.
 
 ## Bots must be named
 
