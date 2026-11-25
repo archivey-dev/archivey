@@ -37,6 +37,7 @@ from archivey import (  # noqa: E402
     open_archive,
 )
 from archivey.fsspec import ArchiveyFileSystem  # noqa: E402
+from archivey.internal.reader_state import LifecycleState  # noqa: E402
 from tests.conftest import case_sensitive  # noqa: E402
 from tests.memory_util import traced_peak  # noqa: E402
 
@@ -1092,12 +1093,17 @@ def test_close_after_the_tree_is_built_keeps_no_tree(
 
     lister = threading.Thread(target=listing)
     lister.start()
+    closer = threading.Thread(target=fs.close)
     try:
         assert built.wait(10)
-        fs.close()
+        closer.start()
+        closer.join(2)
+        assert not closer.is_alive(), "fs.close() waited for the listing"
     finally:
         release.set()
         lister.join(10)
+        if closer.ident is not None:
+            closer.join(10)
     assert len(outcome) == 1 and isinstance(outcome[0], ArchiveyUsageError), outcome
     assert fs._tree is None
     with pytest.raises(ArchiveyUsageError):
@@ -1106,8 +1112,8 @@ def test_close_after_the_tree_is_built_keeps_no_tree(
 
 def test_close_beside_a_pass_on_another_thread_returns_at_once(memfs: Any) -> None:
     """``fs.close()`` while a pass on ``fs.reader`` runs on another thread returns at
-    once; the pass raises the closed error at its next step, and the reader is
-    released after it returns."""
+    once; the pass raises the closed error at its next step, and once it has ended
+    the reader's teardown has run."""
     memfs.pipe("/d/pass.zip", _zip_bytes([("a", b"x"), ("b", b"y")]))
     fs = ArchiveyFileSystem("memory://d/pass.zip")
     in_loop, release = threading.Event(), threading.Event()
@@ -1135,6 +1141,10 @@ def test_close_beside_a_pass_on_another_thread_returns_at_once(memfs: Any) -> No
         worker.join(10)
         closer.join(10)
     assert len(outcome) == 1 and isinstance(outcome[0], ArchiveyUsageError), outcome
+    # Teardown has run, from the close or from the pass's own end, whichever came
+    # last. It fails when teardown never runs (``_maybe_teardown`` made a no-op).
+    state = fs.reader._state  # type: ignore[attr-defined]
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE, state.lifecycle
 
 
 def test_a_second_close_returns_with_the_reader_closed(
@@ -1224,7 +1234,32 @@ def test_a_listing_after_the_close_raises_at_once_beside_a_build(
     assert builds == [1]
 
 
+def test_a_build_overtaken_by_close_reports_no_more_refusals(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A close that lands while the tree is built from the listed members stops the
+    build at the next member: no refusal reaches ``on_diagnostic`` after the close,
+    and the listing raises the closed error, not a diagnostic."""
+    memfs.pipe("/d/late-refusal.zip", _zip_bytes([("ok", b"x"), ("../up", b"y")]))
+    seen: list[DiagnosticCode] = []
+    config = ArchiveyConfig(on_diagnostic=lambda d: seen.append(d.code))
+    fs = ArchiveyFileSystem("memory://d/late-refusal.zip", config=config)
+    real_view = fs._view
+
+    def close_on_first(member: Any, *args: Any) -> Any:
+        if member.name == "ok":
+            fs.close()  # what another thread's close does at this point
+        return real_view(member, *args)
+
+    monkeypatch.setattr(fs, "_view", close_on_first)
+    with pytest.raises(ArchiveyUsageError):
+        fs.ls("")
+    assert DiagnosticCode.MEMBER_PATH_REFUSED not in seen, seen
+
+
 def test_close_under_open_streams_makes_their_reads_raise(memfs: Any) -> None:
+    """``fs.close()`` with member streams still open closes them: their next read
+    raises the closed-file ``ValueError``."""
     memfs.pipe("/d/held.zip", _zip_bytes([("a", b"x" * 10), ("b", b"y" * 10)]))
     fs = ArchiveyFileSystem("memory://d/held.zip")
     first, second = fs.open("a"), fs.open("b")

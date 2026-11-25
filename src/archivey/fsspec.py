@@ -841,6 +841,10 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         with tempfile.TemporaryDirectory(prefix="archivey-fsspec-") as tmp:
             root = resolve_or_raise_on_loop(Path(tmp))
             for member in self.reader.members():
+                # ``members()`` has listed everything by now; a close from here on
+                # stops the build at the next member, before it reports a refusal.
+                if self._closed:
+                    raise closed_reader_error("listing")
                 if not member.is_current:
                     continue
                 try:
