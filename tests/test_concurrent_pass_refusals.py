@@ -961,3 +961,33 @@ def test_a_log_handler_for_a_link_resolution_diagnostic_cannot_call_the_reader(
         assert all(
             isinstance(e, ArchiveyUsageError) and "re-entered" in str(e) for e in errors
         ), (name, errors)
+
+
+def test_the_held_source_pass_does_not_repin_the_extraction_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``extract_all()``'s second pass (the held sources of hard links) runs after
+    members were already processed. It must not re-pin: a peek answers the same
+    before and after it, as at any point of the pass."""
+    from archivey.internal.extraction import ExtractionCoordinator
+    from tests.test_extraction import _tar_bytes
+
+    archive = _tar_bytes(
+        [
+            ("file", "src.bin", b"data"),
+            ("hard", "H", "src.bin"),  # held back: src.bin excluded
+        ]
+    )
+    peeks: list[object] = []
+    real_fill = ExtractionCoordinator._fill_held_sources
+
+    def fill(self: ExtractionCoordinator, reader: object) -> None:
+        peeks.append(reader.members_report_if_available())  # type: ignore[attr-defined]
+        real_fill(self, reader)  # type: ignore[arg-type]
+        peeks.append(reader.members_report_if_available())  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(ExtractionCoordinator, "_fill_held_sources", fill)
+    with open_archive(io.BytesIO(archive)) as reader:
+        reader.extract_all(tmp_path / "out", members=lambda m: m.name != "src.bin")
+    assert len(peeks) == 2
+    assert peeks[0] is peeks[1]
