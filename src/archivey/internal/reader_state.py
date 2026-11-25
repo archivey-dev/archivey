@@ -44,10 +44,11 @@ only one caller acts on it. Teardown always follows the streams, never runs unde
          (drops the reader's lease)                 (lease count 0; succeeds once)
     TEARDOWN_RUNNING --complete_teardown()--> TEARDOWN_COMPLETE
 
-``_closing`` is set once a ``close()`` has passed its checks, and stays set while it drains
-in-flight workers (a wait that only happens under ``CONCURRENT``; a default reader has
-refused the close instead). New calls are refused from then on, and other closers wait
-for the transition.
+A running call holds teardown back too, without a lease: a worker, a child scope, or a
+pass that is not suspended at a yield (``_running_locked``). ``close()`` never waits for
+one and never refuses because of one, in either mode: it marks the reader closed and
+returns. The running call stops at its next checkpoint with the closed error, and the
+last call out runs the reader's teardown (``teardown_hook``).
 """
 
 from __future__ import annotations
@@ -94,6 +95,24 @@ def _overlap_refused(message: str) -> ArchiveyUsageError:
     exc = ArchiveyUsageError(message)
     setattr(exc, _OVERLAP_MARK, True)
     return exc
+
+
+_CLOSED_MARK = "_archivey_reader_closed"
+
+
+def closed_reader_error(op: str) -> ArchiveyUsageError:
+    """The error a call on a closed reader raises, marked so the reader's teardown on
+    the way out can tell it from any other error (it becomes the teardown error's
+    ``__cause__`` holder, not a note)."""
+    exc = ArchiveyUsageError(
+        f"{op} is not available after the archive reader has been closed."
+    )
+    setattr(exc, _CLOSED_MARK, True)
+    return exc
+
+
+def is_closed_reader_error(exc: BaseException) -> bool:
+    return getattr(exc, _CLOSED_MARK, False)
 
 
 def _retry_after_collecting(
@@ -216,8 +235,8 @@ class ReaderState:
     (``concurrent_operations=True``) this class mostly refuses: one live member stream, one
     reader-wide operation, no overlapping worker calls, and no shared-handle locks
     needed. ``CONCURRENT`` turns those refusals into waits: several live streams,
-    a second materializer waits for the first one's snapshot, and ``close()`` drains
-    in-flight worker calls. A pass (``stream_members()``, ``extract_all()``,
+    and a second materializer waits for the first one's snapshot. ``close()`` never
+    waits, in either mode. A pass (``stream_members()``, ``extract_all()``,
     ``verify_all()``, a streaming listing) has the reader to itself in both modes.
     Access to one stream stays single-owner (caller-synchronized) either way.
     """
@@ -241,11 +260,11 @@ class ReaderState:
         self.provider_reentry: Callable[[int | None], bool] | None = None
         self._lock = threading.RLock()
         self._materialization_cv = threading.Condition(self._lock)
-        self._workers_cv = threading.Condition(self._lock)
-        self._close_cv = threading.Condition(self._lock)
         self.cache_state = CacheState.UNMATERIALIZED
         self.lifecycle = LifecycleState.OPEN
-        self._closing = False
+        # Run, outside the lock, by the call that leaves last after a close: the
+        # reader sets it to its teardown (``BaseArchiveReader._teardown_after_call``).
+        self.teardown_hook: Callable[[], None] | None = None
         # The one reader-wide pass or default-reader lookup in progress, if any.
         self._root: OperationToken | None = None
         self._children: set[OperationToken] = set()
@@ -425,8 +444,15 @@ class ReaderState:
         return root if root is not None and not root.suspended else None
 
     def set_suspended(self, token: OperationToken, suspended: bool) -> None:
-        """Mark a generator-held pass as suspended at a yield, or running again."""
+        """Mark a generator-held pass as suspended at a yield, or running again.
+
+        Suspending is a checkpoint: on a closed reader it raises the closed error
+        instead, so a pass that was running when ``close()`` came stops before it hands
+        out another member, and its own ``finally`` winds it down. Unsuspending never
+        raises (it runs on the way out of a yield that raised)."""
         with self._lock:
+            if suspended:
+                self._require_lifecycle_open_locked(token.name)
             token.suspended = suspended
 
     def resume(self, token: OperationToken, op: str) -> None:
@@ -443,6 +469,16 @@ class ReaderState:
         """Record how ``close()`` winds down this pass if it is suspended at a yield."""
         with self._lock:
             token.pass_closer = closer
+
+    def keep_own_closer(self, token: OperationToken) -> bool:
+        """Whether the pass still winds itself down: ``close()`` did not take its
+        closer (the reader is open, or the pass was running when it closed). Takes the
+        closer, so it is decided once."""
+        with self._lock:
+            if token.pass_closer is None:
+                return False
+            token.pass_closer = None
+            return True
 
     def take_pass_wind_down(self) -> Callable[[], None] | None:
         """Winds down the passes the close transition found suspended, each once.
@@ -477,17 +513,26 @@ class ReaderState:
             raise ExceptionGroup("winding down several passes failed", errors)
 
     def release_pass(self, token: OperationToken) -> None:
-        """End a pass, once. The children filed under the pass go with it."""
+        """End a pass, once. The children filed under the pass go with it. The last
+        call out after a close runs the teardown hook."""
         with self._lock:
             if token._released:
                 return
             token._released = True
             if token.parent is not None or token.kind == "child":
                 self._children.discard(token)
-                return
-            if self._root is token:
-                self._root = None
-            self._children = {c for c in self._children if c.parent is not token}
+            else:
+                if self._root is token:
+                    self._root = None
+                self._children = {c for c in self._children if c.parent is not token}
+            due = self._teardown_due_locked()
+        if due:
+            self._run_teardown_hook()
+
+    def _run_teardown_hook(self) -> None:
+        hook = self.teardown_hook
+        if hook is not None:
+            hook()
 
     def enter_child_scope(self, name: str) -> OperationToken | None:
         """A child scope under the pass this thread works for, or ``None`` if no pass.
@@ -504,11 +549,7 @@ class ReaderState:
             return child
 
     def release_child(self, child: OperationToken) -> None:
-        with self._lock:
-            if child._released:
-                return
-            child._released = True
-            self._children.discard(child)
+        self.release_worker(child)
 
     def acquire_worker(self, name: str) -> OperationToken:
         """Take a short-lived token for one call: see :meth:`_acquire_worker_once`.
@@ -570,19 +611,19 @@ class ReaderState:
             return token, None
 
     def release_worker(self, token: OperationToken) -> None:
+        """Release a worker (or child) token, once. The last call out after a close
+        runs the teardown hook."""
         with self._lock:
             if token._released:
                 return
             token._released = True
             if token.kind == "child" or token.parent is not None:
                 self._children.discard(token)
-                return
-            self._workers.discard(token)
-            # Only a draining close() waits on this condition, and it sets ``_closing``
-            # before it waits. Every open() releases a worker, so the notify is skipped
-            # when no close can be waiting.
-            if not self._workers and self._closing:
-                self._workers_cv.notify_all()
+            else:
+                self._workers.discard(token)
+            due = self._teardown_due_locked()
+        if due:
+            self._run_teardown_hook()
 
     def begin_materialization(self) -> bool:
         """Elect a materialization owner or wait for a published snapshot.
@@ -600,9 +641,7 @@ class ReaderState:
         """
         with self._lock:
             while True:
-                # The lifecycle only, not ``_closing``: a caller here already holds
-                # its token, and a close() draining in-flight workers waits for this
-                # one to finish, so refusing it would turn that wait into an error.
+                # A checkpoint: after a close, a waiter stops here instead of building.
                 self._require_lifecycle_open_locked("materialization")
                 if self.cache_state is CacheState.MATERIALIZED:
                     return False
@@ -684,14 +723,22 @@ class ReaderState:
     def bind_live_stream(
         self, token: LiveStreamReservation, stream: ArchiveStreamImpl
     ) -> None:
-        """Consume ``token``, recording ``id(stream)`` as the live stream.
+        """Consume ``token``, recording ``id(stream)`` as the live stream: the point
+        where the stream is published.
 
-        Infallible: no lifecycle re-check. ``open()`` still holds a worker across
-        reserve → open → bind, so ``close()`` cannot complete in between. Does not
-        increment the lease — the reservation already holds it.
+        Re-checks the lifecycle: a ``close()`` that came after the reservation finds
+        no live stream to close, so here the reservation is dropped and the closed
+        error raised; the caller closes the new stream. A close after a bind closes
+        the registered stream like any other. Does not increment the lease — the
+        reservation already holds it.
         """
         ref = weakref.ref(stream)
         with self._lock:
+            if self.lifecycle is not LifecycleState.OPEN:
+                if token in self._reservations:
+                    self._reservations.discard(token)
+                    self._release_lease_locked()
+                raise closed_reader_error("open()")
             self._reservations.discard(token)
             self._live_streams[id(stream)] = ref
 
@@ -752,103 +799,36 @@ class ReaderState:
         return [stream for ref in refs if (stream := ref()) is not None]
 
     def mark_reader_closed(self) -> bool:
-        """Mark reader closed and release the reader lease. True → run teardown now.
+        """Mark the reader closed and drop the reader's lease. True → run teardown now.
 
-        Under ``MemberStreams.CONCURRENT``, blocks until in-flight worker ``open()`` /
-        ``get()`` / ``members()`` calls return (``read()`` while it opens the member),
-        then transitions to closed. A member stream's own reads hold no worker token.
-        Escaped idle member streams keep their lifecycle leases and do not block close.
-        A worker that never returns is a caller bug (same as any lock); there is no
-        artificial timeout.
-
-        Without ``CONCURRENT``, overlapping worker calls still raise
-        :class:`~archivey.exceptions.ArchiveyUsageError`, as does a reader-wide pass
-        that is executing. A pass whose generator is suspended at a yield does not
-        block: the reader closes under it. Concurrent double-``close()`` is
-        idempotent: one thread drains and closes; others wait for that transition and
-        return without running teardown again.
+        Never waits and never refuses, in either mode, whoever is running a call and
+        from whatever thread (a callback of the reader's own call included). From here
+        on every new call raises the closed error, and a running call stops at its next
+        checkpoint (:meth:`set_suspended`, :meth:`resume`, :meth:`check_open`). A call
+        still running holds teardown back: the last one out runs the teardown hook
+        (:meth:`release_worker`, :meth:`release_pass`). A pass suspended at a yield is
+        not running; its closer is handed to ``close()`` with a lease, so the backend's
+        pass cleanup comes before teardown. A second call returns ``False`` unless an
+        interrupted first one left the reader's lease to drop.
         """
         with self._lock:
-            while True:
-                # First, before any wait: a thread closing from INSIDE one of its own
-                # calls (a diagnostic/progress callback calling close()) would wait
-                # forever for a call that cannot return until close() does, and the
-                # generic messages below would send the user looking for a second
-                # caller that does not exist.
-                token = self._same_thread_token_locked()
-                if token is not None:
-                    raise ArchiveyUsageError(
-                        "Cannot close the archive reader from inside one of its own "
-                        f"calls ({token.name!r}; e.g. from a diagnostic or progress "
-                        "callback). Callbacks must not close the reader that "
-                        "triggered them."
-                    )
-                # Before either wait below: from inside a password provider (its
-                # thread or a copied context), waiting for the operation that waits
-                # on the provider, or for a closer that waits on that operation,
-                # never ends.
-                for token in (*self._passes_locked(), *self._workers):
-                    self.refuse_wait_on_provider(token.thread.ident)
-                # Another closer is draining, or close already finished.
-                if self._closing or self.lifecycle is not LifecycleState.OPEN:
-                    while self.lifecycle is LifecycleState.OPEN and self._closing:
-                        self._close_cv.wait()
-                    if self.lifecycle is LifecycleState.READER_CLOSED:
-                        # A closer interrupted between the transition and its lease
-                        # drop left the reader's lease counted. Finish the drop here.
-                        return self._drop_reader_lease_locked()
-                    if self.lifecycle is LifecycleState.OPEN:
-                        # The draining closer was interrupted (its except arm below
-                        # reset ``_closing``), so nothing closed the reader. Returning
-                        # False would tell close() a peer had, and it would then mark
-                        # itself closed with teardown never run. Retry as the closer.
-                        # Invariant: False is returned only when lifecycle is not OPEN.
-                        continue
-                    return False
-                # A pass suspended at a yield is not running: the caller holds its
-                # iterator. Close anyway, as zipfile.ZipFile.close() does with member
-                # handles open; resuming that iterator then raises. Only a pass that
-                # is executing refuses the close.
-                running = self._executing_pass_locked()
-                if running is not None:
-                    raise ArchiveyUsageError(
-                        "Cannot close the archive reader while another reader "
-                        f"operation ({running.name!r}) is active."
-                    )
-                if self._workers and not self.concurrent:
-                    raise ArchiveyUsageError(
-                        "Cannot close the archive reader while an open()/get()/read() call "
-                        "is still in progress."
-                    )
-                self._closing = True
-                try:
-                    # No pass can start or resume meanwhile: a pass is refused
-                    # beside a worker, a worker beside a pass, and ``_closing``
-                    # refuses new calls.
-                    while self._workers:
-                        self._workers_cv.wait()
-                    # Notify last. If an interrupt lands after the transition but
-                    # before the lease drop, the retry branch above finishes the drop.
-                    self.lifecycle = LifecycleState.READER_CLOSED
-                    # In the same lock hold as the decision above (taken again after
-                    # any wait), so a suspended pass cannot resume and release
-                    # itself in between. The lease keeps teardown back until
-                    # close() has run the closers: the backend's pass cleanup must
-                    # come before the source is closed.
-                    for token in self._passes_locked():
-                        if token.pass_closer is not None:
-                            # Lease first: an interrupt between the stores leaves a
-                            # lease that close() drops, never a closer without a lease.
-                            self._pass_wind_down_lease = True
-                            self._pass_wind_down.append(token.pass_closer)
-                            token.pass_closer = None
-                    run_teardown = self._drop_reader_lease_locked()
-                    self._close_cv.notify_all()
-                    return run_teardown
-                except BaseException:
-                    self._closing = False
-                    self._close_cv.notify_all()
-                    raise
+            if self.lifecycle is LifecycleState.OPEN:
+                self.lifecycle = LifecycleState.READER_CLOSED
+                root = self._root
+                if root is not None and root.suspended and root.pass_closer is not None:
+                    # Lease first: an interrupt between the stores leaves a lease that
+                    # close() drops, never a closer without a lease.
+                    self._pass_wind_down_lease = True
+                    self._pass_wind_down.append(root.pass_closer)
+                    root.pass_closer = None
+            return self._drop_reader_lease_locked()
+
+    def check_open(self, op: str) -> None:
+        """A checkpoint inside a running call: raise the closed error if ``close()``
+        has come since the call started."""
+        if self.lifecycle is not LifecycleState.OPEN:
+            with self._lock:
+                self._require_lifecycle_open_locked(op)
 
     def claim_stream_shutdown(self, ticket: object) -> bool:
         """True for the one caller that should wind the pass down and close live streams.
@@ -926,7 +906,7 @@ class ReaderState:
             # a claim can succeed from.
             if self.lifecycle is not LifecycleState.READER_CLOSED:
                 return False
-            if self._outstanding_leases_locked() > 0:
+            if self._outstanding_leases_locked() > 0 or self._running_locked():
                 return False
             self._teardown_claimed = True
             self.lifecycle = LifecycleState.TEARDOWN_RUNNING
@@ -960,10 +940,19 @@ class ReaderState:
             + (1 if self._pass_wind_down_lease else 0)
         )
 
+    def _running_locked(self) -> bool:
+        """Whether a call is still running: a worker, a child scope, or a pass that is
+        not suspended at a yield. Each holds teardown back."""
+        root = self._root
+        return bool(
+            self._workers or self._children or (root is not None and not root.suspended)
+        )
+
     def _teardown_due_locked(self) -> bool:
         return (
             self.lifecycle is LifecycleState.READER_CLOSED
             and self._outstanding_leases_locked() == 0
+            and not self._running_locked()
             and not self._teardown_claimed
         )
 
@@ -1010,15 +999,10 @@ class ReaderState:
             )
 
     def _require_lifecycle_open_locked(self, op: str) -> None:
-        """Lifecycle is still OPEN (including during draining close)."""
+        """Raise the closed error unless the lifecycle is still OPEN."""
         if self.lifecycle is not LifecycleState.OPEN:
-            raise ArchiveyUsageError(
-                f"{op} is not available after the archive reader has been closed."
-            )
+            raise closed_reader_error(op)
 
     def _require_admissible_locked(self, op: str) -> None:
-        """Reject new public admissions after close started or finished."""
-        if self.lifecycle is not LifecycleState.OPEN or self._closing:
-            raise ArchiveyUsageError(
-                f"{op} is not available after the archive reader has been closed."
-            )
+        """Reject new public admissions after close."""
+        self._require_lifecycle_open_locked(op)

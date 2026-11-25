@@ -375,54 +375,53 @@ def test_concurrent_first_touch_materialization_failure_wakes_waiters(
 
 
 @pytest.mark.concurrent_reader
-def test_close_drains_in_flight_workers_then_closes(tmp_path: Path) -> None:
-    """close() waits for in-flight open() workers, then closes the streams they returned."""
+def test_close_returns_beside_an_in_flight_open_then_the_open_raises(
+    tmp_path: Path,
+) -> None:
+    """close() does not wait for an open() running on another thread: it returns, the
+    open() raises the closed error at its bind, and teardown runs after it, once."""
+    from archivey.internal.reader_state import LifecycleState
+
     path = _make_zip(tmp_path / "a.zip", n=4)
     reader = open_archive(path, concurrent_operations=True)
     reader.members()  # publish so open() work is post-materialization
     entered = threading.Event()
     release = threading.Event()
     original_open_member = reader._open_member
+    opened: list[object] = []
 
     def blocking_open_member(member):
         entered.set()
         assert release.wait(timeout=5)
-        return original_open_member(member)
+        stream = original_open_member(member)
+        opened.append(stream)
+        return stream
 
     reader._open_member = blocking_open_member  # type: ignore[method-assign]
     errors: list[BaseException] = []
-    stream_box: dict[str, object] = {}
 
     def worker() -> None:
         try:
-            stream_box["s"] = reader.open("f0.txt")
+            reader.open("f0.txt")
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
     t = threading.Thread(target=worker)
     t.start()
     assert entered.wait(timeout=5)
-    close_done = threading.Event()
-
-    def closer() -> None:
-        reader.close()
-        close_done.set()
-
-    ct = threading.Thread(target=closer)
-    ct.start()
-    # close must block while the worker is still inside open().
-    assert not close_done.wait(timeout=0.2)
+    reader.close()  # returns at once: nothing waits for the worker
+    state = reader._state
+    assert state.lifecycle is LifecycleState.READER_CLOSED  # the worker holds teardown
     release.set()
     t.join(timeout=10)
-    ct.join(timeout=10)
-    assert close_done.is_set()
-    assert not errors
-    stream = stream_box["s"]
-    assert stream is not None
-    # The worker's open() completed before close() was allowed to proceed, so the
-    # stream existed -- and close() then closed it along with the reader.
-    assert stream.closed  # type: ignore[union-attr]
-    stream.close()  # type: ignore[union-attr]  # idempotent
+    assert not t.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], ArchiveyUsageError)
+    assert "closed" in str(errors[0])
+    # The stream the backend made was never handed out, and it was closed.
+    (inner,) = opened
+    assert inner.inner.closed  # type: ignore[attr-defined]
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
     with pytest.raises(ArchiveyUsageError, match="closed"):
         reader.open("f1.txt")
 

@@ -200,6 +200,7 @@ from archivey.internal.reader_state import (
     OperationToken,
     PassKind,
     ReaderState,
+    is_closed_reader_error,
 )
 from archivey.internal.remote import source_change
 from archivey.internal.resource_usage import ResourceUsage, ResourceUsageRecorder
@@ -1045,6 +1046,8 @@ class BaseArchiveReader(ArchiveReader):
 
         # --- Who may call now, and when to close (``ReaderState``) ---------------
         self._state = ReaderState(member_streams=member_streams, open_site=open_site)
+        # The last call out after a close() tears the archive down.
+        self._state.teardown_hook = self._teardown_after_call
         self._closed = False
         # A backend that shares one underlying handle across member streams (the TAR
         # walk's stream) sets this to a lock under CONCURRENT (and TAR
@@ -1373,11 +1376,6 @@ class BaseArchiveReader(ArchiveReader):
         without closing needs no finalizer of its own: ``IOBase.__del__`` calls
         ``close()`` on it, and ``close()`` runs the hook below in its ``finally``.
         """
-        if token is None:
-            self._state.acquire_live_stream(stream)
-        else:
-            self._state.bind_live_stream(token, stream)
-
         # Capture the identity token, not the stream. The stream holds this hook, so a
         # hook that referenced the stream would make a cycle, and a dropped stream would
         # then wait for the cyclic collector to be closed, holding its file descriptor
@@ -1388,8 +1386,44 @@ class BaseArchiveReader(ArchiveReader):
             if self._state.release_live_stream_id(stream_id):
                 self._maybe_teardown()
 
+        # The hook goes on before the stream is published: a close() on another thread
+        # (or from a callback) right after the bind closes the stream, and its lease
+        # must go with it. Before the bind the hook is a no-op: the stream is not
+        # registered, so there is no lease to release.
         stream._on_close = _on_close
+        if token is None:
+            self._state.acquire_live_stream(stream)
+        else:
+            try:
+                self._state.bind_live_stream(token, stream)
+            except BaseException:
+                # close() came after the reservation: the stream is never published,
+                # so it is closed here; bind already dropped the reservation's lease.
+                stream.close()
+                raise
         return stream
+
+    def _teardown_after_call(self) -> None:
+        """Teardown, run by the call that leaves last after a ``close()``.
+
+        It runs in that call's ``finally``. A teardown failure never replaces an error
+        the call is already raising: it becomes the ``__cause__`` of the closed error,
+        or a note on any other error, and is logged. A call that is returning normally
+        raises it instead.
+        """
+        propagating = sys.exc_info()[1]
+        try:
+            self._maybe_teardown()
+        except Exception as exc:
+            if propagating is None:
+                raise
+            logger.warning("Closing the archive after a call failed: %r", exc)
+            if is_closed_reader_error(propagating) and propagating.__cause__ is None:
+                propagating.__cause__ = exc
+            else:
+                propagating.add_note(
+                    f"Closing the archive after this call also failed: {exc!r}"
+                )
 
     def _internal_member_opens(self) -> _InternalMemberOpens:
         """Context manager: library-internal opens are exempt from the live-stream gate."""
@@ -1409,6 +1443,9 @@ class BaseArchiveReader(ArchiveReader):
                 raise pending
             return
         teardown_exc: Exception | None = None
+        # No call is running now, so nothing writes the listing any more: a pass left
+        # early or a link never read is as final as it will get.
+        _settle_listing(self._listed, links_too=True)
         try:
             try:
                 try:
@@ -2787,11 +2824,17 @@ class BaseArchiveReader(ArchiveReader):
     def _drain_walk(self) -> None:
         """Pull to the end of the walk, in batches of ``_DRAIN_BATCH`` members.
 
-        Each batch takes ``_walk_lock`` once."""
+        Each batch takes ``_walk_lock`` once, and the end of each is a checkpoint: a
+        ``close()`` that came during the batch (from a diagnostic callback the batch
+        ran, or from another thread) stops the drain with the closed error, the last
+        batch included, so the call does not return a listing of a closed reader."""
+        state = self._state
         while True:
             with self._walk_lock:
-                if self._pull_members_locked(_DRAIN_BATCH) is None:
-                    return
+                done = self._pull_members_locked(_DRAIN_BATCH) is None
+            state.check_open("listing")
+            if done:
+                return
 
     def _walk_ahead(self) -> None:
         """Drain a streaming walk before its pass reads data; a failure waits for it.
@@ -2918,6 +2961,8 @@ class BaseArchiveReader(ArchiveReader):
             # Prefer the original listing error on the report; leave unresolved links
             # as-is when a secondary link-target fault is swallowed.
             holder = self._finalize_and_publish(self._walk_error, child_scope=True)
+            # Link resolution runs diagnostic callbacks too: a checkpoint after them.
+            self._state.check_open("listing")
             self._state.complete_materialization()
             return holder
         except BaseException:
@@ -5101,7 +5146,21 @@ class BaseArchiveReader(ArchiveReader):
     def read(self, member: str | ArchiveMember) -> bytes:
         """Read member data as bytes."""
         with self.open(member) as f:
-            data = f.read()
+            # In bounded chunks, each one a checkpoint: a close() on another thread
+            # stops the read within one chunk with the closed error.
+            chunks: list[bytes] = []
+            try:
+                while True:
+                    self._state.check_open("read()")
+                    chunk = f.read(_VERIFY_ALL_CHUNK)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+            except ValueError:
+                # The stream was closed under the read by a close() of the reader.
+                self._state.check_open("read()")
+                raise
+            data = b"".join(chunks)
             if self._config.recover_partial_data is PartialDataRecovery.ALL:
                 # At ALL the read to the end returns a damaged member's bytes and
                 # keeps the error for the next read: make it, so this call raises at
@@ -5532,10 +5591,12 @@ class BaseArchiveReader(ArchiveReader):
                 current.close()
             # The backend's pass is closed here, not left to be dropped: what it holds
             # (an unrar process for a solid RAR) then ends now, and not only when an
-            # interpreter without reference counting (PyPy) collects it. Once close()
-            # has begun, its stream-shutdown step closes it instead (below).
+            # interpreter without reference counting (PyPy) collects it. When close()
+            # found the pass suspended at a yield, its stream-shutdown step closes it
+            # instead (below).
             try:
-                if source_closer is not None and self._state.lifecycle_is_open():
+                # Unless close() found the pass suspended and took its wind-down.
+                if source_closer is not None and self._state.keep_own_closer(token):
                     source_closer()
             finally:
                 self._state.release_pass(token)
@@ -5639,11 +5700,13 @@ class BaseArchiveReader(ArchiveReader):
         # refusal reads no index, runs no callback and creates nothing.
         token = self._acquire_pass("extract_all", PassKind.DATA)
         try:
-            # Library-internal member opens (including hardlink recovery) are ungated.
+            # The coordinator's passes are filed under this one by name, with no
+            # internal-open window, so a callback it runs cannot call the reader.
             # The report covers only the emits this call makes, on its own thread:
             # open-phase diagnostics stay on reader.diagnostics, and on a CONCURRENT
             # reader other threads emit into the same collector meanwhile.
-            with self._internal_member_opens(), collector.scoped() as scope:
+            coordinator.pass_token = token
+            with collector.scoped() as scope:
                 results = coordinator.run(self, dest_path)
         finally:
             self._state.release_pass(token)
@@ -5665,31 +5728,21 @@ class BaseArchiveReader(ArchiveReader):
     def close(self) -> None:
         """Close the reader.
 
-        Idempotent. With declared concurrency, blocks until in-flight worker ``open()``
-        / ``get()`` / ``members()`` calls return (``read()`` is one only while it opens
-        the member), then marks the reader closed. Still-open member streams are then
-        closed, matching ``zipfile.ZipFile.close()`` / ``tarfile.TarFile.close()``: a
-        member stream does not outlive the reader it came from.
+        Marks the reader closed and returns, in both modes. It never waits for another
+        thread and never raises because of one, and a callback of the reader's own
+        call may call it to cancel that call. From here on every call on the reader
+        raises ``ArchiveyUsageError``; a call already running stops at its next
+        checkpoint (a chunk of ``read()``, a batch of a listing, the next member of a
+        pass) with the same error. Still-open member streams are closed, matching
+        ``zipfile.ZipFile.close()`` / ``tarfile.TarFile.close()``: a stream's next
+        ``read()`` raises ``ValueError``. A ``stream_members()`` pass suspended at a
+        yield is wound down here; one that is running winds itself down.
 
-        In both modes, a member stream's own ``read()`` is not a worker call:
-        ``close()`` closes the stream under it, and the stream's next ``read()`` raises
-        ``ValueError``, as for any closed file. A read already running when the stream
-        closes returns what it had or raises the same ``ValueError``, never a damage
-        error.
-
-        Without ``CONCURRENT``, ``close()`` still raises if a worker call or reader-wide
-        pass is actively executing, and the reader stays open. A ``stream_members()`` or
-        streaming iteration pass suspended at a yield does not block it: the reader
-        closes, and resuming that iterator raises ``ArchiveyUsageError``. A suspended
-        ``stream_members()`` pass is wound down here, before teardown. Teardown runs at
-        most once, after the last lease drops, and closes a member walk the caller
-        stopped part-way before the backend's own close.
+        The archive is torn down once: here when no call is running, else by the last
+        call to return. Idempotent, also when two threads call it at once.
         """
         if self._closed:
             return
-        # Raising on an active pass must leave the reader open -- so member streams are
-        # closed only once the transition has actually happened. Its "run teardown now"
-        # result is not needed: _maybe_teardown() below asks claim_teardown() directly.
         # Every step below is idempotent on its own (a spent claim refuses), so
         # ``_closed`` is set only at the end, and only once the stream-shutdown step is
         # spent: an interrupt in between, or a peer close() that found the step's
@@ -5698,17 +5751,12 @@ class BaseArchiveReader(ArchiveReader):
         # pass's own finally (see _finish_stream_shutdown_step()).
         self._state.mark_reader_closed()
         pending = self._finish_stream_shutdown_step()
-        # Unconditional: claim_teardown() refuses while a lease remains or once claimed,
-        # so this is a no-op wherever mark_reader_closed() returned False for a good
-        # reason. It is not a no-op after a close() interrupted just past the transition:
-        # the retry's mark_reader_closed() returns False (lifecycle is no longer OPEN)
-        # although nothing tore the archive down. With teardown already claimed, it
-        # still raises ``pending``.
+        # Unconditional: claim_teardown() refuses while a lease or a running call
+        # remains, or once claimed. A running call's own release runs it then
+        # (_teardown_after_call). With teardown already claimed, it still raises
+        # ``pending``.
         self._maybe_teardown(pending)
         if self._state.stream_shutdown_done():
-            # A closed reader updates nothing, so a pass left early or a link never
-            # read is as final as it will get.
-            _settle_listing(self._listed, links_too=True)
             self._closed = True
 
     def _finish_stream_shutdown_step(self) -> Exception | None:

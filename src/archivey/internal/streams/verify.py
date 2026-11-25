@@ -789,6 +789,16 @@ class MemberVerifier:
 
         # Bounded full-count read.
         if self._abandoned or self._concluded:
+            if (
+                self._concluded
+                and self._expected_size is not None
+                and self._pos >= self._expected_size
+            ):
+                # At or past the declared size after the length verdict: the end, as
+                # read(-1) would find it. Reading the inner again would hand over the
+                # bytes of a broken ``bounded`` promise, or ask once more for an end
+                # the verdict already saw.
+                return b""
             try:
                 data = inner.read(n)
             except Exception:  # abandon verify; re-raise decoder error
