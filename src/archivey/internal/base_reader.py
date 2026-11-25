@@ -4352,14 +4352,16 @@ class BaseArchiveReader(ArchiveReader):
         returns at once, the backend stays open until the call is out, and the call
         then raises the closed error. Inside a callback it answers the last published
         ``ArchiveInfo`` and enters no backend code: the call that ran the callback may
-        hold a plugin's handle lock. A built-in reader with nothing published yet
-        answers live there, as its ``_get_archive_info()`` takes no lock.
+        hold a plugin's handle lock. With nothing published yet, a reader whose
+        ``_get_archive_info()`` takes no lock answers live there
+        (:meth:`_info_unpublished_in_callback`); a plugin adapter raises the failure
+        that kept its first ``info`` from being published.
         """
         token = self._state.enter_info(op)
         if token is None:
             snapshot = self._info_snapshot
             if snapshot is None:
-                snapshot = self._info_snapshot = self._get_archive_info()
+                snapshot = self._info_snapshot = self._info_unpublished_in_callback()
             return snapshot
         try:
             info = self._get_archive_info()
@@ -4368,6 +4370,12 @@ class BaseArchiveReader(ArchiveReader):
             return info
         finally:
             self._state.release_worker(token)
+
+    def _info_unpublished_in_callback(self) -> ArchiveInfo:
+        """``info`` inside a callback when nothing is published. The built-in
+        readers' ``_get_archive_info()`` takes no lock, so it answers live; a reader
+        whose does (a plugin adapter) overrides this."""
+        return self._get_archive_info()
 
     @property
     @override
@@ -5206,21 +5214,14 @@ class BaseArchiveReader(ArchiveReader):
     def read(self, member: str | ArchiveMember) -> bytes:
         """Read member data as bytes."""
         with self.open(member) as f:
-            # In bounded chunks, each one a checkpoint: a close() on another thread
-            # stops the read within one chunk with the closed error.
-            chunks: list[bytes] = []
-            try:
-                while True:
-                    self._state.check_open("read()")
-                    chunk = f.read(_VERIFY_ALL_CHUNK)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-            except ValueError:
-                # The stream was closed under the read by a close() of the reader.
-                self._state.check_open("read()")
-                raise
-            data = b"".join(chunks)
+            # One completing read, not bounded chunks: a codec may decide where the
+            # member ends only on the read that completes it (the zlib accelerator
+            # hands a second concatenated stream to the standard library there, and a
+            # bounded read past the first stream's end could not take its bytes back).
+            # A close() on another thread defers until this read is out (the read is
+            # a counted stream call), and its next checkpoint raises the closed error.
+            data = f.read()
+            self._state.check_open("read()")
             if self._config.recover_partial_data is PartialDataRecovery.ALL:
                 # At ALL the read to the end returns a damaged member's bytes and
                 # keeps the error for the next read: make it, so this call raises at
@@ -5800,7 +5801,7 @@ class BaseArchiveReader(ArchiveReader):
         running on another thread and never refuses, and a callback of the reader's
         own call may call it to cancel that call. From here on every call on the
         reader raises ``ArchiveyUsageError``; a call already running stops at its next
-        checkpoint (a chunk of ``read()`` or of a pass's member read, a batch of a
+        checkpoint (the end of a ``read()``, a chunk of a pass's member read, a batch of a
         listing, the next member of a pass, the return of an ``extract_all()``
         progress callback, before a member is moved into place) with the same error.
         Still-open member streams are closed, matching ``zipfile.ZipFile.close()`` /

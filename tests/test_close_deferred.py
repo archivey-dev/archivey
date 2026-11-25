@@ -283,3 +283,53 @@ def test_close_beside_a_blocked_yielded_stream_defers_the_wind_down(
     assert closes == [f"stream close {member.name}", "plugin close"]
     passes.close()
     assert [e for e in _HOOKS.events if "close" in e] == closes
+
+
+def test_info_from_a_callback_with_nothing_published_does_not_deadlock(
+    tmp_path: Path,
+) -> None:
+    """A plugin whose ``archive_info()`` failed at open has no snapshot. ``info``
+    from a callback under ``open_member()`` (which holds the handle lock) then raises
+    that failure again instead of calling the plugin and waiting on the lock."""
+
+    class _FailsAtOpen(_GatedReader):
+        calls = 0
+
+        def archive_info(self) -> ReaderArchiveInfo:
+            type(self).calls += 1
+            if type(self).calls == 1:
+                raise OSError("archive_info failed at open")
+            return super().archive_info()
+
+    class _Handler(ToyHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> _FailsAtOpen:
+            return _FailsAtOpen(source, context)
+
+    global _HOOKS
+    _HOOKS = _Hooks()
+    path = tmp_path / "t.toya"
+    path.write_bytes(build_toya(_ENTRIES))
+    seen: list[BaseException] = []
+    holder: list[object] = []
+
+    def on_read(_progress: object) -> None:
+        if _HOOKS.read_in_open and holder:
+            _HOOKS.read_in_open = False
+            try:
+                holder[0].info  # type: ignore[attr-defined]  # noqa: B018
+            except Exception as exc:  # noqa: BLE001 - the test inspects it
+                seen.append(exc)
+
+    config = ArchiveyConfig(on_source_read=on_read, source_read_step=0)
+    with registration_scope():
+        register_format(_Handler)
+        with open_archive(path, config=config, concurrent_operations=True) as reader:
+            holder.append(reader)
+            reader.members()
+            _HOOKS.read_in_open = True
+            thread, out = _run(lambda: reader.read("docs/a.txt"))
+            thread.join(TIMEOUT)
+            assert not thread.is_alive(), "info in the callback deadlocked"
+            assert out == [b"alpha\n"]
+            assert len(seen) == 1
+            assert "archive_info failed at open" in str(seen[0])
