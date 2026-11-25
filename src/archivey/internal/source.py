@@ -788,6 +788,12 @@ class ArchiveSource(ReadOnlyIOStream):
         reporter = self._reporter
         return None if reporter is None else reporter.successor(name, size)
 
+    def _raise_if_stopped(self) -> None:
+        """Raise what ``on_source_read`` raised before the next source I/O, so a read
+        after a stop never waits on or reads the caller's source."""
+        if self._progress is not None:
+            self._progress.raise_if_stopped()
+
     def raise_if_read_stopped(self) -> None:
         """Raise again what ``on_source_read`` raised, if it has; nothing when unset.
 
@@ -1023,6 +1029,11 @@ class ArchiveSource(ReadOnlyIOStream):
             # memory buffer or a joined set (``source_size_fact``, ``for_volumes``),
             # each full-count by construction, so a short here is the inner breaking
             # its own contract, not a stall.
+            progress = self._progress
+            if progress is not None:
+                # A stop ``on_source_read`` raised holds before any I/O, and at the
+                # end too, where the read that took the last bytes lost them.
+                progress.raise_if_stopped()
             avail = min(n, length - self._pos)
             if avail <= 0:
                 return b""
@@ -1040,6 +1051,8 @@ class ArchiveSource(ReadOnlyIOStream):
                 self._progress.read(self._pos, len(data))
             return data
         if n == 0:
+            # As on the fast path: a stop holds for an empty read too.
+            self._raise_if_stopped()
             return b""
         if self._replay:
             head = self._take_replayed(n)
@@ -1085,6 +1098,7 @@ class ArchiveSource(ReadOnlyIOStream):
         return reader
 
     def _read_source(self, n: int) -> bytes:
+        self._raise_if_stopped()
         remaining = None if self._length is None else self._length - self._pos
         data = read_within_reach(
             self._full_count_reader(),
@@ -1105,6 +1119,7 @@ class ArchiveSource(ReadOnlyIOStream):
         else:
             # A drain in sized reads (the inner may have no ``readall``), each one
             # full-count, so a stall after a short chunk raises.
+            self._raise_if_stopped()
             rest = self._full_count_reader().read(-1)
             self._pos += len(rest)
             if self._progress is not None:
@@ -1117,6 +1132,11 @@ class ArchiveSource(ReadOnlyIOStream):
         # step. A replayed prefix or the gathering strategy goes through ``read``.
         if self._replay or self._gatherer is not None or self._reader is None:
             return super().readinto(b)
+        # A stop holds before any I/O, and at the end too, as in ``read`` (inlined,
+        # as there: every read of an archive pays for this method's calls).
+        progress = self._progress
+        if progress is not None:
+            progress.raise_if_stopped()
         # Views released on return: see try_readinto.
         with memoryview(b) as outer, outer.cast("B") as whole:
             limit = len(whole)
@@ -1180,6 +1200,8 @@ class ArchiveSource(ReadOnlyIOStream):
         replay = self._replay
         if replay is None:
             raise io.UnsupportedOperation("peek: the source is seekable; rewind it")
+        # A stop holds for bytes the prefix already holds, as in ``_take_replayed``.
+        self._raise_if_stopped()
         missing = n - len(replay)
         if missing > 0:
             # One full-count read: a short return is EOF. ``None`` is a stall, so
@@ -1214,6 +1236,7 @@ class ArchiveSource(ReadOnlyIOStream):
             raise io.UnsupportedOperation(
                 "read_arrived: the source is seekable; read() is already complete"
             )
+        self._raise_if_stopped()
         if n == 0:
             return b""
         if replay:
@@ -1254,6 +1277,7 @@ class ArchiveSource(ReadOnlyIOStream):
         replay = self._replay
         if replay is None:
             raise io.UnsupportedOperation("peek: the source is seekable; rewind it")
+        self._raise_if_stopped()
         missing = n - len(replay)
         if missing > 0:
             chunk = read_arrived(self._stream(), missing)
