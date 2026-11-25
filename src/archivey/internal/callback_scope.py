@@ -7,7 +7,8 @@ caller's code, not the library's, and must not inherit the exemption: a pass it 
 would be filed under the running pass, and a lookup would skip the re-entry refusal.
 
 Each dispatch site of a caller's callback (``on_diagnostic``, ``on_source_read``,
-``extract_all(on_progress=, filter=)``) runs it inside :func:`user_callback`. A window
+the password provider, ``extract_all(on_progress=, filter=)``) runs it inside
+:func:`user_callback`. A window
 records the depth it was entered at and is active only at that depth, so a window that
 the callback's own calls open (a reader the callback opens) still works.
 """
