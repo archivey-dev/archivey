@@ -164,26 +164,28 @@ fix reopened the same way. If no single guard exists, say so in the reply and fi
 remaining cases here, or, for a 🟡/🔴, Split them into their own PR or escalate (§6).
 
 To find the class, do these five steps before you write the fix, and again on your own
-fix before you push it:
+fix before you push it. The examples are from #1839, where `ArchiveyFileSystem.close()`
+must drop its garbage-collection finalizer once the reader's teardown is complete:
 
 1. **Write the invariant as one sentence** — the rule the finding broke, not the input
    that broke it ("the finalizer is registered exactly while teardown may still need a
    close", not "close during a read leaks").
 2. **List every place where that sentence can stop being true** — every path that runs
-   the event (here: teardown runs from `close()`, from the last call out and from a
-   pass's end; the docstrings often list them), and every other format, codec or shared
-   path with the same code
+   the event (in #1839: teardown runs from `close()`, from the end of the last running
+   read, and from the end of an iteration pass; the docstrings often list them), and
+   every other format, codec or shared path with the same code
    ([DR-0](../../../dev-docs/design-rules.md#dr-0-fix-the-class-not-the-instance)). Fix
    all of them, or fix where they meet.
-3. **For each check, ask "what if the event lands just after it?"** A check followed by
-   an act is not atomic: name what happens when another thread, or a callback, changes
-   the state between the two.
+3. **For each check in the code you are fixing, ask "what if the event lands just after
+   it?"** A check followed by an act is not atomic: name what happens when another
+   thread, or a callback, changes the state between the two.
 4. **List what the code you replace guaranteed.** Removing a branch or an `except` arm
    also removes the case it covered; keep that case, or say in the reply why it is gone.
 5. **Fix where the condition is decided, not with a stand-in at the caller.** A check
    that approximates the real event ("this call's close finished" for "teardown
    completed", "same context object" for "the collector raised it") misses the next
-   path; hook the event itself, or pass a checkpoint into the code that decides.
+   path; hook the event itself, or give the code that decides a callback to run at that
+   point.
 
 On #1839, Codex rounds 3 and 4 each reopened a fix built on a stand-in check
 (steps 2 and 5), and a self-audit with these steps found one more (step 4) before
