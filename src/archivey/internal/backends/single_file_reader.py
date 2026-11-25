@@ -155,6 +155,7 @@ class _IndexReportRecorder(DiagnosticCollector):
         escalate_as: type[BaseException] | None = None,
         escalate_message: str | None = None,
         escalate_kwargs: dict[str, object] | None = None,
+        checkpoint: Callable[[], None] | None = None,
     ) -> Diagnostic:
         if escalate_as is not None:
             return super().emit(
@@ -167,10 +168,12 @@ class _IndexReportRecorder(DiagnosticCollector):
                 escalate_as=escalate_as,
                 escalate_message=escalate_message,
                 escalate_kwargs=escalate_kwargs,
+                checkpoint=checkpoint,
             )
         assert member is None and not attach_to_member, (
             "an index scan's deferred report cannot name a member"
         )
+        assert checkpoint is None, "an index scan's deferred report takes no checkpoint"
         self.reports.append(IndexReport(code, message, context))
         return Diagnostic(
             occurrence_id=uuid.uuid4().hex, code=code, message=message, context=context
@@ -822,7 +825,7 @@ class SingleFileBackend(ReadBackend):
 
     FORMATS: tuple[ArchiveFormat, ...] = ()
     RAW_STREAMS = True
-    # A compressed stream decodes front-to-back, so streaming=True works on a
+    # A compressed stream decodes front-to-back, so pipe=True works on a
     # non-seekable source. Random access always needs a seekable source.
     SUPPORTS_STREAMING_NON_SEEKABLE = True
 

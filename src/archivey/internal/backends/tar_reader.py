@@ -15,9 +15,10 @@ same layout in a stream codec and behave as **solid** for random member opens.
 
 Random-access reading (``streaming=False``) needs a seekable source (decompressing
 first for a compressed tar) and opens any member on demand: a member's stream is a
-view over its data area. Forward-only (``streaming=True``) walks one progressive pass,
-including on a non-seekable source, via ``_iter_with_data()`` / ``stream_members()``;
-a member's data is read through the walker, which skips what the consumer left.
+view over its data area. Forward-only (``streaming=True``, or ``pipe=True`` for a
+non-seekable source) walks one progressive pass, via ``_iter_with_data()`` /
+``stream_members()``; a member's data is read through the walker, which skips what the
+consumer left.
 
 After a full walk, :meth:`TarReader._verify_tar_eof` checks the end, from the
 :class:`~archivey.internal.backends.tar_parser.TarEnd` the walk stopped on:
@@ -142,6 +143,7 @@ from archivey.internal.streams.resume import (
     restarts_follow_decoding,
 )
 from archivey.internal.streams.streamtools import (
+    HandleLock,
     LockedStream,
     ReadAheadStream,
     ReadOnlyIOStream,
@@ -724,7 +726,7 @@ class TarReader(BaseArchiveReader):
         # uncontended) so the same critical-section shape covers the walk, member
         # reads, the end check and close.
         self._handle_lock = (
-            threading.Lock()
+            HandleLock()
             if MemberStreams.CONCURRENT in member_streams or streaming
             else None
         )
@@ -2212,13 +2214,12 @@ class TarReader(BaseArchiveReader):
         return stream
 
     def _walk_data(self, span: TarSpan) -> BinaryIO:
-        """``span``'s data for a pass, through the walk when the walk is at it
-        (:meth:`_walk_handoff_locked`). Called under the walk lock."""
+        """``span``'s data for a pass, through the walk when the walk is at it, else a
+        view of its own (``_open_member_in_walk``). Called under the walk lock."""
         data = self._walker.open_data(span)
-        return self._walk_handoff_locked(
-            data if data.in_place() else None,
-            lambda start: self._independent_data(span, start),
-        )
+        if data.in_place():
+            return data
+        return self._independent_data(span)
 
     def _streamed_member_stream(self, member: ArchiveMember) -> ArchiveStreamImpl:
         """Open ``member``'s data for a streaming pass. A bad sparse map raises on the
@@ -2308,7 +2309,7 @@ class TarReadBackend(ReadBackend):
     HEADER_CHECKS: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = (
         (ArchiveFormat.TAR, starts_with_header),
     )
-    # TAR is walkable front-to-back, so streaming=True works on a non-seekable source
+    # TAR is walkable front-to-back, so pipe=True works on a non-seekable source
     # (random access always needs a seekable one — that side is format-independent).
     SUPPORTS_STREAMING_NON_SEEKABLE = True
     USES_ENCODING = True  # the fallback codec for names that are not valid UTF-8

@@ -17,10 +17,9 @@ from __future__ import annotations
 import functools
 import io
 import os
-from collections.abc import Callable, Generator, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import BinaryIO, TypeVar
+from typing import BinaryIO, Literal, TypeVar
 
 from archivey.exceptions import ArchiveyError
 from archivey.internal.overrides import override
@@ -297,19 +296,10 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         self._position += len(data)
         return data
 
-    @contextmanager
-    def _typed_after_switch(self) -> Generator[None, None, None]:
+    def _typed_after_switch(self) -> _TypedAfterSwitch:
         """Raise the standard library's data error as the codec's typed error once
         switched; see the class docstring."""
-        try:
-            yield
-        except Exception as exc:
-            if not self.switched or self._translate is None or from_callers_source(exc):
-                raise
-            typed = self._translate(exc)
-            if typed is None:
-                raise
-            raise typed from exc
+        return _TypedAfterSwitch(self)
 
     def _takes_over(self, exc: Exception) -> bool:
         """Whether the standard library takes over after ``exc`` from rapidgzip."""
@@ -445,6 +435,44 @@ def _drain_into(
         if count is not None:
             count(more)
         buf += more
+
+
+class _TypedAfterSwitch:
+    """:meth:`_StdlibOnAcceleratorError._typed_after_switch`. A class rather than a
+    ``contextlib.contextmanager`` generator: on CPython 3.12 a generator that raises a
+    new error in place of the one thrown into it leaves a cycle (the thrown error's
+    traceback holds the generator's frame, whose ``f_back`` is contextlib's
+    ``__exit__`` frame, which holds the thrown error) that keeps the stream alive until
+    the garbage collector runs (see ``kept_errors``). ``__exit__`` deletes its local
+    for the error it raises as the raise leaves, since its frame is in that error's
+    traceback."""
+
+    __slots__ = ("_stream",)
+
+    def __init__(self, stream: _StdlibOnAcceleratorError) -> None:
+        self._stream = stream
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(
+        self, kind: type[BaseException] | None, exc: BaseException | None, tb: object
+    ) -> Literal[False]:
+        stream = self._stream
+        if (
+            not isinstance(exc, Exception)
+            or not stream.switched
+            or stream._translate is None
+            or from_callers_source(exc)
+        ):
+            return False
+        typed = stream._translate(exc)
+        if typed is None:
+            return False
+        try:
+            raise typed from exc
+        finally:
+            del typed
 
 
 class _OutputChecksum:

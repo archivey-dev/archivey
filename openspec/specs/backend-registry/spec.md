@@ -330,8 +330,8 @@ conservative answer.
 | `format_availability(TAR_GZ).required_source` | `FORWARD_ONLY` |
 | `format_availability(GZ).required_source` | `FORWARD_ONLY` |
 | `format_availability(DMG).required_source` | `FORWARD_ONLY` — open refuses before the seekability check; the field keeps the spool recipe from copying the file |
-| `format_availability(ZIP).required_source` | `FORWARD_ONLY` — `streaming=True` reads a ZIP forward over its local headers |
-| `format_availability(RAR).required_source` | `FORWARD_ONLY` — `streaming=True` reads a single-volume RAR forward with RARLAB `unrar` 7.00 or later; without it the open raises `StreamNotSeekableError` naming the fix |
+| `format_availability(ZIP).required_source` | `FORWARD_ONLY` — `pipe=True` reads a ZIP forward over its local headers |
+| `format_availability(RAR).required_source` | `FORWARD_ONLY` — `pipe=True` reads a single-volume RAR forward with RARLAB `unrar` 7.00 or later; without it the open raises `StreamNotSeekableError` naming the fix |
 | `format_availability(ISO \| SEVEN_Z \| FOLDER).required_source` | `SEEKABLE` |
 | ISO queried with every optional package absent | `support=FULL` **and** `required_source=SEEKABLE`: ISO needs no optional package |
 | `required_source <= reader.cost.stream_capability` for a format opened successfully from that source | `True` for every format/source pair the library accepts |

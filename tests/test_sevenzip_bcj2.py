@@ -7,6 +7,7 @@ here: it writes the fixtures, and each member must read back equal to its input.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import random
 import shutil
@@ -19,13 +20,12 @@ from typing import BinaryIO
 import pytest
 
 import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
-from archivey import open_archive
+from archivey import ArchiveyConfig, open_archive
 from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal import native
 from archivey.internal.backends.sevenzip_parser import (
     SevenZipCoder,
     SevenZipFolder,
@@ -42,6 +42,7 @@ from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
 from archivey.types import CompressionAlgorithm
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.kernels_util import use_python_twin
 from tests.streams_util import (
     assert_non_integer_seek_is_type_error,
     assert_seek_underflow_matches_bytesio,
@@ -79,7 +80,7 @@ _FORCED = [
 def bcj2_kernel(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
     """Every test with each BCJ2 decoder: archivey's own, and archivey-codecs'."""
     if request.param == "python":
-        monkeypatch.setattr(native, "bcj2", lambda *_a, **_k: None)
+        use_python_twin(monkeypatch, "bcj2")
     return request.param
 
 
@@ -431,6 +432,82 @@ def test_a_byte_left_over_in_an_input_is_corruption(
         _decode(streams, size)
 
 
+@pytest.mark.parametrize(("index", "label"), [(0, "main"), (1, "call"), (2, "jump")])
+def test_the_read_that_ends_the_output_raises_a_left_over_byte(
+    index: int, label: str
+) -> None:
+    """The end check runs with the read that returns the last byte, and that read
+    raises its error: a reader that asks for exactly the output size sees it. The
+    bytes it decoded are kept: the next read returns them, and a read past them
+    raises the error again."""
+    from tests.bcj2_util import bcj2_encode
+
+    streams = list(bcj2_encode(random.Random(1), 5000))
+    expected = _bcj2(*map(io.BytesIO, streams), unpack_size=5000).read()
+    streams[index] += b"\x00"
+    stream = _bcj2(*map(io.BytesIO, streams), unpack_size=5000)
+    match = f"BCJ2 {label} stream has bytes past"
+    with raises_corruption_not_truncation(match=match):
+        stream.read(5000)
+    assert stream.tell() == 0
+    assert stream.read(5000) == expected
+    with raises_corruption_not_truncation(match=match):
+        stream.read(1)
+    assert stream.read(0) == b""
+
+
+@pytest.mark.parametrize(
+    ("cut", "error"),
+    [("extra", CorruptionError), ("short", TruncatedError)],
+)
+def test_a_short_read_raises_an_error_its_blocks_found(
+    cut: str, error: type[Exception]
+) -> None:
+    """The decoder decodes a whole block at a time. An error found in the blocks a
+    read decodes raises from that read, even a ``read(1)``, at position 0; the bytes
+    decoded before it come from the next reads."""
+    from tests.bcj2_util import bcj2_encode
+
+    streams = list(bcj2_encode(random.Random(1), 5000))
+    expected = _bcj2(*map(io.BytesIO, streams), unpack_size=5000).read()
+    if cut == "extra":
+        streams[0] += b"\x00"
+    else:
+        streams[3] = streams[3][:5]  # the range coder's start bytes only
+    stream = _bcj2(*map(io.BytesIO, streams), unpack_size=5000)
+    with pytest.raises(error):
+        stream.read(1)
+    assert stream.tell() == 0
+    got = b""
+    with contextlib.suppress(error):
+        while chunk := stream.read(7):
+            got += chunk
+    assert got and expected.startswith(got)
+
+
+def test_a_cut_read_keeps_the_bytes_decoded_before_it() -> None:
+    """A read that meets an error raises it and keeps the bytes decoded before it:
+    the next reads return them, then raise the error again."""
+    rc_start = b"\x00" * 5
+    stream = _bcj2(
+        io.BytesIO(b"a" * 100),
+        io.BytesIO(),
+        io.BytesIO(),
+        io.BytesIO(rc_start),
+        unpack_size=10_000,
+    )
+    with pytest.raises(TruncatedError, match="BCJ2 main stream ended early"):
+        stream.read(10_000)
+    assert stream.tell() == 0
+    assert stream.read(60) == b"a" * 60
+    assert stream.tell() == 60
+    with pytest.raises(TruncatedError, match="BCJ2 main stream ended early"):
+        stream.read(100)
+    assert stream.read(40) == b"a" * 40
+    with pytest.raises(TruncatedError, match="BCJ2 main stream ended early"):
+        stream.read(1)
+
+
 class _ReadCounter(io.BytesIO):
     def __init__(self, data: bytes) -> None:
         super().__init__(data)
@@ -778,6 +855,88 @@ def test_bare_bcj2_member_seeks_with_seekable_members() -> None:
             assert_non_integer_seek_is_type_error(stream, payload)
 
 
+class _Stop(Exception):
+    pass
+
+
+def test_the_read_after_a_stop_raises_it_again() -> None:
+    """A stop from ``on_source_read`` is not held behind the bytes BCJ2 decoded.
+
+    The read that meets the stop raises it, and so does the next one: the bytes that
+    read gathered are dropped, as they are on every other stream.
+    """
+    alphabet = bytes(b for b in range(256) if b not in (0xE8, 0xE9, 0x0F))
+    rng = random.Random(3)
+    payload = bytes(rng.choice(alphabet) for _ in range(6 * bcj2_mod._BLOCK))
+    calls = 0
+    armed = False
+
+    def stop(progress: object) -> None:
+        nonlocal calls
+        if armed:
+            calls += 1
+            if calls == 4:
+                raise _Stop("stop")
+
+    config = ArchiveyConfig(on_source_read=stop, source_read_step=1)
+    with open_archive(io.BytesIO(_bare_bcj2_archive(payload)), config=config) as reader:
+        (member,) = reader.members()
+        with reader.open(member) as stream:
+            armed = True
+            got = b""
+            with pytest.raises(_Stop):
+                while chunk := stream.read(70_000):
+                    got += chunk
+            assert calls == 4
+            assert payload.startswith(got)
+            with pytest.raises(_Stop):
+                stream.read(10)
+
+
+class _ZeroRcStoppingAt(io.RawIOBase):
+    """An ``rc`` stream of zero bytes, one a read, whose ``stop_at``-th read raises a
+    stop from ``on_source_read``: zeros decode every branch as not converted."""
+
+    def __init__(self, stop_at: int) -> None:
+        self._stop_at = stop_at
+        self._reads = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        from archivey.internal.streams.callers_source import mark_source_callback
+
+        self._reads += 1
+        if self._reads == self._stop_at:
+            stop = _Stop("stop")
+            mark_source_callback(stop)
+            raise stop
+        return b"\x00"
+
+
+@pytest.mark.parametrize("stop_at", [6, 50])
+def test_a_stop_in_the_middle_of_a_block_drops_the_decoded_bytes(stop_at: int) -> None:
+    """The bytes the decoder decoded before a mid-block stop are not returned after it."""
+    rng = random.Random(5)
+    main = bytes(rng.choice(b"\xe8ABC") for _ in range(200_000))
+    stream = _bcj2(
+        io.BytesIO(main),
+        io.BytesIO(),
+        io.BytesIO(),
+        _ZeroRcStoppingAt(stop_at),
+        unpack_size=len(main),
+    )
+    got = b""
+    with pytest.raises(_Stop):
+        while chunk := stream.read(10):
+            got += chunk
+    assert main.startswith(got)
+    for _ in range(3):
+        with pytest.raises(_Stop):
+            stream.read(10)
+
+
 def test_encrypted_folder_with_a_cycle_is_corruption_not_a_password_error() -> None:
     """Planning runs before the password check's error mapping (D1)."""
     from tests.test_sevenzip_parser_hardening import (
@@ -888,3 +1047,26 @@ def test_wrong_password_on_an_encrypted_bcj2_folder_is_rejected(
         (member,) = reader.members()
         with pytest.raises(EncryptionError):
             reader.read(member)
+
+
+@pytest.mark.parametrize(("index", "label"), [(0, "main"), (1, "call"), (2, "jump")])
+def test_an_empty_output_checks_its_inputs_on_the_first_read(
+    index: int, label: str
+) -> None:
+    """An empty output has no read that returns a last byte, so the first read that
+    asks for one runs the end check. ``read(0)`` reads nothing."""
+    streams = [b"", b"", b"", b"\x00" * 5]
+    streams[index] = b"\x00"
+    stream = _bcj2(*map(io.BytesIO, streams), unpack_size=0)
+    assert stream.read(0) == b""
+    match = f"BCJ2 {label} stream has bytes past"
+    with raises_corruption_not_truncation(match=match):
+        stream.read(1)
+    with raises_corruption_not_truncation(match=match):
+        stream.read()
+
+
+def test_an_empty_output_with_empty_inputs_reads_as_empty() -> None:
+    stream = _bcj2(*map(io.BytesIO, [b"", b"", b"", b"\x00" * 5]), unpack_size=0)
+    assert stream.read(1) == b""
+    assert stream.read() == b""

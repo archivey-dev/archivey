@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import lzma
 import os
 import threading
 import zipfile
+from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, cast
 
 import pytest
 
 from archivey import (
     ArchiveyConfig,
+    CorruptionError,
     SourceProgress,
     SpoolLimits,
     open_archive,
@@ -83,7 +86,7 @@ def test_a_nested_reader_reports_at_its_nest_level(tmp_path: Path) -> None:
     with open_archive(path, config=config) as outer, outer.open("inner.zip") as member:
         before = len(seen.calls)
         with (
-            open_archive(member, parent=outer, streaming=True) as nested,
+            open_archive(member, parent=outer, pipe=True) as nested,
             nested.stream_members() as members,
         ):
             for _, stream in members:
@@ -154,9 +157,7 @@ def test_a_size_hint_is_reported_but_does_not_set_the_report_step(
         seen = _Recorder()
         config = ArchiveyConfig(on_source_read=seen)
         with (
-            open_archive(
-                _HintedPipe(data, size), config=config, streaming=True
-            ) as reader,
+            open_archive(_HintedPipe(data, size), config=config, pipe=True) as reader,
             reader.stream_members() as members,
         ):
             for _, stream in members:
@@ -186,9 +187,7 @@ def test_a_nested_reader_with_its_own_callback_reports_there(tmp_path: Path) -> 
     with (
         open_archive(path, config=config) as outer,
         outer.open("inner.zip") as member,
-        open_archive(
-            member, parent=outer, config=inner_config, streaming=True
-        ) as nested,
+        open_archive(member, parent=outer, config=inner_config, pipe=True) as nested,
         nested.stream_members() as members,
     ):
         for _, stream in members:
@@ -412,7 +411,7 @@ def test_a_pipe_reports_its_last_bytes(size: int) -> None:
     seen = _Recorder()
     config = ArchiveyConfig(on_source_read=seen)
     with (
-        open_archive(_Pipe(data), config=config, streaming=True) as reader,
+        open_archive(_Pipe(data), config=config, pipe=True) as reader,
         reader.stream_members() as members,
     ):
         for _, stream in members:
@@ -493,6 +492,509 @@ def test_a_stop_ends_an_extraction_that_continues_on_errors(
         reader.extract_all(tmp_path / "out", on_error="continue")
 
 
+def _bad_crc_gz(tmp_path: Path, seed: int, random_size: int, run: int) -> Path:
+    # A wrong CRC in the trailer: the decoder decodes again up to the error to keep
+    # the bytes before it (the re-decode).
+    import gzip
+    import random
+
+    payload = random.Random(seed).randbytes(random_size) + b"a" * run
+    data = gzip.compress(payload)
+    path = tmp_path / f"badcrc{seed}.gz"
+    path.write_bytes(data[:-8] + b"\0\0\0\0" + data[-4:])
+    return path
+
+
+@pytest.mark.parametrize(
+    ("seed", "random_size", "run"), [(0, 1 << 16, 1 << 18), (1, 1 << 18, 1 << 20)]
+)
+@pytest.mark.parametrize(
+    "call", ["extract_all", "read", "read_twice", "read_bounded_twice"]
+)
+@pytest.mark.parametrize("stop_type", [_StopValue, KeyboardInterrupt])
+def test_a_stop_during_the_re_decode_of_a_damaged_member_is_not_lost(
+    tmp_path: Path,
+    seed: int,
+    random_size: int,
+    run: int,
+    call: str,
+    stop_type: type[BaseException],
+) -> None:
+    # A stop raised during the re-decode must reach the caller, not the data error,
+    # also when the read already holds output; and the next read raises it again,
+    # before the bytes the stopped read had buffered.
+    path = _bad_crc_gz(tmp_path, seed, random_size, run)
+
+    def go(callback: Any) -> None:
+        config = ArchiveyConfig(
+            on_source_read=callback, source_read_step=0, use_rapidgzip="off"
+        )
+        if call == "extract_all":
+            with open_archive(path, config=config) as reader:
+                reader.extract_all(tmp_path / "out", on_error="continue")
+            return
+        size = 1 << 20 if call == "read_bounded_twice" else -1
+        with open_stream(path, config=config) as stream:
+            if call == "read":
+                stream.read()
+                return
+            try:
+                while stream.read(size):
+                    pass
+            except stop_type:
+                pass
+            stream.read(size)
+
+    recorder = _Recorder()
+    if call == "extract_all":
+        go(recorder)
+    else:
+        with pytest.raises(CorruptionError):
+            go(recorder)
+    calls = len(recorder.calls)
+    assert calls > 0
+    for n in range(1, calls + 1):
+        with pytest.raises(stop_type) as caught:
+            go(_stop_on(n, stop_type))
+        assert type(caught.value) is stop_type
+
+
+class _StopDropsMarks(ValueError):
+    """A stop whose copy is a fresh instance, without the attributes on the first."""
+
+    def __copy__(self) -> _StopDropsMarks:
+        return type(self)(*self.args)
+
+
+class _StopEOFDropsMarks(EOFError):
+    """An ``EOFError`` stop whose copy drops its attributes, as above."""
+
+    def __copy__(self) -> _StopEOFDropsMarks:
+        return type(self)(*self.args)
+
+
+class _StopWithSlots(ValueError):
+    """A stop with a caller-defined field in a slot, which a copy does not carry."""
+
+    __slots__ = ("code",)
+
+
+def test_a_retry_raises_the_caller_s_own_stop_instance(tmp_path: Path) -> None:
+    # The stream keeps the stop to raise it again. For the callback's stop that is
+    # the caller's own instance, with its own fields, not a copy.
+    path = _bad_crc_gz(tmp_path, 0, 1 << 16, 1 << 18)
+    config = ArchiveyConfig(source_read_step=0, use_rapidgzip="off")
+    recorder = _Recorder()
+    with pytest.raises(CorruptionError):
+        _read_stream(path, replace(config, on_source_read=recorder))
+    stopped = 0
+    for n in range(1, len(recorder.calls) + 1):
+        raised: list[_StopWithSlots] = []
+        calls = 0
+
+        def stop(
+            progress: SourceProgress,
+            n: int = n,
+            raised: list[_StopWithSlots] = raised,
+        ) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == n:
+                exc = _StopWithSlots("stop")
+                exc.code = 42
+                raised.append(exc)
+                raise exc
+
+        try:
+            stream = open_stream(path, config=replace(config, on_source_read=stop))
+        except _StopWithSlots:
+            continue
+        with stream:
+            for size in (1 << 20, 1 << 20, 1, -1):
+                try:
+                    stream.read(size)
+                except _StopWithSlots as caught:
+                    assert caught is raised[0]
+                    assert caught.code == 42
+                    stopped += 1
+                except CorruptionError:
+                    assert not raised
+    assert stopped
+
+
+@pytest.mark.parametrize("shape", ["gz", "stored_zip"])
+def test_retries_after_a_stop_do_not_grow_its_traceback(
+    tmp_path: Path, shape: str
+) -> None:
+    # The stop is the caller's own instance, raised again on every retry. A raise
+    # adds its frames to the traceback on the instance, so each retry must start
+    # from the traceback the stop had when it was kept.
+    import traceback
+
+    if shape == "gz":
+        path = _gz_file(tmp_path, 2 << 20)
+    else:
+        path = tmp_path / "stored.zip"
+        path.write_bytes(_small_zip({"a.bin": os.urandom(2 << 20)}))
+
+    @contextlib.contextmanager
+    def stream(config: ArchiveyConfig) -> Any:
+        if shape == "gz":
+            with open_stream(path, config=config) as s:
+                yield s
+        else:
+            with open_archive(path, config=config) as reader, reader.open("a.bin") as s:
+                yield s
+
+    # Stop on the third report after the stream is open, so the stop comes from a
+    # read of the data, not from opening.
+    armed = 0
+
+    def stop(progress: SourceProgress) -> None:
+        nonlocal armed
+        if armed:
+            armed += 1
+            if armed == 4:
+                raise _StopValue("stop")
+
+    config = ArchiveyConfig(
+        on_source_read=stop, source_read_step=0, use_rapidgzip="off"
+    )
+    lengths = []
+    with stream(config) as s:
+        armed = 1
+        with pytest.raises(_StopValue) as caught:
+            while s.read(1 << 16):
+                pass
+        first = caught.value
+        for _ in range(100):
+            with pytest.raises(_StopValue) as caught:
+                s.read(1)
+            assert caught.value is first
+            lengths.append(len(traceback.extract_tb(caught.value.__traceback__)))
+    assert max(lengths) < 80
+    assert lengths[-1] == lengths[1]
+
+
+def _check_stop_holds(
+    open_reads: Any, sizes: list[int], stop_type: type[BaseException]
+) -> int:
+    """Stop at each report in turn and run ``sizes`` as reads. The read during
+    which the callback raised must raise the stop, and so must every read after it.
+    Returns how many runs stopped inside a read."""
+    recorder = _Recorder()
+    # A damaged file ends in its own error.
+    with contextlib.suppress(Exception), open_reads(recorder) as read:
+        for size in sizes:
+            read(size)
+    stopped = 0
+    for n in range(1, len(recorder.calls) + 1):
+        raised = False
+        inner = _stop_on(n, stop_type)
+
+        def callback(progress: SourceProgress, inner: Any = inner) -> None:
+            nonlocal raised
+            try:
+                inner(progress)
+            except BaseException:
+                raised = True
+                raise
+
+        try:
+            context = open_reads(callback)
+            read = context.__enter__()
+        except stop_type:
+            continue
+        try:
+            for size in sizes:
+                if raised:
+                    with pytest.raises(stop_type):
+                        read(size)
+                    continue
+                try:
+                    read(size)
+                except stop_type:
+                    assert raised
+                    stopped += 1
+                except Exception:  # noqa: BLE001 - the data error, before any stop
+                    assert not raised, f"report {n}: the stop became a data error"
+                else:
+                    assert not raised, f"report {n}: the read that stopped returned"
+        finally:
+            context.__exit__(None, None, None)
+    return stopped
+
+
+def _stream_reads(path: Path, **config: Any) -> Any:
+    @contextlib.contextmanager
+    def open_reads(callback: Any) -> Any:
+        cfg = ArchiveyConfig(on_source_read=callback, source_read_step=0, **config)
+        with open_stream(path, config=cfg) as stream:
+            yield stream.read
+
+    return open_reads
+
+
+@pytest.mark.parametrize("stop_type", [_StopValue, KeyboardInterrupt])
+def test_a_stop_on_a_feed_read_holds_for_a_smaller_read(
+    tmp_path: Path, stop_type: type[BaseException]
+) -> None:
+    # A stop on the compressed read outside a decoder call: the output decoded
+    # before it stays buffered, and a smaller read must not get it.
+    path = _gz_file(tmp_path, 2 << 20)
+    sizes = [1 << 20, 1, 4096, 1 << 20, -1]
+    reads = _stream_reads(path, use_rapidgzip="off")
+    assert _check_stop_holds(reads, sizes, stop_type)
+
+
+@pytest.mark.parametrize("stop_type", [_StopDropsMarks, _StopEOFDropsMarks])
+def test_a_stop_whose_copy_drops_its_attributes_still_holds(
+    tmp_path: Path, stop_type: type[BaseException]
+) -> None:
+    # A stop whose copy would drop the caller's marks: the stream raises the caller's
+    # own instance, so the marks hold, buffered bytes stay in, and an ``EOFError`` is
+    # not turned into a truncation error.
+    path = _bad_crc_gz(tmp_path, 0, 1 << 16, 1 << 18)
+    sizes = [1 << 20, 1 << 20, 1, -1]
+    reads = _stream_reads(path, use_rapidgzip="off")
+    assert _check_stop_holds(reads, sizes, stop_type)
+
+
+def test_a_read_after_a_stop_does_not_touch_the_caller_s_source() -> None:
+    import gzip
+
+    data = gzip.compress(os.urandom(2 << 20), 1)
+
+    class Recording(io.BytesIO):
+        stopped = False
+        after = 0
+        seeks_after = 0
+
+        def read(self, n: int | None = -1, /) -> bytes:
+            self.after += self.stopped
+            return super().read(n)
+
+        def readinto(self, b: Any, /) -> int:
+            self.after += self.stopped
+            return super().readinto(b)
+
+        def seek(self, offset: int, whence: int = 0, /) -> int:
+            self.seeks_after += self.stopped
+            return super().seek(offset, whence)
+
+    source = Recording(data)
+    calls = 0
+
+    def stop(progress: SourceProgress) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 4:
+            source.stopped = True
+            raise _StopValue("stop")
+
+    config = ArchiveyConfig(
+        on_source_read=stop, source_read_step=0, use_rapidgzip="off"
+    )
+    with open_stream(source, seekable=True, config=config) as stream:
+        with pytest.raises(_StopValue):
+            while stream.read(1 << 20):
+                pass
+        for size in (1 << 20, 1, -1):
+            with pytest.raises(_StopValue):
+                stream.read(size)
+        # A seek restarts the decoder, which then reads the source again; a retry
+        # raises before that restart, so the source is not even sought.
+        for target in (0, 3 << 20):
+            stream.seek(target)
+            for size in (1 << 20, 1, 1, -1):
+                with pytest.raises(_StopValue):
+                    stream.read(size)
+        assert source.stopped
+        assert source.after == 0
+        assert source.seeks_after == 0
+
+
+def test_a_read_ahead_buffer_keeps_only_a_callback_stop_across_a_seek() -> None:
+    from archivey.internal.streams.callers_source import (
+        mark_callers_source,
+        mark_source_callback,
+    )
+    from archivey.internal.streams.streamtools.readahead import ReadAheadStream
+
+    class Failing(io.BytesIO):
+        fail_with: BaseException | None = None
+
+        def read(self, n: int | None = -1, /) -> bytes:
+            exc, self.fail_with = self.fail_with, None
+            if exc is not None:
+                raise exc
+            return super().read(n)
+
+    # The caller's source failing clears on a seek; the next fill tries again.
+    inner = Failing(b"abcdefgh" * 1024)
+    failure = OSError("transient")
+    mark_callers_source(failure)
+    inner.fail_with = failure
+    stream = ReadAheadStream(cast("BinaryIO", inner), 64)
+    with pytest.raises(OSError, match="transient"):
+        stream.read(8)
+    stream.seek(0)
+    assert stream.read(8) == b"abcdefgh"
+
+    # A stop from ``on_source_read`` holds across the seek.
+    inner = Failing(b"abcdefgh" * 1024)
+    stop = _StopValue("stop")
+    mark_source_callback(stop)
+    inner.fail_with = stop
+    stream = ReadAheadStream(cast("BinaryIO", inner), 64)
+    with pytest.raises(_StopValue):
+        stream.read(8)
+    stream.seek(0)
+    with pytest.raises(_StopValue):
+        stream.read(8)
+
+
+def test_every_source_read_and_peek_raises_a_recorded_stop() -> None:
+    from archivey.internal.source import ArchiveSource
+
+    source = ArchiveSource.for_stream(cast("BinaryIO", _Pipe(b"abcdefghij" * 100)))
+    calls = 0
+
+    def stop(progress: SourceProgress) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise _StopValue("stop")
+
+    source.report_reads(stop, step=0)
+    assert source.peek(10) == b"abcdefghij"
+    with pytest.raises(_StopValue):
+        source.peek(20)
+    # The prefix already holds these bytes, and an empty read asks for none: each
+    # still raises the stop.
+    for call in (
+        lambda: source.peek(5),
+        lambda: source.peek_arrived(5),
+        lambda: source.read(0),
+        lambda: source.read_arrived(0),
+        lambda: source.read(5),
+    ):
+        with pytest.raises(_StopValue):
+            call()
+
+
+@requires("brotli")
+def test_an_interrupt_on_a_read_the_decoder_makes_is_kept(tmp_path: Path) -> None:
+    # Brotli reads the source itself, inside a decoder call, to tell bytes after its
+    # stream from damage. A ``KeyboardInterrupt`` stop there must be kept, not leave
+    # a broken decoder for the next read.
+    import random
+
+    import brotli
+
+    payload = random.Random(0).randbytes(1 << 18) + b"a" * (1 << 20)
+    path = tmp_path / "trailing.br"
+    path.write_bytes(brotli.compress(payload, quality=1) + b"not brotli" * 20)
+
+    @contextlib.contextmanager
+    def seekable_reads(callback: Any) -> Any:
+        cfg = ArchiveyConfig(on_source_read=callback, source_read_step=0)
+        with open_stream(path, seekable=True, config=cfg) as stream:
+            yield stream.read
+
+    sizes = [1 << 16] * 40 + [1, 1]
+    assert _check_stop_holds(seekable_reads, sizes, KeyboardInterrupt)
+
+
+def test_a_stop_holds_after_a_seek_to_a_seek_point(tmp_path: Path) -> None:
+    # A seek restarts the decoder at a seek point, fed from below this stream; the
+    # stop must survive the restart.
+    import gzip
+    import random
+
+    block = random.Random(0).randbytes(1 << 20) + b"a" * (1 << 20)
+    path = tmp_path / "points.gz"
+    path.write_bytes(gzip.compress(block * 2, 1))
+    config = ArchiveyConfig(source_read_step=0, use_rapidgzip="off")
+    recorder = _Recorder()
+    _read_stream(path, replace(config, on_source_read=recorder))
+    stopped = 0
+    for n in range(1, len(recorder.calls) + 1):
+        try:
+            stream = open_stream(
+                path,
+                seekable=True,
+                config=replace(config, on_source_read=_stop_on(n, _StopValue)),
+            )
+        except _StopValue:
+            continue
+        with stream:
+            try:
+                while stream.read(1 << 20):
+                    pass
+            except _StopValue:
+                stopped += 1
+            else:
+                continue
+            for target in (stream.tell(), 0, 3 << 20):
+                stream.seek(target)
+                with pytest.raises(_StopValue):
+                    stream.read(1)
+    assert stopped
+
+
+@pytest.mark.parametrize("stop_type", [_StopValue, KeyboardInterrupt])
+def test_a_stop_holds_through_a_streaming_tar_gz_buffer(
+    tmp_path: Path, stop_type: type[BaseException]
+) -> None:
+    # Streaming TAR.GZ reads members through a read-ahead buffer above the decoder.
+    path = _tar_gz(tmp_path, 1, 2 << 20)
+
+    @contextlib.contextmanager
+    def open_reads(callback: Any) -> Any:
+        cfg = ArchiveyConfig(on_source_read=callback, source_read_step=0)
+        with (
+            open_archive(path, config=cfg, streaming=True) as reader,
+            reader.stream_members() as members,
+        ):
+            for _, stream in members:
+                if stream is not None:
+                    yield stream.read
+                    return
+
+    sizes = [2048, 1 << 20, 1, 1 << 20, -1]
+    assert _check_stop_holds(open_reads, sizes, stop_type)
+
+
+def test_a_stop_on_the_read_of_the_last_bytes_holds_on_the_next_read(
+    tmp_path: Path,
+) -> None:
+    # The stop drops the bytes that read took. The next read finds the source at its
+    # end, and must raise the stop again, not a truncation error.
+    import gzip
+
+    path = tmp_path / "a.gz"
+    path.write_bytes(gzip.compress(os.urandom(1 << 16) + b"a" * (1 << 18)))
+    config = ArchiveyConfig(source_read_step=0, use_rapidgzip="off")
+    recorder = _Recorder()
+    with open_stream(path, config=replace(config, on_source_read=recorder)) as stream:
+        stream.read()
+    calls = len(recorder.calls)
+    stopped = 0
+    for n in range(1, calls + 1):
+        stop = _stop_on(n, _StopValue)
+        try:
+            stream = open_stream(path, config=replace(config, on_source_read=stop))
+        except _StopValue:
+            continue
+        with stream:
+            for _ in range(2):
+                with pytest.raises(_StopValue):
+                    stream.read()
+        stopped += 1
+    assert stopped
+
+
 @requires_unrar_cli()
 def test_a_rar_from_a_pipe_reports_what_the_feeder_thread_read() -> None:
     # The forward pass: a RAR from a pipe, under a spool limit smaller than the
@@ -511,7 +1013,7 @@ def test_a_rar_from_a_pipe_reports_what_the_feeder_thread_read() -> None:
     )
     with (
         open_archive(
-            _Pipe(data), config=config, streaming=True, password="password"
+            _Pipe(data), config=config, pipe=True, password="password"
         ) as reader,
         reader.stream_members() as members,
     ):
@@ -846,3 +1348,71 @@ def test_bytes_of_a_finished_request_count_once() -> None:
     reporter.request_ended(0, 2 << 20, 2 << 20)
     reporter.request_started(2 << 20, 3 << 20)
     assert seen == [0, 1 << 20, 2 << 20, 2 << 20]
+
+
+class _StopsOnRead(io.RawIOBase):
+    """A seekable inner stream whose ``fail_at``-th read raises a callback stop."""
+
+    def __init__(self, data: bytes, fail_at: int) -> None:
+        self._data = io.BytesIO(data)
+        self._fail_at = fail_at
+        self._reads = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self._data.tell()
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        return self._data.seek(offset, whence)
+
+    def read(self, n: int | None = -1) -> bytes:
+        from archivey.internal.streams.callers_source import mark_source_callback
+
+        self._reads += 1
+        if self._reads == self._fail_at:
+            stop = _StopValue("stop")
+            mark_source_callback(stop)
+            raise stop
+        return self._data.read(n)
+
+    def readinto(self, b: Any) -> int:
+        data = self.read(len(b))
+        b[: len(data)] = data
+        return len(data)
+
+
+def test_a_ratio_guard_raises_a_stop_on_the_read_that_met_it() -> None:
+    # A large read goes to the decoder in steps. A stop on a later step raises from
+    # that read; it is not held behind the steps already gathered, as a decoder
+    # error is.
+    from archivey import DecoderLimits
+    from archivey.internal.bomb_tracker import DecodeRatioGuard
+
+    guard = DecodeRatioGuard(
+        cast("BinaryIO", _StopsOnRead(b"x" * (16 << 20), 3)),
+        limits=DecoderLimits(),
+        static_size=1 << 20,
+        consumed=None,
+    )
+    with pytest.raises(_StopValue):
+        guard.read(8 << 20)
+
+
+def test_a_sparse_stream_raises_a_stop_on_the_read_that_met_it() -> None:
+    # A read across chunks gathers each chunk's bytes. A stop on a later chunk raises
+    # from that read; it is not held behind the bytes already gathered, as a cut is.
+    from archivey.internal.streams.streamtools.sparse import SparseStream
+
+    sparse = SparseStream(
+        cast("BinaryIO", _StopsOnRead(b"y" * (4 << 20), 2)),
+        [0, 2 << 20],
+        [1 << 20, 1 << 20],
+        4 << 20,
+    )
+    with pytest.raises(_StopValue):
+        sparse.read(4 << 20)

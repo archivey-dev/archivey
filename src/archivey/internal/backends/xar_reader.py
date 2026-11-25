@@ -57,6 +57,7 @@ from archivey.formats import (
     ReaderSource,
 )
 from archivey.internal.format_adapter import register_builtin_format
+from archivey.internal.listing_limits import str_retained_bytes
 from archivey.internal.overrides import override
 from archivey.terminal import quoted
 from archivey.types import (
@@ -372,7 +373,7 @@ class _TocParser:
         else:
             path = f"{enclosing.path}/{name}"
             raw_path = enclosing.raw_path + b"/" + raw
-        self._charge(len(path) + len(raw_path), path)
+        self._charge(str_retained_bytes(path) + len(raw_path), path)
         frame.path, frame.raw_path = path, raw_path
 
     def _charge(self, nbytes: int, path: str) -> None:

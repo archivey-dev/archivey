@@ -1,6 +1,6 @@
-//! BCJ2 (7-Zip's four-stream x86 branch converter): a port of the decode loop of
-//! archivey's `Bcj2DecoderStream` (`internal/streams/codecs/bcj2_filter.py`). The
-//! Python stream keeps seeking, `tell` and the output buffer; this core decodes.
+//! BCJ2 (7-Zip's four-stream x86 branch converter): a port of archivey's Python twin
+//! `bcj2.Decompressor` (`internal/kernels/python/bcj2.py`). archivey's stream
+//! (`internal/streams/codecs/bcj2_filter.py`) keeps seeking and `tell`; this decodes.
 //! Same candidates, same range coder, same refusals and messages.
 
 use crate::kernels::error::DecodeError;

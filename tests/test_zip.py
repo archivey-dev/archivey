@@ -43,6 +43,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.hashing import crc32_digest
+from archivey.internal.reader_state import LifecycleState
 from archivey.types import CreateSystem, HashAlgorithm
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
@@ -367,13 +368,11 @@ def test_encryption_header_larger_than_declared_size_is_corruption(
 
 
 @pytest.mark.usefixtures("zip_general_path")
-def test_archive_close_waits_for_an_in_flight_member_read() -> None:
-    """Closing waits for a member stream's read that is inside the archive's source.
-
-    The reader lifecycle waits for in-flight reader calls, not for a read on a stream
-    the caller already holds; zipfile's lock, taken by every member read and by
-    ``_close_archive``, is what keeps the handle open under that read.
-    """
+def test_archive_close_defers_teardown_past_an_in_flight_member_read() -> None:
+    """Closing beside a member stream's read that is inside the archive's source
+    returns at once; the read finishes on the open handle, then raises the
+    closed-file error instead of returning its bytes, and the archive is torn down when it is
+    out (the last call out)."""
     import threading
 
     in_read = threading.Event()
@@ -395,32 +394,46 @@ def test_archive_close_waits_for_an_in_flight_member_read() -> None:
     source = _BlockingSource(buf.getvalue())
     ar = open_archive(source, concurrent_operations=True)
     stream = ar.open("a.txt")
-    got: list[bytes] = []
+    got: list[object] = []
+
+    def read() -> None:
+        try:
+            got.append(stream.read())
+        except ValueError as exc:
+            got.append(exc)
+
     source.armed = True
-    reader = threading.Thread(target=lambda: got.append(stream.read()))
+    reader = threading.Thread(target=read)
     reader.start()
     assert in_read.wait(5)
     closed = threading.Event()
     closer = threading.Thread(target=lambda: (ar.close(), closed.set()))
     closer.start()
     try:
-        assert not closed.wait(0.2)
+        assert closed.wait(5)
+        # Closed to the caller at once; its inner close waits for the read.
+        assert stream.closed
+        assert not stream._inner_closed()  # type: ignore[attr-defined]
+        assert ar._state.lifecycle is LifecycleState.READER_CLOSED
     finally:
         release.set()
-    assert closed.wait(5)
     reader.join(5)
     closer.join(5)
-    assert got == [b"data"]
+    assert len(got) == 1 and isinstance(got[0], ValueError), got
+    assert "closed file" in str(got[0])
+    assert stream.closed
+    assert ar._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
 @pytest.mark.usefixtures("zip_general_path")
 def test_archive_closed_before_the_overrun_probe() -> None:
-    """A close between the last declared byte and the over-run probe keeps the read.
+    """A close between the last declared byte and the over-run probe stops the read.
 
     The read that delivers a stored member's bytes closes the archive (the lock it
     waits on is re-entrant, so this is the threaded race above, made deterministic).
     The verifier's probe past the declared size then meets the member's closed view,
-    which is "no more data", not a usage error: every declared byte was delivered.
+    which is "no more data", not a damage error. The read was running when close()
+    came, so it raises the closed-file error before it returns.
     """
     data = b"data" * 10
     buf = io.BytesIO()
@@ -443,7 +456,8 @@ def test_archive_closed_before_the_overrun_probe() -> None:
     ar = open_archive(source, concurrent_operations=True)
     with ar.open("a.txt") as stream:
         source.armed = True
-        assert stream.read() == data
+        with pytest.raises(ValueError, match="closed file"):
+            stream.read()
     assert source.fired  # the close happened inside the member's read
 
 
@@ -716,7 +730,7 @@ def _owner_seen(data: bytes) -> tuple[tuple[int | None, int | None], ...]:
     """The owner a file read lists, then the one the pipe pass gives after its end."""
     with open_archive(io.BytesIO(data)) as ar:
         listed = ar.get("owned.txt")
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as ar:
         streamed = [member for member, _ in ar.stream_members()]
     return (listed.uid, listed.gid), (streamed[0].uid, streamed[0].gid)
 
@@ -854,7 +868,7 @@ def test_local_only_owner_fields_are_read_from_a_writer_that_copies_them(
     data = _zip_with_extra(extra)
     with open_archive(io.BytesIO(data)) as ar:
         assert (ar.get("owned.txt").uid, ar.get("owned.txt").gid) == owner
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as ar:
         (final,) = [member for member, _ in ar.stream_members()]
     assert (final.uid, final.gid) == owner
 
@@ -970,7 +984,7 @@ def test_pass_yields_no_owner_until_the_directory(
     # Extraction applies an owner as it writes a member, and a chown cannot be taken
     # back if the directory gives another owner or none. So the pass yields none, and
     # the member gets the directory's at the end of the pass, as a file read lists it.
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as ar:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as ar:
         during = [(m.uid, m.gid) for m, _ in ar.stream_members()]
     assert during == [(None, None)]
     assert _owner_seen(data) == (owner, owner)
@@ -1001,7 +1015,7 @@ def test_trusted_applies_the_directory_owner_from_a_pipe(
 
     monkeypatch.setattr(ExtractionCoordinator, "_apply_metadata", record)
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
-    with open_archive(source, streaming=piped) as ar:
+    with open_archive(source, pipe=piped) as ar:
         ar.extract_all(
             tmp_path / "out", policy=ExtractionPolicy.TRUSTED, on_blocked="skip"
         )
@@ -1019,7 +1033,7 @@ def test_trusted_as_root_owner_matches_from_a_pipe(
 ) -> None:
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
     dest = tmp_path / "out"
-    with open_archive(source, streaming=piped) as ar:
+    with open_archive(source, pipe=piped) as ar:
         ar.extract_all(dest, policy=ExtractionPolicy.TRUSTED, on_blocked="skip")
     st = (dest / "owned.txt").stat()
     expected = (os.geteuid(), os.getegid()) if owner == (None, None) else owner
@@ -1074,12 +1088,12 @@ def test_non_seekable_zip_fails_fast_via_detection(simple_zip: Path) -> None:
     data = simple_zip.read_bytes()
     with pytest.raises(StreamNotSeekableError) as excinfo:
         open_archive(NonSeekableBytesIO(data))
-    assert "streaming=True" in str(excinfo.value)
+    assert "pipe=True" in str(excinfo.value)
 
 
 def test_non_seekable_zip_opens_via_detection_when_streaming(simple_zip: Path) -> None:
     data = simple_zip.read_bytes()
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
         assert reader.format is ArchiveFormat.ZIP
         assert sum(1 for _ in reader.stream_members()) > 0
 
@@ -2335,7 +2349,7 @@ def test_name_flagged_utf8_that_is_not_decodes_as_unflagged(
     raw = b"caf\xe9.txt"
     data = _stored_zip(raw, utf8_flag=True, comment=b"caf\xe9ine")
     source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
-    with open_archive(source, encoding=encoding, streaming=streaming) as ar:
+    with open_archive(source, encoding=encoding, pipe=streaming) as ar:
         ar.extract_all(tmp_path, on_blocked="skip")
         report = ar.members_report_if_available()
         assert report is not None

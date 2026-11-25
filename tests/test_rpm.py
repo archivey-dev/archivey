@@ -41,7 +41,7 @@ from archivey.internal.backends.rpm_reader import RpmReader
 from tests.conftest import requires_zstd
 from tests.memory_util import traced_peak
 from tests.public_names import assert_only_public_archivey
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, open_mode
 
 RPM = archivey.ArchiveFormat.RPM
 DATA = Path(__file__).parent / "fixtures" / "rpm"
@@ -147,7 +147,7 @@ def test_stream_from_a_pipe(compressor: str) -> None:
     data = (DATA / f"payload-{compressor}.rpm").read_bytes()
     seen: dict[str, bytes] = {}
     members = []
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
         assert reader.format == RPM
         for member, stream in reader.stream_members():
             members.append(member)
@@ -218,7 +218,7 @@ def test_extract(tmp_path: Path, pipe: bool) -> None:
     path = DATA / "payload-xz.rpm"
     source = NonSeekableBytesIO(path.read_bytes()) if pipe else path
     dest = tmp_path / "out"
-    with open_archive(source, streaming=pipe) as reader:
+    with open_archive(source, pipe=pipe) as reader:
         reader.extract_all(dest, on_blocked="skip")
     for name, content in CONTENT.items():
         assert (dest / name).read_bytes() == content
@@ -545,7 +545,7 @@ def test_built_packages(stripped: bool, compressor: bytes | None) -> None:
 
 def test_a_stripped_payload_reads_from_a_pipe() -> None:
     data = _build(_Package(_tree(), stripped=True))
-    with open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+    with open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
         names = [m.name for m, _ in reader.stream_members()]
     assert names == _ORDER
 
@@ -673,7 +673,7 @@ def test_a_file_missing_from_the_payload_fails_alone(
     else:
         reads = {}
         source = NonSeekableBytesIO(data)
-        with open_archive(source, format=RPM, streaming=True) as reader:
+        with open_archive(source, format=RPM, pipe=True) as reader:
             for member, stream in reader.stream_members():
                 if stream is not None:
                     try:
@@ -704,7 +704,7 @@ def test_a_payload_name_the_header_does_not_list() -> None:
     # Structural damage: every file read after it in the same pass fails too, rather
     # than the cursor parsing on from inside the broken entry.
     errors: dict[str, str] = {}
-    with open_archive(NonSeekableBytesIO(data), format=RPM, streaming=True) as r:
+    with open_archive(NonSeekableBytesIO(data), format=RPM, pipe=True) as r:
         for member, stream in r.stream_members():
             if stream is not None:
                 with pytest.raises(CorruptionError) as caught:
@@ -805,7 +805,7 @@ def test_a_changed_header_byte_raises(pipe: bool) -> None:
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
     with (
         pytest.raises(CorruptionError, match="SHA-256 digest"),
-        open_archive(source, streaming=pipe) as reader,
+        open_archive(source, pipe=pipe) as reader,
     ):
         list(reader.stream_members())
 
@@ -1094,7 +1094,9 @@ def test_streaming_header_store_size_does_not_drive_the_allocation(
     def walk() -> None:
         with (
             pytest.raises(TruncatedError),
-            open_archive(source, format=RPM, streaming=True) as reader,
+            open_archive(
+                source, format=RPM, **open_mode(source, streaming=True)
+            ) as reader,
         ):
             for _member, _stream in reader.stream_members():
                 pass
@@ -1671,7 +1673,7 @@ def test_listing_reads_none_of_the_payload(pipe: bool) -> None:
     payload_at = good.index(b"\x1f\x8b")
     data = good[:payload_at] + b"\x1f\x8b\x08\x00" + b"\0" * 6 + b"\xff" * 64
     if pipe:
-        with open_archive(NonSeekableBytesIO(data), format=RPM, streaming=True) as r:
+        with open_archive(NonSeekableBytesIO(data), format=RPM, pipe=True) as r:
             listed = []
             for member, stream in r.stream_members():
                 listed.append(member.name)
@@ -1718,7 +1720,7 @@ def test_a_symlink_whose_payload_target_differs_is_reported(pipe: bool) -> None:
     ``rpm2cpio | cpio`` would make, is reported once a read passes the entry."""
     data = _differing_link()
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
-    with open_archive(source, format=RPM, streaming=pipe) as reader:
+    with open_archive(source, format=RPM, pipe=pipe) as reader:
         targets = {}
         for member, stream in reader.stream_members():
             targets[member.name] = member.link_target

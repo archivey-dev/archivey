@@ -233,8 +233,8 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
 - An agent may merge a straightforward PR once its review approves and CI is green
   (maintainer, 2026-09-25: "go ahead with merge straightforward ones … if there's a
   tricky one, you can ask me to take a look before merging").
-  On standard and deep that approval includes the Opus pass, and on deep a Codex or
-  Cursor review's too (maintainer, 2026-11-22).
+  On standard and deep that approval includes the Opus pass, and on deep a Codex,
+  Cursor or Antigravity review's too (maintainer, 2026-11-22; Antigravity 2026-11-24).
   The maintainer merges a PR that makes a decision of theirs (maintainer, 2026-10-31),
   so their merges go to the PRs that need their judgement, not to every deep one. The tier
   command's `merge:` line says which, run from the base branch's copy as

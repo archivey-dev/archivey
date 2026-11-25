@@ -69,7 +69,7 @@ from archivey.internal.remote import (
     open_file_compression,
     open_file_name,
 )
-from archivey.internal.source import ArchiveSource, seek_is_expensive
+from archivey.internal.source import ArchiveSource, PipeView, seek_is_expensive
 from archivey.internal.streams.streamtools import (
     is_stream,
     readinto_via_read,
@@ -78,6 +78,7 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.streams.streamtools.binaryio import (
     ask_resume_offset,
+    is_seekable,
     read_blocking,
 )
 from archivey.terminal import display_path
@@ -1568,7 +1569,7 @@ def _coerce_path_or_stream(
     return item
 
 
-def _is_source_sequence(source: object) -> TypeGuard[Sequence[object]]:
+def is_source_sequence(source: object) -> TypeGuard[Sequence[object]]:
     """Whether ``source`` is a list of volumes rather than one source.
 
     Narrows to ``Sequence[object]``, not ``Sequence[SourceItem]``: the elements are
@@ -1617,6 +1618,7 @@ def resolve_source(
     *,
     discover_volumes: bool = True,
     max_read_through: int = DEFAULT_MAX_READ_THROUGH,
+    pipe: bool = False,
 ) -> ResolvedSource:
     """Turn ``source`` into the one :class:`ArchiveSource` every later step reads.
 
@@ -1636,8 +1638,13 @@ def resolve_source(
     An ``fsspec.core.OpenFile`` (alone or in a list) is read by range through the fetch
     planner (:mod:`archivey.internal.remote`), whose read-through distance is
     ``max_read_through`` (``ArchiveyConfig.max_read_through``).
+
+    ``pipe`` (``open_archive(pipe=True)``) reads a caller's stream, or fsspec's
+    decompressing file, through a :class:`~archivey.internal.source.PipeView`, so
+    resolving it never seeks it or measures it by decoding. ``open_archive`` refuses a
+    list of parts under ``pipe`` before calling this.
     """
-    if _is_source_sequence(source):
+    if is_source_sequence(source):
         raw_items = list(source)
         if not raw_items:
             raise _UsageValueError("source sequence must not be empty")
@@ -1646,10 +1653,14 @@ def resolve_source(
                 raw_items[0],
                 discover_volumes=discover_volumes,
                 max_read_through=max_read_through,
+                pipe=pipe,
             )
         return _resolve_volume_list(raw_items, max_read_through)
     return _resolve_single(
-        source, discover_volumes=discover_volumes, max_read_through=max_read_through
+        source,
+        discover_volumes=discover_volumes,
+        max_read_through=max_read_through,
+        pipe=pipe,
     )
 
 
@@ -1705,7 +1716,7 @@ def _resolve_volume_list(
 
 
 def _resolve_single(
-    source: object, *, discover_volumes: bool, max_read_through: int
+    source: object, *, discover_volumes: bool, max_read_through: int, pipe: bool
 ) -> ResolvedSource:
     """Resolve one source, which may still turn out to be part of a volume set.
 
@@ -1723,7 +1734,7 @@ def _resolve_single(
             decoded, raw = open_decompressed(source)
             try:
                 opened = ArchiveSource.for_fsspec_decompressed(
-                    decoded, raw, FsspecDecompressed.of(source)
+                    decoded, raw, FsspecDecompressed.of(source), pipe=pipe
                 )
             except BaseException:
                 try:
@@ -1786,5 +1797,12 @@ def _resolve_single(
         # source type archivey does not take. ``reject_source`` is NoReturn, which
         # is what keeps ``source`` narrowed to ``BinaryIO`` below.
         reject_source(source)
-    archive_source = ArchiveSource.for_stream(source)
+    if pipe and is_seekable(source):
+        # Wrapped before it is measured: ``for_stream`` would otherwise seek to the
+        # end and back to find a size that pipe mode does not use.
+        view = PipeView(source, owns=False, name=source_name(source))
+        archive_source = ArchiveSource.for_stream(cast("BinaryIO", view))
+        archive_source.piped_from_seekable = True
+    else:
+        archive_source = ArchiveSource.for_stream(source)
     return ResolvedSource(archive_source, source_name(archive_source), 1)

@@ -52,8 +52,9 @@ The reasons, as the maintainer gave them:
 
 - One extraction API, one report scope: `ExtractionReport.diagnostics` always covers its
   `extract_all()` call, and detection and open diagnostics are on `reader.diagnostics`.
-- Extracting from a pipe or socket needs `streaming=True` on `open_archive()`, the same
-  as every other forward-only read. The docs say so where they show extraction.
+- Extracting from a pipe or socket needs `pipe=True` on `open_archive()`, the same as
+  every other read of a source that cannot seek. The docs say so where they show
+  extraction.
 - Migration docs map `shutil.unpack_archive(p, d)` and `extractall(d)` to the two-line
   form rather than to a single call.
 - The CLI's `archivey extract` is unaffected: it always went through `open_archive()`.

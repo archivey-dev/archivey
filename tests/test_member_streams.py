@@ -319,7 +319,8 @@ def test_reader_close_closes_streams_in_open_order(tmp_path: Path) -> None:
     from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
     closed_order: list[int] = []
-    real_close = ArchiveStreamImpl.close
+    # The reader's shutdown closes each stream through the owned path.
+    real_close = ArchiveStreamImpl._close_owned
 
     def recording_close(self: ArchiveStreamImpl) -> None:
         closed_order.append(id(self))
@@ -329,10 +330,10 @@ def test_reader_close_closes_streams_in_open_order(tmp_path: Path) -> None:
     try:
         streams = [reader.open(name) for name in names]
         opened_order = [id(s) for s in streams]
-        ArchiveStreamImpl.close = recording_close  # type: ignore[method-assign]
+        ArchiveStreamImpl._close_owned = recording_close  # type: ignore[method-assign]
         reader.close()
     finally:
-        ArchiveStreamImpl.close = real_close  # type: ignore[method-assign]
+        ArchiveStreamImpl._close_owned = real_close  # type: ignore[method-assign]
 
     ours = [sid for sid in closed_order if sid in set(opened_order)]
     assert ours == opened_order

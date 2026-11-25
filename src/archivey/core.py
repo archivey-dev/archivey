@@ -6,10 +6,12 @@ cannot be read from a pipe is refused before the caller is told to install its
 package).
 
 1. Check the arguments: a wrong-typed or ``UNKNOWN`` ``format=``, a bad config or
-   encoding, ``streaming=True`` with ``concurrent_operations=True`` or with
-   ``salvage=True``.
+   encoding, ``streaming=True`` or ``pipe=True`` with ``concurrent_operations=True``
+   or with ``salvage=True``.
 2. Resolve the source (``resolve_source``): a path, a
-   stream, or a list of volumes becomes one ``ArchiveSource``.
+   stream, or a list of volumes becomes one ``ArchiveSource``. Under ``pipe=True`` a
+   source that can seek is then read as a pipe (``ArchiveSource.read_as_pipe``), and a
+   directory is refused.
 3. Decide the format (``_decide_format``): refuse a lone numbered volume
    (``.7z.NNN`` / ``.zip.NNN`` / ``.exe.NNN``, then Info-ZIP ``.zNN``), unless
    ``format=`` names a format other than the one the parts join into (ZIP or 7z; ZIP
@@ -22,7 +24,7 @@ package).
 5. Pick the backend (``_backend_for_source``): refuse a non-seekable source for a
    format that needs to seek in either mode, look up the backend
    (``PackageNotInstalledError``), emit the ``password=`` / ``encoding=``
-   diagnostics, and refuse a non-seekable source with ``streaming=False``.
+   diagnostics, and refuse a non-seekable source without ``pipe=True``.
 6. Open: rebase the source, then ``backend.open_read(...)`` over the payload region
    that detection found.
 
@@ -135,6 +137,7 @@ from archivey.internal.volumes import (
     first_volume_for_stub,
     incomplete_lone_numbered_volume_error,
     is_sfx_stub_name,
+    is_source_sequence,
     resolve_source,
 )
 from archivey.reader import ArchiveReader, ArchiveStream, ForwardArchiveReader
@@ -379,16 +382,18 @@ def _follow_stub_volume(
     return resolved
 
 
-# Two overloads carry the access mode into the return type: the default
-# ``streaming=False`` gives the full ``ArchiveReader``, while ``streaming=True`` or a
-# flag known only at run time gives ``ForwardArchiveReader``, which lacks the
-# random-access methods, so a type checker flags a call that would raise.
+# Three overloads carry the access mode into the return type: the default
+# ``streaming=False, pipe=False`` gives the full ``ArchiveReader``, while
+# ``streaming=True``, ``pipe=True`` or a flag known only at run time gives
+# ``ForwardArchiveReader``, which lacks the random-access methods, so a type checker
+# flags a call that would raise.
 @overload
 def open_archive(
     source: OpenSourceInput,
     *,
     format: ArchiveFormat | str | None = None,
     streaming: Literal[False] = False,
+    pipe: Literal[False] = False,
     seekable_members: bool = False,
     concurrent_operations: bool = False,
     password: PasswordInput = None,
@@ -405,6 +410,24 @@ def open_archive(
     *,
     format: ArchiveFormat | str | None = None,
     streaming: bool,
+    pipe: bool = False,
+    seekable_members: bool = False,
+    concurrent_operations: bool = False,
+    password: PasswordInput = None,
+    encoding: str | None = None,
+    config: ArchiveyConfig | None = None,
+    parent: ForwardArchiveReader | None = None,
+    salvage: bool = False,
+) -> ForwardArchiveReader: ...
+
+
+@overload
+def open_archive(
+    source: OpenSourceInput,
+    *,
+    format: ArchiveFormat | str | None = None,
+    streaming: bool = False,
+    pipe: bool,
     seekable_members: bool = False,
     concurrent_operations: bool = False,
     password: PasswordInput = None,
@@ -420,6 +443,7 @@ def open_archive(
     *,
     format: ArchiveFormat | str | None = None,
     streaming: bool = False,
+    pipe: bool = False,
     seekable_members: bool = False,
     concurrent_operations: bool = False,
     password: PasswordInput = None,
@@ -430,9 +454,21 @@ def open_archive(
 ) -> ForwardArchiveReader:
     """Open an archive for reading.
 
-    ``streaming=False`` (the default) opens for random access and fails fast at open
-    time on a non-seekable source. ``streaming=True`` promises forward-only, single-pass
-    access (works on any source, but disables random-access methods).
+    ``streaming=False`` (the default) opens for random access. ``streaming=True``
+    promises forward-only, single-pass access and disables the random-access methods.
+    Both need a source that can seek, and give the same members, metadata and errors.
+
+    ``pipe=True`` is a mode of its own for a source that can be read only once, such
+    as a pipe, a socket or an HTTP response. It reads the source once, from its
+    current position to its end, as a pipe carrying the same bytes is read, **whether
+    or not the source can seek**, so what it gives depends on the flag and never on
+    the object. It implies ``streaming=True``, and ``streaming=`` has no effect with
+    it. Pipe mode differs from reading the same bytes from a file in ways listed in
+    the user docs ("Reading from a pipe"): fewer formats, a ZIP member's permissions
+    and symlink flag known only at the end of the pass, more data lost before damage,
+    and detection that sees only the start of the stream. A directory path cannot be
+    read as a pipe and raises ``ArchiveyUsageError``. A source that cannot seek
+    without ``pipe=True`` raises ``StreamNotSeekableError`` in both modes.
 
     The return type follows the access mode: :class:`~archivey.ArchiveReader` for the
     default ``streaming=False``, and :class:`~archivey.ForwardArchiveReader`, which
@@ -450,16 +486,27 @@ def open_archive(
       ``io.UnsupportedOperation``. A backward seek may re-decompress from the
       start when there is no index or accelerator. A ``stream_members()``
       stream never seeks, with or without this flag.
-    - ``concurrent_operations=True`` — operations on the reader may overlap, from one
-      thread or several, on every format: random ``open()`` / ``read()`` / ``get()``
-      / ``members()``, iteration, ``stream_members()`` passes and ``extract_all()``.
-      Each works as if it ran on a reader of its own. A single member stream object
-      still has one owner, first-touch materialization is coordinated rather than
-      parallel, and ``close()`` waits for calls in flight. Overlap is correct, not
-      always cheaper. Without it, a second overlapping ``open()``, or a random-access
-      call or another pass beside a running pass, raises ``ArchiveyUsageError``;
-      ``close()`` beside a pass suspended at a yield closes the reader, and resuming
-      the pass raises.
+    - ``concurrent_operations=True`` — any number of member streams may be open at
+      once, and ``open()``, ``read()``, ``get()``, ``members()``,
+      ``members_report()``, ``members_report_if_available()`` and iteration may run
+      at the same time from several threads, on every format. Each member stream
+      belongs to one thread at a time, and the member list is built once while the
+      other callers wait for it. Overlap is correct, not always cheaper. Without it,
+      a second ``open()`` while a stream is open raises ``ArchiveyUsageError``, and
+      the reader and its open stream belong to one thread at a time.
+
+    In both modes ``stream_members()``, ``extract_all()`` and ``verify_all()`` have the
+    reader to themselves: while one runs, ``open()``, ``read()``, ``get()``,
+    ``members()``, ``members_report()``, iteration and any other pass raise
+    ``ArchiveyUsageError``, and a pass raises when it starts if another
+    call is running or a stream from ``open()`` is still open. ``format``, ``info``,
+    ``cost``, ``diagnostics``, ``member in reader`` and
+    ``members_report_if_available()`` stay readable beside a pass.
+
+    ``close()`` marks the reader closed and returns, in both modes: it never waits for
+    another thread. A call still running raises ``ArchiveyUsageError`` at its next
+    check, a member stream still open raises ``ValueError``, and the archive is
+    released when the last running call returns.
 
     ``open_stream`` uses the same vocabulary for the single-stream case
     (``open_stream(..., seekable=True)``); concurrency is meaningless there, so it has
@@ -579,10 +626,10 @@ def open_archive(
 
     Raises:
         FormatDetectionError: No format matches the source's contents or name.
-        StreamNotSeekableError: The source cannot seek and ``streaming=False``, or the
-            format needs to seek in either access mode: one whose
-            ``format_availability(format).required_source`` is ``SEEKABLE``, such as 7z,
-            RAR or ISO.
+        StreamNotSeekableError: The source cannot seek and ``pipe=False``, or the
+            format cannot be read as a pipe: one whose
+            ``format_availability(format).required_source`` is ``SEEKABLE``, such as 7z
+            or ISO, opened from a source that cannot seek or with ``pipe=True``.
         CorruptionError: The archive's header is damaged or cut short. A numbered split
             set with a missing part raises the subclass
             :class:`~archivey.TruncatedError`.
@@ -600,8 +647,9 @@ def open_archive(
         DiagnosticRaisedError: A diagnostic that the :class:`~archivey.DiagnosticPolicy`
             in the config raises on, recorded while the archive is detected or opened.
         ArchiveyUsageError: One argument has a type or value the call cannot use (then
-            also a ``TypeError`` or ``ValueError``), or ``streaming=True`` is combined
-            with ``concurrent_operations=True`` or with ``salvage=True``.
+            also a ``TypeError`` or ``ValueError``), ``streaming=True`` or
+            ``pipe=True`` is combined with ``concurrent_operations=True`` or with
+            ``salvage=True``, or ``pipe=True`` names a directory.
         FileNotFoundError: The path does not exist. Other ``OSError`` from reading the
             source is not wrapped either.
     """
@@ -623,6 +671,7 @@ def open_archive(
         )
     for flag_name, flag in (
         ("streaming", streaming),
+        ("pipe", pipe),
         ("seekable_members", seekable_members),
         ("concurrent_operations", concurrent_operations),
         ("salvage", salvage),
@@ -632,18 +681,23 @@ def open_archive(
     _check_parent(parent)
     check_encoding(encoding, call="open_archive(encoding=…)")
 
-    if streaming and concurrent_operations:
+    if (streaming or pipe) and concurrent_operations:
+        mode = "pipe=True" if pipe else "streaming=True"
         raise _UsageValueError(
-            "open_archive(streaming=True) cannot be combined with "
+            f"open_archive({mode}) cannot be combined with "
             "concurrent_operations=True: a forward-only pass has one progressive decoder "
             "and cannot fan out concurrent member streams."
         )
-    if streaming and salvage:
+    if (streaming or pipe) and salvage:
+        mode = "pipe=True" if pipe else "streaming=True"
         raise _UsageValueError(
-            "open_archive(salvage=True) cannot be combined with streaming=True: "
+            f"open_archive(salvage=True) cannot be combined with {mode}: "
             "salvage needs random access to a seekable file. Save the stream to a "
             "file first, then open that file with salvage=True."
         )
+    # Pipe mode is a single forward pass: the streaming access mode over a source
+    # read as a pipe.
+    streaming = streaming or pipe
 
     # The public surface is two booleans; everything below the entry point keeps
     # working in MemberStreams flags, held on the reader and its state. No public
@@ -665,11 +719,16 @@ def open_archive(
     # Collector is created before detection so open + detect share one budget /
     # occurrence order, and reader.diagnostics covers both.
     collector = collector_from_config(effective_config)
+    if pipe:
+        _refuse_volume_list_as_pipe(source)
     resolved = resolve_source(
         source,
         discover_volumes=effective_config.discover_volumes,
         max_read_through=effective_config.max_read_through,
+        pipe=pipe,
     )
+    if pipe:
+        resolved = _read_as_pipe(resolved)
     # Every reader reports to its own config's callback; a ``parent=`` reader's
     # reports say how deep it is; each reader counts reads of its own source.
     if effective_config.on_source_read is not None:
@@ -686,6 +745,7 @@ def open_archive(
                 resolved,
                 format=format,
                 streaming=streaming,
+                pipe=pipe,
                 passwords=passwords,
                 encoding=encoding,
                 config=effective_config,
@@ -699,6 +759,59 @@ def open_archive(
         # Once a reader exists it closes its source; until then nobody else will.
         slot.current.close()
         raise
+
+
+def _volume_set_message(parts: int) -> str:
+    return (
+        f"open_archive(pipe=True) reads one stream, and this source is a volume set of "
+        f"{parts} parts, which a single stream cannot join; open the set without "
+        "pipe=True."
+    )
+
+
+def _refuse_volume_list_as_pipe(source: object) -> None:
+    """Refuse a list of two or more parts under ``pipe=True``, before anything reads
+    or measures them: joining a list measures each caller stream in it."""
+    if is_source_sequence(source):
+        parts = len(source)
+        if parts > 1:
+            raise _UsageValueError(_volume_set_message(parts))
+
+
+def _read_as_pipe(resolved: ResolvedSource) -> ResolvedSource:
+    """The source ``open_archive(pipe=True)`` reads: ``resolved``'s, read as a pipe.
+
+    A source that cannot seek already is one, and so is a caller's stream, which
+    :func:`resolve_source` wrapped before measuring it. A source archivey opened that
+    can seek (a path, an fsspec ``OpenFile`` read by range) is wrapped here so that
+    detection and the backend read it once, front to back, as a pipe carrying the same
+    bytes and name, with no path, volume paths or size to go by. A directory has no
+    bytes to carry, and a volume set found beside a path cannot be joined from one
+    stream, so both are refused. A path that does not exist raises as in the other
+    modes. Closes the source when it raises.
+    """
+    source = resolved.source
+    path = source.path
+    if path is not None:
+        # Checked before the path is hidden: a missing or unreadable path raises
+        # ``OSError`` as it does in the other modes, whatever ``format=`` names.
+        try:
+            os.stat(path)
+        except OSError:
+            source.close()
+            raise
+    if source.is_directory:
+        source.close()
+        raise _UsageValueError(
+            "open_archive(pipe=True) reads a stream of bytes, and a directory is not "
+            "one; open the directory without pipe=True."
+        )
+    if resolved.volume_count > 1:
+        source.close()
+        raise _UsageValueError(_volume_set_message(resolved.volume_count))
+    if not source.seekable():
+        return resolved
+    return replace(resolved, source=ArchiveSource.read_as_pipe(source))
 
 
 def _check_parent(parent: object) -> None:
@@ -1069,7 +1182,7 @@ def _backend_for_source(
     archive_source: ArchiveSource,
     replacement: type[FormatHandler] | None,
     *,
-    streaming: bool,
+    pipe: bool,
     passwords: _PasswordCandidates,
     encoding: str | None,
     config: ArchiveyConfig,
@@ -1078,25 +1191,30 @@ def _backend_for_source(
     """Look up the backend class for the format, and refuse a source it cannot read.
 
     A non-seekable source is refused in two halves. The capability half refuses a
-    format that needs to seek in either access mode, before the availability check;
-    the mode half refuses ``streaming=False``, after it. Both emit the ``password=`` /
-    ``encoding=`` diagnostics first. Raises ``PackageNotInstalledError`` when the
-    backend's optional package is missing.
+    format that cannot be read as a pipe, before the availability check; the mode
+    half refuses a source that cannot seek without ``pipe=True``, after it. Under
+    ``pipe=True`` the source never seeks (``_read_as_pipe``), so only the capability
+    half applies. Both emit the ``password=`` / ``encoding=`` diagnostics first.
+    Raises ``PackageNotInstalledError`` when the backend's optional package is
+    missing.
     """
     resolved_format = decision.format
     archive_name = decision.resolved.archive_name
     registry = get_registry()
 
-    # Access-mode contract: streaming=False never implicitly buffers a pipe.
-    # streaming=True still needs a format with a front-to-back walk (TAR, ZIP's local
-    # headers, raw codecs); ISO, 7z and RAR cannot.
+    # Access-mode contract: no mode implicitly buffers a pipe, and only pipe=True reads
+    # one. Pipe mode still needs a format with a front-to-back walk (TAR, ZIP's local
+    # headers, raw codecs); ISO and 7z cannot.
     source_is_read_once = (
         not archive_source.is_directory and not archive_source.seekable()
     )
-    # Capability first, mode second: for a format that needs seek in *either* mode
-    # the requested mode is not what went wrong, so both modes get the one message
-    # naming the only fix. Proposing streaming=True here would send the caller into
-    # a second refusal explaining the retry could never have worked. Ahead of the
+    # Detection reads the start of the source; ``format=`` skips it, so the source is
+    # still where the caller left it and the refusals below can say so.
+    detection_read = decision.detected is not None
+    # Capability first, mode second: for a format that cannot be read as a pipe the
+    # requested mode is not what went wrong, so every mode gets the one message
+    # naming the only fix. Proposing pipe=True here would send the caller into a
+    # second refusal explaining the retry could never have worked. Ahead of the
     # availability check for the same reason: a piped archive of a plugin format whose
     # package is missing would otherwise be told to install it, and only then that a
     # pipe cannot be read.
@@ -1126,10 +1244,28 @@ def _backend_for_source(
             collector=collector,
             replacement=replacement,
         )
+        if archive_source.piped_from_seekable:
+            # The caller's object can seek; only the flag made it a pipe.
+            message = (
+                f"Format {resolved_format.display_name} cannot be read as a pipe "
+                f"({refused_cls.NON_SEEKABLE_REASON}). Open it again without "
+                "pipe=True, from the position where the archive starts (where the "
+                "stream was when this call began)."
+            )
+        else:
+            # One message whatever the mode: no flag makes this source readable.
+            message = (
+                f"Format {resolved_format.display_name} cannot be read from a source "
+                f"that cannot seek, in any mode ({refused_cls.NON_SEEKABLE_REASON}). "
+                + (
+                    "Detection has already read from this source, so copy the "
+                    "archive from its start to a file or a BytesIO and open that."
+                    if detection_read
+                    else "Copy the archive to a file or a BytesIO and open that."
+                )
+            )
         raise StreamNotSeekableError(
-            f"Format {resolved_format.display_name} cannot be read from a non-seekable source "
-            f"in either access mode ({refused_cls.NON_SEEKABLE_REASON}). Buffer it to "
-            f"disk or a BytesIO and reopen.",
+            message,
             source_format=resolved_format,
             archive_name=archive_name,
         )
@@ -1154,12 +1290,20 @@ def _backend_for_source(
     # The mode half of the access-mode refusal; the capability half is above. This one
     # stays after the availability check: the format can be read from a pipe, so the
     # missing package is a real step on the way, not a detour.
-    if source_is_read_once and not streaming:
+    if source_is_read_once and not pipe:
         raise StreamNotSeekableError(
-            f"Random access (streaming=False) requires a seekable source. Open with "
-            f"streaming=True for a single forward pass over this "
-            f"{resolved_format.display_name} stream, "
-            f"or buffer it to disk or a BytesIO and reopen.",
+            f"This {resolved_format.display_name} source cannot seek, so it can be "
+            "read only as a pipe, which can differ from reading a file (for example, "
+            "a ZIP's permissions and symlinks arrive only at its end, and damaged "
+            "data can lose more). "
+            + (
+                "Detection has already read from this source, so open a new one: "
+                "pass pipe=True to read it that way, or copy the archive to a file "
+                "or a BytesIO first."
+                if detection_read
+                else "Nothing has been read from this source yet: pass pipe=True to "
+                "read it that way, or copy the archive to a file or a BytesIO first."
+            ),
             source_format=resolved_format,
             archive_name=archive_name,
         )
@@ -1172,6 +1316,7 @@ def _open_resolved(
     *,
     format: ArchiveFormat | None,
     streaming: bool,
+    pipe: bool,
     passwords: _PasswordCandidates,
     encoding: str | None,
     config: ArchiveyConfig,
@@ -1209,7 +1354,7 @@ def _open_resolved(
         decision,
         archive_source,
         replacement,
-        streaming=streaming,
+        pipe=pipe,
         passwords=passwords,
         encoding=encoding,
         config=config,
@@ -1359,7 +1504,7 @@ def open_stream(
     For a compressed tar (``.tar.gz``, ``.tar.xz``, …), whether detected or passed as
     ``format=ArchiveFormat.TAR_GZ`` and so on, the returned stream removes the
     compression layer only and yields the tar bytes, as ``gzip.open`` does;
-    ``open_archive(open_stream(p), streaming=True)`` then lists the same members as
+    ``open_archive(open_stream(p), pipe=True)`` then lists the same members as
     ``open_archive(p)``. Any other container (ZIP, 7z, RAR, ISO, an uncompressed tar)
     has no compression layer to remove: detecting one raises
     :class:`~archivey.FormatDetectionError`, and passing one as ``format=`` raises

@@ -61,6 +61,8 @@ Topics:
   in a child process, how the children are reused, and what a caller sees when one dies.
 - [`verification.md`](../topics/verification.md) — what `verified` and `verifiable` mean,
   which check raises them in each format, and how `verify()` and `verify_all()` behave.
+- [`codec-kernels.md`](../topics/codec-kernels.md) — the archivey-codecs Rust kernels,
+  their Python twins with the same API, and the one switch that picks between them.
 
 ## Format page structure
 

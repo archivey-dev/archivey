@@ -70,6 +70,7 @@ from tests.streams_util import (
     NonSeekableBytesIO,
     hold_views,
     lzma_alone_with_filter,
+    open_mode,
 )
 
 _KINDS = {
@@ -173,7 +174,9 @@ _LISTED = {
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
 def test_inner_members_are_listed_and_read_in_one_pass(pipe: bool) -> None:
     source = NonSeekableBytesIO(_TWO) if pipe else io.BytesIO(_TWO)
-    with open_archive(source, format=BoxesHandler.format, streaming=True) as reader:
+    with open_archive(
+        source, format=BoxesHandler.format, **open_mode(source, streaming=True)
+    ) as reader:
         listed = {
             member.name: (member.type, stream.read() if stream else None)
             for member, stream in reader.stream_members()
@@ -255,7 +258,7 @@ def test_a_cut_inner_archive_raises() -> None:
 def test_a_zip_inside_is_read_forward() -> None:
     data = _boxes((b"Z", _zip()))
     with open_archive(
-        NonSeekableBytesIO(data), format=BoxesHandler.format, streaming=True
+        NonSeekableBytesIO(data), format=BoxesHandler.format, pipe=True
     ) as reader:
         listed = {m.name: s.read() for m, s in reader.stream_members() if s}
     assert listed == {"0/z.txt": b"zip"}

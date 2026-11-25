@@ -197,8 +197,10 @@ def test_a_proved_member_is_not_read_again(name: str) -> None:
     with _open(name, streaming=False, source=source) as reader:
         files = _files(reader.members())
         first = max(files, key=lambda member: member.size or 0)
-        held = reader.open(first)
-        assert held.read(3) == _content(name, first)[:3]
+        # A data pass does not start beside a held stream: read part of one and
+        # close it first.
+        with reader.open(first) as held:
+            assert held.read(3) == _content(name, first)[:3]
         assert reader.verify_all().failures == ()
         before = source.bytes_read
         # 10: a second call has nothing left to prove. (RAR is read through unrar,
@@ -212,10 +214,10 @@ def test_a_proved_member_is_not_read_again(name: str) -> None:
                 opened = source.bytes_read
                 assert stream.verify() == stream.verifiable
                 assert source.bytes_read == opened, member.name
-        # 10: the stream the caller held is where it was.
-        assert held.tell() == 3
-        assert held.read() == _content(name, first)[3:]
-        held.close()
+        # 10: a stream opened again starts proved and reads the member from its start.
+        with reader.open(first) as again:
+            assert again.verified == again.verifiable
+            assert again.read() == _content(name, first)
 
 
 def _content(name: str, member: ArchiveMember) -> bytes:

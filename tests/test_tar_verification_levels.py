@@ -91,7 +91,7 @@ def test_an_intact_archive_from_a_pipe_reaches_the_checksum(mode: str) -> None:
     """A streaming walk over a source that cannot seek reads the codec's tail through
     the walk buffer's read-ahead; that end counts as reached, so the trailer raises
     every file and verify_all() fails nothing."""
-    with open_archive(NonSeekableBytesIO(_tar(mode)), streaming=True) as reader:
+    with open_archive(NonSeekableBytesIO(_tar(mode)), pipe=True) as reader:
         report = reader.verify_all()
         assert report.failures == ()
         assert report.structure_error is None

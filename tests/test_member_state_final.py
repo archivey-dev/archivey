@@ -21,7 +21,7 @@ from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.exceptions import ResourceLimitError
 from archivey.types import ArchiveMember
 from tests.conftest import requires_binary
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, open_mode
 
 
 def _tar(
@@ -74,7 +74,7 @@ def test_a_tar_forward_pass_settles_its_members_when_it_ends(
     path.write_bytes(data)
     source = path if seekable else NonSeekableBytesIO(data)
     seen: list[tuple[ArchiveMember, bool, bool]] = []
-    with open_archive(source, streaming=True) as reader:
+    with open_archive(source, **open_mode(source, streaming=True)) as reader:
         for member, _stream in reader.stream_members():
             seen.append((member, member.member_state_final, member.is_current))
     assert [(final, current) for _, final, current in seen] == [
@@ -124,9 +124,7 @@ def test_a_pass_refused_by_the_listing_limits_settles_what_it_yielded(
     members it yielded: they read true from then on."""
     data = _tar(_DUPLICATES)
     config = ArchiveyConfig(listing_limits=ListingLimits(max_members=1))
-    with open_archive(
-        NonSeekableBytesIO(data), streaming=True, config=config
-    ) as reader:
+    with open_archive(NonSeekableBytesIO(data), pipe=True, config=config) as reader:
         seen = []
         with pytest.raises(ResourceLimitError, match="max_members"):
             for member, _ in reader.stream_members():

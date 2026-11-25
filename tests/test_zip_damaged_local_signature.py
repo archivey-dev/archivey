@@ -22,6 +22,7 @@ from archivey.config import ListingLimits
 from archivey.exceptions import ArchiveyError, CorruptionError, UnsupportedFeatureError
 from archivey.internal.backends import zip_local_walk
 from archivey.internal.backends.rar_forward import KEEP_BYTES
+from tests.streams_util import open_mode
 
 
 class _Pipe(io.RawIOBase):
@@ -70,7 +71,9 @@ def _pass(
     )
     seen: list[tuple[str, object]] = []
     error: BaseException | None = None
-    with open_archive(source, streaming=access != "random", config=config) as reader:  # type: ignore[arg-type]
+    with open_archive(
+        source, **open_mode(source, streaming=access != "random"), config=config
+    ) as reader:  # type: ignore[arg-type]
         try:
             for member, stream in reader.stream_members():
                 assert stream is not None

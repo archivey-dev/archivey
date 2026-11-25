@@ -26,6 +26,7 @@ from archivey import (
     ArchiveyUsageError,
     open_archive,
 )
+from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.reader_state import LifecycleState
 from archivey.internal.streams.archive_stream import ArchiveStreamImpl
@@ -212,8 +213,8 @@ def test_close_while_stream_members_suspended_closes_reader(
     reader.close()  # idempotent
 
 
-# A pass's streams hold the live-stream slot together: the pass is checked once, at its
-# first stream, instead of each stream checking in and out of the gate.
+# A data pass is refused at its start beside a stream from open(); its own streams do
+# not check in and out of the gate.
 _RANDOM_ACCESS_READ_SOURCES = [p for p in _READ_SOURCES if not p.values[1]]
 
 
@@ -221,15 +222,12 @@ _RANDOM_ACCESS_READ_SOURCES = [p for p in _READ_SOURCES if not p.values[1]]
 def test_stream_members_beside_a_live_open_stream_is_refused(
     tmp_path: Path, make_source, streaming: bool
 ) -> None:
-    """Without ``concurrent_operations``, a pass is refused at its first stream while
-    a stream from ``open()`` is live, as each of its streams was when each checked in.
-
-    Fails when the pass's streams skip the gate altogether (no
-    ``admit_pass_streams``)."""
+    """Without ``concurrent_operations``, a pass is refused at its start while a stream
+    from ``open()`` is live."""
     with open_archive(make_source(tmp_path), streaming=streaming) as reader:
         first = next(m for m in reader.members() if m.is_file and m.size)
         handle = reader.open(first)
-        with pytest.raises(ArchiveyUsageError, match="already open"):
+        with pytest.raises(ArchiveyUsageError, match="Close it first"):
             for _member, _stream in reader.stream_members():
                 pass
         handle.close()
@@ -635,10 +633,15 @@ def test_failure_in_a_step_the_pass_iterator_finished_comes_out_of_it(
     assert p.stream.closed
 
 
-def test_close_still_refused_while_pass_runs_on_another_thread(tmp_path: Path) -> None:
-    """Only a pass suspended at a yield is closed underneath; a running one still blocks."""
+def test_close_beside_a_pass_running_on_another_thread_cancels_it(
+    tmp_path: Path,
+) -> None:
+    """A pass running on another thread does not hold close(): close() returns, the
+    pass raises the closed error at its next step, and teardown runs after it."""
     root = _dir_with_files(tmp_path)
     reader = open_archive(root)
+    assert isinstance(reader, BaseArchiveReader)
+    state = reader._state
     entered = threading.Event()
     release = threading.Event()
     errors: list[BaseException] = []
@@ -658,13 +661,16 @@ def test_close_still_refused_while_pass_runs_on_another_thread(tmp_path: Path) -
     worker.start()
     try:
         assert entered.wait(10)
-        with pytest.raises(ArchiveyUsageError, match="is active"):
-            reader.close()
+        reader.close()
+        assert state.lifecycle is LifecycleState.READER_CLOSED  # the pass holds it
     finally:
         release.set()
         worker.join(10)
-    assert errors == []
-    reader.close()
+    assert len(errors) == 1
+    assert isinstance(errors[0], ArchiveyUsageError)
+    assert "closed" in str(errors[0])
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+    reader.close()  # a no-op
 
 
 # --- 7.4 cooperative lifecycle ----------------------------------------------------------
@@ -930,24 +936,30 @@ def test_reader_reentry_from_diagnostic_callback_raises_not_deadlocks(
         reader = None
 
 
-def test_close_from_diagnostic_callback_raises_not_deadlocks(tmp_path: Path) -> None:
-    """close() from inside one of the reader's own worker calls (via a callback) would
-    drain-wait forever for a worker that cannot return until close() does."""
+def test_close_from_diagnostic_callback_cancels_the_call(tmp_path: Path) -> None:
+    """close() from inside one of the reader's own worker calls (via a callback)
+    returns at once; the call raises the closed error after the callback, and the
+    reader tears down on its way out."""
     from archivey import ArchiveyConfig
 
     path = _zip_with_bad_dos_date(tmp_path)
     reader = None
+    closes: list[int] = []
 
     def on_diagnostic(diagnostic: object) -> None:
         assert reader is not None
         reader.close()
+        closes.append(1)
 
     config = ArchiveyConfig(on_diagnostic=on_diagnostic)
     reader_cm = open_archive(path, concurrent_operations=True, config=config)
+    assert isinstance(reader_cm, BaseArchiveReader)
     try:
         reader = reader_cm
-        with pytest.raises(ArchiveyUsageError, match="from inside one of its own"):
+        with pytest.raises(ArchiveyUsageError, match="closed"):
             reader.members()
+        assert closes
+        assert reader_cm._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
     finally:
         reader = None
         reader_cm.close()

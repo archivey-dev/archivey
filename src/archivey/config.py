@@ -439,20 +439,38 @@ class ListingLimits:
     """
 
     max_metadata_bytes: int | None = 64 * 2**20
-    """Most bytes of text a listing may retain across its members. 64 MiB.
+    """Weighted budget for the metadata a listing keeps across its members. 64 MiB.
+
+    This is a safety weight that keeps a hostile archive from filling memory with its
+    listing, not a memory cap: for a hard ceiling, set a memory limit on the process or
+    container. It weighs the text and bytes the archive controls. A record that an
+    archive can repeat without adding a member (a PAX keyword, a key of a dict nested in
+    ``extra``, a ZIP extra field, a sparse map entry) also weighs a fixed amount per
+    record, mostly the measured cost of the objects it keeps, rounded up. The weight
+    leaves out the object overhead of ordinary text fields and the fixed cost of each
+    member, about 1.5 KiB, whose total ``max_members`` bounds. So how the memory a
+    listing holds compares with this weight depends on the format, the member count and
+    the shape of the metadata: a ZIP of 1,000-byte names, for example, holds about
+    1.7 bytes per byte weighed, its member objects included.
 
     Counts member names (and raw names), comments, link targets, owner and group names
     and the string or bytes values in ``extra``, plus the keys of a dict nested in it
     (such as TAR's PAX keywords) with 96 bytes more for each such text key, plus the
     archive comment. Each distinct PAX keyword also counts 256 bytes once while its header
     is parsed. The top-level ``extra`` keys are fixed per format and do not
-    count. Non-ASCII text counts four bytes per character, so it is an upper bound
-    rather than an exact size. A TAR sparse member's map, which the listing keeps to
-    read the member, counts 24 bytes per entry, and each ZIP extra field kept in
-    ``extra["zip.extra_fields"]`` counts 72 bytes plus its data. A cabinet's block
-    tables, read as members of each folder are first opened and kept for the reader's
-    life, count 256 bytes per data block on a running total of their own, so opening a
-    member can raise too.
+    count. Non-ASCII text in these fields counts four bytes per character, so it is an
+    upper bound on the text's size rather than an exact size. A TAR sparse member's
+    map, which the listing keeps to read the member, counts 24 bytes per entry, and each
+    ZIP extra field kept in ``extra["zip.extra_fields"]`` counts 72 bytes plus its data.
+    A DMG's run tables, kept for the reader's life, weigh 256 bytes per table plus its
+    name and 36 bytes per declared run, added to the members' weight from when the image
+    is opened, so ``open_archive()`` can raise too.
+
+    Some formats also hold a total of their own to this amount, for structures the
+    listing does not weigh. ISO weighs the full UDF paths when the archive is opened, so
+    ``open_archive()`` can refuse a deep UDF tree. A cabinet's block tables, read as
+    members of each folder are first opened and kept for the reader's life, count 256
+    bytes per data block, so opening a member can raise too.
 
     A ZIP read from a stream that cannot seek also keeps the data of each member
     short enough to be a symlink until its directory says which members are links.
@@ -1170,9 +1188,11 @@ class ArchiveyConfig:
     """Bytes taken from a local file or stream between two ``on_source_read`` calls
     (1 MiB). ``0`` calls it for every read, so :attr:`SourceProgress.read_start
     <archivey.SourceProgress.read_start>` and ``position`` give the range of each read:
-    a log of every region of the file read. A URL source reports every request
-    whatever this is; over HTTP a request also reports about once per MiB of its
-    answer, a gap this step does not set.
+    a log of the regions of the file read. The log has gaps where archivey's own thread
+    reads (the RAR volume feeder): those reports merge as ``on_source_read`` says, and
+    only the latest range is kept, while ``bytes_read`` still counts every byte. A URL
+    source reports every request whatever this is; over HTTP a request also reports
+    about once per MiB of its answer, a gap this step does not set.
     """
 
     salvage_limits: SalvageLimits = SalvageLimits()

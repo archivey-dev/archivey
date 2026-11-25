@@ -623,16 +623,17 @@ installers are handled.
 
 ## Reading from a pipe
 
-A pipe, a socket or an HTTP response can be read once, from start to end, with `streaming=True`
-([Reading once](reading.md#reading-once)). Whether a format can be read that way depends on where
-it keeps what archivey needs.
+A pipe, a socket or an HTTP response can be read once, from start to end, with `pipe=True`
+([Reading from a pipe](reading.md#reading-from-a-pipe)). `pipe=True` reads any source that way,
+one that can seek included, so the lists below hold for the flag, not for the object you pass.
+Whether a format can be read that way depends on where it keeps what archivey needs.
 
 - **Can be read from a pipe:** ZIP, TAR and compressed TAR, CPIO, ar, Debian packages, RPM,
   makeself, and every single-file compressor. RAR can too, for an archive in one volume, when
   `unrar` 7.00 or later is installed.
 - **Need a source that can seek:** 7z, ISO 9660, SquashFS, XAR and macOS installer packages, CAB,
-  LHA and ARJ. Opening one from a pipe raises `StreamNotSeekableError`. Copy it to a file or an
-  `io.BytesIO` first.
+  LHA and ARJ. Opening one with `pipe=True` raises `StreamNotSeekableError`. Copy it to a file or
+  an `io.BytesIO` first, and open that without `pipe=True`.
 
 Some formats behave differently from a pipe:
 

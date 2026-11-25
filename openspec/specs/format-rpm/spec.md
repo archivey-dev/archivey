@@ -48,7 +48,7 @@ a second entry for a file).
 | The same package with no payload compressor | The same members, the same bytes; `cost.listing_cost=INDEXED`, `cost.access_cost=DIRECT` |
 | A package whose payload does not decode | Every member listed; `CorruptionError` when a member's data is read |
 | A file whose mode names no type rpm knows | An `OTHER` member, `MEMBER_TYPE_UNKNOWN` reported |
-| The same package from a pipe with `streaming=True` | The same members |
+| The same package from a pipe with `pipe=True` | The same members |
 | A package whose payload is in the stripped form | The same members as its newc twin |
 | A `%ghost` file | Not a member |
 | A source package | Its spec file under its relative name; `extra["rpm.source"] is True` |

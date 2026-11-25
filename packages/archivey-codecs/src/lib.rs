@@ -2,9 +2,9 @@
 //!
 //! The kernels (`kernels/`) know nothing about Python. This module gives them the
 //! standard-library shapes of archivey's design (openspec change
-//! `rust-codecs-package`, D2 and D3): `hashlib`-style hashes, `zlib.crc32`-style
-//! functions, `lzma.LZMADecompressor`-style decompressors, length-keeping transforms,
-//! one-shot block functions, and the `CodecError` family.
+//! `rust-codecs-package`, D2 and D3): `zlib.crc32`-style functions,
+//! `lzma.LZMADecompressor`-style decompressors, length-keeping transforms, one-shot
+//! block functions, and the `CodecError` family.
 //!
 //! Input: an immutable `bytes` object is read in place, and the GIL is released while
 //! a kernel reads it (by the CRC only from 64 KiB up); any other buffer is copied
@@ -16,12 +16,12 @@ pub mod kernels;
 use std::borrow::Cow;
 
 use kernels::error::DecodeError;
-use kernels::{bcj2, crc16, filters, lzo, lzw, lzx, state, zipcrypto};
+use kernels::{bcj2, crc16, filters, lzfse, lzo, lzw, lzx, state, zipcrypto};
 use pyo3::buffer::PyBuffer;
-use pyo3::exceptions::{PyEOFError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyEOFError, PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::critical_section::with_critical_section;
-use pyo3::types::{PyByteArray, PyBytes, PyDict, PyInt, PyMemoryView};
+use pyo3::types::{PyByteArray, PyBytes, PyDict, PyMemoryView};
 use pyo3::{PyTraverseError, PyVisit};
 
 pyo3::create_exception!(
@@ -56,7 +56,9 @@ const KERNELS: &[(&str, u32)] = &[
     ("arm64", 1),
     ("bcj2", 1),
     ("crc16_arc", 1),
+    ("lzfse", 1),
     ("lzo1x", 1),
+    ("lzvn", 1),
     ("lzw", 1),
     ("lzx", 2),
     ("riscv", 1),
@@ -121,11 +123,103 @@ fn input<'a>(obj: &'a Bound<'_, PyAny>) -> PyResult<Cow<'a, [u8]>> {
         let copy = with_critical_section(&owner, || buffer.to_vec(obj.py()))?;
         return Ok(Cow::Owned(copy));
     }
-    // A buffer of wider items (`array.array("I")`): its bytes, as hashlib reads them.
-    let bytes = PyMemoryView::from(obj)?.call_method1("cast", ("B",))?;
-    let buffer = PyBuffer::<u8>::get(&bytes)?;
-    let copy = with_critical_section(&owner, || buffer.to_vec(obj.py()))?;
-    Ok(Cow::Owned(copy))
+    // A buffer of other items (`array.array("I")`, signed bytes), strided or not: its
+    // bytes in order, as hashlib reads them. `tobytes()` takes any layout, where
+    // `cast("B")` takes only a C-contiguous one.
+    let view = PyMemoryView::from(obj)?;
+    let bytes = with_critical_section(&owner, || view.call_method0("tobytes"))?;
+    Ok(Cow::Owned(bytes.cast::<PyBytes>()?.as_bytes().to_vec()))
+}
+
+// ── Int arguments ───────────────────────────────────────────────────────────────────
+
+// PyO3 raises `OverflowError` for an int outside a parameter's Rust type, with a
+// message that differs by platform (a C `long` has 32 bits on Windows). These
+// parameter types raise `ValueError` with a fixed message instead. A non-int still
+// raises PyO3's `TypeError`, prefixed with the argument's name.
+
+/// `obj` as a `T`, or `out_of_range()` for an int outside `T`.
+fn int_arg<'py, T>(
+    obj: Borrowed<'_, 'py, PyAny>,
+    out_of_range: impl FnOnce() -> PyErr,
+) -> PyResult<T>
+where
+    T: for<'a> FromPyObject<'a, 'py, Error = PyErr>,
+{
+    match obj.extract::<T>() {
+        Err(e) if e.is_instance_of::<PyOverflowError>(obj.py()) => Err(out_of_range()),
+        other => other,
+    }
+}
+
+/// A parameter type `$ty` holding a `$int`: an int outside it raises `ValueError`
+/// naming `$name` and the range.
+macro_rules! int_param {
+    ($ty:ident, $int:ty, $name:literal, $range:literal) => {
+        #[derive(Clone, Copy)]
+        struct $ty($int);
+
+        impl<'a, 'py> FromPyObject<'a, 'py> for $ty {
+            type Error = PyErr;
+
+            fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+                int_arg(obj, || {
+                    PyValueError::new_err(concat!($name, " is outside ", $range))
+                })
+                .map($ty)
+            }
+        }
+    };
+}
+
+int_param!(StartOffset, u64, "start_offset", "0 to 2**64 - 1");
+int_param!(OutputSize, u64, "output_size", "0 to 2**64 - 1");
+int_param!(OutSize, u64, "out_size", "0 to 2**64 - 1");
+int_param!(MaxSize, u64, "max_size", "0 to 2**64 - 1");
+int_param!(MaxWidth, u32, "max_width", "9 to 16");
+
+/// An LZX `window_bits`: an int outside `u32` is refused as the kernel refuses any
+/// window it does not know, with `CorruptDataError`.
+#[derive(Clone, Copy)]
+struct WindowBits(u32);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for WindowBits {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        int_arg(obj, || {
+            CorruptDataError::new_err("LZX window bits outside 0 to 2**32 - 1")
+        })
+        .map(WindowBits)
+    }
+}
+
+/// A `max_length`: any int. A negative one means no limit, and so does one past
+/// `i64::MAX` in practice: it is taken as `i64::MAX`.
+#[derive(Clone, Copy)]
+struct MaxLength(i64);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for MaxLength {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        match obj.extract::<i64>() {
+            Ok(n) => Ok(MaxLength(n)),
+            Err(e) if e.is_instance_of::<PyOverflowError>(obj.py()) => {
+                // The sign of the int, not of the object: an `__index__` object does
+                // not compare with 0.
+                let int = obj.call_method0("__index__")?;
+                Ok(MaxLength(if int.gt(0)? { i64::MAX } else { -1 }))
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// An `out_size` or `max_size` as a buffer size: on a 64-bit platform, the only kind
+/// built, a `usize` holds any `u64`.
+fn as_usize(n: u64) -> usize {
+    usize::try_from(n).unwrap_or(usize::MAX)
 }
 
 // ── Saved state ─────────────────────────────────────────────────────────────────────
@@ -226,68 +320,10 @@ fn crc16_arc(
     };
     // A CRC-16 has 16 bits: a value outside them is refused rather than masked, since
     // it can only be a caller's mistake. Any int is compared, however large.
-    let value = match value.extract::<u16>() {
-        Ok(v) => v,
-        Err(_) if value.is_instance_of::<PyInt>() => {
-            return Err(PyValueError::new_err(format!(
-                "CRC-16 value {value} is outside 0 to 0xFFFF"
-            )));
-        }
-        Err(e) => return Err(e),
-    };
+    let value: u16 = int_arg(value.as_borrowed(), || {
+        PyValueError::new_err("CRC-16 value is outside 0 to 0xFFFF")
+    })?;
     Ok(u32::from(crc16_update(py, value, data)?))
-}
-
-/// A running CRC-16/ARC with the `hashlib` interface; `digest()` is big-endian.
-#[pyclass(skip_from_py_object, module = "archivey_codecs", name = "Crc16Arc")]
-#[derive(Clone)]
-struct Crc16Arc {
-    crc: u16,
-}
-
-#[pymethods]
-impl Crc16Arc {
-    #[new]
-    #[pyo3(signature = (data = None, /))]
-    fn new(py: Python<'_>, data: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
-        let crc = match data {
-            Some(d) => crc16_update(py, 0, d)?,
-            None => 0,
-        };
-        Ok(Crc16Arc { crc })
-    }
-
-    fn update(&mut self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<()> {
-        self.crc = crc16_update(py, self.crc, data)?;
-        Ok(())
-    }
-
-    fn digest<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new(py, &self.crc.to_be_bytes())
-    }
-
-    fn hexdigest(&self) -> String {
-        format!("{:04x}", self.crc)
-    }
-
-    fn copy(&self) -> Self {
-        self.clone()
-    }
-
-    #[getter]
-    fn name(&self) -> &'static str {
-        "crc16_arc"
-    }
-
-    #[getter]
-    fn digest_size(&self) -> usize {
-        2
-    }
-
-    #[getter]
-    fn block_size(&self) -> usize {
-        1
-    }
 }
 
 // ── LZO1X ───────────────────────────────────────────────────────────────────────────
@@ -300,9 +336,11 @@ impl Crc16Arc {
 fn lzo1x_decompress<'py>(
     py: Python<'py>,
     block: &Bound<'py, PyAny>,
-    out_size: Option<usize>,
-    max_size: Option<usize>,
+    out_size: Option<OutSize>,
+    max_size: Option<MaxSize>,
 ) -> PyResult<Bound<'py, PyBytes>> {
+    let out_size = out_size.map(|OutSize(n)| as_usize(n));
+    let max_size = max_size.map(|MaxSize(n)| as_usize(n));
     let limit = match (out_size, max_size) {
         (Some(n), None) | (None, Some(n)) => n,
         _ => {
@@ -325,6 +363,74 @@ fn lzo1x_decompress<'py>(
         }
     }
     Ok(PyBytes::new(py, &out))
+}
+
+// ── LZFSE and LZVN ──────────────────────────────────────────────────────────────────
+
+/// The output limit of a one-shot block function given `out_size` (exact) or
+/// `max_size` (a bound): exactly one of the two.
+fn one_size(name: &str, out_size: Option<usize>, max_size: Option<usize>) -> PyResult<usize> {
+    match (out_size, max_size) {
+        (Some(n), None) | (None, Some(n)) => Ok(n),
+        _ => Err(PyTypeError::new_err(format!(
+            "{name}() takes exactly one of out_size= and max_size="
+        ))),
+    }
+}
+
+/// Run a one-shot kernel on `block` without the GIL, and hold its output to
+/// `out_size` when that was given.
+fn one_shot<'py>(
+    py: Python<'py>,
+    block: &Bound<'py, PyAny>,
+    limit: usize,
+    out_size: Option<usize>,
+    kernel: fn(&[u8], usize) -> kernels::error::Result<Vec<u8>>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let data = input(block)?;
+    let slice: &[u8] = &data;
+    let out = py.detach(|| kernel(slice, limit)).map_err(to_py0)?;
+    if let Some(n) = out_size {
+        if out.len() != n {
+            return Err(CorruptDataError::new_err(format!(
+                "the data decodes to {} bytes, not {n}",
+                out.len()
+            )));
+        }
+    }
+    Ok(PyBytes::new(py, &out))
+}
+
+/// Decode a whole LZFSE stream (blocks up to `bvx$`, nothing after it): exactly
+/// `out_size` bytes, or at most `max_size`. Neither allocates past it.
+#[pyfunction]
+#[pyo3(signature = (data, /, *, out_size = None, max_size = None))]
+fn lzfse_decompress<'py>(
+    py: Python<'py>,
+    data: &Bound<'py, PyAny>,
+    out_size: Option<OutSize>,
+    max_size: Option<MaxSize>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let out_size = out_size.map(|OutSize(n)| as_usize(n));
+    let max_size = max_size.map(|MaxSize(n)| as_usize(n));
+    let limit = one_size("lzfse.decompress", out_size, max_size)?;
+    one_shot(py, data, limit, out_size, lzfse::lzfse_decompress)
+}
+
+/// Decode raw LZVN (opcodes up to the end-of-stream opcode, nothing after it), as
+/// HFS+ compressed files store it: exactly `out_size` bytes, or at most `max_size`.
+#[pyfunction]
+#[pyo3(signature = (data, /, *, out_size = None, max_size = None))]
+fn lzvn_decompress<'py>(
+    py: Python<'py>,
+    data: &Bound<'py, PyAny>,
+    out_size: Option<OutSize>,
+    max_size: Option<MaxSize>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let out_size = out_size.map(|OutSize(n)| as_usize(n));
+    let max_size = max_size.map(|MaxSize(n)| as_usize(n));
+    let limit = one_size("lzvn.decompress", out_size, max_size)?;
+    one_shot(py, data, limit, out_size, lzfse::lzvn_decompress)
 }
 
 // ── ARM64 and RISC-V branch filters ─────────────────────────────────────────────────
@@ -443,8 +549,9 @@ macro_rules! branch_decoder {
         #[pymethods]
         impl $rust {
             #[new]
-            #[pyo3(signature = (start_offset = 0))]
-            fn new(start_offset: u64) -> Self {
+            #[pyo3(signature = (start_offset = StartOffset(0)))]
+            fn new(start_offset: StartOffset) -> Self {
+                let StartOffset(start_offset) = start_offset;
                 $rust {
                     inner: BranchState {
                         kind: $kind,
@@ -717,10 +824,11 @@ impl LzwDecompressor {
     #[new]
     #[pyo3(signature = (*, max_width = None, block_mode = None, nine_bit_widens = None))]
     fn new(
-        max_width: Option<u32>,
+        max_width: Option<MaxWidth>,
         block_mode: Option<bool>,
         nine_bit_widens: Option<bool>,
     ) -> PyResult<Self> {
+        let max_width = max_width.map(|MaxWidth(w)| w);
         // As in the Python twin, `max_width` needs `block_mode`, and a lone
         // `block_mode` is ignored (the header is read from the stream).
         if max_width.is_some() && block_mode.is_none() {
@@ -730,9 +838,7 @@ impl LzwDecompressor {
         }
         if let Some(w) = max_width {
             if !(9..=16).contains(&w) {
-                return Err(PyValueError::new_err(format!(
-                    "max_width {w} is outside 9 to 16"
-                )));
+                return Err(PyValueError::new_err("max_width is outside 9 to 16"));
             }
         }
         Ok(LzwDecompressor {
@@ -749,13 +855,14 @@ impl LzwDecompressor {
         })
     }
 
-    #[pyo3(signature = (data, max_length = -1))]
+    #[pyo3(signature = (data, max_length = MaxLength(-1)))]
     fn decompress<'py>(
         &mut self,
         py: Python<'py>,
         data: &Bound<'py, PyAny>,
-        max_length: i64,
+        max_length: MaxLength,
     ) -> PyResult<Bound<'py, PyBytes>> {
+        let MaxLength(max_length) = max_length;
         if self.eof() {
             return Err(PyEOFError::new_err("End of stream already reached"));
         }
@@ -805,8 +912,13 @@ impl LzwDecompressor {
 
     /// Mark the end of the input and return the rest of the output, at most
     /// `max_length` bytes a call; `eof` is true once all of it is returned.
-    #[pyo3(signature = (max_length = -1))]
-    fn flush<'py>(&mut self, py: Python<'py>, max_length: i64) -> PyResult<Bound<'py, PyBytes>> {
+    #[pyo3(signature = (max_length = MaxLength(-1)))]
+    fn flush<'py>(
+        &mut self,
+        py: Python<'py>,
+        max_length: MaxLength,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let MaxLength(max_length) = max_length;
         self.flushed = true;
         let out = self.produce(py, max_length)?;
         Ok(PyBytes::new(py, &out))
@@ -854,7 +966,10 @@ impl LzwDecompressor {
         let total_out = r.u64().map_err(to_py0)?;
         r.finish().map_err(to_py0)?;
         let produced = total_out.checked_add(held.len() as u64);
-        if clear_at.0 > fed || produced.is_none_or(|p| clear_at.1 > p) {
+        // A CLEAR's segment ends after its group padding, which may not have arrived:
+        // the last CLEAR offset is ahead of `total_in` by the padding still to skip.
+        let consumed = fed.checked_add(inner.pending_skip());
+        if consumed.is_none_or(|c| clear_at.0 > c) || produced.is_none_or(|p| clear_at.1 > p) {
             return Err(CorruptDataError::new_err(
                 "the lzw state holds offsets that do not agree",
             ));
@@ -1021,8 +1136,7 @@ struct LzxDecompressor {
     /// The kernel used all the input given and needs more for the next frame.
     starved: bool,
     /// After a decode error: the error, raised again by every later decoding call while
-    /// it is held (the kernel is left where the error found it). A late output size
-    /// that gives back the input it was met in clears it.
+    /// it is held (the kernel is left where the error found it).
     failed: Option<(u8, String)>,
     /// Bytes the kernel took from the queue.
     taken: u64,
@@ -1207,63 +1321,54 @@ impl LzxDecompressor {
 impl LzxDecompressor {
     #[new]
     #[pyo3(signature = (window_bits, *, output_size = None))]
-    fn new(window_bits: u32, output_size: Option<u64>) -> PyResult<Self> {
-        Self::fresh(window_bits, output_size)
+    fn new(window_bits: WindowBits, output_size: Option<OutputSize>) -> PyResult<Self> {
+        Self::fresh(window_bits.0, output_size.map(|OutputSize(n)| n))
     }
 
     /// Give the declared output size once it is known, before the last frame ends.
     ///
-    /// Without an output size the decoder may already have read input after the
-    /// stream as the start of a next frame or block. A size that ends the output there gives
-    /// that input back as unused, and drops an error the decoder met in it. It cannot
-    /// give the input back when the decoder has already dropped it from its buffer, or
-    /// when the decoder was restored from a state saved after it read that input: the
-    /// input then stays consumed and the error stays.
-    fn set_output_size(&mut self, output_size: u64) -> PyResult<()> {
+    /// Only between frames: before the first, or once a frame's output is decoded.
+    /// While a frame waits for input, or after a decode error, it raises `ValueError`.
+    fn set_output_size(&mut self, output_size: OutputSize) -> PyResult<()> {
+        let OutputSize(output_size) = output_size;
+        if self.failed.is_some() {
+            return Err(PyValueError::new_err(
+                "set_output_size() after a decode error",
+            ));
+        }
+        if self.inner.frame_in_progress().is_some() {
+            return Err(PyValueError::new_err(
+                "set_output_size() while a frame waits for input",
+            ));
+        }
         let decoded = self.inner.decoded();
         if output_size < decoded {
             return Err(PyValueError::new_err(format!(
                 "an output size of {output_size}, below the {decoded} bytes already decoded"
             )));
         }
-        if let Some((size, done)) = self.inner.frame_in_progress() {
-            let frame = (output_size - decoded).min(lzx::FRAME_SIZE as u64) as usize;
-            if frame == 0 && self.inner.rewind_frame() {
-                // The frame that read past the end is undone, and so is an error it
-                // met: it was in input after the stream.
-                self.failed = None;
-            } else if frame > 0 && frame == done && self.inner.rewind_block(frame) {
-                // The output ends where a block header started: what was read from
-                // there is input after the stream, and so is an error met in it.
-                self.failed = None;
-                self.inner.resize_frame(frame);
-            } else if frame != size && !self.inner.resize_frame(frame) {
-                let so_far = decoded + done as u64;
-                return Err(PyValueError::new_err(format!(
-                    "an output size of {output_size}, below the {so_far} bytes already decoded"
-                )));
-            }
+        // Only the last frame is short: a stream that ended with one has no more.
+        if output_size > decoded && !decoded.is_multiple_of(lzx::FRAME_SIZE as u64) {
+            return Err(PyValueError::new_err(format!(
+                "an output size of {output_size}, past the end of a stream whose last \
+                 frame ended short at {decoded} bytes"
+            )));
         }
         self.output_size = Some(output_size);
-        // The frame that waited for input may now be shorter: try it again.
+        // A frame that ran out of input before it read anything may now be shorter,
+        // or not wanted: try it again.
         self.starved = false;
         Ok(())
     }
 
-    /// Start again with an empty window, as at the start of a cabinet folder.
-    #[pyo3(signature = (output_size = None))]
-    fn reset(&mut self, output_size: Option<u64>) -> PyResult<()> {
-        *self = Self::fresh(self.inner.window_bits(), output_size)?;
-        Ok(())
-    }
-
-    #[pyo3(signature = (data, max_length = -1))]
+    #[pyo3(signature = (data, max_length = MaxLength(-1)))]
     fn decompress<'py>(
         &mut self,
         py: Python<'py>,
         data: &Bound<'py, PyAny>,
-        max_length: i64,
+        max_length: MaxLength,
     ) -> PyResult<Bound<'py, PyBytes>> {
+        let MaxLength(max_length) = max_length;
         if self.eof() {
             return Err(PyEOFError::new_err("End of stream already reached"));
         }
@@ -1272,8 +1377,7 @@ impl LzxDecompressor {
         }
         let data = input(data)?;
         // After a decode error the input is of no use: the call gives the output
-        // before the error, then raises it. What is queued stays, for a late output
-        // size that ends the stream before the error.
+        // before the error, then raises it.
         if self.failed.is_none() {
             self.pending.extend_from_slice(&data);
         }
@@ -1284,8 +1388,13 @@ impl LzxDecompressor {
     /// Mark the end of the input and return the rest of the output, at most
     /// `max_length` bytes a call; a frame the input still does not cover raises
     /// `TruncatedDataError`.
-    #[pyo3(signature = (max_length = -1))]
-    fn flush<'py>(&mut self, py: Python<'py>, max_length: i64) -> PyResult<Bound<'py, PyBytes>> {
+    #[pyo3(signature = (max_length = MaxLength(-1)))]
+    fn flush<'py>(
+        &mut self,
+        py: Python<'py>,
+        max_length: MaxLength,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let MaxLength(max_length) = max_length;
         self.ended = true;
         let out = self.run(py, max_length)?;
         Ok(PyBytes::new(py, &out))
@@ -1349,15 +1458,17 @@ impl LzxDecompressor {
             };
             size == next
         });
-        if (out.len() as u64) > decoded || output_size.is_some_and(|n| n < decoded) || !frame_agrees
+        // The input taken counts the bytes the bit buffer and the input buffer hold.
+        let held = (inner.lookahead().len() + inner.unread_input().len()) as u64;
+        if (out.len() as u64) > decoded
+            || output_size.is_some_and(|n| n < decoded)
+            || !frame_agrees
+            || total_in < held
         {
             return Err(CorruptDataError::new_err(
                 "the lzx state holds sizes that do not agree",
             ));
         }
-        let inner_done = inner
-            .frame_in_progress()
-            .is_some_and(|(size, done)| done == size);
         Ok(LzxDecompressor {
             total_out: decoded - out.len() as u64,
             inner,
@@ -1368,8 +1479,7 @@ impl LzxDecompressor {
             output_size,
             ended: false,
             finished: false,
-            // A frame that has decoded all its bytes finishes without more input.
-            starved: !inner_done,
+            starved: true,
             failed: None,
             taken: total_in,
             split_at_end,
@@ -1386,7 +1496,9 @@ impl LzxDecompressor {
         self.failed.is_none()
             && !self.ended
             && self.drained()
-            && (!self.at_end() && self.starved || self.at_end() && self.pad_pending())
+            // Input queued by a call that decoded nothing is still to be read.
+            && (!self.at_end() && self.starved && self.queued() == 0
+                || self.at_end() && self.pad_pending())
     }
 
     /// After `eof`, the input that follows the stream.
@@ -1401,11 +1513,6 @@ impl LzxDecompressor {
     #[getter]
     fn output_size(&self) -> Option<u64> {
         self.output_size
-    }
-
-    #[getter]
-    fn window_bits(&self) -> u32 {
-        self.inner.window_bits()
     }
 
     /// Input bytes used. Mid-stream it counts the words fetched ahead for the next
@@ -1440,10 +1547,8 @@ impl bcj2::Streams for PyStreams<'_, '_> {
     type Error = PyErr;
     fn read(&mut self, which: usize, n: usize) -> Result<Vec<u8>, PyErr> {
         let data = self.reads[which].call1((n,))?;
-        let data = match data.cast::<PyBytes>() {
-            Ok(b) => b.as_bytes().to_vec(),
-            Err(_) => data.extract::<Vec<u8>>()?,
-        };
+        // Read as `input()` reads an argument: a buffer's bytes, copied as a buffer.
+        let data = input(&data)?.into_owned();
         if data.len() > n {
             return Err(PyValueError::new_err(format!(
                 "read({n}) returned {} bytes",
@@ -1561,9 +1666,9 @@ impl Bcj2Decompressor {
         call: &Bound<'_, PyAny>,
         jump: &Bound<'_, PyAny>,
         rc: &Bound<'_, PyAny>,
-        out_size: u64,
+        out_size: OutSize,
     ) -> PyResult<Self> {
-        Self::build([main, call, jump, rc], bcj2::Bcj2::new(), out_size)
+        Self::build([main, call, jump, rc], bcj2::Bcj2::new(), out_size.0)
     }
 
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
@@ -1582,8 +1687,21 @@ impl Bcj2Decompressor {
     }
 
     /// Up to `max_length` bytes of output (all of it when negative); `b""` at the end.
-    #[pyo3(signature = (max_length = -1))]
-    fn read<'py>(&mut self, py: Python<'py>, max_length: i64) -> PyResult<Bound<'py, PyBytes>> {
+    /// `read(0)` decodes nothing and reads no input: it raises an error the decoder
+    /// holds, else returns `b""`.
+    #[pyo3(signature = (max_length = MaxLength(-1)))]
+    fn read<'py>(
+        &mut self,
+        py: Python<'py>,
+        max_length: MaxLength,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let MaxLength(max_length) = max_length;
+        if max_length == 0 {
+            if let Some(err) = self.raise_failure(py) {
+                return Err(err);
+            }
+            return Ok(PyBytes::new(py, b""));
+        }
         let want = if max_length < 0 {
             usize::MAX
         } else {
@@ -1733,8 +1851,9 @@ fn _codecs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<UnsupportedDataError>(),
     )?;
     m.add_function(wrap_pyfunction!(crc16_arc, m)?)?;
-    m.add_class::<Crc16Arc>()?;
     m.add("lzo1x_decompress", wrap_pyfunction!(lzo1x_decompress, m)?)?;
+    m.add("lzfse_decompress", wrap_pyfunction!(lzfse_decompress, m)?)?;
+    m.add("lzvn_decompress", wrap_pyfunction!(lzvn_decompress, m)?)?;
     m.add("Arm64Decoder", py.get_type::<Arm64Decoder>())?;
     m.add("RiscvDecoder", py.get_type::<RiscvDecoder>())?;
     m.add("ZipCryptoDecryptor", py.get_type::<ZipCryptoDecryptor>())?;
