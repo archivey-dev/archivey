@@ -1204,9 +1204,16 @@ def test_a_listing_after_the_close_raises_at_once_beside_a_build(
         return real_build()
 
     monkeypatch.setattr(fs, "_build_tree", slow_build)
-    lister = threading.Thread(
-        target=lambda: pytest.raises(ArchiveyUsageError, fs.ls, "")
-    )
+    first: list[BaseException | None] = []
+
+    def first_listing() -> None:
+        try:
+            fs.ls("")
+            first.append(None)
+        except BaseException as exc:  # noqa: BLE001 - checked below
+            first.append(exc)
+
+    lister = threading.Thread(target=first_listing)
     outcome: list[BaseException | None] = []
 
     def late_listing() -> None:
@@ -1230,6 +1237,7 @@ def test_a_listing_after_the_close_raises_at_once_beside_a_build(
         lister.join(10)
         if late.ident is not None:
             late.join(10)
+    assert len(first) == 1 and isinstance(first[0], ArchiveyUsageError), first
     with pytest.raises(ArchiveyUsageError):
         fs.ls("")
     assert builds == [1]

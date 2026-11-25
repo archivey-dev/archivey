@@ -982,10 +982,10 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     ) -> None:
         """Report a member left out of the tree, unless the file system is closed.
 
-        A close before the report: nothing is reported, and the listing raises the
-        closed error. A close while the report runs (its log line or
-        ``on_diagnostic`` has started): the report finishes, and the listing still
-        raises the closed error, also when the policy raises on the refusal. The
+        A close stops the reports of every member after the one being checked. That one
+        member's refusal can still be reported once, after the close, if its closed
+        check passed first: the check and the report are not atomic. The listing raises
+        the closed error either way, also when the policy raises on the refusal. The
         report is not made under ``_publish_lock``: a callback that closes the file
         system would wait for itself."""
         if self._closed:
