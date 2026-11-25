@@ -312,10 +312,12 @@ That includes the **For dummies** section at its top: when a fix changes what th
 or who notices, rewrite it too.
 
 **A conditional approval covers the fixes the reviewer wrote, not the ones you made.**
-If a fix turned out bigger than the change the reviewer spelled out (it grew past one
-function, or touched locking, close or teardown, shared state, an index, or a loop's end
-condition), add the `review` label again after the push instead of stopping
-(`dev-docs/review-loop.md` §Stopping it).
+Add the `review` label again after the push, instead of stopping
+(`dev-docs/review-loop.md` §Stopping it), when a fix went past the change the reviewer
+spelled out: it grew past one function, or it reached locking, close or teardown, shared
+state, an index or a loop's end condition that the reviewer's fix did not name. A fix
+that is the reviewer's own written change, in the one function it named, needs no new
+round, even when that function is a close.
 
 ### Before the `review` label: write down what the round taught
 
