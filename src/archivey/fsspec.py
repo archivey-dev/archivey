@@ -41,7 +41,7 @@ from archivey.internal.filters import (
     resolve_or_raise_on_loop,
 )
 from archivey.internal.overrides import override
-from archivey.internal.reader_state import closed_reader_error
+from archivey.internal.reader_state import LifecycleState, closed_reader_error
 from archivey.terminal import quoted
 from archivey.types import ArchiveMember, ExtractionPolicy, MemberType
 
@@ -650,8 +650,13 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         # closed before it returns, also on a second thread while the first is still
         # inside it, and after an interrupted first call. The finalizer runs only once,
         # so a second ``fs.close()`` through it could return with the reader still open.
-        # The reader's teardown drops the finalizer (see ``__init__``).
-        self.reader.close()
+        # The reader's teardown drops the finalizer (see ``__init__``). An interrupt
+        # after teardown completed and before that hook ran leaves it registered, and
+        # teardown never runs twice: this call, or a retry, drops it here instead.
+        reader = cast("BaseArchiveReader", self.reader)
+        reader.close()
+        if reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE:
+            self._finalizer.detach()
 
     def __enter__(self) -> Self:
         return self

@@ -1541,6 +1541,40 @@ def test_a_close_beside_a_peers_unfinished_close_keeps_the_finalizer(
         stream.read(1)
 
 
+def test_a_close_retried_after_an_interrupt_past_teardown_frees_the_file_system(
+    memfs: Any,
+) -> None:
+    """``fs.close()`` interrupted after the reader's teardown completed, before the
+    finalizer was dropped, then called again: the file system, which its
+    ``on_diagnostic`` callback refers to, is freed on collection."""
+    memfs.pipe("/d/late.zip", _zip_bytes([("a", b"x")]))
+
+    def make() -> weakref.ref[ArchiveyFileSystem]:
+        box: dict[str, ArchiveyFileSystem] = {}
+        config = ArchiveyConfig(on_diagnostic=lambda _d: box)
+        fs = ArchiveyFileSystem("memory://d/late.zip", config=config)
+        box["fs"] = fs  # the callback now keeps the file system alive
+
+        def interrupt() -> None:  # lands after teardown completed, before the detach
+            raise KeyboardInterrupt
+
+        fs.reader._after_teardown.insert(0, interrupt)  # type: ignore[attr-defined]
+        try:
+            fs.close()
+        except KeyboardInterrupt:
+            pass
+        else:
+            raise AssertionError("the close was not interrupted")
+        state = fs.reader._state  # type: ignore[attr-defined]
+        assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+        fs.close()  # the retry
+        return weakref.ref(fs)
+
+    fs_ref = make()
+    gc.collect()
+    assert fs_ref() is None
+
+
 def test_close_under_open_streams_makes_their_reads_raise(memfs: Any) -> None:
     """``fs.close()`` with member streams still open closes them: their next read
     raises the closed-file ``ValueError``."""
