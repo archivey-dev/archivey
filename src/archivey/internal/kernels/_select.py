@@ -260,7 +260,6 @@ class Latch:
             panic = exc if error is not exc else panic_of(exc)
             if panic is not None:
                 self._failure = (unraised(error), unraised(panic))
-            del panic
         if error is exc:
             return False
         try:
