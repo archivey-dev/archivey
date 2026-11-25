@@ -642,7 +642,12 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         with self._publish_lock:
             self._closed = True
             self._tree = None
-        self._finalizer()
+        # The reader's own close, on every call: it is idempotent and marks the reader
+        # closed before it returns, also on a second thread while the first is still
+        # inside it, and after an interrupted first call. The finalizer runs only once,
+        # so a second ``fs.close()`` through it could return with the reader still open.
+        self._finalizer.detach()
+        self.reader.close()
 
     def __enter__(self) -> Self:
         return self
@@ -665,8 +670,13 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         if tree is not None:
             return tree
         # Two threads can list at once (``concurrent_operations=True``): one builds the
-        # tree and reports each refusal once. After ``close``, ``members()`` raises.
+        # tree and reports each refusal once. After ``close``, a listing raises at once:
+        # it neither waits for a build still running nor starts one.
+        if self._closed:
+            raise closed_reader_error("listing")
         with self._tree_lock:
+            if self._closed:
+                raise closed_reader_error("listing")
             tree = self._tree
             if tree is not None:
                 return tree

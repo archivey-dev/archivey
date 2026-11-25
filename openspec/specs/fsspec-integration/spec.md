@@ -157,8 +157,9 @@ instance with no open member streams SHALL close it too. After `close()`, listin
 opening SHALL raise `ArchiveyUsageError`, also when the tree was listed before the
 close. `close()` SHALL NOT wait for another thread: not for a first listing that is
 building the tree (it raises the closed error and keeps no tree), and not for a call on
-`fs.reader` (`reader-concurrency`, "Reader close marks the reader closed"). A member
-stream still open raises the closed-file `ValueError` on its next read.
+`fs.reader` (`reader-concurrency`, reader close). A listing after `close()` raises at
+once, also while a build from before the close is still running. A member stream still
+open raises the closed-file `ValueError` on its next read.
 
 The tree SHALL be the name view of `extract_all(dest, policy=policy)`: each path SHALL
 be the relative path that policy's name transform gives the member, a duplicate name

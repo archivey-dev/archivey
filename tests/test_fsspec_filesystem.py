@@ -1133,7 +1133,95 @@ def test_close_beside_a_pass_on_another_thread_returns_at_once(memfs: Any) -> No
     finally:
         release.set()
         worker.join(10)
+        closer.join(10)
     assert len(outcome) == 1 and isinstance(outcome[0], ArchiveyUsageError), outcome
+
+
+def test_a_second_close_returns_with_the_reader_closed(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two threads close at once. The second ``fs.close()`` does not return before
+    the reader is closed, even while the first is still inside the reader's close:
+    after it returns, a call on ``fs.reader`` and a read on an open stream raise."""
+    memfs.pipe("/d/two.zip", _zip_bytes([("a", b"x" * 10), ("b", b"y" * 10)]))
+    fs = ArchiveyFileSystem("memory://d/two.zip")
+    stream = fs.reader.open("a")
+    state = fs.reader._state  # type: ignore[attr-defined]
+    real_mark = state.mark_reader_closed
+    entered, release = threading.Event(), threading.Event()
+    first = threading.Lock()
+
+    def mark_then_wait() -> bool:
+        if first.acquire(blocking=False):
+            entered.set()
+            assert release.wait(10)
+        return real_mark()
+
+    monkeypatch.setattr(state, "mark_reader_closed", mark_then_wait)
+    closer_a = threading.Thread(target=fs.close)
+    closer_a.start()
+    try:
+        assert entered.wait(10)
+        fs.close()  # closer B
+        with pytest.raises(ArchiveyUsageError):
+            fs.reader.members()
+        with pytest.raises(ValueError, match="closed file"):
+            stream.read(1)
+    finally:
+        release.set()
+        closer_a.join(10)
+    assert not closer_a.is_alive()
+
+
+def test_a_listing_after_the_close_raises_at_once_beside_a_build(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A first listing is still building the tree when ``fs.close()`` returns. A new
+    ``ls()`` then raises the closed error at once: it does not wait for that build,
+    and it starts no build of its own."""
+    memfs.pipe("/d/wait.zip", _zip_bytes([("a", b"x"), ("b", b"y")]))
+    fs = ArchiveyFileSystem("memory://d/wait.zip")
+    entered, release = threading.Event(), threading.Event()
+    real_build = fs._build_tree
+    builds: list[int] = []
+
+    def slow_build() -> Any:
+        builds.append(1)
+        if len(builds) == 1:
+            entered.set()
+            assert release.wait(10)
+        return real_build()
+
+    monkeypatch.setattr(fs, "_build_tree", slow_build)
+    lister = threading.Thread(
+        target=lambda: pytest.raises(ArchiveyUsageError, fs.ls, "")
+    )
+    outcome: list[BaseException | None] = []
+
+    def late_listing() -> None:
+        try:
+            fs.ls("")
+            outcome.append(None)
+        except BaseException as exc:  # noqa: BLE001 - checked below
+            outcome.append(exc)
+
+    late = threading.Thread(target=late_listing)
+    lister.start()
+    try:
+        assert entered.wait(10)
+        fs.close()
+        late.start()
+        late.join(2)
+        assert not late.is_alive(), "a listing after the close waited for the build"
+        assert len(outcome) == 1 and isinstance(outcome[0], ArchiveyUsageError), outcome
+    finally:
+        release.set()
+        lister.join(10)
+        if late.ident is not None:
+            late.join(10)
+    with pytest.raises(ArchiveyUsageError):
+        fs.ls("")
+    assert builds == [1]
 
 
 def test_close_under_open_streams_makes_their_reads_raise(memfs: Any) -> None:
