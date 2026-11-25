@@ -1397,6 +1397,49 @@ def test_an_interrupted_close_still_closes_the_reader_on_collection(
         reader.members()
 
 
+def test_a_close_beside_a_peers_unfinished_close_keeps_the_finalizer(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second ``fs.close()`` while a peer's close still owns the stream shutdown
+    returns with the reader's close unfinished. If that peer is then interrupted and
+    the file system collected, the reader is still torn down on collection."""
+    memfs.pipe("/d/peer.zip", _zip_bytes([("a", b"x")]))
+    fs = ArchiveyFileSystem("memory://d/peer.zip")
+    reader = fs.reader
+    inside, release = threading.Event(), threading.Event()
+
+    def hold_then_interrupt() -> None:
+        inside.set()
+        release.wait(5)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(reader, "_close_public_streams", hold_then_interrupt)
+    outcome: list[BaseException] = []
+
+    def first_close(target: ArchiveyFileSystem) -> None:
+        try:
+            target.close()
+        except BaseException as exc:  # noqa: BLE001 - the interrupt is the expected outcome
+            outcome.append(exc)
+
+    closer = threading.Thread(target=first_close, args=(fs,))
+    closer.start()
+    try:
+        assert inside.wait(5)
+        fs.close()  # the peer still owns the shutdown: the reader's close is unfinished
+        assert fs._finalizer.alive  # type: ignore[attr-defined]
+    finally:
+        release.set()
+        closer.join(5)
+    assert not closer.is_alive()
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], KeyboardInterrupt)
+    monkeypatch.undo()
+    del fs
+    gc.collect()
+    assert reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE  # type: ignore[attr-defined]
+
+
 def test_close_under_open_streams_makes_their_reads_raise(memfs: Any) -> None:
     """``fs.close()`` with member streams still open closes them: their next read
     raises the closed-file ``ValueError``."""
