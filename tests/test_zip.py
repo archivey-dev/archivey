@@ -43,6 +43,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.hashing import crc32_digest
+from archivey.internal.reader_state import LifecycleState
 from archivey.types import CreateSystem, HashAlgorithm
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
@@ -367,13 +368,10 @@ def test_encryption_header_larger_than_declared_size_is_corruption(
 
 
 @pytest.mark.usefixtures("zip_general_path")
-def test_archive_close_waits_for_an_in_flight_member_read() -> None:
-    """Closing waits for a member stream's read that is inside the archive's source.
-
-    The reader lifecycle waits for in-flight reader calls, not for a read on a stream
-    the caller already holds; zipfile's lock, taken by every member read and by
-    ``_close_archive``, is what keeps the handle open under that read.
-    """
+def test_archive_close_defers_teardown_past_an_in_flight_member_read() -> None:
+    """Closing beside a member stream's read that is inside the archive's source
+    returns at once; the read finishes on the open handle, and the archive is torn
+    down when it is out (the last call out)."""
     import threading
 
     in_read = threading.Event()
@@ -404,13 +402,16 @@ def test_archive_close_waits_for_an_in_flight_member_read() -> None:
     closer = threading.Thread(target=lambda: (ar.close(), closed.set()))
     closer.start()
     try:
-        assert not closed.wait(0.2)
+        assert closed.wait(5)
+        assert not stream.closed
+        assert ar._state.lifecycle is LifecycleState.READER_CLOSED
     finally:
         release.set()
-    assert closed.wait(5)
     reader.join(5)
     closer.join(5)
     assert got == [b"data"]
+    assert stream.closed
+    assert ar._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
 @pytest.mark.usefixtures("zip_general_path")

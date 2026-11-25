@@ -366,6 +366,17 @@ class _PluginAdapter(BaseArchiveReader):
         """Call the plugin's ``open``, and check what it returned."""
         raise NotImplementedError
 
+    @override
+    def _validate_at_open(self) -> None:
+        super()._validate_at_open()
+        # Publish the first ``info`` now, so one read inside a callback (which may
+        # run under the plugin's handle lock) has a snapshot to answer. A plugin whose
+        # ``archive_info()`` fails still opens: the first live ``info`` raises it.
+        try:
+            self._info_snapshot = self._get_archive_info()
+        except Exception:  # noqa: BLE001, S110 - raised again by the first live info
+            pass
+
     def _charge_key_derivation(self, rounds: int) -> None:
         """``ReaderContext.charge_key_derivation``: the reader's one budget."""
         self._kdf_budget.spend(

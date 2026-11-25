@@ -1053,6 +1053,9 @@ class BaseArchiveReader(ArchiveReader):
         # closed reader (and its listing) alive until the cyclic collector runs.
         self._state.teardown_hook = WeakMethod(self._teardown_after_call)
         self._closed = False
+        # The last ``ArchiveInfo`` a live ``info`` returned (``_archive_info``):
+        # what ``cost`` and ``info`` inside a callback answer.
+        self._info_snapshot: ArchiveInfo | None = None
         # A backend that shares one underlying handle across member streams (the TAR
         # walk's stream) sets this to a lock under CONCURRENT (and TAR
         # also under streaming). Backends acquire it via ``_handle_guard()`` so the "lock
@@ -1396,6 +1399,9 @@ class BaseArchiveReader(ArchiveReader):
         # must go with it. Before the bind the hook is a no-op: the stream is not
         # registered, so there is no lease to release.
         stream._on_close = _on_close
+        # Each call on the stream that may reach its inner layers is counted, so
+        # close() closes no inner stream under it (ReaderState.enter_stream_call).
+        stream._calls = self._state
         if token is None:
             self._state.acquire_live_stream(stream)
         else:
@@ -1407,7 +1413,8 @@ class BaseArchiveReader(ArchiveReader):
         return stream
 
     def _teardown_after_call(self, entry_exc: BaseException | None) -> None:
-        """Teardown, run by the call that leaves last after a ``close()``.
+        """What ``close()`` deferred, run by the call that leaves last after it: the
+        pass wind-down, the member streams' closes, then teardown.
 
         It runs in that call's ``finally``. A teardown failure never replaces an error
         the call is already raising: it becomes the ``__cause__`` of the closed error,
@@ -1427,7 +1434,9 @@ class BaseArchiveReader(ArchiveReader):
             else in_flight
         )
         try:
-            self._maybe_teardown()
+            # What close() deferred while this call ran: the pass wind-down and the
+            # member streams' closes, then teardown. Each step is claimed once.
+            self._maybe_teardown(self._finish_stream_shutdown_step())
         except Exception as exc:
             if propagating is None:
                 raise
@@ -4326,8 +4335,32 @@ class BaseArchiveReader(ArchiveReader):
     @property
     @override
     def info(self) -> ArchiveInfo:
-        self._state.require_open("info")
-        return self._get_archive_info()
+        return self._archive_info("info")
+
+    def _archive_info(self, op: str) -> ArchiveInfo:
+        """``info``: live, and published for ``cost`` and callbacks, or the
+        published snapshot inside a callback of the reader's own call.
+
+        A live call is counted (``ReaderState.enter_info``): a ``close()`` meanwhile
+        returns at once, the backend stays open until the call is out, and the call
+        then raises the closed error. Inside a callback it answers the last published
+        ``ArchiveInfo`` and enters no backend code: the call that ran the callback may
+        hold a plugin's handle lock. A built-in reader with nothing published yet
+        answers live there, as its ``_get_archive_info()`` takes no lock.
+        """
+        token = self._state.enter_info(op)
+        if token is None:
+            snapshot = self._info_snapshot
+            if snapshot is None:
+                snapshot = self._info_snapshot = self._get_archive_info()
+            return snapshot
+        try:
+            info = self._get_archive_info()
+            self._info_snapshot = info
+            self._state.check_open(op)
+            return info
+        finally:
+            self._state.release_worker(token)
 
     @property
     @override
@@ -4346,8 +4379,13 @@ class BaseArchiveReader(ArchiveReader):
         return self._usage.backends()
 
     def _cost_receipt(self) -> CostReceipt:
-        """``ArchiveInfo.cost``; overridden as :meth:`_archive_comment` is."""
-        return self._get_archive_info().cost
+        """``ArchiveInfo.cost``, from the published ``info`` (live when nothing is
+        published yet), so ``cost`` and ``info.cost`` agree; overridden as
+        :meth:`_archive_comment` is."""
+        snapshot = self._info_snapshot
+        if snapshot is not None:
+            return snapshot.cost
+        return self._archive_info("cost").cost
 
     @property
     @override
@@ -5581,6 +5619,7 @@ class BaseArchiveReader(ArchiveReader):
                         # Each read is a checkpoint: a close() stops the pass's reads
                         # within one chunk, with the error naming the public call.
                         stream._checkpoint = partial(self._state.check_open, call_name)
+                        stream._calls = self._state
                         stream._level_member = m
                         stream._level_refresh = self._refresh_member_levels
                         if hold_to_ratio:
@@ -5762,18 +5801,15 @@ class BaseArchiveReader(ArchiveReader):
         listing, the next member of a pass, the return of an ``extract_all()``
         progress callback, before a member is moved into place) with the same error.
         Still-open member streams are closed, matching ``zipfile.ZipFile.close()`` /
-        ``tarfile.TarFile.close()``: a stream's next ``read()`` raises ``ValueError``.
-        A ``stream_members()`` pass suspended at a yield is wound down here; one that is
+        ``tarfile.TarFile.close()``: a stream's next call raises ``ValueError``.
+        A ``stream_members()`` pass suspended at a yield is wound down; one that is
         running winds itself down.
 
-        Not yet: a member stream from ``open()`` that another thread is reading is
-        closed under that read, and the two then share the decoder. The close can
-        then raise from the stream's cleanup (a helper process's pipe read by both),
-        and the read gets ``ValueError`` or a decoder error. Join such threads before
-        closing, or close their streams from those threads.
-
-        The archive is torn down once: here when no call is running, else by the last
-        call to return. Idempotent, also when two threads call it at once.
+        Nothing physical happens beside a running call, member-stream calls (a
+        ``read()`` on another thread) included: the streams' inner closes, the pass
+        wind-down and the archive's teardown run here when no call is running, else
+        once, in that order, when the last call returns. Idempotent, also when two
+        threads call it at once.
         """
         if self._closed:
             return

@@ -176,6 +176,14 @@ class LifecycleState(enum.Enum):
     TEARDOWN_COMPLETE = "teardown_complete"
 
 
+class _Refused(enum.Enum):
+    REFUSED = enum.auto()
+
+
+# What :meth:`ReaderState.enter_stream_call` answers once the reader is closed.
+REFUSED = _Refused.REFUSED
+
+
 @dataclass(eq=False)
 class LiveStreamReservation:
     """Opaque live-stream slot reservation.
@@ -192,7 +200,7 @@ class OperationToken:
 
     name: str
     parent: OperationToken | None = None
-    kind: str = "root"  # "root" | "child" | "worker"
+    kind: str = "root"  # "root" | "child" | "worker" | "info"
     # The thread that acquired the token. Used to detect same-thread re-entry (a
     # diagnostic/progress callback driving the reader that is mid-operation on this very
     # thread), which must raise a usage error instead of deadlocking on a wait for itself.
@@ -289,6 +297,17 @@ class ReaderState:
         self._root: OperationToken | None = None
         self._children: set[OperationToken] = set()
         self._workers: set[OperationToken] = set()
+        # Live ``info`` calls (:meth:`enter_info`): counted like a worker, so teardown
+        # waits for them, but no worker token, so they are admitted wherever ``info``
+        # is (a pass's loop body, another thread beside a pass).
+        self._info_calls: set[OperationToken] = set()
+        # Member-stream calls running now (:meth:`enter_stream_call`), by thread
+        # ident: each one's depth. They hold teardown and the physical close of every
+        # stream back, as reader calls do: under the flag a plugin's streams share one
+        # handle lock, so closing an idle stream beside a running read would wait for
+        # that read (and deadlock, from a callback inside it). Idents, not threads:
+        # each entry is cleared on the thread that made it, in a ``finally``.
+        self._stream_calls: dict[int, int] = {}
         # Open public member streams: ``id(stream)`` to a weak reference, in the order
         # they were registered. ``reader.close()`` closes them in that order
         # (:meth:`live_streams`). Weak, so this map never keeps a dropped stream alive:
@@ -558,15 +577,18 @@ class ReaderState:
                 if self._root is token:
                     self._root = None
                 self._children = {c for c in self._children if c.parent is not token}
-            due = self._teardown_due_locked()
+            due = self._cleanup_due_locked()
         if due:
             self._run_teardown_hook(token)
 
     def _run_teardown_hook(self, token: OperationToken) -> None:
+        self._run_hook(token.entry_exc)
+
+    def _run_hook(self, entry_exc: BaseException | None) -> None:
         ref = self.teardown_hook
         hook = ref() if ref is not None else None
         if hook is not None:
-            hook(token.entry_exc)
+            hook(entry_exc)
 
     def enter_child_scope(self, name: str) -> OperationToken | None:
         """A child scope under the pass this thread works for, or ``None`` if no pass.
@@ -645,6 +667,60 @@ class ReaderState:
             self._workers.add(token)
             return token, None
 
+    def enter_info(self, op: str) -> OperationToken | None:
+        """Admit a live ``info`` call: its token, or ``None`` when this thread is
+        inside a call of the reader (a callback), where ``info`` answers the published
+        snapshot instead and enters no backend code.
+
+        A callback can run while a plugin method holds the plugin's handle lock (a
+        source read inside ``open_member()``, or under a member stream's read), and a
+        live ``archive_info()`` would wait for that lock. The running call it is
+        inside already holds teardown back. Raises the closed error after
+        ``close()``. Release with :meth:`release_worker`.
+        """
+        with self._lock:
+            self._require_admissible_locked(op)
+            current = threading.current_thread()
+            if (
+                self._same_thread_token_locked() is not None
+                or threading.get_ident() in self._stream_calls
+                or any(t.thread is current for t in self._info_calls)
+            ):
+                return None
+            token = OperationToken(name=op, kind="info")
+            self._info_calls.add(token)
+            return token
+
+    def enter_stream_call(self) -> BaseException | None | _Refused:
+        """Count a member-stream call (a read, seek, ``verify()``...) that may touch
+        the stream's inner layers. ``REFUSED`` once ``close()`` has come: the stream
+        is closed to new calls, though its inner close waits for the last call out.
+        Otherwise the exception this thread is handling, for
+        :meth:`exit_stream_call`."""
+        with self._lock:
+            if self.lifecycle is not LifecycleState.OPEN:
+                return REFUSED
+            ident = threading.get_ident()
+            calls = self._stream_calls
+            calls[ident] = calls.get(ident, 0) + 1
+        return sys.exception()
+
+    def exit_stream_call(self, entry_exc: BaseException | None) -> None:
+        """End a call :meth:`enter_stream_call` counted. The last call out after a
+        ``close()`` runs the teardown hook: the deferred stream closes, the pass
+        wind-down, then teardown."""
+        with self._lock:
+            ident = threading.get_ident()
+            calls = self._stream_calls
+            depth = calls[ident] - 1
+            if depth:
+                calls[ident] = depth
+            else:
+                del calls[ident]
+            due = self._cleanup_due_locked()
+        if due:
+            self._run_hook(entry_exc)
+
     def release_worker(self, token: OperationToken) -> None:
         """Release a worker (or child) token, once. The last call out after a close
         runs the teardown hook."""
@@ -654,9 +730,11 @@ class ReaderState:
             token._released = True
             if token.kind == "child" or token.parent is not None:
                 self._children.discard(token)
+            elif token.kind == "info":
+                self._info_calls.discard(token)
             else:
                 self._workers.discard(token)
-            due = self._teardown_due_locked()
+            due = self._cleanup_due_locked()
         if due:
             self._run_teardown_hook(token)
 
@@ -890,6 +968,10 @@ class ReaderState:
         with self._lock:
             if self._stream_shutdown_done or self._stream_shutdown_owner is not None:
                 return False
+            if self._running_locked():
+                # Deferred: no inner close runs beside a running call. The last call
+                # out claims it (:meth:`_cleanup_due_locked`).
+                return False
             self._stream_shutdown_owner = ticket
             return True
 
@@ -976,11 +1058,26 @@ class ReaderState:
         )
 
     def _running_locked(self) -> bool:
-        """Whether a call is still running: a worker, a child scope, or a pass that is
-        not suspended at a yield. Each holds teardown back."""
+        """Whether a call is still running: a worker, a child scope, a live ``info``,
+        a member-stream call, or a pass that is not suspended at a yield. Each holds
+        teardown and the stream closes back."""
         root = self._root
         return bool(
-            self._workers or self._children or (root is not None and not root.suspended)
+            self._workers
+            or self._children
+            or self._info_calls
+            or self._stream_calls
+            or (root is not None and not root.suspended)
+        )
+
+    def _cleanup_due_locked(self) -> bool:
+        """Whether the call leaving now is the last one out after a ``close()``: it
+        then runs the hook, which does what ``close()`` deferred (the stream closes and
+        the pass wind-down, :meth:`claim_stream_shutdown`) and then teardown."""
+        return (
+            self.lifecycle is LifecycleState.READER_CLOSED
+            and not self._running_locked()
+            and not self._teardown_claimed
         )
 
     def _teardown_due_locked(self) -> bool:
