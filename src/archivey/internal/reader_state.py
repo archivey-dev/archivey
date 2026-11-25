@@ -199,6 +199,10 @@ class OperationToken:
     # The member-list report a pass pinned (``pin_report``): what
     # ``members_report_if_available()`` answers while the pass is open, or ``None``.
     report: MemberListReport | None = field(default=None, repr=False)
+    # Set by the first startup pin (``pin_report``) under this root: a later pass
+    # filed under it (``extract_all()``'s held-source pass) runs after members were
+    # processed, so it pins nothing.
+    startup_pinned: bool = field(default=False, repr=False)
     _released: bool = field(default=False, repr=False)
 
 
@@ -365,7 +369,7 @@ class ReaderState:
         kind: PassKind,
         report: Callable[[], MemberListReport | None] | None,
     ) -> OperationToken:
-        """Acquire a pass token: root when free, else a child under an internal owner."""
+        """Acquire a root pass token, or raise why the pass cannot start."""
         with self._lock:
             self._require_admissible_locked(name)
             self._reject_same_thread_reentry_locked(f"start {name!r}")
@@ -411,14 +415,22 @@ class ReaderState:
         self, token: OperationToken, report: MemberListReport | None
     ) -> None:
         """Set what ``members_report_if_available()`` answers while ``token``'s pass
-        is open. A pass pins at admission and again once its startup has run, before
-        its first member. A child token pins on the pass it is filed under
+        is open, once its startup has run and before its first member (a pass also
+        pins at admission). A child token pins on the pass it is filed under
         (``verify_all()``'s and ``extract_all()``'s nested passes): the peek answers
-        from the root."""
+        from the root. Only the first startup under a root pins: a later nested pass
+        runs after members were processed, and the peek answers the same throughout
+        the pass."""
         with self._lock:
             root = token if token.kind == "root" else token.parent
-            if root is not None and root is self._root and not root._released:
+            if (
+                root is not None
+                and root is self._root
+                and not root._released
+                and not root.startup_pinned
+            ):
                 root.report = report
+                root.startup_pinned = True
 
     def pin_owner_report(self, report: MemberListReport | None) -> None:
         """:meth:`pin_report` for the pass this thread works for, if any."""

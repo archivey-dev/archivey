@@ -1370,7 +1370,7 @@ class BaseArchiveReader(ArchiveReader):
         ``token`` is a reservation already taken (eager ``open()``); bind is
         infallible. Without ``token`` this acquires a new slot (the extraction
         coordinator re-opening a retyped member). A ``stream_members()`` pass's streams
-        do not come here (``ReaderState.admit_pass_streams``).
+        do not come here: the pass winds them down itself.
 
         The gate also records the stream, weakly and in open order, for ``close()``
         to close if the caller has not (stdlib parity: ``ZipFile.close()`` and
