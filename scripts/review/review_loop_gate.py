@@ -130,8 +130,8 @@ VERDICT_STOPS = {
     "clean": True,
     # ✅ Approve, with nothing to fix beyond 💡/📚/🎉 annotations.
     "approved": True,
-    # ✅ Approve conditional on the listed fixes, or 💬 Comment: findings were posted,
-    # and the reviewer does not need to see them fixed. They are still fixed; what ends
+    # ✅ Approve conditional on the listed fixes: findings were posted, and the
+    # reviewer does not need to see them fixed. They are still fixed; what ends
     # is the re-reading.
     "conditional": True,
     # 🔄 Request Changes: the next round is the implementer's to ask for.
@@ -519,9 +519,8 @@ def finish(event: dict) -> Finish:
             "(`address-review-findings` §7)."
         )
     elif v.stop:
-        # Not "the review approved it": this covers ✅ Approve, the conditional
-        # approval and 💬 Comment, and SKILL.md §4 is explicit that a comment is not
-        # an approval.
+        # Not "the review approved it": this covers ✅ Approve and the conditional
+        # approval, whose fixes are still outstanding (SKILL.md §4).
         body = (
             f"**Round {rnd}: the review does not need to see the result.**{summary}\n\n"
             "Work through any findings it posted with `address-review-findings`. No "

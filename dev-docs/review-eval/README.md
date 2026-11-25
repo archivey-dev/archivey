@@ -13,6 +13,8 @@ the workflow prompt or the model can be measured instead of guessed.
 - [`pr-bodies/`](pr-bodies/): each PR's title and description as GitHub holds them,
   so a run needs no GitHub access.
 - [`results.md`](results.md): the baseline and every later run worth keeping.
+- [`multi-model-2026-11-25.md`](multi-model-2026-11-25.md): a week of Opus, Codex and
+  Antigravity reviews compared PR by PR; the basis for the second-model review order.
 
 The runner is [`scripts/review/review_eval.py`](../../scripts/review/review_eval.py).
 

@@ -153,6 +153,21 @@ its cases ("formats with a central directory", not "ZIP, 7z and ISO") rather tha
 one more case. A list of cases grows by one finding per round; in
 another project's review loop one block took 24 findings over 9 rounds this way.
 
+**Fix the class, not the instance — in code too.** When a finding shows one input that
+breaks an invariant (a stale path after one alias, a lock skipped on one error path),
+find the one guard that makes every such input impossible and fix that, with a test for
+the class. A point fix invites the next reviewer to find the next variant: in the week
+to 2026-11-25
+([evidence](../../../dev-docs/review-eval/multi-model-2026-11-25.md)), #1715 took four
+Codex rounds of narrower variants of one finding, and #1833, #1757 and #1767 each had a
+fix reopened the same way. If no single guard exists, say so in the reply and fix the
+remaining cases here, or, for a 🟡/🔴, Split them into their own PR or escalate (§6).
+
+**After a second model's review, Opus checks your fixes first.** Fix everything from the
+Codex or Antigravity round, then run the `review` label loop until Opus approves the
+fixes, and only then ask that model for its recheck (`dev-docs/review-loop.md`
+§Second-model reviews).
+
 ---
 
 ## 3. Verify before you act
@@ -267,6 +282,12 @@ you add the label again, and equally before you stop after an approving verdict,
 reviewer would, and update the PR body in the same push so it no longer describes round 1.
 That includes the **For dummies** section at its top: when a fix changes what the PR does
 or who notices, rewrite it too.
+
+**A conditional approval covers the fixes the reviewer wrote, not the ones you made.**
+If a fix turned out bigger than the change the reviewer spelled out (it grew past one
+function, or touched locking, close or teardown, shared state, an index, or a loop's end
+condition), add the `review` label again after the push instead of stopping
+(`dev-docs/review-loop.md` §Stopping it).
 
 ### Before the `review` label: write down what the round taught
 
