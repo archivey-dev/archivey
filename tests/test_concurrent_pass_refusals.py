@@ -876,3 +876,36 @@ def test_a_link_resolution_diagnostic_cannot_call_the_reader(
         assert all(
             isinstance(e, ArchiveyUsageError) and "re-entered" in str(e) for e in errors
         ), (name, errors)
+
+
+@pytest.mark.parametrize("outer", ["extract_all", "verify_all"])
+def test_a_password_provider_during_a_link_data_read_cannot_call_the_reader(
+    tmp_path: Path, outer: str
+) -> None:
+    """An encrypted ZIP keeps a symlink's target as encrypted member data, so the
+    first-touch link-data read asks the password provider, inside the library's own
+    window. The provider is the caller's code: a pass it starts is refused as
+    re-entry, not filed as a child of the running pass."""
+    from tests.zipcrypto import build_zipcrypto_zip
+
+    holder: list[object] = []
+    seen: list[BaseException] = []
+
+    def provider(request: object) -> str:
+        try:
+            holder[0].verify_all()  # type: ignore[attr-defined]
+        except BaseException as exc:  # noqa: BLE001 - the test inspects it
+            seen.append(exc)
+        return "secret"
+
+    blob = build_zipcrypto_zip(b"secret", b"link", b"target.txt", unix_mode=0o120777)
+    with open_archive(io.BytesIO(blob), password=provider) as reader:
+        holder.append(reader)
+        if outer == "extract_all":
+            reader.extract_all(tmp_path / "out", on_error="continue")
+        else:
+            reader.verify_all()
+    assert seen
+    assert all(
+        isinstance(e, ArchiveyUsageError) and "re-entered" in str(e) for e in seen
+    ), seen
