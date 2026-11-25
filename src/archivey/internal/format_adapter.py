@@ -281,11 +281,10 @@ class _PluginAdapter(BaseArchiveReader):
         # takes one lock (``_handle_guard``). The exception is ``translate_exception``,
         # which ``base_reader`` runs outside the lock. The views of ``ReaderSource``
         # need none, but archivey cannot tell which kind of reader it was given. A
-        # random-access pass's stored member data read through the walk takes
-        # ``_walk_lock`` instead (``_open_member_in_walk``): it reads archivey's own
-        # walk stream, not the plugin, and the walk is the only other reader of that
-        # stream. Decoded member data (``MemberSpan.data``) is the plugin's stream, so
-        # it takes this lock too.
+        # random-access pass's stored member data read through the walk takes neither
+        # (``_open_member_in_walk``): it reads archivey's own walk stream, not the
+        # plugin, and the pass has the reader to itself. Decoded member data
+        # (``MemberSpan.data``) is the plugin's stream, so it takes this lock too.
         if MemberStreams.CONCURRENT in member_streams:
             self._handle_lock = threading.Lock()
         # Views over a seekable source, when the reader shape uses them.
@@ -3093,37 +3092,23 @@ class SequentialReaderAdapter(_PluginAdapter):
                     if self._decoded_in_place(decoded)
                     else None
                 )
-                # Only the open made here may ask the provider: a reopen once the
-                # stream is handed off is a replacement open inside its read.
-                handed_off = False
                 verdict = [record.unlocked]
-                # The winners the data handed out was unlocked with: the listing
-                # walk's when it reads through the walk, else the first reopen's.
-                winners = dict(self._listing_walk.winners) if window is not None else {}
-
-                def reopen(start: int) -> BinaryIO:
-                    return self._decoded_by_walk(
-                        decoded,
-                        start,
-                        allow_provider=not handed_off,
-                        verdict=verdict,
-                        winners=winners,
-                    )
-
-                stream = self._walk_handoff_locked(window, reopen)
-                handed_off = True
+                stream: BinaryIO
+                if window is not None:
+                    stream = window
+                else:
+                    # The walk has moved past the member: a view of its own, from the
+                    # start, unlocked by its own open.
+                    stream = self._decoded_by_walk(decoded, 0, verdict=verdict)
             return self._decoded_parts(member, record, decoded, stream, verdict=verdict)
         shared = record.layer.shared
         assert shared is not None
 
-        def reopen(start: int) -> BinaryIO:
-            return self._span_view(record, start)
-
-        # Stored data: _walk_lock, not _handle_guard: the window reads the walk's own
-        # stream (not the plugin's, as decoded data above does), which
-        # only the walk also reads, and every walk step runs under _walk_lock; the
-        # walk detaches this stream before it moves (_before_pull_locked). The views
-        # it falls back to are serialized by the SharedSource.
+        # Stored data: _walk_lock to decide, not _handle_guard: the window reads the
+        # walk's own stream (not the plugin's, as decoded data above does), which only
+        # the walk also reads. Nothing but the pass moves the walk while it runs, and
+        # it is done with this stream when it steps on. The view it falls back to is
+        # serialized by the SharedSource.
         with self._walk_lock:
             forward = record.layer.forward
             # The walk is at the data's start only while it is on the member's
@@ -3133,9 +3118,10 @@ class SequentialReaderAdapter(_PluginAdapter):
                 and forward is self._listing_walk.layer.forward
                 and forward.offset == record.offset
             )
-            stream = self._walk_handoff_locked(
-                _SpanWindow(forward, record, self._archive_what) if in_place else None,
-                reopen,
+            stream = (
+                _SpanWindow(forward, record, self._archive_what)
+                if in_place
+                else self._span_view(record)
             )
         return self._span_parts(member, record, stream)
 
@@ -3213,15 +3199,13 @@ class SequentialReaderAdapter(_PluginAdapter):
         # Built once: it is read on every member open, and the format never changes.
         return f"{self._format.display_name} archive"
 
-    def _span_view(self, record: _Span, start: int) -> BinaryIO:
-        """``record``'s data from ``start`` for a pass the walk has left: a view that
-        raises ``TruncatedError`` at a cut (:class:`MemberDataView`), as the window it
-        takes over from does."""
+    def _span_view(self, record: _Span) -> BinaryIO:
+        """``record``'s data for a pass the walk has left: a view that raises
+        ``TruncatedError`` at a cut (:class:`MemberDataView`), as the window it stands
+        in for does."""
         shared = record.layer.shared
         assert shared is not None
         view = shared.view(record.offset, record.length)
-        if start:
-            view.seek(start)
         return MemberDataView(
             view, record.offset, record.length, what=self._archive_what
         )

@@ -33,7 +33,7 @@
   it was admitted with; `extract_all()` takes its progress totals inside its pass
   through an owner-only helper; `verify_all()` one pass lease over its spanning passes
   and report (design.md §2)
-- [ ] 2.3 Remove what only the overlap needed (design.md §6): `_drain_walk`'s sleep, the
+- [x] 2.3 Remove what only the overlap needed (design.md §6): `_drain_walk`'s sleep, the
   mid-stream walk hand-off (`MemberDataView` and the at-open `reopen(0)` fallback stay)
   and the 7z pass-link thread check, each after checking that nothing else needs it
 - [ ] 2.4 Docstrings: `open_archive`, `ArchiveReader.open`, `stream_members`,

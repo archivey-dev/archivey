@@ -2,7 +2,7 @@
 
 Under the flag every call works as if it ran on a reader of its own: what one call
 emits, or a close on another thread, does not show up in a different call's result
-as something that call did. ``test_concurrent_pass_workers.py`` covers which calls
+as something that call did. ``test_concurrent_pass_refusals.py`` covers which calls
 may overlap; this file covers what they see of each other.
 """
 
@@ -19,32 +19,9 @@ import pytest
 from archivey import ArchiveyConfig, open_archive
 from archivey.diagnostics import DiagnosticCode
 from archivey.internal.streams.archive_stream import ArchiveStreamImpl
-from tests.test_concurrent_pass_workers import _in_thread, _run_together
+from tests.test_concurrent_pass_refusals import _in_thread, _run_together
 
 pytestmark = pytest.mark.concurrent_reader
-
-
-def test_pass_stream_diagnostics_leave_out_another_threads_walk(
-    tmp_path: Path,
-) -> None:
-    """The names another thread's ``members()`` normalizes are not the stream's."""
-    path = tmp_path / "names.tar"
-    with tarfile.open(path, "w") as tf:
-        for name in ("a.txt", ".//b.txt", ".//c.txt"):
-            info = tarfile.TarInfo(name)
-            info.size = 3
-            tf.addfile(info, io.BytesIO(b"abc"))
-    normalized = DiagnosticCode.MEMBER_NAME_NORMALIZED
-    with open_archive(path, concurrent_operations=True) as reader:
-        it = reader.stream_members()
-        member, stream = next(it)
-        assert member.name == "a.txt"
-        assert stream is not None
-        _in_thread(reader.members)
-        assert stream.read() == b"abc"
-        assert stream.diagnostics.total_count == 0
-        assert reader.diagnostics.counts[normalized] == 2
-        it.close()
 
 
 def test_random_stream_diagnostics_are_its_own(tmp_path: Path) -> None:
