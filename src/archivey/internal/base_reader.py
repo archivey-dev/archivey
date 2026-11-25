@@ -1399,13 +1399,11 @@ class BaseArchiveReader(ArchiveReader):
         if token is None:
             self._state.acquire_live_stream(stream)
         else:
-            try:
-                self._state.bind_live_stream(token, stream)
-            except BaseException:
-                # close() came after the reservation: the stream is never published,
-                # so it is closed here; bind already dropped the reservation's lease.
-                stream.close()
-                raise
+            # Raises the closed error when close() came after the reservation (and
+            # drops the reservation's lease): the stream is never published, and
+            # open()'s cleanup of an unbound stream closes it, keeping the closed error
+            # primary if that close fails too.
+            self._state.bind_live_stream(token, stream)
         return stream
 
     def _teardown_after_call(self, entry_exc: BaseException | None) -> None:
@@ -1462,12 +1460,14 @@ class BaseArchiveReader(ArchiveReader):
                 raise pending
             return
         teardown_exc: Exception | None = None
-        # No call is running now, so nothing writes the listing any more: a pass left
-        # early or a link never read is as final as it will get.
-        _settle_listing(self._listed, links_too=True)
         try:
             try:
                 try:
+                    # No call is running now, so nothing writes the listing any more: a
+                    # pass left early or a link never read is as final as it will get.
+                    # Inside the guarded steps: teardown is claimed and never retried,
+                    # so an interrupt here must still reach the releases below.
+                    _settle_listing(self._listed, links_too=True)
                     # A walk stopped part-way: close it first, so the backend's
                     # ``finally`` blocks run now, on an open archive, and not when a
                     # collector gets to the generator (on PyPy, not on one collect).

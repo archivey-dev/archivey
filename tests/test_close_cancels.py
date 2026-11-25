@@ -208,6 +208,36 @@ def test_close_before_the_bind_discards_the_new_stream(
     assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
+def test_a_failing_close_of_the_unbound_stream_keeps_the_closed_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """open() raises the closed error, not the stream's close failure, which it
+    carries as a note."""
+    reader = open_archive(_plain_zip(tmp_path))
+    assert isinstance(reader, BaseArchiveReader)
+    reader.members()
+    state = reader._state
+    real_bind = state.bind_live_stream
+
+    def close_then_bind(token: object, stream: object) -> None:
+        real_close = stream.close  # type: ignore[attr-defined]
+
+        def failing_close() -> None:
+            real_close()
+            raise OSError("stream cleanup failed")
+
+        stream.close = failing_close  # type: ignore[attr-defined]
+        reader.close()
+        real_bind(token, stream)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(state, "bind_live_stream", close_then_bind)
+    with pytest.raises(ArchiveyUsageError, match=CLOSED) as ei:
+        reader.open("f0.txt")
+    notes = getattr(ei.value, "__notes__", [])
+    assert any("stream cleanup failed" in n for n in notes), notes
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+
+
 def test_close_from_on_progress_stops_extract_all(tmp_path: Path) -> None:
     """Closing from a progress callback is the supported way to cancel."""
     reader = open_archive(_plain_zip(tmp_path, n=5))
@@ -332,3 +362,66 @@ def test_a_cancelled_extract_all_names_extract_all(tmp_path: Path) -> None:
         reader.extract_all(out, on_progress=on_progress)
     left = sorted(p.name for p in out.rglob("*")) if out.exists() else []
     assert left == [], left
+
+
+@pytest.mark.parametrize("last_out", [False, True])
+def test_an_interrupt_while_settling_the_listing_still_releases_the_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, last_out: bool
+) -> None:
+    """Teardown is claimed once and never retried, so an interrupt in its first step
+    (settling the listing) must still run the backend and source releases."""
+    from archivey.internal import base_reader as base_reader_module
+
+    reader = open_archive(_plain_zip(tmp_path), concurrent_operations=last_out)
+    assert isinstance(reader, BaseArchiveReader)
+    reader.members()
+    released: list[int] = []
+    real_close_archive = reader._close_archive
+
+    def close_archive() -> None:
+        released.append(1)
+        real_close_archive()
+
+    monkeypatch.setattr(reader, "_close_archive", close_archive)
+    real_settle = base_reader_module._settle_listing
+
+    def interrupted_settle(*args: object, **kwargs: object) -> None:
+        monkeypatch.setattr(base_reader_module, "_settle_listing", real_settle)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(base_reader_module, "_settle_listing", interrupted_settle)
+    if not last_out:
+        with pytest.raises(KeyboardInterrupt):
+            reader.close()
+    else:
+        # The teardown runs on a running call's way out: close() from its callback.
+        inside = threading.Event()
+        release = threading.Event()
+        real_lookup = reader._published_within_limits
+        outcome: list[BaseException | None] = []
+
+        def slow_lookup() -> object:
+            published = real_lookup()
+            if threading.current_thread() is not threading.main_thread():
+                inside.set()
+                assert release.wait(5)
+            return published
+
+        monkeypatch.setattr(reader, "_published_within_limits", slow_lookup)
+
+        def lookup() -> None:
+            try:
+                reader.get("f0.txt")
+                outcome.append(None)
+            except BaseException as exc:  # noqa: BLE001 - checked below
+                outcome.append(exc)
+
+        worker = threading.Thread(target=lookup)
+        worker.start()
+        assert inside.wait(5)
+        reader.close()
+        release.set()
+        worker.join(5)
+        assert len(outcome) == 1 and isinstance(outcome[0], KeyboardInterrupt)
+    assert released == [1]
+    assert reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
