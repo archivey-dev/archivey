@@ -353,6 +353,8 @@ class _PluginAdapter(BaseArchiveReader):
         # check that passes does not raise them (``SpanningCheck.passed``).
         self._failed_reads: frozenset[int] = frozenset()
         context._spanning_pass = self._spanning_passes.append
+        # Only verify_all() runs the passes (``_run_spanning_passes``).
+        context._checkpoint = functools.partial(self._state.check_open, "verify_all()")
         context._decompress_coder = self._decompress_coder
         context._keep_metadata = self._listing_tracker.keep
         if self._listing_decode is not None:

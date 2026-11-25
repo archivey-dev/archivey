@@ -706,6 +706,11 @@ class ReaderContext:
     # error ``verify_all()`` returns for every covered file) and keeps its result, so
     # a second call decodes nothing. Internal, set by the adapter; not for plugins.
     _spanning_pass: Callable[[Callable[[], None]], None] | None = None
+    # ``_checkpoint()`` raises the closed error when the reader was closed while a
+    # ``_spanning_pass`` runs; the pass calls it between the bounded reads it makes
+    # (each run, each slice), so a close() stops it within one of them. Internal,
+    # set by the adapter; not for plugins.
+    _checkpoint: Callable[[], None] | None = None
     # ``_decompress_coder(data, stream_format, size)`` decodes ``data``, a container
     # coder's whole data in ``stream_format``, as ``decompress`` does, except that a
     # byte after the end raises ``CorruptionError`` (as for a ZIP member) instead of

@@ -1023,7 +1023,10 @@ class UdifImage:
         ]
 
     def table_crc(
-        self, table: UdifTable, draw: Callable[[int], None] | None = None
+        self,
+        table: UdifTable,
+        draw: Callable[[int], None] | None = None,
+        checkpoint: Callable[[], None] | None = None,
     ) -> int:
         """The CRC-32 of ``table``'s runs as the format defines it: every run but the
         ignore runs, decoded, in sector order. One run is in memory at a time (a raw
@@ -1031,9 +1034,12 @@ class UdifImage:
         raise, naming the run. ``draw(n)`` is told the size of each run that stores
         bytes (compressed or raw) before any of it is read, and may raise to stop:
         runs may share stored bytes, so even raw runs can read far more than the
-        file holds."""
+        file holds. ``checkpoint()`` runs before each run and each slice read, and
+        may raise to stop."""
         crc = 0
         for index in range(table.first_run, table.end_run):
+            if checkpoint is not None:
+                checkpoint()
             kind = self._kind[index]
             size = self._count[index] * SECTOR
             if kind == IGNORE:
@@ -1045,6 +1051,8 @@ class UdifImage:
                 if draw is not None:
                     draw(size)
                 for at in range(0, size, CHECK_SLICE):
+                    if at and checkpoint is not None:
+                        checkpoint()
                     n = min(CHECK_SLICE, size - at)
                     data = self._read_file(
                         self._offset[index] + at, n, self._where(index)
@@ -1058,11 +1066,14 @@ class UdifImage:
                 self._refuse_kind(index)
         return crc
 
-    def data_fork_crc(self) -> int:
-        """The CRC-32 of the data fork's stored bytes, read in slices."""
+    def data_fork_crc(self, checkpoint: Callable[[], None] | None = None) -> int:
+        """The CRC-32 of the data fork's stored bytes, read in slices.
+        ``checkpoint()`` runs before each slice, and may raise to stop."""
         crc = 0
         start, length = self.koly.data_fork_offset, self.koly.data_fork_length
         for at in range(0, length, CHECK_SLICE):
+            if checkpoint is not None:
+                checkpoint()
             n = min(CHECK_SLICE, length - at)
             crc = zlib.crc32(self._read_file(start + at, n, "the UDIF data fork"), crc)
         return crc

@@ -1906,9 +1906,11 @@ def test_verify_all_raises_every_file_of_an_hdiutil_image_to_checksum(
     passes: list[str] = []
     table_crc = UdifImage.table_crc
 
-    def counted(self: UdifImage, table: object, draw: object = None) -> int:
+    def counted(
+        self: UdifImage, table: object, draw: object = None, checkpoint: object = None
+    ) -> int:
         passes.append(table.name)  # type: ignore[attr-defined]
-        return table_crc(self, table, draw)  # type: ignore[arg-type]
+        return table_crc(self, table, draw, checkpoint)  # type: ignore[arg-type]
 
     monkeypatch.setattr(UdifImage, "table_crc", counted)
     password = "archivey" if name in _HFS_ENCRYPTED else None
@@ -2463,3 +2465,36 @@ def test_runs_shared_by_files_read_out_of_listing_order_are_not_charged() -> Non
         files = [m for m in reader.members() if m.is_file]
         for member in reversed(files):
             assert reader.read(member) == data[member.name]
+
+
+def test_close_during_the_partition_pass_stops_it_within_one_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """verify_all()'s partition pass reads after the members are read; a close()
+    while it reads stops it at the next run or slice, not at the end of the pass."""
+    from archivey.exceptions import ArchiveyUsageError
+    from archivey.internal.backends.udif import UdifImage
+
+    reader = open_archive(_FIXTURES / "hfs-UDZO.dmg")
+    in_pass: list[bool] = []
+    reads_after_close: list[int] = []
+    real_read = UdifImage._read_file
+    real_crc = UdifImage.table_crc
+
+    def table_crc(self: UdifImage, *args: object) -> int:
+        in_pass.append(True)
+        return real_crc(self, *args)  # type: ignore[arg-type]
+
+    def read_file(self: UdifImage, offset: int, n: int, what: str) -> bytes:
+        if in_pass:
+            reads_after_close.append(n)
+            if len(reads_after_close) == 1:
+                reader.close()
+        return real_read(self, offset, n, what)
+
+    monkeypatch.setattr(UdifImage, "table_crc", table_crc)
+    monkeypatch.setattr(UdifImage, "_read_file", read_file)
+    with pytest.raises(ArchiveyUsageError, match=r"^verify_all\(\)"):
+        reader.verify_all()
+    # The read the close() ran inside finishes; no further one starts.
+    assert len(reads_after_close) == 1, reads_after_close
