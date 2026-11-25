@@ -205,8 +205,10 @@ evidence for it.
   into a larger change that warrants a full review, and the implementer is trusted to
   judge that (davitf, 2026-09-23). The implementer **must** add the label again when a
   fix made under a conditional approval turned out not to be the local change the
-  reviewer wrote: it grew past one function, or touched locking, teardown, shared state
-  or a loop's end condition (davitf, 2026-11-25). The cap below still bounds it.
+  reviewer wrote: it grew past one function, or reached locking, close or teardown,
+  shared state, an index or a loop's end condition that the reviewer's fix did not name
+  (davitf, 2026-11-25). The reviewer's own written change, in the one function it named,
+  needs no new round, even in a close. The cap below still bounds it.
 - **Five rounds an agent can ask for, then a person.** Past `MAX_ROUNDS` an agent's
   label is refused, with a comment saying so, and a person's label still runs a round.
   Past `MAX_FORCED_ROUNDS` (eight) nothing runs, so the bound holds even if the person

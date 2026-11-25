@@ -270,6 +270,32 @@ suppression:
 - Briefing (block 1) stays thin and carries the index; detail lives in each finding's own
   thread (block 2); decisions (block 3) stay only what needs you.
 
+### Report the class, not only the instance
+
+A finding that names one input invites a point fix, and the next round then finds the
+next variant: on #1839, Codex rounds 3 and 4 each reopened a fix that covered only the
+path the finding showed. So for every 🔴 and 🟡 you mark `CONFIRMED`, look for the class
+before you post, and put what you found in the same finding:
+
+1. **The invariant**, in one sentence: the rule the code broke, not the input that broke
+   it.
+2. **Where else it can break**, and what you found there: every other path that runs the
+   same event (the docstrings often list them), the same code in other formats, codecs
+   and shared paths
+   ([DR-0](../../../dev-docs/design-rules.md#dr-0-fix-the-class-not-the-instance)), and
+   the window just after each check on the same state (another thread, a callback). Send
+   the wide searches to subagents (§How to spend turns). Each other site you confirm
+   goes into this finding's list of sites, not into a finding of its own (one finding
+   per cause, above); a site you checked and found safe is named as checked.
+3. **The guard that fixes the class**: where the condition is decided, not a stand-in
+   check at the caller that approximates it. If you see no single guard, say so.
+
+Put these under a **Class:** line in the finding. A 🟢 needs none of this, except a
+`caller-misuse` 🟢, which still names its one guard (§5). A finding whose class is the
+one site you cite needs only "Class: this site only" and what you checked. The
+implementer runs the same steps on the fix (`address-review-findings` §2), so this is a
+second chance at the same search, not a replacement for it.
+
 ## 3. Output shape — three blocks (required)
 
 Three blocks, and **they do not all go in the same place.** Blocks 1 and 3 are the review
@@ -355,7 +381,8 @@ block 3 below).
 
 **Evidence, not prose.** Each finding carries severity, confidence, location (`file:line`),
 what's wrong, why it matters, fix direction, and a trigger / repro note where possible
-(`CONFIRMED` + trigger ⇒ red–green candidate, `CONTRIBUTING.md` §Testing standards). Don't
+(`CONFIRMED` + trigger ⇒ red–green candidate, `CONTRIBUTING.md` §Testing standards). A 🔴
+or 🟡 marked `CONFIRMED` also carries a **Class:** line (§2 Report the class). Don't
 restate the diff, narrate your process, or pad with transitions. Terse is not thin:
 cutting evidence to look brief violates the brevity fence, cutting prose does not.
 
@@ -522,9 +549,9 @@ index line (§3 block 1). Put the trigger first in the finding.
 
 A `caller-misuse` finding is 🟡 only when its outcome is a hang, deadlock, crash, bare
 `AssertionError`, data loss or a write outside the destination; otherwise 🟢 (§4). Say
-what one guard would make the whole class impossible, not only your example: a second
-`caller-misuse` finding of the same class asks for that guard, not another case
-(`address-review-findings` §2).
+what one guard would make the whole class impossible, not only your example (§2 Report
+the class): a second `caller-misuse` finding of the same class asks for that guard, not
+another case (`address-review-findings` §2).
 
 ## 6. Posting the review to a pull request
 

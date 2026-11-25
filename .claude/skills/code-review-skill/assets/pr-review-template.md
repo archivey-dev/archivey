@@ -145,6 +145,9 @@ someone who has only this thread open: no "see the briefing", no "as in K3".
 
 **Fix:** [concrete direction]
 
+**Class:** [invariant; other sites checked and what each showed; the guard], or "this
+site only" and what you checked. 🔴/🟡 `CONFIRMED` only.
+
 **Trigger:** [input/state → failure], or `needs-repro`
 ```
 
