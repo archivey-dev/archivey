@@ -83,6 +83,7 @@ from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
     BombTracker,
 )
+from archivey.internal.callback_scope import user_callback
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.dry_run import DryRun, scratch_for
 from archivey.internal.file_copy_pass import FileCopyPass
@@ -2122,7 +2123,8 @@ class ExtractionCoordinator:
             # The filter is told, as a predicate is, when the walk can still change
             # the member (``member_state_final``): it may see the member again.
             transformed._listing_pending = original._listing_pending
-            filtered = self._filter(transformed)
+            with user_callback():
+                filtered = self._filter(transformed)
             if filtered is None:
                 return None, None, frozenset()
             if not isinstance(filtered, ArchiveMember):
@@ -5602,18 +5604,19 @@ class ExtractionCoordinator:
             return
         state = self._state
         try:
-            self._on_progress(
-                ExtractionProgress(
-                    member=member,
-                    bytes_written=state.tracker.total_bytes,
-                    total_bytes_estimated=state.total_estimate,
-                    members_done=members_done,
-                    members_total=state.members_total,
-                    member_bytes_written=member_bytes_written,
-                    members_extracted=state.members_extracted,
-                    members_blocked=state.members_blocked,
+            with user_callback():
+                self._on_progress(
+                    ExtractionProgress(
+                        member=member,
+                        bytes_written=state.tracker.total_bytes,
+                        total_bytes_estimated=state.total_estimate,
+                        members_done=members_done,
+                        members_total=state.members_total,
+                        member_bytes_written=member_bytes_written,
+                        members_extracted=state.members_extracted,
+                        members_blocked=state.members_blocked,
+                    )
                 )
-            )
         except BaseException as exc:
             # The caller's own exception, raised from inside a member's copy loop:
             # it says nothing about the member's data, so it never keeps a partial

@@ -1064,6 +1064,11 @@ class BaseArchiveReader(ArchiveReader):
         self._walk: Iterator[ArchiveMember] | None = None
         # Set when the walk ends, cleanly or on terminal damage.
         self._walk_done: bool = False
+        # The index-only report, published once when an upfront walk ends
+        # (``_end_walk``): what a peek answers before the listing is published with
+        # its links read, and what a pass pins at admission, by reference, so the
+        # admission copies nothing under the state lock.
+        self._index_report: MemberListReport | None = None
         # The terminal damage the walk ended on. Its object identity is a contract:
         # extraction tells listing damage (write the prefix, then raise) from a member
         # fault by ``exc is _walk_error``, so a pass that ends on the damage re-raises
@@ -2717,9 +2722,15 @@ class BaseArchiveReader(ArchiveReader):
                 self._stamp_error_context(error)
             _apply_last_entry_wins_is_current(self._listed_in_index_order())
         finally:
+            if self._MEMBER_LIST_UPFRONT:
+                self._index_report = MemberListReport(
+                    members=tuple(self._listed),
+                    error=error,
+                    diagnostics=self._diagnostics_collector.snapshot(),
+                )
             # Last, in one store: what reads the walk's outcome without the walk lock
-            # (``_built_report``) sees ``_walk_done`` only with the error and the
-            # last-entry-wins stamps that go with it.
+            # (``_built_report``) sees ``_walk_done`` only with the error, the
+            # last-entry-wins stamps and the index report that go with it.
             self._walk_done = True
 
     def _listed_in_index_order(self) -> list[ArchiveMember]:
@@ -4159,10 +4170,10 @@ class BaseArchiveReader(ArchiveReader):
         one :meth:`_members_report_if_available` builds), kept apart from
         ``_materialized`` because its link targets may not be read yet. ``None`` when
         neither exists, or when a listing limit stands in the way (a limit is never
-        stored on a report). Reads plain attributes only and takes no lock but the
-        diagnostics collector's, so a pass can pin it at any point
-        (:meth:`_pin_pass`), and admission builds it under the state lock
-        (``ReaderState.acquire_pass``).
+        stored on a report). Both reports are published once and only picked here,
+        by reference: it reads plain attributes and builds nothing, so a pass can pin
+        it at any point (:meth:`_pin_pass`), and admission picks it under the state
+        lock (``ReaderState.acquire_pass``).
         """
         materialized = self._materialized
         if materialized is not None:
@@ -4177,11 +4188,7 @@ class BaseArchiveReader(ArchiveReader):
             or self._walk_failure is not None
         ):
             return None
-        return MemberListReport(
-            members=tuple(self._listed),
-            error=self._walk_error,
-            diagnostics=self._diagnostics_collector.snapshot(),
-        )
+        return self._index_report
 
     def _acquire_pass(self, name: str, kind: PassKind) -> OperationToken:
         """Take the pass token for ``name``, pinning what is built at admission."""
@@ -4727,11 +4734,7 @@ class BaseArchiveReader(ArchiveReader):
         if materialized is not None:
             # Published while this call waited on another thread's materialization.
             return materialized.report
-        return MemberListReport(
-            members=tuple(self._listed),
-            error=self._walk_error,
-            diagnostics=self._diagnostics_collector.snapshot(),
-        )
+        return self._index_report
 
     @override
     def __contains__(self, member: object) -> bool:

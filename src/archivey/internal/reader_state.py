@@ -60,6 +60,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from archivey.exceptions import ArchiveyUsageError
+from archivey.internal.callback_scope import callback_depth
 from archivey.types import MemberStreams
 
 if TYPE_CHECKING:
@@ -287,7 +288,10 @@ class ReaderState:
         # during the window on a non-CONCURRENT reader — and on backends without a
         # shared-handle lock the interleaved seek+read pairs then serve wrong member
         # bytes instead of the loud error this gate exists to raise.
-        self._internal_open_threads: dict[int, int] = {}
+        # Each thread's open windows, as the callback depth each was entered at
+        # (``callback_scope``): a window is active only at that depth, so a caller's
+        # callback run inside it does not inherit the exemption.
+        self._internal_open_threads: dict[int, list[int]] = {}
         # The thread that currently owns the materialization election, for same-thread
         # re-entry detection.
         self._materializing_thread: int | None = None
@@ -305,23 +309,24 @@ class ReaderState:
         Leave it with :meth:`end_internal_opens`.
         """
         tid = threading.get_ident()
+        depth = callback_depth()
         with self._lock:
-            self._internal_open_threads[tid] = (
-                self._internal_open_threads.get(tid, 0) + 1
-            )
+            self._internal_open_threads.setdefault(tid, []).append(depth)
 
     def end_internal_opens(self) -> None:
         tid = threading.get_ident()
         with self._lock:
-            depth = self._internal_open_threads.get(tid, 0) - 1
-            if depth > 0:
-                self._internal_open_threads[tid] = depth
-            else:
+            windows = self._internal_open_threads.get(tid)
+            if windows:
+                windows.pop()
+            if not windows:
                 self._internal_open_threads.pop(tid, None)
 
     def _internal_opens_active_locked(self) -> bool:
-        """Whether the CURRENT thread is inside a library-internal open window."""
-        return self._internal_open_threads.get(threading.get_ident(), 0) > 0
+        """Whether the CURRENT thread is inside a library-internal open window, and
+        not inside a caller's callback the library ran from it."""
+        windows = self._internal_open_threads.get(threading.get_ident())
+        return bool(windows) and windows[-1] == callback_depth()
 
     def _owner_pass_locked(self) -> OperationToken | None:
         """The pass a library-internal scope opened on this thread belongs to: the one
