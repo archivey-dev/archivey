@@ -513,6 +513,7 @@ class DiagnosticCollector:
         escalate_as: type[BaseException] | None = None,
         escalate_message: str | None = None,
         escalate_kwargs: dict[str, object] | None = None,
+        checkpoint: Callable[[], None] | None = None,
     ) -> Diagnostic:
         """Emit one diagnostic through the ordered policy matrix.
 
@@ -529,6 +530,10 @@ class DiagnosticCollector:
         type. Under ``IGNORE`` that means an exception with no log line and no callback
         behind it, only the count. A caller that wants the policy to decide should pass
         ``escalate_as`` only when the disposition is already ``RAISE``.
+
+        ``checkpoint`` runs after delivery and before any raise this emit makes. An
+        exception from it propagates in place of that raise; an exception from the
+        log handler or the callback comes first and propagates unchanged.
         """
         validate_code_context(code, context)
         context = self._shift_member_id(context)
@@ -545,6 +550,7 @@ class DiagnosticCollector:
                 escalate_as,
                 escalate_message,
                 escalate_kwargs,
+                checkpoint,
             )
 
         with self._lock:
@@ -584,6 +590,8 @@ class DiagnosticCollector:
         try:
             if not ignored:
                 self._deliver(diagnostic, log, thread_id)
+            if checkpoint is not None:
+                checkpoint()
             # Only the raise this emit makes is part of what a replay repeats; one out of
             # the logger or the callback, a KeyboardInterrupt included, is not.
             raised: BaseException | None = None
@@ -616,6 +624,7 @@ class DiagnosticCollector:
         escalate_as: type[BaseException] | None,
         escalate_message: str | None,
         escalate_kwargs: dict[str, object] | None,
+        checkpoint: Callable[[], None] | None,
     ) -> Diagnostic:
         """An emit inside a :meth:`muted` block: nothing counted, retained, logged,
         called back or recorded for a replay. It raises as an emit outside the block
@@ -626,6 +635,8 @@ class DiagnosticCollector:
             message=message,
             context=context,
         )
+        if checkpoint is not None:
+            checkpoint()
         raised: BaseException | None = None
         if escalate_as is not None:
             msg = escalate_message if escalate_message is not None else message

@@ -29,7 +29,7 @@ from fsspec.core import OpenFile
 
 from archivey.core import open_archive
 from archivey.diagnostics import DiagnosticCode, PathRefusedContext
-from archivey.exceptions import DiagnosticRaisedError, FilterRejectionError
+from archivey.exceptions import FilterRejectionError
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.internal.enum_args import coerce_enum
 from archivey.internal.extraction import hardlink_chain_end
@@ -612,8 +612,11 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         self.reader: ArchiveReader = reader
         # Closes the reader when the instance is collected. The callback holds the
         # reader, not ``self``. The reader's own callbacks may still hold ``self``, so
-        # ``close()`` detaches the finalizer once the reader's close has finished.
+        # the finalizer is dropped once the reader's teardown completes, on whichever
+        # path runs it: this close, or the last call out after it. Until then (an
+        # interrupted close, or a peer's close still in progress) it stays.
         self._finalizer = weakref.finalize(self, reader.close)
+        cast("BaseArchiveReader", reader)._after_teardown.append(self._finalizer.detach)
         # The tree extraction writes, built at the first listing; ``close`` drops it.
         self._tree: _Tree | None = None
         # Elects the one thread that builds the tree. ``close`` never takes it, so it
@@ -647,13 +650,8 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         # closed before it returns, also on a second thread while the first is still
         # inside it, and after an interrupted first call. The finalizer runs only once,
         # so a second ``fs.close()`` through it could return with the reader still open.
-        # The finalizer holds the reader, and through its callbacks maybe this file
-        # system, so it stays registered only while the reader may still need a close:
-        # after an interrupted close, or while a peer's close still owns the shutdown.
-        # Once the reader's close has finished, it is dropped.
+        # The reader's teardown drops the finalizer (see ``__init__``).
         self.reader.close()
-        if cast("BaseArchiveReader", self.reader)._closed:
-            self._finalizer.detach()
 
     def __enter__(self) -> Self:
         return self
@@ -990,11 +988,11 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         A close stops the reports of every member after the one being checked. That one
         member's refusal can still be reported once, after the close, if its closed
         check passed first: the check and the report are not atomic. The listing raises
-        the closed error either way, also when the policy raises on this refusal. Only
-        that escalation is replaced: an error out of the log handler or the callback,
-        another file system's ``DiagnosticRaisedError`` included, propagates unchanged.
-        The report is not made under ``_publish_lock``: a callback that closes the file
-        system would wait for itself."""
+        the closed error either way, also when the policy raises on this refusal: a
+        closed check runs after the report is delivered and before the policy's raise.
+        An error out of the log handler or the callback comes before that check and
+        propagates unchanged. The report is not made under ``_publish_lock``: a
+        callback that closes the file system would wait for itself."""
         if self._closed:
             raise closed_reader_error("listing")
         reader = cast("BaseArchiveReader", self.reader)
@@ -1011,19 +1009,17 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
             policy=self.policy.value,
             reason=reason,
         )
-        try:
-            reader._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_PATH_REFUSED,
-                message=f"{quoted(member.name)} is not in the archivey:// tree: {why}",
-                context=context,
-                member=member,
-            )
-        except DiagnosticRaisedError as exc:
-            # This emit's own escalation carries this context object; any other
-            # DiagnosticRaisedError came out of the callback or the log handler.
-            if self._closed and exc.diagnostic.context is context:
-                raise closed_reader_error("listing") from exc
-            raise
+        reader._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_PATH_REFUSED,
+            message=f"{quoted(member.name)} is not in the archivey:// tree: {why}",
+            context=context,
+            member=member,
+            checkpoint=self._raise_if_closed,
+        )
+
+    def _raise_if_closed(self) -> None:
+        if self._closed:
+            raise closed_reader_error("listing")
 
     # fsspec annotates ``_open`` as returning its own buffered file; any binary file
     # object is what callers of ``open`` get, and a member stream is one.

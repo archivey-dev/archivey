@@ -1054,6 +1054,10 @@ class BaseArchiveReader(ArchiveReader):
         # closed reader (and its listing) alive until the cyclic collector runs.
         self._state.teardown_hook = WeakMethod(self._teardown_after_call)
         self._closed = False
+        # Run once, right after teardown completes, on whichever path ran it: close(),
+        # the last call out, or a pass's own end. Internal; each must not raise. The
+        # fsspec file system drops its collection finalizer here.
+        self._after_teardown: list[Callable[[], object]] = []
         # The last ``ArchiveInfo`` a live ``info`` returned (``_archive_info``):
         # what ``cost`` and ``info`` inside a callback answer.
         self._info_snapshot: ArchiveInfo | None = None
@@ -1509,6 +1513,8 @@ class BaseArchiveReader(ArchiveReader):
             self._listing_tracker.leave_nest()
             # Also on an interrupt: teardown is never retried, so it is complete either way.
             self._state.complete_teardown()
+            for hook in self._after_teardown:
+                hook()
         if pending is not None and teardown_exc is not None:
             raise ExceptionGroup(
                 "close-time cleanup and archive teardown both failed",

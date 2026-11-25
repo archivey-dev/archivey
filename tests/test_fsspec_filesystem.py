@@ -1351,6 +1351,79 @@ def test_a_callbacks_own_error_is_not_replaced_by_the_closed_error(memfs: Any) -
     inner.close()
 
 
+def test_a_callbacks_own_raise_of_its_diagnostic_is_not_replaced(memfs: Any) -> None:
+    """An ``on_diagnostic`` callback closes its file system, then raises a
+    ``DiagnosticRaisedError`` of its own that carries the diagnostic it received.
+    That exact error comes out of the listing: a callback's error propagates
+    unchanged, even when it looks like the policy's escalation."""
+    memfs.pipe("/d/own.zip", _zip_bytes([("ok", b"x"), ("../up", b"y")]))
+    holder: list[ArchiveyFileSystem] = []
+    mine: list[DiagnosticRaisedError] = []
+
+    def close_then_raise(d: Any) -> None:
+        if d.code is DiagnosticCode.MEMBER_PATH_REFUSED:
+            holder[0].close()
+            mine.append(DiagnosticRaisedError("the callback's own", diagnostic=d))
+            raise mine[0]
+
+    holder.append(
+        ArchiveyFileSystem(
+            "memory://d/own.zip",
+            config=ArchiveyConfig(on_diagnostic=close_then_raise),
+        )
+    )
+    with pytest.raises(DiagnosticRaisedError) as caught:
+        holder[0].ls("")
+    assert caught.value is mine[0]
+
+
+def test_a_file_system_closed_during_a_read_and_held_by_its_callback_is_collected(
+    memfs: Any,
+) -> None:
+    """A file system whose ``on_diagnostic`` callback refers to it, closed once
+    while a member read runs on another thread, so that the read's end runs the
+    teardown. Then it is dropped: collection frees it."""
+    memfs.pipe("/d/reading.zip", _zip_bytes([("a", b"x" * 10)]))
+
+    def make() -> tuple[weakref.ref[ArchiveyFileSystem], Any]:
+        # Returns the reader's state, not the reader: the reader's config holds the
+        # callback, which holds the file system.
+        box: dict[str, ArchiveyFileSystem] = {}
+        config = ArchiveyConfig(on_diagnostic=lambda _d: box)
+        fs = ArchiveyFileSystem("memory://d/reading.zip", config=config)
+        box["fs"] = fs  # the callback now keeps the file system alive
+        stream = fs.reader.open("a")
+        reading, release = threading.Event(), threading.Event()
+
+        checkpoint = stream._checkpoint
+
+        def held() -> None:  # the read waits here until released
+            reading.set()
+            assert release.wait(10)
+            if checkpoint is not None:
+                checkpoint()
+
+        stream._checkpoint = held
+
+        def read(target: Any) -> None:
+            with contextlib.suppress(ArchiveyUsageError, ValueError):
+                target.read(1)
+
+        worker = threading.Thread(target=read, args=(stream,))
+        worker.start()
+        assert reading.wait(10)
+        fs.close()  # the read still runs: its end runs the teardown
+        release.set()
+        worker.join(10)
+        assert not worker.is_alive()
+        return weakref.ref(fs), fs.reader._state  # type: ignore[attr-defined]
+
+    fs_ref, state = make()
+    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
+    gc.collect()
+    assert fs_ref() is None
+
+
 def test_a_closed_file_system_held_by_its_callback_is_collected(memfs: Any) -> None:
     """A file system whose ``on_diagnostic`` callback refers to it, closed, then
     dropped: collection frees it. The close leaves nothing that keeps it alive."""
@@ -1400,12 +1473,14 @@ def test_an_interrupted_close_still_closes_the_reader_on_collection(
 def test_a_close_beside_a_peers_unfinished_close_keeps_the_finalizer(
     memfs: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A second ``fs.close()`` while a peer's close still owns the stream shutdown
-    returns with the reader's close unfinished. If that peer is then interrupted and
-    the file system collected, the reader is still torn down on collection."""
+    """A second ``fs.close()`` while a peer's close still owns the stream shutdown,
+    with a member stream open, returns before teardown. If that peer is then
+    interrupted and the file system collected, collection closes the stream and
+    tears the reader down."""
     memfs.pipe("/d/peer.zip", _zip_bytes([("a", b"x")]))
     fs = ArchiveyFileSystem("memory://d/peer.zip")
     reader = fs.reader
+    stream = reader.open("a")  # its lease holds teardown back
     inside, release = threading.Event(), threading.Event()
 
     def hold_then_interrupt() -> None:
@@ -1414,30 +1489,32 @@ def test_a_close_beside_a_peers_unfinished_close_keeps_the_finalizer(
         raise KeyboardInterrupt
 
     monkeypatch.setattr(reader, "_close_public_streams", hold_then_interrupt)
-    outcome: list[BaseException] = []
+    # The exception's type only: its traceback would keep the file system alive.
+    outcome: list[type[BaseException]] = []
 
     def first_close(target: ArchiveyFileSystem) -> None:
         try:
             target.close()
         except BaseException as exc:  # noqa: BLE001 - the interrupt is the expected outcome
-            outcome.append(exc)
+            outcome.append(type(exc))
 
     closer = threading.Thread(target=first_close, args=(fs,))
     closer.start()
     try:
         assert inside.wait(5)
-        fs.close()  # the peer still owns the shutdown: the reader's close is unfinished
+        fs.close()  # the peer still owns the shutdown: the stream stays open
         assert fs._finalizer.alive  # type: ignore[attr-defined]
     finally:
         release.set()
         closer.join(5)
     assert not closer.is_alive()
-    assert len(outcome) == 1
-    assert isinstance(outcome[0], KeyboardInterrupt)
+    assert outcome == [KeyboardInterrupt]
     monkeypatch.undo()
     del fs
     gc.collect()
     assert reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match="closed file"):
+        stream.read(1)
 
 
 def test_close_under_open_streams_makes_their_reads_raise(memfs: Any) -> None:
