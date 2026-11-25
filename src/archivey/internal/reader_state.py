@@ -353,6 +353,9 @@ class ReaderState:
         # one, the suspended pass's own finally.
         self._pass_wind_down: list[Callable[[], None]] = []
         self._pass_wind_down_lease = False
+        # The live streams at the close transition, held strongly until the stream
+        # shutdown finishes (``mark_reader_closed``, ``finish_stream_shutdown``).
+        self._deferred_streams: list[ArchiveStreamImpl] = []
         # Library-internal open windows (first-touch link-data reads, the one user
         # left), keyed BY THREAD: the exemption from the live-stream gate (the window's
         # only effect) applies only to the thread that entered the window. A plain
@@ -713,7 +716,9 @@ class ReaderState:
             calls[ident] = calls.get(ident, 0) + 1
         return sys.exception()
 
-    def enter_stream_close(self) -> BaseException | None | _Refused:
+    def enter_stream_close(
+        self, *, finalizing: bool = False
+    ) -> BaseException | None | _Refused:
         """Count a member stream's own ``close()`` as a stream call
         (:meth:`enter_stream_call`), so a ``reader.close()`` meanwhile defers its
         shutdown to it. ``REFUSED`` once the reader is closed: the shutdown then owns
@@ -725,16 +730,20 @@ class ReaderState:
         hold: a stream call (an ``on_source_read`` inside a read of this stream or of
         a sibling), or, from inside a caller's callback, any other call (``open()``,
         a listing, ``info``, a pass). The pass's own closes of its streams come from
-        no callback.
+        no callback. ``finalizing``: the collector's close of a dropped stream,
+        which may run on any thread inside any call, and is never refused.
         """
         with self._lock:
             ident = threading.get_ident()
             current = threading.current_thread()
-            if ident in self._stream_calls or (
-                callback_depth() > 0
-                and (
-                    self._same_thread_token_locked() is not None
-                    or any(t.thread is current for t in self._info_calls)
+            if not finalizing and (
+                ident in self._stream_calls
+                or (
+                    callback_depth() > 0
+                    and (
+                        self._same_thread_token_locked() is not None
+                        or any(t.thread is current for t in self._info_calls)
+                    )
                 )
             ):
                 raise ArchiveyUsageError(
@@ -984,6 +993,14 @@ class ReaderState:
         with self._lock:
             if self.lifecycle is LifecycleState.OPEN:
                 self.lifecycle = LifecycleState.READER_CLOSED
+                # Strong references to the streams the shutdown will close: one the
+                # caller drops meanwhile is not collected (and closed by its
+                # finalizer, beside a call still running) before the shutdown runs.
+                self._deferred_streams = [
+                    stream
+                    for ref in self._live_streams.values()
+                    if (stream := ref()) is not None
+                ]
                 root = self._root
                 if root is not None and root.suspended and root.pass_closer is not None:
                     # Lease first: an interrupt between the stores leaves a lease that
@@ -1045,6 +1062,7 @@ class ReaderState:
                 return
             self._pass_wind_down = []
             self._pass_wind_down_lease = False
+            self._deferred_streams = []
             self._stream_shutdown_done = True
 
     def stream_shutdown_done(self) -> bool:

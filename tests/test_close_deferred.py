@@ -516,3 +516,39 @@ def test_reader_read_overtaken_after_its_open_raises_the_closed_error(
     monkeypatch.setattr(reader, "open", open_then_close)
     with pytest.raises(ArchiveyUsageError, match=r"read\(\) is not available"):
         reader.read("docs/a.txt")
+
+
+def test_a_stream_dropped_after_close_beside_a_running_read_closes_nothing(
+    gated: Path,
+) -> None:
+    """``reader.close()`` keeps the streams it defers alive until its shutdown
+    closes them: an idle stream the caller drops while a sibling's read still runs
+    is not closed by the collector beside that read (under the flag its close would
+    wait on the handle lock the read holds), and is closed once, after the read."""
+    import gc
+
+    reader = open_archive(gated, concurrent_operations=True)
+    a = reader.open("b.bin")
+    held = [reader.open("docs/a.txt")]
+    _HOOKS.block_read = True
+    thread, _out = _run(lambda: a.read(1))
+    assert _HOOKS.entered.wait(TIMEOUT)
+    reader.close()
+
+    def drop() -> None:
+        held.clear()
+        gc.collect()
+
+    dropper, dropped = _run(drop)
+    dropper.join(TIMEOUT)
+    try:
+        assert not dropper.is_alive(), "the collector's close waited for the read"
+        assert dropped == [None]
+        assert not [e for e in _HOOKS.events if "close" in e]
+    finally:
+        _HOOKS.go.set()
+    thread.join(TIMEOUT)
+    assert not thread.is_alive()
+    closes = [e for e in _HOOKS.events if "close" in e]
+    assert sorted(closes[:2]) == ["stream close b.bin", "stream close docs/a.txt"]
+    assert closes[2:] == ["plugin close"]

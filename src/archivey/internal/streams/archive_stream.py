@@ -1685,18 +1685,9 @@ class ArchiveStreamImpl(ArchiveStream):
         if calls is None:
             self._close_scoped()
             return
-        if self._finalizing:
-            # The collector's close of a dropped stream: the reader's shutdown no
-            # longer reaches it (its registry holds it weakly), so it closes here.
-            self._close_owned()
-            return
-        calls = self._calls
-        if calls is None:
-            self._close_scoped()
-            return
         # A counted call, so a reader.close() meanwhile defers its shutdown to it.
         # Raises from a callback inside a read of a stream of this reader.
-        entry = calls.enter_stream_close()
+        entry = calls.enter_stream_close(finalizing=self._finalizing)
         if entry is REFUSED:
             # The reader is closed: its shutdown owns this stream's inner close,
             # now or when the last running call is out.
@@ -1719,13 +1710,13 @@ class ArchiveStreamImpl(ArchiveStream):
 
     @override
     def __del__(self) -> None:
-        # A dropped stream may be collected on a thread inside another stream's call,
-        # or after its reader closed: neither refuses or defers its close. Closed
-        # here, as ``closed`` may already answer True (a closed reader) and the base
-        # finalizer would then skip it.
+        # A dropped stream may be collected on a thread inside another stream's call:
+        # that is not a callback's close, so close() does not refuse it. After
+        # reader.close() the base finalizer skips the close (``closed`` is True), and
+        # nothing is left to do: the reader's shutdown held every stream it deferred
+        # strongly (``ReaderState.mark_reader_closed``), so a stream collected now has
+        # had its inner close.
         self._finalizing = True
-        if not self._inner_closed():
-            self.close()
         super().__del__()
 
     def _close_scoped(self) -> None:
