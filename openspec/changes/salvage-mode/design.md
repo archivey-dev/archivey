@@ -294,7 +294,12 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
     gap are held until pass 2 has searched the gaps, then listed with pass 2's in
     order of their offsets. Each byte is examined once per layer: a gap is a range
     pass 1's search position stepped over without examining it, and pass 2 searches
-    it under `SalvageState.revisiting`.
+    it under `SalvageState.revisiting`. A held member counts against the listing
+    limits from when it is held (`ListingLimitTracker.hold`, at least the metadata its
+    member keeps), so a listing that crosses a limit stops at that member, as a
+    one-pass walk does. Pass 2 starts each gap with the PAX global records in force at
+    its start, kept with the gap: a global header pass 1 read later applies only to
+    what follows it.
   - Total decode: two passes over the layer, whatever the member count (about
     1.1 to 2 times the compressed size on the test shapes: 40 found members that
     each claim 6 MiB, 20 that claim 12 MiB, 300 dense ones that claim 16 MiB). This
@@ -320,19 +325,22 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
   `_DecodeThroughSkips` from the decoder's own `nearest_resume_offset`): the seek then
   skips decoding the bytes in between and keeps none of them. Otherwise a seek would
   decode those bytes anyway, so the window reads through and keeps the 4 MiB hold. A
-  seek back is cheap, and pass 1 records no gap, once a seek has jumped a restart point
-  (`_Window.indexed`). Either move stops at the stream's end: `_DecodeThroughSkips.seek`
-  reads to the restart point's offset or through, and returns where the stream ended
-  rather than seeking past it, since a seek past the end counts bytes no decoder
-  produced and the ratio guard refuses them. The default walk uses the same handle, so a
-  `.tar.gz` whose last size points past the end now ends in `TruncatedError`, as the
-  plain tar does, where it raised the ratio error before. A read right after a seek that
-  comes back empty says the stream ends at or before that offset (`_Window.ended_by`).
-  The decoder reads a file's own index (a BGZF scan, a Seekable Zstandard seek table)
-  only on declared seek demand, and the plain resume query does not build it, so in a
-  TAR walk the restart points ahead are the ones a decode already found: in pass 2,
-  after pass 1 decoded the layer. The default walk asks the same question, so neither
-  walk jumps more than base did.
+  seek back to a gap's start is cheap, and pass 1 records no gap there, once a seek has
+  jumped a restart point (`_Window.indexed`) and the restart point the codec gives for
+  that offset (`RestartPoints.resume_before`) is at most 4 MiB before it
+  (`TarWalker.rewind_cheap`). The restart point is asked for each gap: the codec picks
+  one for each target, so one cheap seek says nothing of the next. Either move stops at
+  the stream's end: `_DecodeThroughSkips.seek` reads to the restart point's offset or
+  through, and returns where the stream ended rather than seeking past it, since a seek
+  past the end counts bytes no decoder produced and the ratio guard refuses them. The
+  default walk uses the same handle, so a `.tar.gz` whose last size points past the end
+  now ends in `TruncatedError`, as the plain tar does, where it raised the ratio error
+  before. A read right after a seek that comes back empty says the stream ends at or
+  before that offset (`_Window.ended_by`). The decoder reads a file's own index (a BGZF
+  scan, a Seekable Zstandard seek table) only on declared seek demand, and the plain
+  resume query does not build it, so in a TAR walk the restart points ahead are the ones
+  a decode already found: in pass 2, after pass 1 decoded the layer. The default walk
+  asks the same question, so neither walk jumps more than base did.
 - **A deb's tars on a plain file** read with random access. A deb opened with random
   access hands its control and data tars to `open_nested` as seekable views of the
   file (`ForwardStream._take_view`, internal: the public `take()` contract does not

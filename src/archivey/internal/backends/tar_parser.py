@@ -1413,6 +1413,18 @@ class _Chain:
         self.note = ""
 
 
+@dataclass(frozen=True)
+class GlobalRecords:
+    """The PAX global records in force at one point of a walk
+    (:meth:`TarWalker.global_records`). A global header replaces the walker's
+    dictionary rather than changing it (``_apply_global``), so holding these
+    references keeps the records as they were."""
+
+    records: dict[bytes, PaxValue]
+    view: Mapping[bytes, PaxValue]
+    binary: bool
+
+
 class TarWalker:
     """Walks the headers of one TAR byte stream, one member per :meth:`next_entry`.
 
@@ -1774,6 +1786,19 @@ class TarWalker:
         self._unchecked_data_end = None
         self._damage_run = 0
 
+    def global_records(self) -> GlobalRecords:
+        """The PAX global records in force where the walk stands, to put back with
+        :meth:`restore_global_records` when a salvage pass walks there again."""
+        return GlobalRecords(self._global, self._global_view, self._global_binary)
+
+    def restore_global_records(self, records: GlobalRecords) -> None:
+        """Put back the PAX global records :meth:`global_records` gave: the walk
+        goes back to where they were in force, and a later global header applies
+        only to what comes after it in the archive."""
+        self._global = records.records
+        self._global_view = records.view
+        self._global_binary = records.binary
+
     def resume_after_zero_end(self) -> None:
         """Before a search from a zero block the walk ended on: a forward-only walk
         reads what follows that block from the bytes it had already read past
@@ -1854,14 +1879,21 @@ class TarWalker:
             return not self._read(1)
         return end is not None and pos > end
 
-    @property
-    def rewind_cheap(self) -> bool:
-        """Whether a seek back costs no decode from the start: a plain file, or an
-        indexed codec stream whose seek has jumped a restart point
-        (_Window.indexed)."""
+    def rewind_cheap(self, target: int) -> bool:
+        """Whether a seek back to ``target`` decodes little: a plain file, or an
+        indexed codec stream (one whose seek has jumped a restart point,
+        _Window.indexed) with a restart point at most :data:`_FORWARD_HOLD` bytes
+        before ``target``. The codec picks the restart point for each target, so
+        one cheap seek says nothing of the next."""
         if not self._seekable:
             return False
-        return not self._rewind_costly or (self._win is not None and self._win.indexed)
+        if not self._rewind_costly:
+            return True
+        win = self._win
+        if win is None or not win.indexed:
+            return False
+        resume = win.resume_before(target)
+        return resume is not None and target - resume <= _FORWARD_HOLD
 
     def search_floor(self, start: int) -> int:
         """Where a search back into a member's data starts after the walk read past
@@ -2913,6 +2945,11 @@ class RestartPoints(Protocol):
         where the stream stands, and so skip decoding the bytes in between."""
         ...
 
+    def resume_before(self, target: int) -> int | None:
+        """The restart point at or before ``target`` that a seek there decodes
+        from, or ``None`` when the codec gives none."""
+        ...
+
 
 class _Window:
     """A walk's stream that keeps bytes around where it reads: those a look ahead
@@ -2968,6 +3005,10 @@ class _Window:
         """Whether a seek of the inner has jumped a restart point: the codec is
         indexed, so a seek back costs no decode from the start."""
         return self._restarts is not None and self._restarts.jumped
+
+    def resume_before(self, target: int) -> int | None:
+        """The restart point a seek of the inner to ``target`` decodes from."""
+        return None if self._restarts is None else self._restarts.resume_before(target)
 
     def _jumps(self, offset: int) -> bool:
         """Whether a seek of the inner to ``offset`` skips decoding to it."""

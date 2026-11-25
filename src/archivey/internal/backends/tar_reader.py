@@ -99,6 +99,7 @@ from archivey.internal.backends.tar_parser import (
     SPARSE_ENTRY_BYTES,
     Ambiguity,
     Budget,
+    GlobalRecords,
     HeaderFormat,
     LinkData,
     NameSource,
@@ -120,6 +121,7 @@ from archivey.internal.base_reader import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.listing_limits import TEXT_ENTRY_BYTES
 from archivey.internal.logs import (
     backends as backends_logger,
     integrity as integrity_logger,
@@ -653,6 +655,14 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
         stream stands (``tar_parser.RestartPoints``)."""
         return target > self._inner.tell() and self._resume_ahead(target) is not None
 
+    def resume_before(self, target: int) -> int | None:
+        """The restart point at or before ``target`` that a seek there decodes from,
+        when restart points skip decoding."""
+        if not self._restarts_skip_decoding:
+            return None
+        resume = ask_resume_offset(self._inner, target)
+        return None if resume is None or resume > target else resume
+
     def _resume_ahead(self, target: int) -> int | None:
         """The restart point a seek to ``target`` would resume from, when it lies
         past where the stream stands: a point the decoder found, or one of the
@@ -688,6 +698,45 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
         return ask_resume_offset(self._inner, target)
 
 
+def _text_weight(raw: bytes) -> int:
+    """At least what the text decoded from ``raw`` weighs in the listing limits
+    (``str_retained_bytes``): a character takes at least one byte."""
+    return len(raw) if raw.isascii() else 4 * len(raw)
+
+
+def _held_weight(entry: TarEntry) -> int:
+    """At least the metadata the member typed from ``entry`` keeps
+    (:func:`member_metadata_bytes`, and the sparse map ``_register_member`` adds):
+    its name twice (the name and ``raw_name``), its link target, owner names, PAX
+    records (``extra["tar.pax_headers"]``) and special file type, and its sparse
+    map."""
+    total = len(entry.name) + _text_weight(entry.name) + len(entry.typeflag)
+    special = special_file_type_from_tar_typeflag(entry.typeflag)
+    if special is not None:
+        total += len(special)
+    uname = entry.uname if entry.uname_pax is None else entry.uname_pax.value
+    gname = entry.gname if entry.gname_pax is None else entry.gname_pax.value
+    for raw in (entry.linkname, uname, gname):
+        if raw:
+            total += _text_weight(raw)
+    for key, value in entry.pax.items():
+        total += TEXT_ENTRY_BYTES + _text_weight(key) + _text_weight(value.value)
+    if entry.sparse is not None:
+        total += len(entry.sparse) * SPARSE_ENTRY_BYTES
+    return total
+
+
+@dataclass(frozen=True)
+class _Gap:
+    """A range of a found member's data the first salvage pass read past without
+    searching it (``_SalvageWalk.gaps``), and the PAX global records in force at its
+    start, which the second pass puts back before it searches there."""
+
+    start: int
+    stop: int
+    records: GlobalRecords
+
+
 @dataclass
 class _SalvageWalk:
     """One walk's salvage mode (``open_archive(salvage=True)``): where the default
@@ -720,7 +769,7 @@ class _SalvageWalk:
     # Whether any member was listed, and whether one had a header other than v7.
     listed: bool = False
     listed_non_v7: bool = False
-    gaps: list[tuple[int, int]] = field(default_factory=list)
+    gaps: list[_Gap] = field(default_factory=list)
     known: set[int] = field(default_factory=set)
     clean_end: int | None = None
     gap: tuple[int, int] | None = None
@@ -1230,6 +1279,7 @@ class TarReader(BaseArchiveReader):
                     search_from = found.search_from
                     if defer:
                         salvage.note_listed(entry)
+                        self._hold_entry(entry)
                         held.append((entry, found))
                     else:
                         last_member = self._to_member(entry, index)
@@ -1269,6 +1319,7 @@ class TarReader(BaseArchiveReader):
             held += self._second_pass(walker, salvage)
             held.sort(key=lambda item: item[1].offset)
         for held_entry, found in held:
+            self._listing_tracker.release(held_entry)
             member = self._to_member(held_entry, index)
             self._emit_found(member, index, found)
             yield member
@@ -1471,12 +1522,14 @@ class TarReader(BaseArchiveReader):
         unread = 0
         if (searched or past) and not confirmed and not trusted:
             search_from = found + BLOCKSIZE
-            if far and not walker.rewind_cheap:
+            if far and not walker.rewind_cheap(search_from):
                 # Not on an indexed codec, which goes back to the data by a seek.
                 search_from = walker.search_floor(search_from)
                 unread = search_from - found - BLOCKSIZE
                 if gap is None and unread:
-                    salvage.gaps.append((found + BLOCKSIZE, search_from))
+                    salvage.gaps.append(
+                        _Gap(found + BLOCKSIZE, search_from, walker.global_records())
+                    )
         unchecked: tuple[str, ...] = ("position",)
         if searched and entry.header.offset == found and walker.found_name_full:
             unchecked += ("name",)
@@ -1558,6 +1611,18 @@ class TarReader(BaseArchiveReader):
             logger=backends_logger,
         )
 
+    def _hold_entry(self, entry: TarEntry) -> None:
+        """Charge an entry a salvage pass holds until the second pass is done to the
+        listing limits, as one member and at least the metadata its member will keep
+        (:func:`_held_weight`), so the walk's header budget counts it. Registration
+        takes the charge off and counts the member itself."""
+        self._listing_tracker.hold(
+            entry,
+            _held_weight(entry),
+            "held for the second salvage pass",
+            name=entry.name.decode("utf-8", "replace"),
+        )
+
     def _second_pass(
         self, walker: TarWalker, salvage: _SalvageWalk
     ) -> list[tuple[TarEntry, _Found]]:
@@ -1574,10 +1639,18 @@ class TarReader(BaseArchiveReader):
         out: list[tuple[TarEntry, _Found]] = []
         layer = self._salvage_layer
         reached = 0
-        for gap_start, gap_stop in salvage.gaps:
+        # The records in force at the first pass's end, for the walk after this one.
+        final = walker.global_records()
+        for gap in salvage.gaps:
+            gap_stop = gap.stop
             if gap_stop <= reached:
                 continue
-            start = max(gap_start, reached)
+            if gap.start >= reached:
+                # A global header the first pass read after this gap does not
+                # apply to what the search finds in it. A walk that ran on into
+                # the gap from the one before has the records in force already.
+                walker.restore_global_records(gap.records)
+            start = max(gap.start, reached)
             salvage.gap = (start, gap_stop)
             try:
                 with self._salvage_mode.revisiting(layer, start, gap_stop):
@@ -1585,6 +1658,7 @@ class TarReader(BaseArchiveReader):
                     while entry is not None:
                         found = self._check_found(walker, entry, salvage)
                         salvage.note_listed(entry)
+                        self._hold_entry(entry)
                         out.append((entry, found))
                         if found.search_from is not None:
                             entry = self._salvage_next(
@@ -1606,6 +1680,7 @@ class TarReader(BaseArchiveReader):
                 salvage.gap = None
             if salvage.limit_reached:
                 break
+        walker.restore_global_records(final)
         return out
 
     def _raise_members_the_codec_checked(self) -> None:

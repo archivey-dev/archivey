@@ -177,7 +177,7 @@ class ListingLimitTracker:
         self._archive_comment_counted = False
         # Members a reader holds back before yielding them (``hold_member``): what
         # each was charged, by identity, until ``release_member`` takes it off.
-        self._held: dict[int, tuple[ArchiveMember, int]] = {}
+        self._held: dict[int, tuple[object, int]] = {}
         self._held_bytes = 0
         # What a reader keeps while it walks, beyond its members (``charge_walk``),
         # taken off when the walk ends.
@@ -317,10 +317,16 @@ class ListingLimitTracker:
         stays until :meth:`release_member`, called when the member is yielded and
         counted by :meth:`account_member`, so a held member is counted once.
         """
-        key = id(member)
+        self.hold(member, member_metadata_bytes(member), reason, name=member.name)
+
+    def hold(self, held_object: object, nbytes: int, reason: str, *, name: str) -> None:
+        """:meth:`hold_member` for what a reader holds before it has the member
+        (``held_object``, kept by identity): ``nbytes``, at least what
+        :func:`member_metadata_bytes` will give for it. ``name`` names it if it is
+        held twice. The charge stays until :meth:`release`."""
+        key = id(held_object)
         if key in self._held:
-            raise ValueError(f"member {member.name!r} is already held")
-        nbytes = member_metadata_bytes(member)
+            raise ValueError(f"member {name!r} is already held")
         held = len(self._held) + 1
         held_bytes = self._held_bytes + nbytes
         next_count = self.member_count + 1
@@ -349,16 +355,21 @@ class ListingLimitTracker:
         except BaseException:
             self._uncharge_outward(nbytes)
             raise
-        self._held[key] = (member, nbytes)
+        # The object is kept with its charge, so its id is not reused while held.
+        self._held[key] = (held_object, nbytes)
         self._held_bytes = held_bytes
         self.member_count = next_count
         self.metadata_bytes = next_bytes
 
     def release_member(self, member: ArchiveMember) -> None:
         """Take off what :meth:`hold_member` charged for ``member``, if it is held."""
+        self.release(member)
+
+    def release(self, held_object: object) -> None:
+        """Take off what :meth:`hold` charged for ``held_object``, if it is held."""
         if not self._held:
             return
-        entry = self._held.pop(id(member), None)
+        entry = self._held.pop(id(held_object), None)
         if entry is not None:
             self._uncharge(entry[1])
 

@@ -1159,6 +1159,9 @@ class _Restarts:
     def jumps(self, target: int) -> bool:
         return self.ahead
 
+    def resume_before(self, target: int) -> int | None:
+        return target if self.ahead else None
+
 
 @pytest.mark.parametrize("indexed", [True, False])
 def test_the_window_seeks_to_a_restart_point_and_otherwise_reads_through(
@@ -1806,3 +1809,115 @@ def test_an_on_source_read_error_during_the_search_escapes_unchanged(
     ):
         reader.members()
     assert raised.value is mine
+
+
+@dataclass
+class _FarRestarts:
+    """An indexed codec whose restart point for a target lies ``behind`` bytes
+    before it, after a forward seek has jumped one."""
+
+    behind: int
+    jumped: bool = True
+
+    def jumps(self, target: int) -> bool:
+        return False
+
+    def resume_before(self, target: int) -> int | None:
+        return max(0, target - self.behind)
+
+
+@pytest.mark.parametrize(
+    ("behind", "cheap"),
+    [(64 << 10, True), (4 << 20, True), ((4 << 20) + 1, False)],
+    ids=["near", "at-hold", "past-hold"],
+)
+def test_a_rewind_is_cheap_only_when_its_own_restart_point_is_near(
+    behind: int, cheap: bool
+) -> None:
+    """Whether the first pass searches a gap now or leaves it to the second pass
+    depends on the restart point for that gap's start, not on an earlier jump: a
+    codec with one large frame can jump once and still decode far for a rewind."""
+    restarts = _FarRestarts(behind)
+    inner = io.BytesIO(bytes(64 << 20))
+    walker = tar_parser.TarWalker(
+        inner, seekable=True, rewind_costly=True, restarts=restarts
+    )
+    walker._win = tar_parser._Window(
+        inner, 0, head=b"", seekable=True, restarts=restarts
+    )
+    assert walker.rewind_cheap(50 << 20) is cheap
+
+
+def test_a_global_header_after_a_gap_does_not_apply_to_what_pass_two_finds() -> None:
+    """A gzip tar whose first pass reads past a gap and then a PAX global header:
+    the second pass lists the gap's members with the global records in force at the
+    gap, as the plain tar's one pass does, not with the later header's."""
+    rng = random.Random(11)
+
+    def member(name: str, size: int) -> bytes:
+        info = tarfile.TarInfo(name)
+        info.size = size
+        head = info.tobuf(format=tarfile.USTAR_FORMAT)
+        return head + rng.randbytes(size) + bytes(-size % BLOCKSIZE)
+
+    liar = tarfile.TarInfo("liar")
+    liar.size = 8 << 20
+    late = tarfile.TarInfo._create_pax_generic_header(  # type: ignore[attr-defined]
+        {"uname": "late"}, tarfile.XGLTYPE, "utf-8"
+    )
+    data = member("a", 3) + b"\x01" * BLOCKSIZE
+    data += liar.tobuf(format=tarfile.USTAR_FORMAT)
+    data += b"".join(member(f"s{i}", 600_000) for i in range(8))
+    data += b"".join(member(f"m{i}", 1_000_000) for i in range(6))
+    data += late
+    data += member("t", 10) + bytes(2 * BLOCKSIZE)
+
+    def owners(source: bytes) -> list[tuple[str, str | None]]:
+        with open_archive(io.BytesIO(source), salvage=True) as reader:
+            return [(m.name, m.uname) for m in reader.members_report().members]
+
+    plain = owners(data)
+    assert ("s0", None) in plain
+    assert ("t", "late") in plain
+    assert owners(gzip.compress(data, compresslevel=1)) == plain
+
+
+def _gap_then_members() -> bytes:
+    """A gzip tar: ``a``, a damaged block, ``liar`` claiming 8 MiB, eight 600 kB
+    members and six 1 MB members. The first pass lists ``a`` and ``liar``, records
+    a gap inside the claim, and holds the members after it for the second pass."""
+    rng = random.Random(13)
+
+    def member(name: str, size: int) -> bytes:
+        info = tarfile.TarInfo(name)
+        info.size = size
+        head = info.tobuf(format=tarfile.USTAR_FORMAT)
+        return head + rng.randbytes(size) + bytes(-size % BLOCKSIZE)
+
+    liar = tarfile.TarInfo("liar")
+    liar.size = 8 << 20
+    data = member("a", 3) + b"\x01" * BLOCKSIZE
+    data += liar.tobuf(format=tarfile.USTAR_FORMAT)
+    data += b"".join(member(f"s{i}", 600_000) for i in range(8))
+    data += b"".join(member(f"m{i}", 1_000_000) for i in range(6))
+    return gzip.compress(data + bytes(2 * BLOCKSIZE), compresslevel=1)
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [ListingLimits(max_members=5), ListingLimits(max_metadata_bytes=40)],
+    ids=["members", "metadata"],
+)
+def test_members_held_for_the_second_pass_count_against_the_listing_limits(
+    limits: ListingLimits,
+) -> None:
+    """The members the first pass holds back count as they are held, so the
+    listing stops at the one that crosses a limit, not after both passes."""
+    config = ArchiveyConfig(listing_limits=limits)
+    with (
+        open_archive(
+            io.BytesIO(_gap_then_members()), salvage=True, config=config
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="held for the second salvage pass"),
+    ):
+        reader.members()
