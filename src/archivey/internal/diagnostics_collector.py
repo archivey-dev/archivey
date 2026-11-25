@@ -535,7 +535,9 @@ class DiagnosticCollector:
         exception from it propagates in place of that raise; an exception from the
         log handler or the callback comes first and propagates unchanged. An emit that
         a replay repeats (:meth:`call_replaying`) does not run it: it repeats the
-        first run's outcome without delivering.
+        first run's outcome without delivering. Inside :meth:`deferring_raises` its
+        exception is not held: it propagates at once, while this emit's own raise
+        would be held.
         """
         validate_code_context(code, context)
         context = self._shift_member_id(context)
