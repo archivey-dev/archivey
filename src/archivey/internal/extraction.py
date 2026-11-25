@@ -958,6 +958,9 @@ class ExtractionCoordinator:
         # on_progress, a password provider) is refused as re-entry if it calls the
         # reader, instead of running as the library's own call.
         self.pass_token: OperationToken | None = None
+        # Set by the reader with ``pass_token``: raises the closed error once the
+        # reader is closed (``_checkpoint``).
+        self.checkpoint: Callable[[], None] | None = None
         # ``_parent``'s one-entry cache: the last path asked for, and its parent.
         self._parent_of: Path | None = None
         self._parent_path: Path | None = None
@@ -2125,6 +2128,8 @@ class ExtractionCoordinator:
             transformed._listing_pending = original._listing_pending
             with user_callback():
                 filtered = self._filter(transformed)
+            # The filter is user code, so it may have closed the reader.
+            self._checkpoint()
             if filtered is None:
                 return None, None, frozenset()
             if not isinstance(filtered, ArchiveMember):
@@ -2461,6 +2466,9 @@ class ExtractionCoordinator:
         is tracked in ``links``, so a later member that moves what it resolves through
         gets it rechecked."""
         written_paths = self._state.written_paths
+        # Directories and links are placed directly, with no stream read and no
+        # swap, so this is their last chance to see a close() from a callback.
+        self._checkpoint()
         if transformed.type == MemberType.DIRECTORY:
             return self._write_directory(original, transformed, dest_path)
 
@@ -5315,6 +5323,9 @@ class ExtractionCoordinator:
         for another reason, in a sticky directory where someone else owns the entry;
         elsewhere POSIX ``os.replace`` replaces the entry, which is why those policies
         land with ``_land_on_free_name`` first."""
+        # A close() since the member's data was written: the run stops, and the
+        # caller's BaseException cleanup removes the temp, so the member is not placed.
+        self._checkpoint()
         with self._readonly_cleared(dest):
             if self._overwrite is not OverwritePolicy.REPLACE and (
                 dest not in self._current.parked
@@ -5624,6 +5635,15 @@ class ExtractionCoordinator:
             # may refuse new attributes.
             self._progress_error = exc
             raise
+        # A callback is where a caller cancels the run: close() from on_progress
+        # stops it here, not at the next read.
+        self._checkpoint()
+
+    def _checkpoint(self) -> None:
+        """Raise the reader's closed error if ``close()`` has come during the run."""
+        checkpoint = self.checkpoint
+        if checkpoint is not None:
+            checkpoint()
 
     @staticmethod
     def _close(stream: BinaryIO | None) -> None:

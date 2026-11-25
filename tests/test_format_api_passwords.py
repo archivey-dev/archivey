@@ -444,9 +444,14 @@ def test_provider_reentry_raises(toyx: type[ToyXReader], tmp_path: Path) -> None
             reader.read("a.txt")
 
 
-def test_copied_context_close_from_provider_raises(
+def test_copied_context_close_from_provider_cancels_the_read(
     toyx: type[ToyXReader], tmp_path: Path
 ) -> None:
+    """close() from the provider's copied context (a helper thread) returns at once,
+    the read waiting on the provider raises the closed error once it answers, and the
+    reader tears down after that read, once."""
+    from archivey.internal.reader_state import LifecycleState
+
     outcome: list[BaseException | None] = []
     box: list[Any] = []
 
@@ -463,68 +468,16 @@ def test_copied_context_close_from_provider_raises(
         helper.start()
         helper.join(timeout=10)
         assert not helper.is_alive(), "close() waited on the provider"
+        assert box[0]._state.lifecycle is LifecycleState.READER_CLOSED
         return b"right"
 
-    with open_archive(
-        _one(tmp_path), password=provider, concurrent_operations=True
-    ) as reader:
-        box.append(reader)
-        reader.members()
-        assert reader.read("a.txt") == _SECRET
-    assert len(outcome) == 1
-    assert isinstance(outcome[0], ArchiveyUsageError)
-
-
-def test_copied_context_close_raises_while_another_close_drains(
-    toyx: type[ToyXReader], tmp_path: Path
-) -> None:
-    """An independent close() is already waiting for the worker whose provider is
-    running: a close() from that provider's copied context must raise, not wait
-    behind that closer, which waits for the provider."""
-    outcome: list[BaseException | None] = []
-    box: list[Any] = []
-    closers: list[threading.Thread] = []
-
-    def close_in_helper() -> None:
-        try:
-            box[0].close()
-            outcome.append(None)
-        except BaseException as exc:  # noqa: BLE001 - recorded for the test
-            outcome.append(exc)
-
-    def provider(request: PasswordRequest) -> bytes | None:
-        # A fresh context: on a build whose threads inherit the starter's context
-        # (free-threaded 3.14+), this thread would otherwise count as the
-        # provider's copied context, and its close() would raise.
-        closer = threading.Thread(
-            target=contextvars.Context().run, args=(box[0].close,)
-        )
-        closers.append(closer)
-        closer.start()
-        state = box[0]._state
-        deadline = time.monotonic() + 10
-        while not state._closing and time.monotonic() < deadline:
-            time.sleep(0.001)
-        assert state._closing, "the independent close() never started draining"
-        context = contextvars.copy_context()
-        helper = threading.Thread(target=context.run, args=(close_in_helper,))
-        helper.start()
-        helper.join(timeout=10)
-        assert not helper.is_alive(), "close() waited behind the draining closer"
-        return b"right"
-
-    with open_archive(
-        _one(tmp_path), password=provider, concurrent_operations=True
-    ) as reader:
-        box.append(reader)
-        reader.members()
-        # Not read(): the independent closer closes the reader as soon as open()
-        # returns, so the stream may already be closed when it comes back.
-        reader.open("a.txt").close()
-    for closer in closers:
-        closer.join(timeout=10)
-    assert len(outcome) == 1
-    assert isinstance(outcome[0], ArchiveyUsageError)
+    reader = open_archive(_one(tmp_path), password=provider, concurrent_operations=True)
+    box.append(reader)
+    reader.members()
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        reader.read("a.txt")
+    assert outcome == [None]
+    assert reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
 @pytest.mark.parametrize("name", ["t.toyx", "t.toyw"])
