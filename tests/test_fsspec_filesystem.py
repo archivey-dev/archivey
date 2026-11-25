@@ -33,6 +33,7 @@ from archivey import (  # noqa: E402
     ArchiveyConfig,
     ArchiveyUsageError,
     DiagnosticCode,
+    DiagnosticPolicy,
     ExtractionPolicy,
     open_archive,
 )
@@ -1255,6 +1256,84 @@ def test_a_build_overtaken_by_close_reports_no_more_refusals(
     with pytest.raises(ArchiveyUsageError):
         fs.ls("")
     assert DiagnosticCode.MEMBER_PATH_REFUSED not in seen, seen
+
+
+def test_a_close_at_the_refusal_reports_nothing_and_raises_the_closed_error(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A close that lands after the build checked the member, before it reports that
+    member's refusal: nothing reaches ``on_diagnostic``, and a policy that raises
+    on the refusal does not turn the listing's closed error into its own."""
+    memfs.pipe("/d/at-refusal.zip", _zip_bytes([("ok", b"x"), ("../up", b"y")]))
+    seen: list[DiagnosticCode] = []
+    config = ArchiveyConfig(
+        on_diagnostic=lambda d: seen.append(d.code),
+        diagnostic_policy=DiagnosticPolicy(
+            raise_on={DiagnosticCode.MEMBER_PATH_REFUSED}
+        ),
+    )
+    fs = ArchiveyFileSystem("memory://d/at-refusal.zip", config=config)
+    real_view = fs._view
+
+    def close_inside_view(member: Any, *args: Any) -> Any:
+        if member.name == "../up":
+            fs.close()  # after the per-member check, before the refusal
+        return real_view(member, *args)
+
+    monkeypatch.setattr(fs, "_view", close_inside_view)
+    with pytest.raises(ArchiveyUsageError):
+        fs.ls("")
+    assert DiagnosticCode.MEMBER_PATH_REFUSED not in seen, seen
+
+
+def test_a_close_during_a_refusal_raises_the_closed_error(memfs: Any) -> None:
+    """A close that lands while a refusal is being reported (here from the
+    ``on_diagnostic`` callback itself): the listing raises the closed error, also
+    when the policy raises on that refusal."""
+    memfs.pipe("/d/in-refusal.zip", _zip_bytes([("ok", b"x"), ("../up", b"y")]))
+    holder: list[ArchiveyFileSystem] = []
+
+    def close_on_refusal(d: Any) -> None:
+        if d.code is DiagnosticCode.MEMBER_PATH_REFUSED:
+            holder[0].close()
+
+    config = ArchiveyConfig(
+        on_diagnostic=close_on_refusal,
+        diagnostic_policy=DiagnosticPolicy(
+            raise_on={DiagnosticCode.MEMBER_PATH_REFUSED}
+        ),
+    )
+    holder.append(ArchiveyFileSystem("memory://d/in-refusal.zip", config=config))
+    with pytest.raises(ArchiveyUsageError):
+        holder[0].ls("")
+
+
+def test_an_interrupted_close_still_closes_the_reader_on_collection(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``fs.close()`` interrupted inside the reader's close (``KeyboardInterrupt``),
+    then the file system is collected: its reader is closed, as for a file system
+    collected without a close."""
+    memfs.pipe("/d/interrupted.zip", _zip_bytes([("a", b"x")]))
+    fs = ArchiveyFileSystem("memory://d/interrupted.zip")
+    reader = fs.reader
+    state = reader._state  # type: ignore[attr-defined]
+    real_mark = state.mark_reader_closed
+    calls: list[int] = []
+
+    def interrupt_first() -> bool:
+        calls.append(1)
+        if len(calls) == 1:
+            raise KeyboardInterrupt
+        return real_mark()
+
+    monkeypatch.setattr(state, "mark_reader_closed", interrupt_first)
+    with pytest.raises(KeyboardInterrupt):
+        fs.close()
+    del fs
+    gc.collect()
+    with pytest.raises(ArchiveyUsageError):
+        reader.members()
 
 
 def test_close_under_open_streams_makes_their_reads_raise(memfs: Any) -> None:

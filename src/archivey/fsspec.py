@@ -29,7 +29,7 @@ from fsspec.core import OpenFile
 
 from archivey.core import open_archive
 from archivey.diagnostics import DiagnosticCode, PathRefusedContext
-from archivey.exceptions import FilterRejectionError
+from archivey.exceptions import DiagnosticRaisedError, FilterRejectionError
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.internal.enum_args import coerce_enum
 from archivey.internal.extraction import hardlink_chain_end
@@ -646,7 +646,8 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         # closed before it returns, also on a second thread while the first is still
         # inside it, and after an interrupted first call. The finalizer runs only once,
         # so a second ``fs.close()`` through it could return with the reader still open.
-        self._finalizer.detach()
+        # The finalizer stays registered: if this close is interrupted, collecting the
+        # file system still closes the reader (a later close is a no-op).
         self.reader.close()
 
     def __enter__(self) -> Self:
@@ -978,6 +979,26 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
 
     def _report_refused(
         self, member: ArchiveMember, reason: str, unmodelled: bool = False
+    ) -> None:
+        """Report a member left out of the tree, unless the file system is closed.
+
+        A close before the report: nothing is reported, and the listing raises the
+        closed error. A close while the report runs (its log line or
+        ``on_diagnostic`` has started): the report finishes, and the listing still
+        raises the closed error, also when the policy raises on the refusal. The
+        report is not made under ``_publish_lock``: a callback that closes the file
+        system would wait for itself."""
+        if self._closed:
+            raise closed_reader_error("listing")
+        try:
+            self._emit_refused(member, reason, unmodelled)
+        except DiagnosticRaisedError as exc:
+            if self._closed:
+                raise closed_reader_error("listing") from exc
+            raise
+
+    def _emit_refused(
+        self, member: ArchiveMember, reason: str, unmodelled: bool
     ) -> None:
         reader = cast("BaseArchiveReader", self.reader)
         why = (
