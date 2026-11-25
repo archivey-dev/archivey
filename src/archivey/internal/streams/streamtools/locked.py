@@ -50,10 +50,18 @@ class HandleLock:
         return acquired
 
     def release(self) -> None:
+        # The holder's batch, taken while it still holds the lock: a thread that
+        # takes the lock after this release starts its own.
+        batch = self._deferred
+        if batch:
+            self._deferred = []
         self._owner = None
         self._lock.release()
-        if self._deferred:
-            self._run_deferred()
+        for close in batch:
+            # Outside the lock: each close takes it again. A collector's close: a
+            # failure belongs to no call the caller made.
+            with contextlib.suppress(Exception):
+                close()
 
     def __enter__(self) -> bool:
         return self.acquire()
@@ -70,15 +78,6 @@ class HandleLock:
     def defer(self, close: Callable[[], None]) -> None:
         """Keep ``close`` for the release of the lock this thread holds."""
         self._deferred.append(close)
-
-    def _run_deferred(self) -> None:
-        # Only the holder appends, and it runs them after its release, outside the
-        # lock: each close takes the lock again.
-        while self._deferred and not self.held_by_current_thread():
-            close = self._deferred.pop(0)
-            # A collector's close: a failure belongs to no call the caller made.
-            with contextlib.suppress(Exception):
-                close()
 
 
 class LockedStream(DelegatingStream):

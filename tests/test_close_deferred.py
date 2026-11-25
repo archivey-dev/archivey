@@ -647,3 +647,49 @@ def test_a_sibling_dropped_inside_a_read_then_reader_closed_closes_once(
     closes = [e for e in _HOOKS.events if "close" in e]
     assert sorted(closes[:2]) == ["stream close b.bin", "stream close docs/a.txt"]
     assert closes[2:] == ["plugin close"]
+
+
+def _forget_registration(reader: object, stream: object) -> None:
+    """What the cycle collector does before it finalizes a stream in a cycle: the
+    reader's weak reference to it is cleared first."""
+    import weakref
+
+    class _Gone:
+        pass
+
+    live = reader._state._live_streams  # type: ignore[attr-defined]
+    dead = weakref.ref(_Gone())
+    for sid, ref in list(live.items()):
+        if ref() is stream:
+            live[sid] = dead
+
+
+@pytest.mark.parametrize("while_reading", [False, True])
+def test_a_cycle_collected_stream_still_closes_after_reader_close(
+    gated: Path, while_reading: bool
+) -> None:
+    """A stream in a cycle loses its registration before its finalizer runs. A
+    reader close that lands in between misses it: the finalizer still closes it,
+    once, and the reader's teardown finishes, once. ``while_reading``: a sibling's
+    read is still running, so the shutdown has not run yet when the finalizer does.
+    """
+    from archivey.internal.reader_state import LifecycleState
+
+    reader = open_archive(gated, concurrent_operations=True)
+    stream = reader.open("docs/a.txt")
+    if while_reading:
+        a = reader.open("b.bin")
+        _HOOKS.block_read = True
+        thread, _out = _run(lambda: a.read(1))
+        assert _HOOKS.entered.wait(TIMEOUT)
+    _forget_registration(reader, stream)
+    reader.close()
+    stream.__del__()  # the collector's finalizer, after the close
+    if while_reading:
+        _HOOKS.go.set()
+        thread.join(TIMEOUT)
+        assert not thread.is_alive()
+    closes = [e for e in _HOOKS.events if "close" in e]
+    assert closes.count("stream close docs/a.txt") == 1, closes
+    assert closes[-1] == "plugin close" and closes.count("plugin close") == 1
+    assert reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE  # type: ignore[attr-defined]

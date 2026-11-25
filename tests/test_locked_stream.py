@@ -151,3 +151,33 @@ def test_a_close_under_its_own_handle_lock_waits_for_the_release() -> None:
         assert not stream.closed
     assert stream.closed
     assert not lock.locked()
+
+
+def test_each_holder_runs_only_the_closes_it_deferred() -> None:
+    """The deferred closes are the holder's: a thread that takes the lock between
+    the first holder's release and its drain runs none of them, and the first
+    holder's drain does not fail on a list another thread emptied."""
+    from archivey.internal.streams.streamtools import HandleLock
+
+    lock = HandleLock()
+    ran: list[tuple[str, int]] = []
+
+    def other_holder() -> None:
+        with lock:
+            lock.defer(lambda: ran.append(("other", threading.get_ident())))
+
+    def first() -> None:
+        ran.append(("first", threading.get_ident()))
+        # Another thread takes and lets go of the lock before this holder's drain
+        # reaches its second close.
+        thread = threading.Thread(target=other_holder)
+        thread.start()
+        thread.join(5)
+
+    with lock:
+        lock.defer(first)
+        lock.defer(lambda: ran.append(("second", threading.get_ident())))
+    me = threading.get_ident()
+    assert [name for name, _ in ran] == ["first", "other", "second"]
+    assert ran[0][1] == me and ran[2][1] == me
+    assert ran[1][1] != me

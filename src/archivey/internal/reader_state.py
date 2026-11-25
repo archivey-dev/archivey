@@ -787,6 +787,23 @@ class ReaderState:
             self._implicit_closes.append((threading.get_ident(), stream))
             return True
 
+    def finalized_after_close(self, stream: ArchiveStreamImpl) -> bool:
+        """The collector finalizes ``stream`` after ``close()``: True when the
+        finalizer must close it itself.
+
+        The stream shutdown normally owns the inner close, from its snapshot of the
+        live streams, but the cycle collector clears the reader's weak reference to a
+        stream before its finalizer runs, so a snapshot taken in between misses it.
+        While the shutdown is still to come, the stream joins its queue
+        (:meth:`live_streams`); once it has started, the finalizer closes the
+        stream: no call is running by then.
+        """
+        with self._lock:
+            if self._stream_shutdown_owner is None and not self._stream_shutdown_done:
+                self._implicit_closes.append((threading.get_ident(), stream))
+                return False
+            return True
+
     def _inside_call_locked(self) -> bool:
         """Whether this thread is inside a running call of the reader."""
         current = threading.current_thread()
