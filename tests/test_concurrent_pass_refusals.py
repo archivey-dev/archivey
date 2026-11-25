@@ -700,7 +700,7 @@ def test_peek_answers_the_pinned_report_while_a_pass_is_open() -> None:
     takes a worker token. A default reader's lookup token is not a pass."""
     state = _state(concurrent=False)
     pinned = object()
-    token = state.acquire_pass("stream_members", PassKind.DATA, pinned)  # type: ignore[arg-type]
+    token = state.acquire_pass("stream_members", PassKind.DATA, lambda: pinned)  # type: ignore[arg-type, return-value]
     assert state.acquire_peek("peek") == (None, pinned)
     assert _in_thread(lambda: state.acquire_peek("peek")) == (None, pinned)
     later = object()
@@ -714,3 +714,91 @@ def test_peek_answers_the_pinned_report_while_a_pass_is_open() -> None:
     with pytest.raises(ArchiveyUsageError, match="re-entered"):
         state.acquire_peek("peek")
     state.release_pass(lookup)
+
+
+# --- callbacks of a pass are not the library's own calls ------------------------------
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+@pytest.mark.parametrize("make", [_zip, _tar, _tgz])
+def test_an_extraction_callback_cannot_call_the_reader(
+    tmp_path: Path, concurrent: bool, make: Callable[[Path], Path]
+) -> None:
+    """open(), members() and verify_all() from on_progress are refused as re-entry
+    (none of them may move the walk the pass reads through), and the extraction
+    still writes every member when the callback catches the refusal."""
+    reader = open_archive(make(tmp_path), concurrent_operations=concurrent)
+    refused: dict[str, list[str]] = {"open": [], "members": [], "verify_all": []}
+    calls: dict[str, Callable[[], object]] = {
+        "open": lambda: reader.open("c.txt").close(),
+        "members": reader.members,
+        "verify_all": reader.verify_all,
+    }
+
+    def on_progress(_progress: object) -> None:
+        for name, call in calls.items():
+            try:
+                call()
+            except ArchiveyUsageError as exc:
+                refused[name].append(str(exc))
+
+    out = tmp_path / "out"
+    with reader:
+        reader.extract_all(out, on_progress=on_progress)
+    for name, messages in refused.items():
+        assert messages, name
+        assert all("re-entered" in m for m in messages), (name, messages)
+    for name, data in _FILES.items():
+        assert (out / name).read_bytes() == data
+
+
+# --- the peek pin: built at the grant, on the outer pass -------------------------------
+
+
+def test_the_admission_pin_is_built_at_the_grant_and_not_on_a_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pinned report is built once the pass holds the gate, so nothing can
+    publish in between; a refused pass builds nothing."""
+    reader = open_archive(_zip(tmp_path))
+    state = reader._state  # type: ignore[attr-defined]
+    real = reader._built_report  # type: ignore[attr-defined]
+    seen: list[object] = []
+
+    def built() -> object:
+        seen.append(state._root)
+        return real()
+
+    monkeypatch.setattr(reader, "_built_report", built)
+    with reader:
+        held = reader.open("c.txt")
+        with pytest.raises(ArchiveyUsageError, match="Close it first"):
+            next(iter(reader.stream_members()))
+        assert seen == []  # refused before anything was built
+        held.close()
+        for _member, _stream in reader.stream_members():
+            break
+    assert seen, "the admitted pass must have built its pin"
+    assert seen[0] is not None and seen[0].name == "stream_members"
+
+
+def test_verify_all_pins_its_startup_on_the_outer_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No peek before verify_all(): the nested stream pass's startup drains the
+    upfront index, and the peek during verification answers that, not ``None``."""
+    reader = open_archive(_zip(tmp_path))
+    real_pin = reader._pin_pass  # type: ignore[attr-defined]
+    peeks: list[object] = []
+
+    def pin_then_peek(token: object) -> None:
+        real_pin(token)
+        peeks.append(reader.members_report_if_available())
+
+    monkeypatch.setattr(reader, "_pin_pass", pin_then_peek)
+    with reader:
+        reader.verify_all()
+    assert peeks
+    report = peeks[0]
+    assert report is not None
+    assert sorted(m.name for m in report.members) == sorted(_FILES)  # type: ignore[attr-defined]

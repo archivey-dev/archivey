@@ -790,19 +790,20 @@ def test_an_error_out_of_the_orphan_pass_closes_it(
     monkeypatch.setattr(ExtractionCoordinator, "_fill_held_source", fail)
     with open_archive(_tar_with_orphaned_hardlink(tmp_path)) as reader:
         passes = []
-        real = reader.stream_members
+        real = reader._stream_members
 
-        def kept(*args: object, **kwargs: object) -> object:
+        def kept(*args: object, **kwargs: object) -> Iterator[object]:
             source = real(*args, **kwargs)  # type: ignore[arg-type]
             passes.append(source)
             return source
 
-        monkeypatch.setattr(reader, "stream_members", kept)
+        monkeypatch.setattr(reader, "_stream_members", kept)
         with pytest.raises(RuntimeError, match="linking failed") as excinfo:
             reader.extract_all(tmp_path / "out", members=["link.txt"], policy="trusted")
         assert excinfo.value is not None  # the traceback is still held here
-        (orphan_pass,) = passes
-        assert orphan_pass._pass.gi_frame is None
+        # The main pass, then the orphan pass for the link's source: both closed.
+        assert len(passes) == 2
+        assert all(source.gi_frame is None for source in passes)
 
 
 def test_a_failed_pass_close_does_not_hide_the_extraction_error() -> None:

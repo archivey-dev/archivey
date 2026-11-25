@@ -100,6 +100,7 @@ from archivey.internal.filters import (
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, make_dirs, plain
+from archivey.internal.member_pass import MemberPassImpl
 from archivey.internal.overrides import override
 from archivey.internal.placements import Claim as _Claim, Placements
 from archivey.internal.selection import CollectionSelector
@@ -132,6 +133,7 @@ if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
     from archivey.internal.base_reader import BaseArchiveReader
+    from archivey.internal.reader_state import OperationToken
     from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
 
@@ -950,6 +952,11 @@ class ExtractionCoordinator:
         self._current = _MemberState()
         # Set for the length of a dry run; ``None`` on a real run.
         self._dry: DryRun | None = None
+        # The reader's extract_all() pass, set by the reader before run(): this run's
+        # own passes are filed under it by name, so a callback of the run (a filter,
+        # on_progress, a password provider) is refused as re-entry if it calls the
+        # reader, instead of running as the library's own call.
+        self.pass_token: OperationToken | None = None
         # ``_parent``'s one-entry cache: the last path asked for, and its parent.
         self._parent_of: Path | None = None
         self._parent_path: Path | None = None
@@ -1276,7 +1283,9 @@ class ExtractionCoordinator:
                 current_by_name: dict[str, int] = {}
                 pairs = _until_listing_damage(
                     reader,
-                    reader._stream_members(stream_selector, copies),
+                    reader._stream_members(
+                        stream_selector, copies, parent=self.pass_token
+                    ),
                     listing_damage,
                 )
                 with _closing_pass(pairs):
@@ -1463,7 +1472,9 @@ class ExtractionCoordinator:
         staging: list[_Staging] = []
         members_done = 0
         pairs = _until_listing_damage(
-            reader, reader._stream_members(walk_selector, copies), listing_damage
+            reader,
+            reader._stream_members(walk_selector, copies, parent=self.pass_token),
+            listing_damage,
         )
         with _closing_pass(pairs):
             for original, stream in pairs:
@@ -3967,7 +3978,11 @@ class ExtractionCoordinator:
         selector = CollectionSelector(
             [held.source for held in needed.values()], record=False
         )
-        passing = reader.stream_members(selector)
+        passing = MemberPassImpl(
+            reader._stream_members(
+                selector, FileCopyPass(streams=True), parent=self.pass_token
+            )
+        )
         with _closing_pass(passing):
             for member, stream in passing:
                 held = left.pop(member.member_id, None)

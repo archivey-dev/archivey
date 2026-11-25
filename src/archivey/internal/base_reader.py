@@ -4161,7 +4161,8 @@ class BaseArchiveReader(ArchiveReader):
         neither exists, or when a listing limit stands in the way (a limit is never
         stored on a report). Reads plain attributes only and takes no lock but the
         diagnostics collector's, so a pass can pin it at any point
-        (:meth:`_pin_pass`).
+        (:meth:`_pin_pass`), and admission builds it under the state lock
+        (``ReaderState.acquire_pass``).
         """
         materialized = self._materialized
         if materialized is not None:
@@ -4184,7 +4185,7 @@ class BaseArchiveReader(ArchiveReader):
 
     def _acquire_pass(self, name: str, kind: PassKind) -> OperationToken:
         """Take the pass token for ``name``, pinning what is built at admission."""
-        return self._state.acquire_pass(name, kind, self._built_report())
+        return self._state.acquire_pass(name, kind, self._built_report)
 
     def _pin_pass(self, token: OperationToken) -> None:
         """Pin what the pass's startup built, before its first member: what
@@ -5639,11 +5640,14 @@ class BaseArchiveReader(ArchiveReader):
         # refusal reads no index, runs no callback and creates nothing.
         token = self._acquire_pass("extract_all", PassKind.DATA)
         try:
-            # Library-internal member opens (including hardlink recovery) are ungated.
+            # The coordinator's passes are filed under this one by name, with no
+            # internal-open window, so a callback it runs (a filter, on_progress, a
+            # password provider) cannot call the reader: it is refused as re-entry.
             # The report covers only the emits this call makes, on its own thread:
             # open-phase diagnostics stay on reader.diagnostics, and on a CONCURRENT
             # reader other threads emit into the same collector meanwhile.
-            with self._internal_member_opens(), collector.scoped() as scope:
+            coordinator.pass_token = token
+            with collector.scoped() as scope:
                 results = coordinator.run(self, dest_path)
         finally:
             self._state.release_pass(token)

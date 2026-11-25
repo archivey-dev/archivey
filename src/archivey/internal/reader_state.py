@@ -338,7 +338,7 @@ class ReaderState:
         self,
         name: str,
         kind: PassKind = PassKind.LOOKUP,
-        report: MemberListReport | None = None,
+        report: Callable[[], MemberListReport | None] | None = None,
     ) -> OperationToken:
         """Take the token for a reader-wide pass named ``name`` (or, inside this thread's
         internal-open window, a child of the pass it works for), or raise the usage
@@ -346,12 +346,18 @@ class ReaderState:
 
         A pass has the reader to itself: it is refused beside another pass and beside a
         worker call in flight, in both modes, and a ``DATA`` pass also beside a member
-        stream from ``open()``. ``report`` is what the pass pins at admission
-        (:meth:`pin_report`)."""
+        stream from ``open()``. ``report`` builds what the pass pins at admission
+        (:meth:`pin_report`). It runs under the state lock once the pass is granted,
+        so nothing can publish between the snapshot and the grant (a publisher holds a
+        worker or pass token) and a refusal builds nothing. It must take no lock but
+        leaf locks (the diagnostics collector's), never the walk lock."""
         return _retry_after_collecting(self._acquire_pass_once, name, kind, report)
 
     def _acquire_pass_once(
-        self, name: str, kind: PassKind, report: MemberListReport | None
+        self,
+        name: str,
+        kind: PassKind,
+        report: Callable[[], MemberListReport | None] | None,
     ) -> OperationToken:
         """Acquire a pass token: root when free, else a child under an internal owner."""
         with self._lock:
@@ -379,10 +385,14 @@ class ReaderState:
                     f"Cannot start {name!r}: a member stream from open() is still "
                     "open on this reader. Close it first."
                 )
-            token = OperationToken(
-                name=name, kind="root", pass_kind=kind, report=report
-            )
+            token = OperationToken(name=name, kind="root", pass_kind=kind)
             self._root = token
+            if report is not None:
+                try:
+                    token.report = report()
+                except BaseException:
+                    self._root = None
+                    raise
             return token
 
     def acquire_child(self, parent: OperationToken, name: str) -> OperationToken:
@@ -403,10 +413,13 @@ class ReaderState:
     ) -> None:
         """Set what ``members_report_if_available()`` answers while ``token``'s pass
         is open. A pass pins at admission and again once its startup has run, before
-        its first member. A no-op for a child token."""
+        its first member. A child token pins on the pass it is filed under
+        (``verify_all()``'s and ``extract_all()``'s nested passes): the peek answers
+        from the root."""
         with self._lock:
-            if token.kind == "root" and not token._released:
-                token.report = report
+            root = token if token.kind == "root" else token.parent
+            if root is not None and root is self._root and not root._released:
+                root.report = report
 
     def pin_owner_report(self, report: MemberListReport | None) -> None:
         """:meth:`pin_report` for the pass this thread works for, if any."""
