@@ -283,6 +283,12 @@ reviewer would, and update the PR body in the same push so it no longer describe
 That includes the **For dummies** section at its top: when a fix changes what the PR does
 or who notices, rewrite it too.
 
+**A conditional approval covers the fixes the reviewer wrote, not the ones you made.**
+If a fix turned out bigger than the change the reviewer spelled out (it grew past one
+function, or touched locking, close or teardown, shared state, an index, or a loop's end
+condition), add the `review` label again after the push instead of stopping
+(`dev-docs/review-loop.md` §Stopping it).
+
 ### Before the `review` label: write down what the round taught
 
 Run each 📚 `[learning]` note and each disproven finding whose answer took real

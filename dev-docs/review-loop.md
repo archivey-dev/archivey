@@ -190,18 +190,23 @@ evidence for it.
 - **The verdict decides whether another round is asked for.** The reviewer writes one of
   five verdicts. `clean`, `approved` and `conditional` mean it does not need to see the
   result: `approved` is a plain "✅ Approve", and `conditional` is "✅ Approve,
-  conditional on the listed fixes", given when no 🔴 stands and every 🟡 fix leaves
-  behaviour unchanged (🟢 fixes never count against it). The findings are still posted in
+  conditional on the listed fixes", given when no 🔴 stands and every 🟡 fix is
+  behaviour-neutral or a local behaviour fix the reviewer wrote out exactly (🟢 fixes
+  never count against it). The findings are still posted in
   full and still fixed, but the closing comment does not ask for another round.
   `findings` (🔄 Request Changes) asks for one, and is the verdict whenever a 🟡's fix
-  changes what code does. There is no "💬 Comment" verdict
+  touches locking, teardown, shared state, a loop's end condition or a repeated pattern
+  (`code-review-skill` §4). There is no "💬 Comment" verdict
   ([`code-review-skill`](../.claude/skills/code-review-skill/SKILL.md) §4).
   `decision` stops until the maintainer answers. `VERDICT_STOPS` in
   [`scripts/review/review_loop_gate.py`](../scripts/review/review_loop_gate.py) holds the mapping.
 - **The verdict advises; it does not refuse.** After a verdict that needs no other
   round, an agent's label still runs one. A nit or a maintainer question sometimes grows
   into a larger change that warrants a full review, and the implementer is trusted to
-  judge that (davitf, 2026-09-23). The cap below still bounds it.
+  judge that (davitf, 2026-09-23). The implementer **must** add the label again when a
+  fix made under a conditional approval turned out not to be the local change the
+  reviewer wrote: it grew past one function, or touched locking, teardown, shared state
+  or a loop's end condition (davitf, 2026-11-25). The cap below still bounds it.
 - **Five rounds an agent can ask for, then a person.** Past `MAX_ROUNDS` an agent's
   label is refused, with a comment saying so, and a person's label still runs a round.
   Past `MAX_FORCED_ROUNDS` (eight) nothing runs, so the bound holds even if the person

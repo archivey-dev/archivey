@@ -418,18 +418,23 @@ so use these meanings and no others:
 - **✅ Approve** — nothing left to change. Every finding is `DISPROVEN`, already fixed in a
   later commit, or a 💡 / 📚 / 🎉 annotation that carries no action.
 - **✅ Approve, conditional on the listed fixes** — no 🔴 stands, and every remaining 🟡
-  fix leaves the program's behaviour as it is: a docstring, a comment, a spec or doc
-  line, the PR body, a test, a name, a line wrap. A 🟡 doc-drift finding qualifies, and
-  so does any 🟢. Say which IDs the approval is conditioned on, in the heading itself.
+  fix is either behaviour-neutral (a docstring, a comment, a spec or doc line, the PR
+  body, a test, a name, a line wrap) or a **local behaviour fix**: you can write the
+  exact change ("raise `X` instead of `Y` at line N", "add `if x is None: raise …`"),
+  it stays inside one function, and none of the 🔄 triggers below applies. Any 🟢
+  qualifies. Say which IDs the approval is conditioned on, in the heading itself.
   This is the one verdict that approves with work outstanding; the conditioned findings
   are still posted in full (block 2, inline threads, IDs) — approving is not shorthand
   for dropping them.
-- **🔄 Request Changes** — a 🔴 stands, or a 🟡's fix changes what code does (a new
-  branch, guard, lock, error type or bound). A 🟢 never makes the verdict 🔄, whatever
-  its fix touches: that is the one exception, and it is what the reach rule and the
-  round budget below rely on. Fixes that change
-  behaviour are where later rounds' findings come from: about 20 of the findings after
-  round 1 in the week to 2026-11-25 were caused by an earlier fix or merge
+- **🔄 Request Changes** — a 🔴 stands, or a 🟡's fix changes what code does and is not a
+  local behaviour fix: it touches locking, close or teardown, shared state or an index,
+  or a loop's end condition; the same pattern exists at other call sites; or you cannot
+  spell out the exact change. A 🟢 never makes the verdict 🔄, whatever its fix touches:
+  that is the one exception, and it is what the reach rule and the round budget below
+  rely on. On #1834, #1783 and #1782 every fix that caused a later finding was of one of
+  these kinds, while single-function guards and error swaps caused none. Fixes that
+  change behaviour are where later rounds' findings come from: about 20 of the findings
+  after round 1 in the week to 2026-11-25 were caused by an earlier fix or merge
   (`dev-docs/review-eval/multi-model-2026-11-25.md`). On a light PR (§1), only a 🔴.
 - **⏸️ Maintainer decision needed** — block 3 is not empty (§3).
 
