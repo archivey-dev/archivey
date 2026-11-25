@@ -290,11 +290,11 @@ before you post, and put what you found in the same finding:
 3. **The guard that fixes the class**: where the condition is decided, not a stand-in
    check at the caller that approximates it. If you see no single guard, say so.
 
-Put these under a **Class:** line in the finding. A 🟢 needs none of this, and neither
-does a finding whose class is the one site you cite: say "Class: this site only" and
-what you checked. The implementer runs the same steps on the fix
-(`address-review-findings` §2), so this is a second chance at the same search, not a
-replacement for it.
+Put these under a **Class:** line in the finding. A 🟢 needs none of this, except a
+`caller-misuse` 🟢, which still names its one guard (§5). A finding whose class is the
+one site you cite needs only "Class: this site only" and what you checked. The
+implementer runs the same steps on the fix (`address-review-findings` §2), so this is a
+second chance at the same search, not a replacement for it.
 
 ## 3. Output shape — three blocks (required)
 
