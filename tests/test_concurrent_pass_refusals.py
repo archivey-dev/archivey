@@ -782,6 +782,34 @@ def test_the_admission_pin_is_built_at_the_grant_and_not_on_a_refusal(
     assert seen[0] is not None and seen[0].name == "stream_members"
 
 
+def test_admission_after_an_index_only_listing_copies_nothing_under_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After an index-only listing (a peek), a pass's admission pins the report
+    published at the end of the walk: under the state lock it only picks a
+    reference, and copies no member list or diagnostics."""
+    reader = open_archive(_zip(tmp_path))
+    state = reader._state  # type: ignore[attr-defined]
+    collector = reader._diagnostics_collector  # type: ignore[attr-defined]
+    real_snapshot = collector.snapshot
+    under_lock: list[bool] = []
+
+    def snapshot() -> object:
+        under_lock.append(state._lock._is_owned())
+        return real_snapshot()
+
+    monkeypatch.setattr(collector, "snapshot", snapshot)
+    with reader:
+        peek = reader.members_report_if_available()
+        assert peek is not None
+        for _member, _stream in reader.stream_members():
+            inside = reader.members_report_if_available()
+            assert inside is not None
+            assert inside.members == peek.members
+            break
+    assert not any(under_lock), under_lock
+
+
 def test_verify_all_pins_its_startup_on_the_outer_pass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -802,3 +830,49 @@ def test_verify_all_pins_its_startup_on_the_outer_pass(
     report = peeks[0]
     assert report is not None
     assert sorted(m.name for m in report.members) == sorted(_FILES)  # type: ignore[attr-defined]
+
+
+# --- callbacks run outside the library's internal window --------------------------------
+
+
+@pytest.mark.parametrize("outer", ["extract_all", "verify_all"])
+def test_a_link_resolution_diagnostic_cannot_call_the_reader(
+    tmp_path: Path, outer: str
+) -> None:
+    """Resolving a link whose target data is damaged reports
+    ``SYMLINK_TARGET_UNAVAILABLE`` from inside the library's own link-data read.
+    The callback still runs as the caller's code: a pass, a lookup or a listing it
+    starts is refused as re-entry, and is not admitted under the library's window."""
+    from tests.test_audit2_zip import _zip64_header_offset_zip
+
+    holder: list[object] = []
+    seen: dict[str, list[BaseException]] = {"verify_all": [], "members": [], "get": []}
+
+    def on_diagnostic(diag: object) -> None:
+        if getattr(diag, "code", None) is not DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE:
+            return
+        reader = holder[0]
+        calls: dict[str, Callable[[], object]] = {
+            "verify_all": reader.verify_all,  # type: ignore[attr-defined]
+            "members": reader.members,  # type: ignore[attr-defined]
+            "get": lambda: reader.get("x"),  # type: ignore[attr-defined]
+        }
+        for name, call in calls.items():
+            try:
+                call()
+            except BaseException as exc:  # noqa: BLE001 - the test inspects it
+                seen[name].append(exc)
+
+    blob = _zip64_header_offset_zip(2**63, symlink=True)
+    config = ArchiveyConfig(on_diagnostic=on_diagnostic)
+    with open_archive(io.BytesIO(blob), config=config) as reader:
+        holder.append(reader)
+        if outer == "extract_all":
+            reader.extract_all(tmp_path / "out", on_error="continue")
+        else:
+            reader.verify_all()
+    for name, errors in seen.items():
+        assert errors, name
+        assert all(
+            isinstance(e, ArchiveyUsageError) and "re-entered" in str(e) for e in errors
+        ), (name, errors)
