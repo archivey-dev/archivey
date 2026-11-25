@@ -560,10 +560,6 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # bytes the walk's window holds, read forward once; stored bytes, no codec
         # above it.
         tar_parser._HeldSlice,
-        # A random-access pass's member data: the slice above (or a sequential
-        # format's span window), or a view from where it stopped once the walk moves
-        # on. Forward-only, stored bytes.
-        walk_handoff.WalkHandoffStream,
         # A random-access member's data view: the view's offsets, forwarded.
         walk_handoff.MemberDataView,
         # A sequential plugin's member data in a streaming pass: stored bytes read

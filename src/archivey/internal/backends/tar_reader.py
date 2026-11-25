@@ -2595,13 +2595,12 @@ class TarReader(BaseArchiveReader):
         return stream
 
     def _walk_data(self, span: TarSpan) -> BinaryIO:
-        """``span``'s data for a pass, through the walk when the walk is at it
-        (:meth:`_walk_handoff_locked`). Called under the walk lock."""
+        """``span``'s data for a pass, through the walk when the walk is at it, else a
+        view of its own (``_open_member_in_walk``). Called under the walk lock."""
         data = self._walker.open_data(span)
-        return self._walk_handoff_locked(
-            data if data.in_place() else None,
-            lambda start: self._independent_data(span, start),
-        )
+        if data.in_place():
+            return data
+        return self._independent_data(span)
 
     def _streamed_member_stream(self, member: ArchiveMember) -> ArchiveStreamImpl:
         """Open ``member``'s data for a streaming pass. A bad sparse map raises on the

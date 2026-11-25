@@ -19,7 +19,13 @@ from collections.abc import Callable, Iterator
 
 import pytest
 
-from archivey import ArchiveFormat, StreamFormat, Verification, open_archive
+from archivey import (
+    ArchiveFormat,
+    ArchiveyUsageError,
+    StreamFormat,
+    Verification,
+    open_archive,
+)
 from archivey.formats import ForwardStream, MemberDigest, MemberSpan, SequentialReader
 from archivey.internal.format_adapter import registration_scope
 from archivey.types import ArchiveMember
@@ -221,8 +227,8 @@ def test_data_the_reader_decodes_is_left_to_its_own_reads(streaming: bool) -> No
 
 def test_member_reads_during_a_random_access_listing_still_raise_every_file() -> None:
     # Member reads share the codec with the walk. A read back over bytes the walk
-    # passed seeks the codec, but the walk then decodes on from where it was, so the
-    # decode still runs from the start to the trailer (review round 1, K2).
+    # passed would seek the codec (review round 1, K2); inside a pass it is refused,
+    # so the decode still runs from the start to the trailer.
     files = _files((300_000, 100_000, 5))
     data = gzip.compress(_archive("cpio", files), compresslevel=1)
     with open_archive(io.BytesIO(data), concurrent_operations=True) as reader:
@@ -232,6 +238,6 @@ def test_member_reads_during_a_random_access_listing_still_raise_every_file() ->
             members.append(member)
             if member.name == "m1":
                 assert stream.read() == files["m1"]
-                with reader.open("m0") as earlier:
-                    assert earlier.read(10) == files["m0"][:10]
+                with pytest.raises(ArchiveyUsageError, match="already active"):
+                    reader.open("m0")
     assert _levels(members) == dict.fromkeys(files, _CHECKED)

@@ -451,42 +451,44 @@ data its pass keeps for link targets beside it.
   `encoding=` that decodes to fewer characters
   than the stored bytes (UTF-16) can refuse a listing up to about twice early. The
   fixed cost per entry is bounded by `max_members` only (the residual below).
-  A DMG image bounds its run tables at open, before any run is kept (36 bytes a run
-  against `max_metadata_bytes`, the property list at 64 MiB), and the first listing
-  charges each HFS+ folder name, hard-link inode record and kept extended attribute as
-  it keeps them, and the reader counts what APFS keeps for the archive's life (object
-  maps, filesystem trees) against the same cap, with the APFS checkpoint scan bounded at
-  64 MiB read, decoded or served from zero-fill runs (`apfs.SCAN_BUDGET`); the open
-  itself reads and decodes at most 64 MiB past the property list (`udif.OPEN_BUDGET`).
-  Zero-fill runs make a large disk from a tiny file, so member reads count in the
-  archive-wide ratio like ISO's. A volume whose listing order would decode a compressed
-  run twice lists in data order, as CAB and SquashFS do; a run that a member stream or a
-  pass in listing order decodes again counts in one total per image, held to `max_ratio`
-  times the file size like the checksum pass below (the first decode of a run is free:
-  [§5](#dmg-runs-decoded-once-are-free)). The in-house ADC, LZFSE and LZVN decoders are
-  bounded by the run's sectors. Each run a listing decodes, a cache miss included,
-  counts toward `max_decoded_bytes` (`ReaderContext._listing_draw`, from
-  `UdifImage._decode_run`), so a catalog spread over more runs than the cache holds
-  cannot decode without bound ([formats/dmg.md](formats/dmg.md) §4). `verify_all()`'s
-  partition CRC-32 pass decodes runs no member read reaches (free space, metadata); its
-  compressed and raw runs (which may share stored bytes) are held to the archive-wide
-  ratio on their own total, and its zero-fill runs cost O(log n) without their bytes
-  ([formats/dmg.md](formats/dmg.md) §2.4). The TAR walker keeps nothing behind the
-  member list, so nothing else is held. The caps bound memory, not work: a forward-only
-  TAR walk reads through every member it skips, and a TAR walk in either mode reads the
-  declared span of a link header whose first block is zero, each for the bytes present
-  rather than the size a header declares (a member declaring more than the archive holds
-  raises `TruncatedError` at the first short read), and that ZIP walk reads through the
-  data of every member whose local header leaves its size to a data descriptor, up to
-  one read of the file. The pipe pass also reads the entries its directory places in the
-  bytes it kept after the walk stopped (a gap between members, a second archive
-  appended). Every byte each attempt consumes there, a member read or a local header
-  that fails to parse, is counted against the bytes held, and past that the next entry
-  is `CorruptionError` before it is read (entries a writer laid out never overlap), so
-  the attempts consume the kept bytes at most twice, not once per entry. What the pass
-  keeps of an attempt whose local header does not parse is the parse error, without its
-  traceback, about 1 KB per entry, released when the pass completes and held by the
-  reader when it raises (the residual below).
+  A DMG image weighs its run tables at open, before any run is kept (256 bytes per table
+  plus its name and 36 bytes per declared run, kept for the reader's life with what the
+  listing holds against `max_metadata_bytes`; the property list at 64 MiB), and the
+  first listing charges each HFS+ folder name, hard-link inode record and kept extended
+  attribute as it keeps them, and the reader counts what APFS keeps for the archive's
+  life (object maps, filesystem trees) against the same cap, with the APFS checkpoint
+  scan bounded at 64 MiB read, decoded or served from zero-fill runs
+  (`apfs.SCAN_BUDGET`); the open itself reads and decodes at most 64 MiB past the
+  property list (`udif.OPEN_BUDGET`). Zero-fill runs make a large disk from a tiny file,
+  so member reads count in the archive-wide ratio like ISO's. A volume whose listing
+  order would decode a compressed run twice lists in data order, as CAB and SquashFS do;
+  a run that a member stream or a pass in listing order decodes again counts in one
+  total per image, held to `max_ratio` times the file size like the checksum pass below
+  (the first decode of a run is free: [§5](#dmg-runs-decoded-once-are-free)). The
+  in-house ADC, LZFSE and LZVN decoders are bounded by the run's sectors. Each run a
+  listing decodes, a cache miss included, counts toward `max_decoded_bytes`
+  (`ReaderContext._listing_draw`, from `UdifImage._decode_run`), so a catalog spread
+  over more runs than the cache holds cannot decode without bound
+  ([formats/dmg.md](formats/dmg.md) §4). `verify_all()`'s partition CRC-32 pass decodes
+  runs no member read reaches (free space, metadata); its compressed and raw runs (which
+  may share stored bytes) are held to the archive-wide ratio on their own total, and its
+  zero-fill runs cost O(log n) without their bytes ([formats/dmg.md](formats/dmg.md)
+  §2.4). The TAR walker keeps nothing behind the member list, so nothing else is held.
+  The caps bound memory, not work: a forward-only TAR walk reads through every member it
+  skips, and a TAR walk in either mode reads the declared span of a link header whose
+  first block is zero, each for the bytes present rather than the size a header declares
+  (a member declaring more than the archive holds raises `TruncatedError` at the first
+  short read), and that ZIP walk reads through the data of every member whose local
+  header leaves its size to a data descriptor, up to one read of the file. The pipe pass
+  also reads the entries its directory places in the bytes it kept after the walk
+  stopped (a gap between members, a second archive appended). Every byte each attempt
+  consumes there, a member read or a local header that fails to parse, is counted
+  against the bytes held, and past that the next entry is `CorruptionError` before it is
+  read (entries a writer laid out never overlap), so the attempts consume the kept bytes
+  at most twice, not once per entry. What the pass keeps of an attempt whose local
+  header does not parse is the parse error, without its traceback, about 1 KB per entry,
+  released when the pass completes and held by the reader when it raises (the residual
+  below).
 - 7z checks `max_members` while parsing, at `open_archive`
   (`internal/backends/sevenzip_parser.py`, the `max_members` checks on folders, unpack
   streams, their sum and `num_files`). Member-scaled counts are also checked against the
@@ -1326,14 +1328,13 @@ trusted: archivey checks what it reports, not who wrote it. `unar`'s password is
 **Property.** On a reader declaring `MemberStreams.CONCURRENT`, after random-access
 materialization, concurrent `open()` and independent use of different member streams is
 data-race-free without the GIL. Otherwise a second overlapping open raises
-`ArchiveyUsageError`, so accidental sharing fails fast. On a `CONCURRENT` reader,
-random-access calls, further `stream_members()` passes and `extract_all()` also run
-beside a `stream_members()` or `extract_all()` pass: they share the reader's one member
-walk, each at its own position, and every pull, cursor step and link finalization holds
-the walk lock (`base_reader.py` `_walk_lock`). A TAR pass stream reading through the
-walk moves to a view of its own before the walk moves on for another caller
-(`_WalkHandoffStream`). A library-internal scope (an extraction's own opens, link-data
-reads) is filed under its own thread's pass, never another thread's. Close stays
+`ArchiveyUsageError`, so accidental sharing fails fast. Lookup calls share the reader's
+one member walk, each at its own position, and every pull, cursor step and link
+finalization holds the walk lock (`base_reader.py` `_walk_lock`). A pass
+(`stream_members()`, `extract_all()`, `verify_all()`) has the reader to itself in both
+modes: any other call beside it raises, so nothing moves the walk under a pass stream
+that reads through it. A library-internal scope (an extraction's own opens, link-data
+reads) is filed under that pass. Close stays
 single-owner, as does everything on a reader without `CONCURRENT`. Stream leases defer
 backend teardown until the last stream closes, because an accelerator must close before
 it is finalized
@@ -1341,7 +1342,7 @@ it is finalized
 §6).
 
 **Tests.** The required `free-threaded-concurrency` job (Linux CPython 3.13t,
-`.github/workflows/ci.yml`), which runs `tests/test_concurrent_pass_workers.py` among
+`.github/workflows/ci.yml`), which runs `tests/test_concurrent_pass_refusals.py` among
 the rest; optional backends are not claimed until a job runs them.
 Scope: [`docs/install.md`](../docs/install.md) §Free-threaded Python; design:
 [`investigations/parallel-reader.md`](investigations/parallel-reader.md) §4.

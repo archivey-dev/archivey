@@ -14,10 +14,10 @@ A kernel is used when all of these hold:
   one may differ from this archivey's Python twin, so it is skipped, logged once at
   DEBUG);
 - under ``ProcessIsolation.NATIVE_DECODERS``, which promises that no native decoder
-  runs in this process, a decoding kernel (ARM64, RISC-V, LZW, LZO1X, LZX) runs in the
-  decoder child (:mod:`archivey.internal.kernels.child`), and the Python twin decodes
-  when no child can run it. BCJ2, LZFSE and LZVN are not run there yet, so their
-  Python twins decode them. CRC-16/ARC and ZipCrypto run in this process under every
+  runs in this process, a decoding kernel (ARM64, RISC-V, LZW, LZO1X, LZX, LZFSE,
+  LZVN) runs in the decoder child (:mod:`archivey.internal.kernels.child`), and the
+  Python twin decodes when no child can run it. BCJ2 is not run there yet, so its
+  Python twin decodes it. CRC-16/ARC and ZipCrypto run in this process under every
   setting, as checksums and AES do.
 
 A missed check in a kernel panics, and PyO3 raises ``pyo3_runtime.PanicException``, a
@@ -27,10 +27,9 @@ into archivey's ``CorruptionError`` with the panic as its cause.
 
 from __future__ import annotations
 
-import contextlib
-from collections.abc import Generator, Mapping
+from collections.abc import Mapping
 from types import ModuleType
-from typing import NoReturn
+from typing import Literal, NoReturn
 
 from archivey.exceptions import (
     CorruptionError,
@@ -143,33 +142,84 @@ def caused_by_panic(exc: BaseException) -> bool:
     return panic_of(exc) is not None
 
 
-@contextlib.contextmanager
-def panic_to_corruption(kernel: str) -> Generator[None]:
+# The guards below are classes, not ``contextlib.contextmanager`` generators. On
+# CPython 3.12 a generator keeps the frame that last resumed it as its ``f_back``, so
+# when it raises a new error in place of one thrown into it, the thrown error's
+# traceback holds the generator's frame, that ``f_back`` is contextlib's ``__exit__``
+# frame, and that frame holds the thrown error: a cycle that keeps the caller's frames,
+# and the kernel object in them, alive until the garbage collector runs (see
+# ``kept_errors``). For the same reason each ``__exit__`` deletes its local for the
+# error it raises as the raise leaves: its frame is in that error's traceback.
+
+
+def _as_corruption(kernel: str, exc: BaseException) -> BaseException:
+    """``exc`` as the error to raise: a new ``CorruptionError`` for a panic (the
+    caller raises it from the panic), else ``exc`` itself."""
+    if is_panic(exc):
+        return CorruptionError(
+            f"archivey-codecs' {kernel} decoder failed on this data: {exc}"
+        )
+    return exc
+
+
+class panic_to_corruption:
     """Raise a panic in the block as ``CorruptionError``, the panic its cause."""
-    try:
-        yield
-    except BaseException as exc:
-        if is_panic(exc):
-            raise CorruptionError(
-                f"archivey-codecs' {kernel} decoder failed on this data: {exc}"
-            ) from exc
-        raise
+
+    __slots__ = ("_kernel",)
+
+    def __init__(self, kernel: str) -> None:
+        self._kernel = kernel
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(
+        self, kind: type[BaseException] | None, exc: BaseException | None, tb: object
+    ) -> Literal[False]:
+        if exc is None:
+            return False
+        error = _as_corruption(self._kernel, exc)
+        if error is exc:
+            return False
+        try:
+            raise error from exc
+        finally:
+            del error
 
 
-@contextlib.contextmanager
-def codec_errors(module: Kernels, kernel: str) -> Generator[None]:
+class codec_errors:
     """Raise the package's errors as archivey's, with the same message, and a panic
     as ``CorruptionError``. The kernels raise with their Python twin's message, so the
     error a caller sees is the one the twin raises."""
-    try:
-        with panic_to_corruption(kernel):
-            yield
-    except module.TruncatedDataError as exc:
-        raise TruncatedError(str(exc)) from None
-    except module.CorruptDataError as exc:
-        raise CorruptionError(str(exc)) from None
-    except module.UnsupportedDataError as exc:
-        raise UnsupportedFeatureError(str(exc)) from None
+
+    __slots__ = ("_kernel", "_module")
+
+    def __init__(self, module: Kernels, kernel: str) -> None:
+        self._module = module
+        self._kernel = kernel
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(
+        self, kind: type[BaseException] | None, exc: BaseException | None, tb: object
+    ) -> Literal[False]:
+        if exc is None:
+            return False
+        error = _as_corruption(self._kernel, exc)
+        if error is not exc:
+            try:
+                raise error from exc
+            finally:
+                del error
+        module = self._module
+        if isinstance(exc, module.TruncatedDataError):
+            raise TruncatedError(str(exc)) from None
+        if isinstance(exc, module.CorruptDataError):
+            raise CorruptionError(str(exc)) from None
+        if isinstance(exc, module.UnsupportedDataError):
+            raise UnsupportedFeatureError(str(exc)) from None
+        return False
 
 
 class Latch:
@@ -188,25 +238,34 @@ class Latch:
         # this latch (see ``kept_errors``).
         self._failure: tuple[CorruptionError, BaseException] | None = None
 
-    @contextlib.contextmanager
-    def guard(self) -> Generator[None]:
-        """Raise the stored failure, else run the block, storing a panic in it as
-        the ``CorruptionError`` it raises."""
+    def guard(self) -> Latch:
+        """The latch as a context manager: it raises the stored failure, else runs
+        the block, storing a panic in it as the ``CorruptionError`` it raises. A class
+        rather than a generator: see the note above :func:`_as_corruption`."""
+        return self
+
+    def __enter__(self) -> None:
         if self._failure is not None:
             self._raise_again(*self._failure)
-        try:
-            with panic_to_corruption(self._kernel):
-                yield
-        except CorruptionError as exc:
+
+    def __exit__(
+        self, kind: type[BaseException] | None, exc: BaseException | None, tb: object
+    ) -> Literal[False]:
+        if exc is None:
+            return False
+        error = _as_corruption(self._kernel, exc)
+        if isinstance(error, CorruptionError):
             # The panic itself, wherever it is in the chain: a copy drops its own
             # cause, so a copy of a cause that wraps the panic would lose it.
-            # The local goes before the raise: this frame is in the error's
-            # traceback, and the raised panic's own traceback holds the caller.
-            panic = panic_of(exc)
+            panic = exc if error is not exc else panic_of(exc)
             if panic is not None:
-                self._failure = (unraised(exc), unraised(panic))
-            del panic
-            raise
+                self._failure = (unraised(error), unraised(panic))
+        if error is exc:
+            return False
+        try:
+            raise error from exc
+        finally:
+            del error
 
     @staticmethod
     def _raise_again(error: CorruptionError, panic: BaseException) -> NoReturn:

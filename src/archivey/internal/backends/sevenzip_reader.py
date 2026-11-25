@@ -29,7 +29,6 @@ from __future__ import annotations
 import io
 import re
 import stat
-import threading
 import zlib
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, ExitStack, suppress
@@ -929,14 +928,10 @@ class SevenZipReader(BaseArchiveReader):
         self._link_data: dict[int, bytes | ArchiveyError] = {}
         # The link member a data pass is on, and how to open it from that pass's own
         # folder decode. Valid only until the pass moves on; ``extract_all`` reads an
-        # accepted link through it (``_link_data_stream``). The thread is the one that
-        # ran the pass step, the only one that may read through that decoder. One slot
-        # for every pass: on a CONCURRENT reader several passes can run, and another
-        # pass's step clears or replaces this offer. A cancelled offer costs one decode
-        # of the folder, never wrong bytes (the member and thread checks refuse it).
+        # accepted link through it (``_link_data_stream``). A pass has the reader to
+        # itself, so only the pass's own call can take the offer.
         self._pass_link: (
-            tuple[ArchiveMember, Callable[[], ArchiveStreamImpl], threading.Thread]
-            | None
+            tuple[ArchiveMember, Callable[[], ArchiveStreamImpl]] | None
         ) = None
         # A member's or coder's compressed data is the codec's whole input, so a
         # byte its codec leaves unread is refused (``StreamConfig.refuse_input_after_end``).
@@ -1298,7 +1293,7 @@ class SevenZipReader(BaseArchiveReader):
                 # handed out. Finalization skips the flagged member.
                 self._report_unreadable_link_target(member, kept)
             return content
-        self._pass_link = (member, opener, threading.current_thread())
+        self._pass_link = (member, opener)
         return None
 
     def _capture_link_data(
@@ -1418,10 +1413,6 @@ class SevenZipReader(BaseArchiveReader):
         pass sitting on this member, through its own decoder; then a direct open, which
         decodes the folder from its start (``open()`` following a link, a listing of
         one link).
-
-        The pass's decoder is offered only on the thread that ran the pass step. A
-        ``CONCURRENT`` reader admits ``open()`` beside a ``stream_members()`` pass from
-        any thread, and a call from another thread must not move the pass's decoder.
         """
         member_id = member._member_id
         kept = self._link_data.pop(member_id, None) if member_id is not None else None
@@ -1430,11 +1421,7 @@ class SevenZipReader(BaseArchiveReader):
         if kept is not None:
             return io.BytesIO(kept)
         pass_link = self._pass_link
-        if (
-            pass_link is not None
-            and pass_link[0] is member
-            and pass_link[2] is threading.current_thread()
-        ):
+        if pass_link is not None and pass_link[0] is member:
             return pass_link[1]()
         return self._open_member_handle(member)
 

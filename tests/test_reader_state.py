@@ -128,17 +128,20 @@ def test_suspended_pass_is_not_diagnosed_as_a_callback() -> None:
     assert state.lifecycle is not LifecycleState.OPEN
 
 
-def test_internal_open_window_still_admits_children() -> None:
+def test_internal_open_window_admits_no_pass_and_no_worker() -> None:
+    """The window exempts only the live-stream gate: a pass or a worker call from
+    inside it is refused as re-entry, like any call beside the running pass."""
     state = _state()
     root = state.acquire_pass("extract_all")
     state.begin_internal_opens()
     try:
-        child = state.acquire_pass("stream_members")
-        worker = state.acquire_worker("open")
+        with pytest.raises(ArchiveyUsageError, match="re-entered"):
+            state.acquire_pass("stream_members")
+        with pytest.raises(ArchiveyUsageError, match="re-entered"):
+            state.acquire_worker("open")
     finally:
         state.end_internal_opens()
-    assert child.parent is root
-    assert worker.parent is root
+        state.release_pass(root)
 
 
 def _zip_with_bidi_name() -> bytes:
@@ -790,19 +793,20 @@ def test_an_error_out_of_the_orphan_pass_closes_it(
     monkeypatch.setattr(ExtractionCoordinator, "_fill_held_source", fail)
     with open_archive(_tar_with_orphaned_hardlink(tmp_path)) as reader:
         passes = []
-        real = reader.stream_members
+        real = reader._stream_members
 
-        def kept(*args: object, **kwargs: object) -> object:
+        def kept(*args: object, **kwargs: object) -> Iterator[object]:
             source = real(*args, **kwargs)  # type: ignore[arg-type]
             passes.append(source)
             return source
 
-        monkeypatch.setattr(reader, "stream_members", kept)
+        monkeypatch.setattr(reader, "_stream_members", kept)
         with pytest.raises(RuntimeError, match="linking failed") as excinfo:
             reader.extract_all(tmp_path / "out", members=["link.txt"], policy="trusted")
         assert excinfo.value is not None  # the traceback is still held here
-        (orphan_pass,) = passes
-        assert orphan_pass._pass.gi_frame is None
+        # The main pass, then the orphan pass for the link's source: both closed.
+        assert len(passes) == 2
+        assert all(source.gi_frame is None for source in passes)
 
 
 def test_a_failed_pass_close_does_not_hide_the_extraction_error() -> None:

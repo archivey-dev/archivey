@@ -29,6 +29,7 @@ from archivey.exceptions import (
     _UsageTypeError,
     _UsageValueError,
 )
+from archivey.internal.callback_scope import user_callback
 from archivey.types import ArchiveMember
 
 _T = TypeVar("_T")
@@ -351,8 +352,9 @@ class _PasswordCandidates:
             self._provider_owner = (me, token)
         context_token = _PROVIDER_CALL.set(token)
         try:
-            # Provider runs with no Archivey lock held.
-            raw = self._provider(PasswordRequest(member=member, attempt=attempt))
+            # Provider runs with no Archivey lock held, as the caller's code.
+            with user_callback():
+                raw = self._provider(PasswordRequest(member=member, attempt=attempt))
         finally:
             _PROVIDER_CALL.reset(context_token)
             with self._provider_turn:
