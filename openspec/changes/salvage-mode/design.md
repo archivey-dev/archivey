@@ -250,17 +250,21 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
 - **A found chain is provisional until its member is confirmed.** One rule covers every
   walk (a file, a codec stream, a deb's forward-only `data.tar`, a `stream_members()`
   pass): a found chain whose member is not confirmed changes nothing that outlives it.
-  The search's start puts back what the chain changed (the PAX global records and the
-  v7 rule's record of what was listed), and a confirmation keeps it. A member is
-  confirmed only when the block after its data passes the search's own checks, or is
-  the clean end. A member a forward-only walk trusts (below) is confirmed when the
-  walk reads that block, on the same checks. So a found `g` header counts for later
-  members only once its member is confirmed (davi, 2026-11-26), and a found member
-  nothing confirms neither ends nor starts the v7 rule. The `g` header still applies
-  to its own unconfirmed member, and that member's `MEMBER_FOUND_BY_SCAN` message says
-  so. This departs from GNU tar on purpose: GNU tar `--ignore-zeros` applies such a
-  header to later members, but a chain with no confirmed member is noise. A `g` header
-  the walk itself reaches applies to later members as in GNU tar.
+  The search's start puts back what the chain changed (the PAX global records and the v7
+  rule's record of what was listed), and a confirmation keeps it. A member is confirmed
+  only when the block after its data passes the search's own checks, or is the clean
+  end. A member a forward-only walk trusts (below) is confirmed when the walk reads that
+  block, on the same checks. The two-pass walk on a codec stream keeps the rule: a gap
+  is a search the first pass defers, so it keeps the state that search would start from
+  (before an unconfirmed member's chain), and pass 2 starts each gap from it; the
+  re-walk after a gap carries a re-read chain's records to the next held member only
+  when that member is confirmed or the walk reached it. So a found `g` header counts for
+  later members only once its member is confirmed (davi, 2026-11-26), and a found member
+  nothing confirms neither ends nor starts the v7 rule. The `g` header still applies to
+  its own unconfirmed member, and that member's `MEMBER_FOUND_BY_SCAN` message says so.
+  This departs from GNU tar on purpose: GNU tar `--ignore-zeros` applies such a header
+  to later members, but a chain with no confirmed member is noise. A `g` header the walk
+  itself reaches applies to later members as in GNU tar.
 - **A found chain hits a limit only for what the archive can hold.** A found header's
   numbers may be noise. When a charge against `max_metadata_bytes` fails for data a
   found header claims (an extended header's data, a PAX 1.0 sparse map's entry count)
@@ -322,9 +326,10 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
     it under `SalvageState.revisiting`. A held member counts against the listing
     limits from when it is held (`ListingLimitTracker.hold`, at least the metadata its
     member keeps), so a listing that crosses a limit stops at that member, as a
-    one-pass walk does. Pass 2 starts each gap with the PAX global records in force at
-    its start, kept with the gap: a global header pass 1 read later applies only to
-    what follows it.
+    one-pass walk does. Pass 2 starts each gap with the state a search from its start
+    has in a one-pass walk (the PAX global records and the v7 rule's flags), kept with
+    the gap: a global header pass 1 read later applies only to what follows it, and a
+    member pass 1 listed later does not end the v7 rule inside the gap.
   - **The re-walk after a gap** (maintainer ruling, review round 4 of PR 1774, K10).
     A global header inside a gap reaches only pass 2, so the members pass 1 held
     after the gap were parsed with older records. When pass 2 ends a gap with

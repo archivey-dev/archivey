@@ -2418,3 +2418,78 @@ def test_a_found_sparse_map_the_file_lacks_is_passed_over() -> None:
     # The default walk over the same member, intact, still hits the limit.
     with pytest.raises(ResourceLimitError, match="sparse map"):
         _list(data[3 * BLOCKSIZE :])
+
+
+# ---------------------------------------------------------------------------
+# The two-pass walk keeps a found chain provisional too
+# ---------------------------------------------------------------------------
+
+
+def _gap_maker() -> bytes:
+    """A found header claiming 8 MiB past the end: on a codec stream the first pass
+    reads to the end and searches only the last 4 MiB, so the bytes after this
+    header and before the :func:`_gap_filler` are a gap the second pass searches,
+    and the members after the filler are held."""
+    info = tarfile.TarInfo("liar")
+    info.size = 8 << 20
+    return info.tobuf(tarfile.USTAR_FORMAT) + b"Z" * BLOCKSIZE
+
+
+def _gap_filler() -> bytes:
+    return random.Random(5).randbytes(4_300_000 // BLOCKSIZE * BLOCKSIZE)
+
+
+def _pax_listing(data: bytes) -> list[tuple[str, object]]:
+    with open_archive(io.BytesIO(data), salvage=True) as reader:
+        members = reader.members_report().members
+        return [(m.name, m.extra.get("tar.pax_headers")) for m in members]
+
+
+def test_the_second_pass_searches_a_gap_with_the_v7_rule_of_its_start() -> None:
+    # A v7 archive: the v7 members in the gap are found by the first pass's v7
+    # rule at the gap's start, not ended by the ustar members the first pass
+    # listed after the gap.
+    data = (
+        _v7_member("a.txt", b"a")
+        + b"X" * BLOCKSIZE
+        + _gap_maker()
+        + _v7_member("v1.txt", b"1")
+        + _v7_member("v2.txt", b"2")
+        + _gap_filler()
+        + b"W" * BLOCKSIZE
+        + _member("late.txt", b"late")
+        + _member("late2.txt", b"l2")
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    plain = _list(data, salvage=True).names
+    assert plain == ["a.txt", "liar", "v1.txt", "v2.txt", "late.txt", "late2.txt"]
+    assert _list(gzip.compress(data, 1), salvage=True).names == plain
+
+
+def test_the_rewalk_after_a_gap_does_not_carry_an_unconfirmed_global_header() -> None:
+    # The gap holds a global header with a confirmed member (pass 2 only); the
+    # first pass held u.txt, found with a g header and confirmed by nothing, then
+    # real.txt. The re-walk applies the gap's records to real.txt, and u.txt's g
+    # header to u.txt alone, as the one-pass walk of the plain tar does.
+    data = (
+        _member("before.txt", b"b")
+        + b"X" * BLOCKSIZE
+        + _gap_maker()
+        + _global_header({"uname": "gone1"})
+        + _member("in.txt", b"in")
+        + _member("in2.txt", b"i2")
+        + _gap_filler()
+        + b"W" * BLOCKSIZE
+        + _global_header({"path": "hijacked.txt"})
+        + _member("u.txt", b"")
+        + b"Y" * BLOCKSIZE
+        + _member("real.txt", b"real")
+        + _member("real2.txt", b"r2")
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    plain = _pax_listing(data)
+    assert plain[-2:] == [
+        ("real.txt", {"uname": "gone1"}),
+        ("real2.txt", {"uname": "gone1"}),
+    ]
+    assert _pax_listing(gzip.compress(data, 1)) == plain

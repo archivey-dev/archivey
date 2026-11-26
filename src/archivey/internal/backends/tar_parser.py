@@ -1327,7 +1327,8 @@ class _Charger:
     one budget. The limit message names the member once :meth:`name_member` has
     given its name, and "a TAR member" before.
 
-    ``lacks`` is set for a chain a salvage search found (:meth:`TarWalker._ends_before`):
+    ``lacks`` is set for a chain a salvage search found
+    (:meth:`TarWalker._ends_before`):
     see :meth:`claim`."""
 
     __slots__ = ("_lacks", "_name", "_raw_name", "cap", "left")
@@ -1538,6 +1539,9 @@ class TarWalker:
         # 100-byte name field (no NUL in it).
         self._found_at = -1
         self.found_name_full = False
+        # The PAX global records in force where the last chain read starts: what a
+        # salvage re-walk compares (TarReader._rewalk).
+        self.chain_records = GlobalRecords(self._global, self._global_view, False)
         # Where the block after the data of a found member whose size the walk
         # trusted starts (salvage_confirms), with the v7 rule of its search: that
         # block confirms the member only if it passes the same checks.
@@ -1995,6 +1999,7 @@ class TarWalker:
         is trusted, an error included.
         """
         chain = _Chain(self._pos)
+        self.chain_records = self.global_records()
         try:
             result = self._read_chain(budget, chain)
         except ArchiveyError:

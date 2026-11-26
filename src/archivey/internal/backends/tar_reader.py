@@ -735,26 +735,29 @@ def _held_weight(entry: TarEntry) -> int:
 
 
 @dataclass(frozen=True)
-class _Gap:
-    """A range of a found member's data the first salvage pass read past without
-    searching it (``_SalvageWalk.gaps``), and the PAX global records in force at its
-    start, which the second pass puts back before it searches there, unless the
-    re-walk after the gap before it ended with others (``TarReader._rewalk``)."""
-
-    start: int
-    stop: int
-    records: GlobalRecords
-
-
-@dataclass(frozen=True)
-class _Provisional:
-    """What a found chain may change for the rest of the walk, as it stood before
-    the search found it (:meth:`_SalvageWalk.search_starts`): the PAX global records
-    and the v7 rule's record of what was listed."""
+class _WalkState:
+    """What a found chain may change for the rest of the walk, at one point of it:
+    the PAX global records and the v7 rule's record of what was listed. It is kept
+    from before a found chain until its member is confirmed
+    (``_SalvageWalk.provisional``), and from the start of each gap for the second
+    pass (``_Gap.state``)."""
 
     records: GlobalRecords
     listed: bool
     listed_non_v7: bool
+
+
+@dataclass(frozen=True)
+class _Gap:
+    """A range of a found member's data the first salvage pass read past without
+    searching it (``_SalvageWalk.gaps``), and the state a search from its start
+    uses (:meth:`_SalvageWalk.search_state`), which the second pass puts back
+    before it searches there. The re-walk after the gap before it may end with
+    other PAX global records (``TarReader._rewalk``)."""
+
+    start: int
+    stop: int
+    state: _WalkState
 
 
 @dataclass
@@ -771,12 +774,15 @@ class _SalvageWalk:
     size (``TarWalker.salvage_confirms``).
 
     A found chain is provisional until its member is confirmed: what it changes for
-    the rest of the walk (``_Provisional``) is kept as it stood before the search
+    the rest of the walk (``_WalkState``) is kept as it stood before the search
     found it, put back when the next search starts (:meth:`search_starts`), and
     dropped when the member is confirmed (:meth:`confirm`). Every way a found member
     ends up unconfirmed (its chain makes no member, the block after its data does
     not confirm it, or nothing confirms the size a forward-only walk trusted) leads
-    to a next search, so that one point puts the state back on every path.
+    to a next search, so that one point puts the state back on every path. A gap
+    the first pass leaves is such a search, deferred: it keeps the state that
+    search starts from (:meth:`search_state`), and the second pass starts from it
+    (:meth:`enter_gap`).
 
     The two-pass rule (design.md, "Notes from the TAR PR"): on a codec walk the
     first pass reads the layer forward once, and ``gaps`` holds, in order, the
@@ -791,7 +797,7 @@ class _SalvageWalk:
     default_last: ArchiveMember | None = None
     default_count: int = 0
     found_at: int | None = None
-    provisional: _Provisional | None = None
+    provisional: _WalkState | None = None
     trusted: int | None = None
     v7: bool = False
     limit_reached: bool = False
@@ -816,9 +822,30 @@ class _SalvageWalk:
 
     def chain_found(self, walker: TarWalker) -> None:
         """A search found a chain: what it changes is provisional from here."""
-        self.provisional = _Provisional(
-            walker.global_records(), self.listed, self.listed_non_v7
-        )
+        self.provisional = self._state(walker)
+
+    def _state(self, walker: TarWalker) -> _WalkState:
+        return _WalkState(walker.global_records(), self.listed, self.listed_non_v7)
+
+    def search_state(self, walker: TarWalker) -> _WalkState:
+        """The state a search from here starts from: the one before the pending
+        found chain, whose member is not confirmed, or the walk's own."""
+        if self.provisional is not None:
+            return self.provisional
+        return self._state(walker)
+
+    def enter_gap(
+        self, walker: TarWalker, state: _WalkState, records: GlobalRecords | None
+    ) -> None:
+        """Before the second pass searches a gap: the state at its start, with
+        ``records`` in place of its records when the re-walk after the gap before
+        ended with others. What the second pass listed before also counts for the
+        v7 rule: the flags only grow along the archive."""
+        walker.restore_global_records(state.records if records is None else records)
+        self.listed = state.listed or self.listed
+        self.listed_non_v7 = state.listed_non_v7 or self.listed_non_v7
+        self.provisional = None
+        self.trusted = None
 
     def confirm(self) -> None:
         """The found member is confirmed: what its chain changed stands."""
@@ -1350,8 +1377,6 @@ class TarReader(BaseArchiveReader):
         # The members the first salvage pass lists after its first gap, held until
         # the second pass has searched the gaps, so the listing keeps archive order.
         held: list[_Held] = []
-        # The PAX global records in force where the chain of ``entry`` starts.
-        chain_records = walker.global_records()
         # ``None`` once the salvage searches have found nothing more.
         entry: TarEntry | TarEnd | None = first
         if salvage.default_end is not None and isinstance(first, TarEnd):
@@ -1373,7 +1398,7 @@ class TarReader(BaseArchiveReader):
                     if defer:
                         salvage.note_listed(entry)
                         self._hold_entry(entry)
-                        held.append(_Held(entry, found, chain_records))
+                        held.append(_Held(entry, found, walker.chain_records))
                     else:
                         last_member = self._to_member(entry, index)
                         self._emit_found(last_member, index, found)
@@ -1385,7 +1410,6 @@ class TarReader(BaseArchiveReader):
                     salvage.note_listed(entry)
                     yield last_member
                     index += 1
-                chain_records = walker.global_records()
                 if search_from is not None:
                     entry = self._salvage_next(walker, search_from, salvage)
                 else:
@@ -1408,7 +1432,6 @@ class TarReader(BaseArchiveReader):
             if start is None:
                 break
             salvage.begin(entry, last_member, index)
-            chain_records = walker.global_records()
             entry = self._salvage_next(walker, start, salvage)
         if salvage.gaps and not salvage.limit_reached:
             held += self._second_pass(walker, salvage, held)
@@ -1642,8 +1665,10 @@ class TarReader(BaseArchiveReader):
                 search_from = walker.search_floor(search_from)
                 unread = search_from - after_header
                 if gap is None and unread:
+                    # A search deferred to the second pass: it starts from what a
+                    # search from here would, without this chain if unconfirmed.
                     salvage.gaps.append(
-                        _Gap(after_header, search_from, walker.global_records())
+                        _Gap(after_header, search_from, salvage.search_state(walker))
                     )
         unchecked: tuple[str, ...] = ("position",)
         if searched and entry.header.offset == found and walker.found_name_full:
@@ -1769,6 +1794,9 @@ class TarReader(BaseArchiveReader):
         # The records the re-walk after the last gap ended with, at this gap's start.
         rewalked: GlobalRecords | None = None
         gaps = salvage.gaps
+        # The v7 rule's flags start from each gap's own (enter_gap), plus what the
+        # second pass lists, not from all the first pass listed after the gap.
+        salvage.listed = salvage.listed_non_v7 = False
         for number, gap in enumerate(gaps):
             at_start, rewalked = rewalked, None
             gap_stop = gap.stop
@@ -1776,11 +1804,10 @@ class TarReader(BaseArchiveReader):
                 continue
             if gap.start >= reached:
                 # A global header the first pass read after this gap does not
-                # apply to what the search finds in it. A walk that ran on into
-                # the gap from the one before has the records in force already.
-                walker.restore_global_records(
-                    gap.records if at_start is None else at_start
-                )
+                # apply to what the search finds in it, nor does a member it listed
+                # there count for the v7 rule. A walk that ran on into the gap from
+                # the one before has the state in force already.
+                salvage.enter_gap(walker, gap.state, at_start)
             start = max(gap.start, reached)
             salvage.gap = (start, gap_stop)
             try:
@@ -1895,7 +1922,10 @@ class TarReader(BaseArchiveReader):
             self._listing_tracker.release(old.entry)
             self._hold_entry(entry)
             held[index] = _Held(entry, found, records)
-            records = walker.global_records()
+            if found.confirmed or not found.searched:
+                # As in the first pass: a found chain whose member nothing
+                # confirms changes nothing for the members after it.
+                records = walker.global_records()
             index += 1
             if moved and found.confirmed:
                 if stop is not None and data_end > stop:
