@@ -59,8 +59,9 @@ SHALL go on after its data. An unconfirmed member SHALL be listed with
 `confirmed=False`, claim nothing, and the search SHALL go on at the byte after its
 first byte. No byte of a volume SHALL be searched twice.
 
-**Headers that are not members.** A MAIN header found after the first SHALL be skipped
-without reading its flags. A RAR5 ENCRYPTION header found after MAIN, or after a damaged
+**Headers that are not members.** A MAIN header found after the first, or after a
+MAIN that failed its CRC behind an intact signature, SHALL be skipped without reading
+its flags. A RAR5 ENCRYPTION header found after MAIN, or after a damaged
 MAIN, SHALL be skipped. An end block found after a search in the same volume SHALL end
 the volume when only zeros or the end of the volume follow it; otherwise the search SHALL
 go on after it, and when it finds no header to the volume's end, the end block SHALL end
@@ -74,6 +75,12 @@ so that no byte of a window is hashed more than once for such candidates. Howeve
 close together the damage points are, each byte of a volume SHALL be read and scanned
 by each finder a bounded number of times. Found members SHALL count against
 `ListingLimits`.
+
+**A found header that fails.** Past damage, a header that passed its check and then
+fails when the walk acts on it (a field or record it declares, a seek past its data,
+a split continuation of another member) SHALL be damage the search found: it SHALL
+NOT be listed, the damage SHALL be recorded after the default's, and the search SHALL
+go on from the byte after its first. It SHALL NOT end the open.
 
 Each `ARCHIVE_REGION_SKIPPED` SHALL be recorded once per open, from the parse that
 stands: a parse started over (a retry with a password, a file read again as a later

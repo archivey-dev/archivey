@@ -3557,6 +3557,36 @@ class _Rar3Walk:
         """Whether the walk is past ``MAIN``: it read it, or salvage lost it."""
         return self.main_seen or self.main_lost
 
+    @property
+    def _own_main_passed(self) -> bool:
+        """Whether the volume's own ``MAIN`` is behind the walk: read, or damaged in
+        its place after an intact signature. A ``MAIN`` found after it is a nested
+        archive's, whose flags are not read."""
+        return self.main_seen or (self.main_lost and not self.start_lost)
+
+    def _found_block_failed(self, exc: CorruptionError, start: int) -> bool:
+        """Past damage in salvage mode, the header at ``start`` passed its check and
+        then failed: a field it declares, a record it holds, or its place among the
+        others (a split, a seek past its data) is invalid. That is damage the search
+        found, not the end of the open: the damage is recorded after the default's,
+        and the search goes on from the byte after the header's first. ``True`` with
+        the walk at the next header found; ``False`` when it is the volume's end.
+        Raises ``exc`` before the damage, or with no search to make."""
+        if (
+            not self.past_damage
+            or not self._can_salvage()
+            or isinstance(exc, EncryptionError)
+        ):
+            raise exc
+        self.damaged = _add_damage(self.damaged, self._damage_text(exc, start))
+        self.found_here = False
+        members = self.members
+        if members and members[-1].header_offset == start:
+            # Listed before the failure (a seek past its data): as the damaged
+            # header where a walk stops, it is not listed.
+            members.pop()
+        return self._salvage_resume(start + 1)
+
     def _can_salvage(self) -> bool:
         return self.salvage is not None and not self.has_header_encryption
 
@@ -3758,65 +3788,74 @@ class _Rar3Walk:
                 if self.damage_stop and self._salvage_resume(self.resume_from):
                     continue
                 break
-            self.found_here = self.found_at == block.start
-            self.found_at = None
-            if block.block_type == _RAR3_MARK:
-                _seek_after_packed(source, block.data_offset, block.add_size)
-                continue
-            if block.block_type == _RAR3_MAIN:
-                if self.past_damage and self.main_seen:
-                    # Past damage, a second MAIN may be a nested archive's.
+            try:
+                self.found_here = self.found_at == block.start
+                self.found_at = None
+                if block.block_type == _RAR3_MARK:
                     _seek_after_packed(source, block.data_offset, block.add_size)
                     continue
-                try:
-                    self._on_main(block)
-                except _RarHeaderCrcError as exc:
-                    if not self._can_salvage() or block.encrypted:
-                        raise
-                    self._lose_damaged_main(exc, block.start)
-                    if self._salvage_resume(block.start):
+                if block.block_type == _RAR3_MAIN:
+                    if self.past_damage and self._own_main_passed:
+                        # Past damage, a second MAIN may be a nested archive's.
+                        _seek_after_packed(source, block.data_offset, block.add_size)
                         continue
-                    break
-                continue
-            if block.block_type == _RAR3_ENDARC:
-                outcome = self._on_end_block(block)
-                if outcome is not None:
-                    if self._salvage_resume(outcome):
-                        continue
-                    if outcome > block.start and not self._search_spent():
-                        # An intact end block the search went on after, finding
-                        # nothing to the volume's end: it ends this volume.
-                        self.ended_in_damage = False
-                        self._on_end_block(block, searched_after=True)
-                break
-            if block.block_type in (_RAR3_FILE, _RAR3_SUB):
-                if not self._on_file_header(block):
-                    if not self.resume:
-                        if self._can_salvage() and self._salvage_resume(
-                            self.resume_from
-                        ):
+                    try:
+                        self._on_main(block)
+                    except _RarHeaderCrcError as exc:
+                        if not self._can_salvage() or block.encrypted:
+                            raise
+                        self._lose_damaged_main(exc, block.start)
+                        if self._salvage_resume(block.start):
                             continue
                         break
-                    chain, self.resume = self.resume, []
-                    for damaged, member, crc_pos in chain:
-                        _seek_to(source, damaged.data_offset)
-                        self._on_parsed_file_header(
-                            damaged, member, crc_pos, damaged=True
-                        )
-                        pending, self.pending = self.pending, None
-                        if pending is not None:
-                            yield pending
-                            _seek_after_packed(
-                                source, pending.data_offset, pending.data_size
-                            )
                     continue
-                pending, self.pending = self.pending, None
-                if pending is not None:
-                    yield pending
-                    _seek_after_packed(source, pending.data_offset, pending.data_size)
-                continue
-            # Unknown / skippable block
-            _seek_after_packed(source, block.data_offset, block.add_size)
+                if block.block_type == _RAR3_ENDARC:
+                    outcome = self._on_end_block(block)
+                    if outcome is not None:
+                        if self._salvage_resume(outcome):
+                            continue
+                        if outcome > block.start and not self._search_spent():
+                            # An intact end block the search went on after, finding
+                            # nothing to the volume's end: it ends this volume.
+                            self.ended_in_damage = False
+                            self._on_end_block(block, searched_after=True)
+                    break
+                if block.block_type in (_RAR3_FILE, _RAR3_SUB):
+                    if not self._on_file_header(block):
+                        if not self.resume:
+                            if self._can_salvage() and self._salvage_resume(
+                                self.resume_from
+                            ):
+                                continue
+                            break
+                        chain, self.resume = self.resume, []
+                        for damaged, member, crc_pos in chain:
+                            _seek_to(source, damaged.data_offset)
+                            self._on_parsed_file_header(
+                                damaged, member, crc_pos, damaged=True
+                            )
+                            pending, self.pending = self.pending, None
+                            if pending is not None:
+                                yield pending
+                                _seek_after_packed(
+                                    source, pending.data_offset, pending.data_size
+                                )
+                        continue
+                    pending, self.pending = self.pending, None
+                    if pending is not None:
+                        yield pending
+                        _seek_after_packed(
+                            source, pending.data_offset, pending.data_size
+                        )
+                    continue
+                # Unknown / skippable block
+                _seek_after_packed(source, block.data_offset, block.add_size)
+            except CorruptionError as exc:
+                # Past damage, a found header that fails after its CRC16 passed
+                # is damage: the search goes on (``_found_block_failed``).
+                if self._found_block_failed(exc, block.start):
+                    continue
+                break
 
     def result(self) -> RarArchive:
         """What the walk found; call once :meth:`walk` is exhausted."""
@@ -5399,6 +5438,36 @@ class _Rar5Walk:
         self.found_at = first
         _seek_to(self.source, first)
 
+    @property
+    def _own_main_passed(self) -> bool:
+        """Whether the volume's own ``MAIN`` is behind the walk: read, or damaged in
+        its place after an intact signature. A ``MAIN`` found after it is a nested
+        archive's, whose flags are not read."""
+        return self.main_seen or (self.main_lost and not self.start_lost)
+
+    def _found_block_failed(self, exc: CorruptionError, start: int) -> bool:
+        """Past damage in salvage mode, the header at ``start`` passed its check and
+        then failed: a field it declares, a record it holds, or its place among the
+        others (a split, a seek past its data) is invalid. That is damage the search
+        found, not the end of the open: the damage is recorded after the default's,
+        and the search goes on from the byte after the header's first. ``True`` with
+        the walk at the next header found; ``False`` when it is the volume's end.
+        Raises ``exc`` before the damage, or with no search to make."""
+        if (
+            not self.past_damage
+            or not self._can_salvage()
+            or isinstance(exc, EncryptionError)
+        ):
+            raise exc
+        self.damaged = _add_damage(self.damaged, self._damage_text(exc, start))
+        self.found_here = False
+        members = self.members
+        if members and members[-1].header_offset == start:
+            # Listed before the failure (a seek past its data): as the damaged
+            # header where a walk stops, it is not listed.
+            members.pop()
+        return self._salvage_resume(start + 1)
+
     def _can_salvage(self) -> bool:
         return self.salvage is not None and self.hdr_enc is None
 
@@ -5521,53 +5590,64 @@ class _Rar5Walk:
                             source, pending.data_offset, pending.data_size
                         )
                 continue
-            self.headers_read += 1
-            self.found_here = self.found_at == block.header_offset
-            self.found_at = None
-            # Past damage, a MAIN or ENCRYPTION header after the first header the
-            # walk read may be a nested archive's: its flags are not read.
-            nested = self.past_damage and (self.main_seen or self.headers_read > 1)
-            if block.block_type == _RAR5_MAIN:
-                if nested:
-                    _seek_after_packed(source, block.data_offset, block.add_size)
+            try:
+                self.headers_read += 1
+                self.found_here = self.found_at == block.header_offset
+                self.found_at = None
+                # Past damage, a MAIN or ENCRYPTION header after the first header the
+                # walk read may be a nested archive's: its flags are not read.
+                nested = self.past_damage and (
+                    self._own_main_passed or self.headers_read > 1
+                )
+                if block.block_type == _RAR5_MAIN:
+                    if nested:
+                        _seek_after_packed(source, block.data_offset, block.add_size)
+                        continue
+                    self._on_main(block)
                     continue
-                self._on_main(block)
-                continue
-            if block.block_type == _RAR5_ENCRYPTION:
-                # After a damaged MAIN with the signature intact, the archive's own
-                # headers are plain: its ENCRYPTION header would precede MAIN. So
-                # only a lost start can find the archive's own.
-                if nested or (self.past_damage and not self.start_lost):
-                    # The headers after it are ciphertext: search on past them.
-                    if self._salvage_resume(
-                        _packed_span_end(block.data_offset, block.add_size)
-                    ):
-                        continue
-                    break
-                self._on_encryption(block)
-                continue
-            if block.block_type == _RAR5_ENDARC:
-                end = _packed_span_end(block.data_offset, block.add_size)
-                if self.past_damage and not _only_zeros_after(source, end):
-                    # After a search, an end block with more bytes after it may be
-                    # a nested archive's: search on after it. When the search
-                    # finds nothing to its end, the block ends this volume.
-                    if self._salvage_resume(end):
-                        continue
-                    if self._search_spent():
+                if block.block_type == _RAR5_ENCRYPTION:
+                    # After a damaged MAIN with the signature intact, the archive's own
+                    # headers are plain: its ENCRYPTION header would precede MAIN. So
+                    # only a lost start can find the archive's own.
+                    if nested or (self.past_damage and not self.start_lost):
+                        # The headers after it are ciphertext: search on past them.
+                        if self._salvage_resume(
+                            _packed_span_end(block.data_offset, block.add_size)
+                        ):
+                            continue
                         break
-                    self.ended_in_damage = False
-                self._on_end_block(block)
+                    self._on_encryption(block)
+                    continue
+                if block.block_type == _RAR5_ENDARC:
+                    end = _packed_span_end(block.data_offset, block.add_size)
+                    if self.past_damage and not _only_zeros_after(source, end):
+                        # After a search, an end block with more bytes after it may be
+                        # a nested archive's: search on after it. When the search
+                        # finds nothing to its end, the block ends this volume.
+                        if self._salvage_resume(end):
+                            continue
+                        if self._search_spent():
+                            break
+                        self.ended_in_damage = False
+                    self._on_end_block(block)
+                    break
+                if block.block_type in (_RAR5_FILE, _RAR5_SERVICE):
+                    self._on_file_or_service(block)
+                    pending, self.pending = self.pending, None
+                    if pending is not None:
+                        yield pending
+                        _seek_after_packed(
+                            source, pending.data_offset, pending.data_size
+                        )
+                    continue
+                # Unknown block — skip data area.
+                _seek_after_packed(source, block.data_offset, block.add_size)
+            except CorruptionError as exc:
+                # Past damage, a found header that fails after its CRC passed
+                # is damage: the search goes on (``_found_block_failed``).
+                if self._found_block_failed(exc, block.header_offset):
+                    continue
                 break
-            if block.block_type in (_RAR5_FILE, _RAR5_SERVICE):
-                self._on_file_or_service(block)
-                pending, self.pending = self.pending, None
-                if pending is not None:
-                    yield pending
-                    _seek_after_packed(source, pending.data_offset, pending.data_size)
-                continue
-            # Unknown block — skip data area.
-            _seek_after_packed(source, block.data_offset, block.add_size)
 
         self._report_unmatched_qo_copies()
 

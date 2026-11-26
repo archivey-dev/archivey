@@ -1839,3 +1839,103 @@ def test_the_walk_refuses_a_header_size_vint_longer_than_3_bytes(
     assert "header size" in str(listing.error)
     assert salvage.names == ["a"]
     assert type(salvage.error) is CorruptionError
+
+
+def _rar5_vint(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte, value = value & 0x7F, value >> 7
+        out.append(byte | (0x80 if value else 0))
+        if not value:
+            return bytes(out)
+
+
+def _rar5_block(body: bytes) -> bytes:
+    size = _rar5_vint(len(body))
+    return zlib.crc32(size + body).to_bytes(4, "little") + size + body
+
+
+# Headers that pass their CRC-32 and then fail: a data size no seek can reach, a
+# file-encryption record cut short, and a split continuation of a member of
+# another name.
+_FAILING_FOUND_RAR5 = {
+    "packed_size_unseekable": _rar5_block(
+        bytes([2, 0x02]) + _rar5_vint(1 << 63) + bytes([0, 0, 0, 0, 0, 1]) + b"h"
+    ),
+    "encryption_record_cut": _rar5_block(
+        bytes([2, 0x01, 3, 0, 0, 0, 0, 0, 1]) + b"x" + bytes([2, 1, 0])
+    ),
+    "split_of_another_name": _rar5_block(bytes([2, 0, 0, 0, 0, 0, 0, 1]) + b"q")
+    + _rar5_block(bytes([2, 0x08, 0, 0, 0, 0, 0, 1]) + b"s"),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_FAILING_FOUND_RAR5))
+def test_a_found_rar5_header_that_fails_after_its_crc_is_damage(
+    shape: str, tmp_path: Path
+) -> None:
+    """Past damage, a header the search found and whose CRC-32 passed can still
+    fail when the walk acts on it. That is more damage, not the end of the open:
+    it is not listed, the search goes on, and the pass ends in the default's
+    error."""
+    data = (
+        _RAR5_SIGNATURE
+        + _RAR5_MAIN
+        + _RAR5_EMPTY_FILE
+        + bytes(16)
+        + _FAILING_FOUND_RAR5[shape]
+        + _RAR5_EMPTY_E
+        + _RAR5_END
+    )
+    listing = _list(_write(tmp_path, data), salvage=True)
+    assert listing.names[0] == "a"
+    assert listing.names[-1] == "e"
+    assert "h" not in listing.names and "x" not in listing.names
+    assert type(listing.error) is CorruptionError
+    assert "CRC mismatch at offset 30" in str(listing.error)
+
+
+def test_a_found_rar3_split_of_another_name_is_damage(tmp_path: Path) -> None:
+    from tests.rar_util import _rar3_block
+
+    data = (
+        _RAR3_SIGNATURE
+        + _rar3_block(0x73, 0x0000, bytes(6))
+        + _rar3_file_header(b"a", b"alpha")
+        + b"alpha"
+        + bytes(40)
+        + _rar3_file_header(b"q", b"quux")
+        + b"quux"
+        + _rar3_file_header(b"s", b"sss", flags=0x8001)  # continues another name
+        + b"sss"
+        + _rar3_file_header(b"e", b"eee")
+        + b"eee"
+        + _rar3_block(0x7B, 0x4000, b"")
+    )
+    listing = _list(_write(tmp_path, data), salvage=True)
+    assert listing.names == ["a", "q", "e"]
+    assert type(listing.error) is CorruptionError
+
+
+def test_after_a_damaged_main_an_inner_main_is_a_nested_archives(
+    tmp_path: Path,
+) -> None:
+    """The signature is intact and MAIN fails its CRC: MAIN was there, so a MAIN
+    found later is an inner archive's. Its flags (here a solid volume) are not
+    read as the outer archive's; the members after it are listed."""
+    inner_main = _rar5_block(b"\x01\x00\x05")  # MAIN: a solid volume
+    inner = (
+        _RAR5_SIGNATURE
+        + inner_main
+        + _rar5_block(bytes([2, 0, 0, 0, 0, 0, 0, 1]) + b"i")
+    )
+    data = _RAR5_SIGNATURE + bytes(13) + inner + _RAR5_EMPTY_E + _RAR5_END
+    path = _write(tmp_path, data)
+    listing = _list(path, salvage=True)
+    assert listing.names == ["i", "e"]
+    assert type(listing.error) is CorruptionError
+    with open_archive(path, salvage=True) as reader:
+        reader.members_report()
+        archive = reader._archive  # type: ignore[attr-defined]
+        assert not archive.is_solid
+        assert not archive.is_volume
