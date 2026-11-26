@@ -2503,8 +2503,13 @@ def test_the_rewalk_after_a_gap_does_not_carry_an_unconfirmed_global_header() ->
 def _salvage_snapshot(source: bytes) -> tuple[list[tuple[object, ...]], str]:
     """Each listed member's name, uname, size, and its ``MEMBER_FOUND_BY_SCAN``
     record (confirmed, and whether the walk reached it rather than a search), and
-    the type of the error the listing ends in."""
-    with open_archive(io.BytesIO(source), salvage=True) as reader:
+    the type of the error the listing ends in.
+
+    The generated tars' data is runs of one byte, which some zlib builds (Fedora's
+    zlib-ng) compress past the default ``max_ratio``: the ratio guard is lifted, the
+    same for the plain tar and the gzip one, so the two compare like for like."""
+    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=None))
+    with open_archive(io.BytesIO(source), salvage=True, config=config) as reader:
         report = reader.members_report()
         scans = {
             d.context.member_id: (d.context.confirmed, "walk reached it" in d.message)
