@@ -2891,6 +2891,11 @@ class RarReader(BaseArchiveReader):
                 name_encoding=self._encoding,
             )
             if archive.is_volume and not archive.needs_next_volume:
+                if archive.main_lost:
+                    # Salvage read on without MAIN: the volume flag is inferred
+                    # from the members' split flags, and the listing ends in the
+                    # default's error, as from a file (``_parse_lone_file``).
+                    return archive
                 # A lone volume that says nothing follows it is a later
                 # volume, or the only one, of a set. One that says another
                 # follows is volume 1 here: the parse refuses a later volume

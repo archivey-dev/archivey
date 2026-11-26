@@ -2092,6 +2092,22 @@ def test_a_damaged_rar5_header_after_a_found_one_was_not_searched_for(
     assert not found["d"].searched
 
 
+@pytest.mark.parametrize("source", ["stream", "path"])
+def test_a_lost_start_whose_member_continues_a_missing_volume_lists_it(
+    source: str, tmp_path: Path
+) -> None:
+    """``tinyvol.part2.rar`` without its signature and MAIN: the one member found
+    continues one in a volume that is not there. Salvage lists it and ends the
+    listing in an error, from a stream as from a path; the stream did not raise
+    "Incomplete RAR multi-volume set" at open."""
+    data = (_RAR / "tinyvol.part2.rar").read_bytes()[8 + 17 :]
+    opened: object = io.BytesIO(data) if source == "stream" else _write(tmp_path, data)
+    with open_archive(opened, format=ArchiveFormat.RAR, salvage=True) as reader:  # type: ignore[arg-type]
+        report = reader.members_report()
+    assert [m.name for m in report.members] == ["payload.bin"]
+    assert isinstance(report.error, CorruptionError)
+
+
 def test_a_damaged_header_past_lost_bytes_continues_nothing(tmp_path: Path) -> None:
     """Damage, a found service header (which leaves the lost bytes for the next
     member), then a FILE header that fails its CRC with ``SPLIT_BEFORE`` set and
