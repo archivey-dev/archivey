@@ -836,18 +836,26 @@ class WalkSalvage:
         confirmed: bool,
         unchecked: tuple[str, ...] = ("position",),
         searched: bool = True,
+        held: bool = False,
     ) -> None:
         """Record ``MEMBER_FOUND_BY_SCAN`` for ``member``, before it is yielded:
-        found by the search (``searched``), or walked on to after a member the search
-        found."""
-        self._moves_back = not confirmed
+        found by the search (``searched``), walked on to after a member the search
+        found, or (``held``) a hard link the walk read whole before the damage and
+        held for data that no link before the damage carried (``"held_link"``)."""
+        if not held:
+            # A held link has no data to move back into.
+            self._moves_back = not confirmed
         if self._report_found is None:
             return
-        where = (
-            "by a header search"
-            if searched
-            else "by walking on from a member a header search found"
-        )
+        if held:
+            where = (
+                "as a hard link: the walk read its header whole before the damage, "
+                "but its data never came with a later link before the damage"
+            )
+        elif searched:
+            where = "by a header search"
+        else:
+            where = "by walking on from a member a header search found"
         how = (
             "the header after its data passes too"
             if confirmed
@@ -858,6 +866,7 @@ class WalkSalvage:
             SalvageScanContext(
                 member_name=member.name,
                 format=self._format_name,
+                method="held_link" if held else "header_search",
                 offset=offset,
                 confirmed=confirmed,
                 unchecked=unchecked,

@@ -1509,3 +1509,84 @@ def test_deb_unconfirmed_control_tar_holds_nothing(tmp_path: Path) -> None:
     assert [m[0] for m in members][-3:] == [".", "usr/", "usr/a"]
     assert members[1] == ("DEBIAN/control", 5015, b"Package: stray\n" + b"#" * 5000)
     assert isinstance(error, CorruptionError)
+
+
+# Every member salvage adds is flagged: links held from before the damage ------------
+
+
+def _link(variant: str, name: str, data: bytes, ino: int) -> bytes:
+    """A member with ``nlink=2`` in ``variant``."""
+    if variant == "odc":
+        return _odc_link(name, data, ino)
+    member = bytearray(_newc(name, data, ino, magic=_MAGICS[variant]))
+    member[6 + 4 * 8 : 6 + 5 * 8] = b"%08X" % 2
+    return bytes(member)
+
+
+_MAGICS = {"newc": b"070701", "crc": b"070702"}
+
+
+def _plain(variant: str, name: str, data: bytes, ino: int) -> bytes:
+    if variant == "odc":
+        return _odc(name, data, ino)
+    return _newc(name, data, ino, magic=_MAGICS[variant])
+
+
+@pytest.mark.parametrize("variant", ["newc", "crc", "odc"])
+@pytest.mark.parametrize(
+    "end", ["damage-end", "found-trailer", "found-data-link", "data-before-damage"]
+)
+def test_cpio_link_held_before_the_damage_is_flagged(
+    variant: str, end: str, tmp_path: Path
+) -> None:
+    """A newc or crc link the default walk read and held for its data before the
+    damage is listed by salvage only, so it is flagged ``method="held_link"``: where
+    the pass ends in the damage, at a trailer the search finds, and when a link with
+    its data is found past the damage. odc stores the data with every link and
+    holds none, so the default lists the link itself and there is nothing to flag.
+    Every member salvage adds is flagged once; a link whose data comes before the
+    damage is the default's, and is not flagged."""
+    raw = _plain(variant, "x.txt", b"xxxx", 1) + _link(variant, "a.txt", b"", 7)
+    if end == "data-before-damage":
+        raw += _link(variant, "b.txt", b"hello", 7)
+    raw += b"\0" * 64
+    if end == "found-trailer":
+        raw += _plain(variant, "c.txt", b"cccc", 3)
+    elif end == "found-data-link":
+        raw += _link(variant, "b.txt", b"hello", 7)
+    if end != "damage-end":
+        raw += _plain(variant, "TRAILER!!!", b"", 0)
+    path = _write(tmp_path, raw, "a.cpio")
+    members, _diagnostics, error = _read(path)
+    s_members, s_diagnostics, s_error = _read(path, salvage=True)
+    assert s_members[: len(members)] == members
+    assert type(s_error) is type(error)
+    added = [m[0] for m in s_members[len(members) :]]
+    found = _found(s_diagnostics)
+    assert sorted(c.member_name for c in found) == sorted(added)
+    held = [c for c in found if c.method == "held_link"]
+    if variant == "odc" or end == "data-before-damage":
+        assert held == []
+        assert "a.txt" in [m[0] for m in members]
+        return
+    assert "a.txt" in added
+    (record,) = held
+    assert (record.member_name, record.offset) == (
+        "a.txt",
+        len(_plain(variant, "x.txt", b"xxxx", 1)),
+    )
+    assert record.confirmed is False  # the header after it is the damage
+    with open_archive(path, salvage=True) as reader:
+        listed = {m.name: m for m in reader.members_report().members}
+        if end == "found-data-link":
+            # Released to the data link the search found, as a link to it.
+            assert listed["a.txt"].link_target == "b.txt"
+            assert reader.read("a.txt") == b"hello"
+        (message,) = [
+            str(d.message)
+            for d in reader.diagnostics.retained
+            if isinstance(d.context, SalvageScanContext)
+            and d.context.method == "held_link"
+        ]
+    assert "read its header whole before the damage" in message
+    assert "data never came with a later link" in message

@@ -44,7 +44,7 @@ from __future__ import annotations
 import re
 import struct
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from archivey.diagnostics import (
@@ -264,11 +264,14 @@ class _LinkGroup:
 @dataclass(frozen=True)
 class _Scan:
     """How salvage reached a member past the damage, for its
-    ``MEMBER_FOUND_BY_SCAN`` record, made when the member is listed."""
+    ``MEMBER_FOUND_BY_SCAN`` record, made when the member is listed. ``held``: a
+    newc or crc link the walk read and held for its data before the damage, which
+    the default lists only if a link before the damage carries that data."""
 
     offset: int
     confirmed: bool
     searched: bool
+    held: bool = False
 
     def report(self, salvage: WalkSalvage | None, member: ArchiveMember) -> None:
         assert salvage is not None
@@ -277,7 +280,21 @@ class _Scan:
             offset=self.offset,
             confirmed=self.confirmed,
             searched=self.searched,
+            held=self.held,
         )
+
+
+def _listed_link(
+    salvage: WalkSalvage | None,
+    past_damage: bool,
+    link: ArchiveMember,
+    scan: _Scan | None,
+) -> MemberSpan:
+    """A held link, as it is listed: recorded as found when salvage lists it and
+    the default does not, which is when it is released past the damage."""
+    if scan is not None and (past_damage or not scan.held):
+        scan.report(salvage, link)
+    return MemberSpan(link, 0)
 
 
 # What the held links are, in a limit error (ReaderContext.hold).
@@ -339,6 +356,8 @@ class CpioReader(SequentialReader):
         # set in one place below, from a header the walk counts.
         variant: Variant | None = None
         base = 0
+        # The link held last before any damage, while the header after it is unread.
+        last_held: tuple[_LinkGroup, int] | None = None
         while True:
             # Whether the search found this header, or the walk walked on to it.
             searched = search_from is not None
@@ -349,13 +368,14 @@ class CpioReader(SequentialReader):
                 if hit is None:
                     # The pass ends in the damage error, with no trailer: the links
                     # still held for data are listed as at a trailer (recall first).
-                    yield from self._flush(groups, salvage)
+                    yield from self._flush(groups, salvage, past_damage=True)
                     raise salvage.ending(damage)
                 header, raw = hit
             else:
                 offset = stream.offset
                 try:
                     header, raw = self._read_entry(stream, variant)
+                    last_held = None
                 except CorruptionError as err:
                     if (
                         salvage is None
@@ -365,13 +385,20 @@ class CpioReader(SequentialReader):
                         raise
                     # Damage: the walk searches on from the damaged header, and the
                     # pass ends in this error.
+                    if damage is None and last_held is not None:
+                        # The header after the last link held before the damage
+                        # is the damage: nothing confirms that link.
+                        group, at = last_held
+                        link, link_scan = group.held[at]
+                        assert link_scan is not None
+                        group.held[at] = (link, replace(link_scan, confirmed=False))
                     damage = damage or err
                     search_from = offset
                     continue
             if raw == TRAILER:
                 if variant is None:
                     self._variant = header.variant
-                yield from self._flush(groups, salvage)
+                yield from self._flush(groups, salvage, past_damage=damage is not None)
                 self._check_end(stream)
                 if salvage is not None:
                     if damage is not None:
@@ -427,6 +454,11 @@ class CpioReader(SequentialReader):
                     # newc keeps the data with the last link: hold this one back,
                     # counted toward the listing's limits while it waits.
                     self._context.hold(member, reason=_HELD)
+                    if salvage is not None and scan is None:
+                        # Before the damage: listed by salvage alone if the pass
+                        # gets past the damage before its data comes.
+                        scan = _Scan(header.offset, True, False, held=True)
+                        last_held = (group, len(group.held))
                     group.held.append((member, scan))
                     stream.skip(size + self._data_pad(header))
                     continue
@@ -449,9 +481,7 @@ class CpioReader(SequentialReader):
                     link.type = MemberType.HARDLINK
                     link.link_target = member.name
                     link.size = None
-                    if link_scan is not None:
-                        link_scan.report(salvage, link)
-                    yield MemberSpan(link, 0)
+                    yield _listed_link(salvage, damage is not None, link, link_scan)
                 group.held.clear()
 
     def _read_entry(
@@ -535,28 +565,27 @@ class CpioReader(SequentialReader):
         whole = head[:fixed] + salvage.read_at(after + fixed, name_size)
         return _passes(whole, 0, magics)
 
+    @staticmethod
     def _flush(
-        self,
         groups: dict[tuple[tuple[int, int], int], _LinkGroup],
         salvage: WalkSalvage | None,
+        *,
+        past_damage: bool,
     ) -> Iterator[MemberSpan]:
-        """At the trailer: the links whose data never arrived, the first as an empty
-        file and the rest as links to it."""
+        """At the end of the walk (a trailer, or the damage error past the damage):
+        the links whose data never arrived, the first as an empty file and the rest
+        as links to it."""
         for group in groups.values():
             if not group.held:
                 continue
             (first, first_scan), *rest = group.held
             first.size = 0
-            if first_scan is not None:
-                first_scan.report(salvage, first)
-            yield MemberSpan(first, 0)
+            yield _listed_link(salvage, past_damage, first, first_scan)
             for link, link_scan in rest:
                 link.type = MemberType.HARDLINK
                 link.link_target = first.name
                 link.size = None
-                if link_scan is not None:
-                    link_scan.report(salvage, link)
-                yield MemberSpan(link, 0)
+                yield _listed_link(salvage, past_damage, link, link_scan)
 
     @staticmethod
     def _defers_link_data(header: Header) -> bool:

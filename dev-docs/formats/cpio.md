@@ -102,7 +102,10 @@ searches forward for the next header of the variant the first header showed (`ne
 and `crc` at 4-byte steps, `odc` at every byte; binary has no search) and lists every
 member after the damage with `MEMBER_FOUND_BY_SCAN`. A found `TRAILER!!!` ends the walk;
 the pass still ends in the first damage error (`openspec/changes/salvage-mode`, design
-decision 7). A CPIO read inside another archive (a `.pkg` payload) reads forward only
+decision 7). A `newc` or `crc` link the walk read and held before the damage, whose data
+no link before the damage carried, is listed then too (as an empty file, or as a link to
+a data link found past the damage) and flagged with `method="held_link"`: the default
+does not list it. A CPIO read inside another archive (a `.pkg` payload) reads forward only
 and records `SALVAGE_UNAVAILABLE`.
 
 ### 2.3 Member data

@@ -69,8 +69,10 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
    SalvageUnavailableContext(kind="salvage_unavailable", archive_name, format, reason)
    ```
 
-   - `method`: `"header_search"` in this step (later: `"second_copy"`,
-     `"stream_segment"`, `"content"`).
+   - `method`: `"header_search"` in this step, and `"held_link"` for a CPIO
+     `newc`/`crc` hard link the walk read before the damage and held for data no link
+     before the damage carried (the CPIO and ar notes below). Later: `"second_copy"`,
+     `"stream_segment"`, `"content"`.
    - `offset`: where the member's header starts in its layer.
    - `confirmed`: the header after the member's data passes its check too (or is the
      format's clean end). Q16.
@@ -267,9 +269,15 @@ Choices made while building PR 3, and where it departs from the decisions above:
   dialect the archive info reports; a deb's control tar (its fields, its md5sums, and
   whether a later control tar is still read). A member that is not listed records no
   diagnostic.
-- **Every member the walk has read is listed at every end of the pass**: at a
-  trailer, and where the pass ends in the damage error with no trailer. CPIO links
-  still held for data are listed as empty files there, as at a trailer.
+- **Every member the walk has read is listed at every end of the pass, and each one
+  the default does not list is flagged** (Q2): at a trailer, and where the pass ends
+  in the damage error with no trailer. CPIO links still held for data are listed as
+  empty files there, as at a trailer. A `newc`/`crc` link held from before the damage
+  is listed by salvage only when the walk gets past the damage first: at the damage
+  end, at a trailer the search finds, or released to a data link found past the
+  damage. It is flagged `MEMBER_FOUND_BY_SCAN` with `method="held_link"`, unconfirmed
+  when the header after it is the damage (maintainer ruling, 2026-11-26: "List them,
+  flagged").
 - **Many candidates cost about one pass over a decoded layer**, not one each: a
   probe of a data end or of the next header reads forward only past what earlier
   probes read, and stops at the end once one reached it; each `search_forward` call
