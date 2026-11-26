@@ -1705,6 +1705,7 @@ def test_found_rows_leave_the_prefixs_solid_pass_plan_as_it_was(
     assert plans[False][2] is not None
 
 
+@requires("cryptography")
 @pytest.mark.parametrize(
     "name", ["encrypted_header__.rar", "encrypted_header__rar4.rar"]
 )
