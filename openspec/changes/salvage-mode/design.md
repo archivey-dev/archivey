@@ -254,17 +254,18 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
   it, or the walk cannot tell without reading it (a codec stream, a forward-only walk),
   it stays a `ResourceLimitError`, as in the default walk.
 - **A found `g` header counts for later members only once its member is confirmed**
-  (davi, 2026-11-26), or trusted on a forward-only walk. When its chain makes no member,
-  or a member nothing confirms, the global records stay as they were before it; it
-  still applies to its own unconfirmed member. This departs from GNU tar on purpose:
-  GNU tar `--ignore-zeros` applies such a header to later members, but a chain with no
-  confirmed member is noise. A `g` header the walk itself reaches applies to later
-  members as in GNU tar.
+  (davi, 2026-11-26). A member a forward-only walk trusts counts once the header after
+  its data confirms it. When its chain makes no member, or a member nothing confirms,
+  the global records stay as they were before it; it still applies to its own
+  unconfirmed member, and that member's `MEMBER_FOUND_BY_SCAN` message says so. This
+  departs from GNU tar on purpose: GNU tar `--ignore-zeros` applies such a header to
+  later members, but a chain with no confirmed member is noise. A `g` header the walk
+  itself reaches applies to later members as in GNU tar.
 - **An unconfirmed found member's next search starts after its member header**, not
-  inside its chain, so that a member with extended headers before it is listed once. Past the
-  default's end, `CorruptionError` inside a walked chain ends that chain as a rejected
-  header does, and the search starts at the chain. Damage in the codec stream during a
-  search ends the walk; the pass ends in the default's error.
+  inside its chain, so that a member with extended headers before it is listed once.
+  Past the default's end, `CorruptionError` inside a walked chain ends that chain as a
+  rejected header does, and the search starts at the chain. Damage in the codec stream
+  during a search ends the walk; the pass ends in the default's error.
 - **The damage error's message** adds that salvage searched past it, and names the
   search limit when it stopped the search. Its code and context are the default's.
 - **Lost start in core is a flag, not a format choice.** Detection already falls back

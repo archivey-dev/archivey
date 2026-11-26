@@ -412,8 +412,7 @@ class ListingLimits:
     reading it. In salvage mode, a header the search found whose data runs past the end
     of a file is passed over as noise instead. While it parses a PAX header, TAR also
     charges 256 bytes for each distinct keyword, once: a repeated keyword does not count
-    again.
-    A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
+    again. A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
     ``DEBIAN/md5sums`` whole, and refuses the one whose size takes their sum past
     ``max_metadata_bytes``, before reading it. It also counts against ``max_members``
     the path steps of the data tar's symlink resolutions that grow faster than the tar:

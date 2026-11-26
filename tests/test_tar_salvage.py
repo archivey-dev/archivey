@@ -1470,15 +1470,21 @@ def test_a_found_global_header_whose_chain_makes_no_member_changes_nothing() -> 
     assert salvage.members[1][2] == b"real"
 
 
-@pytest.mark.parametrize("typeflag", [tarfile.XHDTYPE, tarfile.GNUTYPE_LONGNAME])
+@pytest.mark.parametrize(
+    "typeflag", [tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.GNUTYPE_LONGNAME]
+)
 def test_a_trusted_found_member_after_extended_headers_is_listed_once_in_a_deb(
     typeflag: bytes,
 ) -> None:
     # A forward-only walk (a deb's data.tar) trusts m.txt's lying size; when
     # nothing confirms it, the search goes back from after m.txt's own header,
     # not from inside its chain, as the plain .tar's search does.
+    # A g header counts for later members only once its member is confirmed: a
+    # trusted member nothing confirms leaves real.txt and real2.txt their names.
     record = (
-        b"21 path=hijacked.txt\n" if typeflag == tarfile.XHDTYPE else b"longname.txt\0"
+        b"longname.txt\0"
+        if typeflag == tarfile.GNUTYPE_LONGNAME
+        else b"21 path=hijacked.txt\n"
     )
     payload = record + b"\0" * (-len(record) % BLOCKSIZE)
     info = tarfile.TarInfo("m.txt")
@@ -1492,6 +1498,7 @@ def test_a_trusted_found_member_after_extended_headers_is_listed_once_in_a_deb(
         + b"m" * BLOCKSIZE
         + b"Y" * BLOCKSIZE
         + _member("real.txt", b"real")
+        + _member("real2.txt", b"r2")
         + b"\0" * (2 * BLOCKSIZE)
     )
     plain = _list(data, salvage=True).names
@@ -1528,3 +1535,11 @@ def test_a_found_global_header_before_an_unconfirmed_member_renames_nothing_afte
     )
     salvage = _list(data, salvage=True)
     assert salvage.names == ["before.txt", "hijacked.txt", "real.txt", "real2.txt"]
+    # The diagnostic says what the listing shows: the g header renamed only its
+    # own member.
+    (found,) = [
+        d
+        for d in salvage.of(DiagnosticCode.MEMBER_FOUND_BY_SCAN)
+        if d.context.member_name == "hijacked.txt"  # type: ignore[union-attr]
+    ]
+    assert "global PAX header in its chain applies to it alone" in found.message
