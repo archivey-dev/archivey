@@ -38,6 +38,7 @@ from archivey import (
 )
 from archivey.diagnostics import (
     Diagnostic,
+    MemberHeaderDamageContext,
     RegionSkippedContext,
     SalvageScanContext,
     SalvageUnavailableContext,
@@ -1538,3 +1539,40 @@ def test_a_lone_later_volume_records_each_skipped_region_once(
     assert "c" in salvage.names
     regions = salvage.regions()
     assert [r.volume_index for r in regions] == [1]
+
+
+@pytest.mark.parametrize(("key", "crc_bytes"), [("rar5", 4), ("rar29", 2)])
+def test_each_found_row_names_the_check_that_confirmed_it(
+    key: str, crc_bytes: int, tmp_path: Path
+) -> None:
+    """A RAR5 row is confirmed by its own CRC-32, a RAR 1.5-4 row by the position
+    after its data. A header past the search that fails its CRC and that the walk
+    follows by its sizes says so: it is not reported as a header that passed."""
+    archive = _archive(key)
+    walked = _header_offsets(_write(tmp_path, archive.data, "intact.rar"))
+    assert walked is not None
+    version, offsets = walked
+    zero_at = len(archive.data) * 3 // 10 // 4096 * 4096
+    later = next(o for o in offsets if o > len(archive.data) * 7 // 10)
+    data = _zeroed(archive.data, zero_at)
+    data = _flipped(data, *range(later, later + crc_bytes))
+    salvage = _list(_write(tmp_path, data), salvage=True)
+    messages = {
+        d.context.member_name: d.message
+        for d in salvage.of(DiagnosticCode.MEMBER_FOUND_BY_SCAN)
+        if isinstance(d.context, SalvageScanContext)
+    }
+    damaged = [
+        d.context.member_name
+        for d in salvage.of(DiagnosticCode.MEMBER_HEADER_DAMAGED)
+        if isinstance(d.context, MemberHeaderDamageContext)
+    ]
+    assert len(damaged) == 1
+    assert "fails its CRC" in messages[damaged[0]]
+    assert "followed its sizes" in messages[damaged[0]]
+    others = [m for name, m in messages.items() if name != damaged[0]]
+    assert others
+    own = "passes its own CRC-32" if version == 5 else "the position after its data"
+    for message in others:
+        assert own in message
+        assert "the header after its data passes too" not in message

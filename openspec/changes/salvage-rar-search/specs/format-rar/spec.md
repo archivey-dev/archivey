@@ -162,7 +162,13 @@ A found member's read SHALL be decided before any program runs:
   `CorruptionError`; after a confirmed found member it SHALL read with
   `DIGEST_UNVERIFIABLE` (`reason="after_damaged_header"`).
 
-A found member SHALL NOT emit `MEMBER_HEADER_DAMAGED`. Its `verifiable` SHALL be what
+A found member whose header passed its check SHALL NOT emit `MEMBER_HEADER_DAMAGED`.
+A header past the search that fails its CRC and that step 1 follows SHALL be listed
+as the default lists it, with `MEMBER_HEADER_DAMAGED` on read, and its
+`MEMBER_FOUND_BY_SCAN` SHALL say it failed its CRC and was followed by its sizes.
+Each `MEMBER_FOUND_BY_SCAN` SHALL name the check that confirmed the member: a RAR5
+header's own CRC-32, the position after a RAR 1.5-4 member's data, or step 1's
+follow. Its `verifiable` SHALL be what
 the same member has without damage: `CHECKSUM` with a stored digest, `LENGTH` without
 one.
 

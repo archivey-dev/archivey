@@ -1410,8 +1410,12 @@ class SalvageScanContext(_JsonSafeContext):
     set (not the format's own volume number), or ``None`` for an archive in one file.
 
     ``confirmed`` is ``True`` when the header after the member's data passes the same
-    checks, or is the format's clean end. An unconfirmed member's sizes are checked by
-    nothing, so its data may run into other members' bytes.
+    checks, or is the format's clean end. A format whose headers carry a 32-bit check
+    confirms a header by that check alone: RAR5 by its CRC-32, while RAR 1.5-4, with
+    a CRC16, needs the position after the data. A header that fails its own check is
+    confirmed only when the walk follows its sizes to a position that confirms, and
+    the message says so. An unconfirmed member's sizes are checked by nothing, so its
+    data may run into other members' bytes.
 
     ``unchecked`` names the fields no check covers. For ``"header_search"`` it always
     holds ``"position"``: nothing says the member belongs at this level of the

@@ -648,6 +648,21 @@ _RAR_ENCDATA_FLAG_TWEAKED_CHECKSUMS = 0x02
 _RAR5_XREDIR_WINDOWS_JUNCTION = 3
 
 
+# What ``MEMBER_FOUND_BY_SCAN`` says confirmed a member a header search reached, by
+# ``RarFound.check``.
+_FOUND_CHECK_TEXT = {
+    "crc32": "its header passes its own CRC-32",
+    "after_data": (
+        "the position after its data confirms it (a header that passes its CRC16, "
+        "an end block, or the end of the volume)"
+    ),
+    "followed": (
+        "its header fails its CRC, and the walk followed its sizes to a position "
+        "that confirms them, as the default walk does"
+    ),
+    "none": "nothing after its data confirms it, so its sizes are unchecked",
+}
+
 # Read step for the confirmation pass over a cut-short member's stored bytes
 # (``RarReader._confirm_unsettled_plaintext``). Matches the verifier's own drain
 # step; the pass is bounded by the member, which is bounded by the source.
@@ -4078,11 +4093,7 @@ class RarReader(BaseArchiveReader):
             )
             unchecked: tuple[str, ...] = ()
         else:
-            check = (
-                "the header after its data passes too"
-                if found.confirmed
-                else "nothing after its data confirms it, so its sizes are unchecked"
-            )
+            check = _FOUND_CHECK_TEXT[found.check]
             message = (
                 f"Salvage found RAR member {quoted(member.name)} by a header search, "
                 f"at {where}; {check}. Nothing says it belongs at this level of the "

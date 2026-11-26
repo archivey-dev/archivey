@@ -438,12 +438,18 @@ class RarFound(NamedTuple):
     volume that only salvage goes on to. ``offset`` is where its header starts in its
     own volume. ``confirmed``: RAR5 headers always (a CRC-32); a RAR 1.5-4 header when
     the position after its data confirms, as for step 1's second header.
+
+    ``check`` is what confirmed it, for the report: ``"crc32"``, a RAR5 header's own
+    CRC-32; ``"after_data"``, the position after a RAR 1.5-4 member's data;
+    ``"followed"``, a header that failed its CRC and whose sizes step 1 followed to
+    a position that confirms; ``"none"`` for an unconfirmed one.
     """
 
     method: Literal["header_search", "next_volume"]
     offset: int
     confirmed: bool
     searched: bool
+    check: Literal["crc32", "after_data", "followed", "none"] = "none"
 
 
 @dataclass(slots=True)
@@ -3675,7 +3681,7 @@ class _Rar3Walk:
             # The search goes through its data, so it claims nothing.
             last = members[-1]
             if last.found is not None:
-                last.found = last.found._replace(confirmed=False)
+                last.found = last.found._replace(confirmed=False, check="none")
         if self._search is None:
             from archivey.internal.backends.rar_search import rar3_search
 
@@ -4010,13 +4016,15 @@ class _Rar3Walk:
                     block.hdata, crc_pos, encoding=self.name_encoding
                 )
             if self.past_damage:
-                # Confirmed: its CRC16, and the position after its data (a search
-                # found it), or the header that led the walk here.
+                # Confirmed by the position after its data: the walk goes on there,
+                # and a search from its data marks it unconfirmed. A damaged header
+                # is confirmed only by step 1 following its sizes.
                 member.found = RarFound(
                     "header_search",
                     block.start,
                     confirmed=True,
                     searched=self.found_here,
+                    check="followed" if damaged else "after_data",
                 )
                 member.after_lost, self.pending_lost = self.pending_lost, None
                 if (self.is_solid or self.main_lost) and self.found_here:
@@ -5872,12 +5880,14 @@ class _Rar5Walk:
             # read; this branch is holes, FILE after QO, and the no-QO walk.
             if member.header_offset not in self.seen_file_offsets:
                 if self.past_damage:
-                    # Its CRC-32 passed, a 32-bit check: confirmed.
+                    # Its CRC-32 passed, a 32-bit check: confirmed. A damaged one is
+                    # confirmed only by step 1 following its sizes.
                     member.found = RarFound(
                         "header_search",
                         block.header_offset,
                         confirmed=True,
                         searched=self.found_here,
+                        check="followed" if damaged else "crc32",
                     )
                     member.after_lost, self.pending_lost = self.pending_lost, None
                     if (self.is_solid or self.main_lost) and self.found_here:
