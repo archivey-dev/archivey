@@ -41,14 +41,18 @@ that other formats use, and solve the import cost with the same mechanism.
 - **Codec registry.** Codecs by name, method bindings per container, and a second
   implementation of a name only where its owner or the caller approves it.
   `archivey-codecs` stays a library that archivey imports; readers in any package reach
-  its kernels through one public helper (proposed).
+  its kernels through one public helper.
 - **Reader API.** Public helpers replace each `archivey.internal` import of the moved
   readers. `API_VERSION` replaces the exact version pin. The thread rules are the short ones
   that the concurrency cut, a separate change that lands first, leaves.
-- **Packages.** `archivey-disk-images`, `archivey-package-formats` and
+- **Packages.** `archivey-disk-images`, `archivey-dmg`, `archivey-package-formats` and
   `archivey-legacy-formats` under `packages/`. `[recommended]`, `[all]`,
-  `[free-threaded]` and `archivey-cli` include all three. No extra is named after a
+  `[free-threaded]` and `archivey-cli` include all four. No extra is named after a
   package.
+- **Typed `extra` keys. Breaking for type checking.** One `ExtraKey` mechanism for
+  every format replaces the per-key overloads in core.
+- **Process isolation for package codecs.** A codec names its native object, and
+  archivey runs it in the decoder child under `NATIVE_DECODERS`.
 
 ## Capabilities
 
@@ -64,7 +68,7 @@ Deltas are written with each implementation step, not in this plan.
 - `backend-registry`: lazy loading, providers, refusals.
 - `format-detection`: detection from manifest data, `refines`.
 - `compressed-streams`: codecs by name, method bindings, second implementations.
-- `packaging-and-extras`: the three packages and the extras that include them.
+- `packaging-and-extras`: the four packages and the extras that include them.
 - `archive-data-model`: open name types.
 - The format specs of the formats that move: where they live, nothing else.
 
@@ -73,8 +77,8 @@ Deltas are written with each implementation step, not in this plan.
 - **Callers.** `ContainerFormat.ZIP` and string comparisons keep working.
   `list(ContainerFormat)`, exhaustive `match` on the enums and the `Literal` types stop
   working. The moved constants (13 containers, their `ArchiveFormat` constants,
-  `StreamFormat.PBZX` and 11 methods) warn for one release, then go. The typed
-  `extra` keys of the moved formats leave core (proposed).
+  `StreamFormat.PBZX` and 11 methods) warn for one release, then go. A string-literal
+  `extra` key types as `object`; the typed way is the format's key constant.
 - **Installs.** Bare `archivey` stops reading the moved formats and says which package
   to install. `archivey[recommended]` and `archivey-cli` read everything as before.
 - **Same archive, same contents.** Extended to installs: an archive reads the same way
@@ -82,10 +86,11 @@ Deltas are written with each implementation step, not in this plan.
   opened is read.
 - **Servers that read uploads.** An allow-list policy (`FormatPolicy.COMMON`, `only=`)
   is not affected by installed packages. `plugins=False` allows less after the split,
-  because the moved formats are no longer core's: `providers=` replaces it (proposed),
-  and the narrowing is a **Breaking:** line. Under `NATIVE_DECODERS`, a codec from a
-  package runs in the caller's process.
+  because the moved formats are no longer core's: `providers=` replaces it, and the
+  narrowing is a **Breaking:** line. `only_libraries` admits only the libraries it
+  lists, a plugin's too. Under `NATIVE_DECODERS`, a package codec that declares its
+  native object runs in the child.
 - **Plugin authors.** The interface changes shape once more (it is experimental), then
   gets a version number.
-- **Releases.** Three more distributions published with each archivey release, in the
+- **Releases.** Four more distributions published with each archivey release, in the
   same workflow as `archivey-cli`.

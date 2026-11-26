@@ -111,7 +111,7 @@ A manifest is a data file, not Python. Core reads it without importing or runnin
 anything from the package that ships it.
 
 ```toml
-# archivey_disk_images/archivey-manifest.toml
+# archivey_dmg/archivey-manifest.toml
 api = "1.0"
 
 [[format]]
@@ -119,11 +119,11 @@ name = "dmg"
 extensions = [".dmg"]
 trailer = { offset = -512, hex = "6b6f6c79" }      # "koly"
 preempts = ["bz2", "xz"]
-handler = "archivey_disk_images.dmg:DmgHandler"
+handler = "archivey_dmg.reader:DmgHandler"
 
 [[codec]]
 name = "lzfse"
-decoder = "archivey_disk_images.lzfse:LzfseCodec"
+decoder = "archivey_dmg.lzfse:LzfseCodec"
 ```
 
 - A format entry carries what `FormatHandler` declares as class attributes today:
@@ -151,7 +151,7 @@ ContainerFormat("dmg")       # any well-formed name
 ArchiveFormat("dmg")         # stream defaults to uncompressed
 fmt.container == "dmg"       # True, as today
 
-from archivey_disk_images import DMG    # = ArchiveFormat("dmg")
+from archivey_dmg import DMG            # = ArchiveFormat("dmg")
 ```
 
 What changes:
@@ -195,7 +195,7 @@ Rules:
   hint for a name that is known and not installed. Core's named constants stay.
 - **Provenance is data.** `FormatInfo.provider` is the distribution name: `"archivey"`
   for core.
-- **`providers=` replaces `plugins=` (proposed, P2).** `FormatPolicy(providers={...})`
+- **`providers=` replaces `plugins=` (ruling R2).** `FormatPolicy(providers={...})`
   names the distributions whose code may run. `plugins=False` is the same check as
   today, "the `archivey` distribution only", but what it allows shrinks at the split:
   with `archivey[recommended]` installed it opens an ISO in 0.6.0 and refuses it in
@@ -203,11 +203,13 @@ Rules:
   `providers={"archivey"}`, and the changelog carries the narrowing under
   **Breaking:**. A server that wants our packages and nobody else's writes
   `providers={"archivey", "archivey-disk-images"}`.
-- **Libraries.** `only_libraries` cannot be computed by subtracting from an open type,
-  so it is defined directly: under `only_libraries` a library may be used when it is
+- **Libraries (ruling R5).** `only_libraries` cannot be computed by subtracting from an
+  open type, so it is defined directly: under `only_libraries` a library may be used when it is
   listed, whoever requires it. Today a plugin's own module stays enabled under
   `only_libraries`; that exception goes, since core no longer knows which modules are
-  a plugin's (**Breaking:** in step 2).
+  a plugin's (**Breaking:** in step 2). A name in either library set is checked when a
+  call starts, against the libraries that core and the installed manifests declare, so
+  a typo is still an error and cannot leave a library on.
 - **Policy sets are stored by role.** `FormatPolicy` keeps containers, streams and
   methods apart inside, whatever the caller passed in one `exclude=` set, so no lookup
   compares a method with a stream.
@@ -385,11 +387,34 @@ becomes a public call or goes:
 - `source._origin`, `_will_read`, `_progress_reporter`, `_raw` (SFX offsets in LHA and
   ARJ; range hints in ISO, UDF, DMG; progress over a multi-file cue sheet).
 
-**Typed `extra` keys.** `MemberExtra` and `ArchiveInfoExtra` carry 35 `@overload`s for
-the keys of the formats that move (`iso.*`, `lha.*`, `dmg.*` and so on). Kept in core
-they are a type that exists only for some plugins (proposed, P3): each overload goes
-with its format, the subscript then types as `object`, and the package exports typed
-accessors for its own keys. **Breaking:** for type checking only, at the split.
+**Typed `extra` keys (ruling R3).** `MemberExtra` and `ArchiveInfoExtra` carry 62
+`@overload`s today, one per known key: 20 for core's formats and 42 for the formats
+that move. An outside plugin cannot add one. All of them go, core's too, and one
+mechanism serves every format:
+
+```python
+# archivey: the whole mechanism
+class ExtraKey(str, Generic[T]): ...
+
+class MemberExtra(dict[str, object]):
+    @overload
+    def __getitem__(self, key: ExtraKey[T], /) -> T: ...
+    @overload
+    def __getitem__(self, key: str, /) -> object: ...
+
+# archivey_dmg: a format declares its keys beside its reader
+class DmgExtra:
+    RESOURCE_FORK_SIZE = ExtraKey[int]("dmg.resource_fork_size")
+
+member.extra[DmgExtra.RESOURCE_FORK_SIZE]     # int, no cast
+member.extra["dmg.resource_fork_size"]        # works as today, typed object
+```
+
+A key is a string, so the dictionary and its contents do not change, and `get()` is
+typed the same way. Core's formats declare their keys in the same shape. The
+conformance checks fail a reader that sets a key it did not declare. **Breaking:** for
+type checking only: a caller who subscripts with a string literal, for a ZIP key too,
+gets `object` until it uses the constant. It lands with the open names in step 2.
 
 Each new public helper lands in the pull request of the reader that needs it. Nothing
 is added on speculation.
@@ -435,6 +460,7 @@ the rule is exercised and not hidden by it.
 name = "shrink"
 decoder = "archivey_legacy_formats.zip_methods:ShrinkCodec"
 methods = { zip = [1] }        # a vacant slot in ZIP's method namespace
+# native = "somelib:Decompressor"   a native decoder object, for process isolation
 # stream = { extensions = [".lzo"], hex = "..." }   for a file format of its own
 ```
 
@@ -463,12 +489,31 @@ methods = { zip = [1] }        # a vacant slot in ZIP's method namespace
   install is `PARTIAL` and names `archivey-legacy-formats`, and `[recommended]` is
   `FULL` as today. A method that only an outside package declares never counts.
 
-**Process isolation (proposed, P4).** `ProcessIsolation.NATIVE_DECODERS` moves core's
-native decoders to the decoder child. The child runs a fixed table of known modules
-and may not import archivey. A codec that a package supplies runs in the caller's
-process, as a package's parser does. The plan states this limit here, and the security
-page and the threat model state it too, in place of "the same for every codec". A
-child for package codecs is a possible later step (Open Questions).
+**Process isolation (ruling R4).** `ProcessIsolation.NATIVE_DECODERS` moves native
+decoders to the decoder child. Today a codec registered through the public API runs
+in the caller's process whatever the setting. The child is already generic: it builds
+one decoder object, calls the method it is told with the bytes it is given, and sends
+back the output with the object's `eof`, `needs_input` and `unused_data`. Only its
+table of loaders is fixed, and the child imports nothing from archivey.
+
+So a package gets isolation without writing any of it:
+
+- A codec entry names its native object: `native = "somelib:Decompressor"`.
+- The codec asks archivey for that object (`call.native(...)`). It gets the object
+  itself, or under `NATIVE_DECODERS` a stand-in with the same methods that runs in a
+  child. The child imports that one dotted path and nothing else. The codec's own
+  logic stays in the caller's process and is the same in both cases.
+- A library that is not shaped like a decoder object (a one-shot function) needs a
+  small adapter class, in a module of the package that imports only the library.
+- An error raised in the child reaches the codec's `translate_exception` as something
+  it can recognise. The mapping rule is settled with the implementation.
+- A codec with no `native` is pure Python and never pays for a process.
+- The dotted path is loaded only for a provider and a format that the call's policy
+  allows, like every other path of a manifest.
+
+The limit that remains is stated in the security page and the threat model: a package
+that runs native code without declaring it is not isolated. `providers=` is how a
+caller keeps such a package out.
 
 **Who may decode what.** Installing a package must not change which code decodes a
 member that already decoded. Priority alone would allow that, so eligibility comes
@@ -494,7 +539,7 @@ Tests: a vacant slot with and without its provider; an unrelated distribution cl
 a higher priority for a stock method (refused, reported, the stock decoder runs); a
 test wheel that the owner lists, and its fallback.
 
-**Kernels (proposed, P1).** `archivey-codecs` does not go through the codec registry.
+**Kernels (ruling R1).** `archivey-codecs` does not go through the codec registry.
 Review A1 showed that it cannot:
 
 - Eight of its ten kernels are not incremental stream decoders: a checksum (CRC-16), a
@@ -512,9 +557,9 @@ So `archivey-codecs` stays what it is: an optional library, named by
 What becomes public is the switch. A reader asks `ReaderContext` for a kernel by name
 and passes its own Python decoder as the other side; it gets the Rust kernel, wrapped
 with the revision check, the panic guard and the child, or its own decoder back. Core
-(ZIP, 7z, `.Z`), `archivey-disk-images` (LZFSE, LZVN) and
-`archivey-legacy-formats` (LZX, CRC-16) call the same helper, and each Python twin
-moves with its format.
+(ZIP, 7z, `.Z`), `archivey-dmg` (LZFSE, LZVN), `archivey-package-formats` (CAB's LZX)
+and `archivey-legacy-formats` (LHA's CRC-16) call the same helper, and each Python
+twin moves with its format.
 
 Other rules:
 
@@ -529,19 +574,28 @@ Other rules:
 ### 7. Packages
 
 All under `packages/` in this repository, each a flat top-level module
-(`archivey_disk_images`), released with core at the same version.
+(`archivey_disk_images`), released with core at the same version. Four format
+packages (rulings R6 and R7); sizes measured on 2026-11-26, readers with the helpers
+and decoders only they use.
 
 - `archivey` (core): ZIP, TAR and its compressors, 7z, RAR, single compressed files,
-  directories. About 43,000 lines of readers.
-- `archivey-disk-images`: ISO 9660, UDF, CD images, SquashFS, DMG with HFS+ and APFS;
-  the LZFSE, LZVN and ADC decoders. About 14,500 lines.
-- `archivey-package-formats`: deb, rpm, ar, cpio, xar, pkg, makeself; pbzx. About 5,000
-  lines.
-- `archivey-legacy-formats`: CAB, LHA, ARJ with their decoders; ZIP shrink, reduce,
-  implode and DCL implode as registered codecs. About 6,000 lines.
+  directories. About 43,000 lines of readers. No moved format stays: ISO, ar and cpio
+  leave too, and `VISION.md`, which names ISO in the baseline, is updated to say it
+  comes with `[recommended]`.
+- `archivey-disk-images`: ISO 9660, UDF, CD images (6,100 lines), SquashFS (1,200).
+- `archivey-dmg`: DMG alone, 7,200 lines: UDIF, HFS+, APFS, encryption, partition
+  maps, the LZFSE, LZVN and ADC decoders. It is the one format with two file-system
+  parsers and an encryption path of its own, and the one that may get a support tier
+  or a release pace of its own. A name published on PyPI stays, so it is split before
+  the first release and not after.
+- `archivey-package-formats`: deb, rpm, ar, cpio, xar, pkg, makeself, pbzx, and CAB
+  with its LZX decoder (2,000 lines), which current Windows tooling still writes.
+  About 7,400 lines.
+- `archivey-legacy-formats`: LHA and ARJ with their decoders; ZIP shrink, reduce,
+  implode and DCL implode as registered codecs. About 3,900 lines.
 - `archivey-codecs`: unchanged. It is a library that archivey imports, not a plugin (§6).
 
-`[recommended]`, `[all]`, `[free-threaded]` and `archivey-cli` include all three. The
+`[recommended]`, `[all]`, `[free-threaded]` and `archivey-cli` include all four. The
 packages are pure Python, so they keep the GIL off, and leaving them out of
 `[free-threaded]` would drop 13 formats from those installs and from the 3.13t and
 3.15t jobs. There is no extra named after a package: `packaging-and-extras` already
@@ -550,7 +604,7 @@ rules out format-named extras, because a published extra can never be removed, a
 by its own name, `pip install archivey-disk-images`. A hint names that package.
 
 The type checkers, the fuzz targets and `test.sh --all-configs` cover `src` only
-today. Each move adds its package to them in the same pull request, or 24,000 lines
+today. Each move adds its package to them in the same pull request, or 25,000 lines
 would stop being checked without a single failure.
 
 One repository because the corpus, the fuzz targets, the review rules and CI are
@@ -560,14 +614,13 @@ package, installs it beside a core wheel, and fails on any import outside the pu
 names. A separate repository makes sense for a package only after the API is stable.
 
 Because names are strings, discovery is by manifest and no extra names a package,
-regrouping later (DMG to a package of its own) changes one hint-table line and what
-`[recommended]` lists, and no caller.
+regrouping changes one hint-table line and what `[recommended]` lists, and no caller.
+What it cannot undo is a published package name, which is why DMG is split now.
 
 ## Decisions
 
-All ten were put to the maintainer and agreed on 2026-11-24. Where a review has since
-shown that one cannot stand as agreed, the change is listed under "Proposed revisions"
-below and is not a ruling until the maintainer takes it.
+All ten were put to the maintainer and agreed on 2026-11-24. Decisions 5, 6 and 7 were
+revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R7 below).
 
 1. **Installed plugins load by themselves, behind the guardrails of §3.** This replaces
    the 2026-10-25 rule (explicit `register_format()` only), which the maintainer
@@ -580,10 +633,9 @@ below and is not a ruling until the maintainer takes it.
 3. **A hint table in core** (§4), counted as the allowed small mention of our packages.
 4. **Codecs by name with method bindings** (§6). The 7z filters, ZipCrypto and AES stay
    in core.
-5. **`archivey-codecs` is a second implementation of a codec name**, not a special
-   case, under the accelerator rule. *Revision proposed: P1.*
-6. **Three format packages** (§7). DMG stays in disk-images for now.
-7. **`[recommended]` and `archivey-cli` install all three.**
+5. ~~`archivey-codecs` is a second implementation of a codec name.~~ Replaced by R1.
+6. ~~Three format packages, DMG in disk-images.~~ Replaced by R7: four.
+7. **`[recommended]` and `archivey-cli` install every format package.**
 8. **One repository, released together**, each package depending on one minor of core.
 9. **The concurrency cut comes first, as a separate change** (maintainer, 2026-11-24).
    This plan builds on the contract it leaves (§5) and carries none of its tasks.
@@ -592,21 +644,29 @@ below and is not a ruling until the maintainer takes it.
 **The manifest is a data file** (maintainer, 2026-11-24, after review C1), not a Python
 entry point that callers opt in to.
 
-**Proposed revisions, from review round A. Not rulings yet.**
+**Rulings of 2026-11-26**, each taken by the maintainer on its own, with the options
+and the evidence in front of him (review round A):
 
-- **P1. `archivey-codecs` stays a library behind a public kernel helper** (§6), in
-  place of decision 5. Its kernels do not fit the codec interface, and a manifest
-  would make it depend on archivey.
-- **P2. `providers=` replaces `plugins=` on `FormatPolicy`** (§2). `plugins=False`
-  would silently allow less after the split.
-- **P3. The typed `extra` overloads leave core with their formats** (§5).
-- **P4. Package codecs run in the caller's process under `NATIVE_DECODERS`**, and the
-  security page says so (§6).
+- **R1. `archivey-codecs` stays a library behind one public kernel helper** (§6).
+  Rejected: the codec registry for all ten kernels (eight are not stream decoders);
+  the registry for LZW and LZX only (two mechanisms for one package).
+- **R2. `FormatPolicy(providers=...)` replaces `plugins=`** (§2). Rejected: keeping
+  `plugins=False` alone; keeping both.
+- **R3. Typed key constants for every format; all `extra` overloads go** (§5).
+  Rejected: overloads leaving core only for the moved formats; keeping all 62.
+- **R4. A codec declares its native object, and archivey runs it in the child under
+  `NATIVE_DECODERS`** (§6). Rejected: documenting the limit only; refusing package
+  codecs under the setting.
+- **R5. `only_libraries` is plain membership** (§2). Rejected: governing only the
+  libraries core names.
+- **R6. All 13 formats leave core**, ISO, ar and cpio included (§7). Rejected: ISO in
+  core; ISO, ar and cpio in core.
+- **R7. Four packages: DMG alone, CAB with the package formats** (§7). Rejected: DMG
+  and CAB each alone; three packages with CAB in either group.
 
-Also changed without a ruling to revise, because the plan contradicted a spec or the
-code: `CompressionAlgorithm` stays a non-string type, `only_libraries` is defined by
-membership, no extra is named after a package, and the three packages join
-`[free-threaded]`.
+Changed without a ruling to revise, because the plan contradicted a spec or the code:
+`CompressionAlgorithm` stays a non-string type, no extra is named after a package, and
+the format packages join `[free-threaded]`.
 
 Earlier rulings kept: the composition interface with `BaseArchiveReader` private
 (2026-10-25); ZIP, 7z and RAR on the internal base (2026-10-30); the private
@@ -658,8 +718,8 @@ failure points at the API, at detection or at distribution, and not at all three
    a package boundary. A reader moves when it passes the public-imports test, not
    before, so there is no stage where all ten must pass at once.
 5. **The other moves, one pack at a time.** The rest of the package formats (deb, xar,
-   pkg, makeself), then legacy, then disk images. Each pack repeats the pilot's checks
-   and the corpus comparison.
+   pkg, makeself, CAB), then legacy, then disk images, then DMG. Each pack repeats the
+   pilot's checks and the corpus comparison.
 6. **Afterwards.** Aliases removed one release later; the plugin guide rewritten,
    shorter.
 
@@ -676,12 +736,9 @@ For the next rounds of this plan. None blocks step 1.
 
 1. Field names of the manifest file, and whether `FormatHandler` keeps its declaring
    class attributes or reads them from its entry.
-2. The package name `archivey-legacy-formats` and whether CAB belongs there or with the
-   package formats (it is still written by Windows Update and driver packages). And
-   whether ISO, ar or cpio stay in core: once step 1 makes loading lazy, moving a
-   format saves wheel size (review A12 estimates 250 KB for all 13) and not import
-   time, and a bare install loses `.iso` on upgrade. Decision 6 stands until the
-   maintainer reopens it; nothing before step 5 depends on it.
+2. Whether `OptionalLibrary` stays a type. A library name is the module name, so plain
+   strings with core's names as constants would do; the maintainer raised it on
+   2026-11-26 and has not ruled.
 3. Whether a known name with no installed package may be detected by signature, or by
    extension only, when the signature needs a probe.
 4. The exact spelling of the off switch and of the provider query.
@@ -690,8 +747,9 @@ For the next rounds of this plan. None blocks step 1.
 6. The crypto facade's size: which primitives, and whether it requires `cryptography`
    as core does today.
 7. Whether the conformance kit (`archivey.testing`) is part of step 5 or later.
-8. A decoder child for package codecs: an entry would mark a native decoder, so that
-   pure-Python ones never pay for a process.
+8. For the decoder child of package codecs (R4): how an error from the child is handed
+   to `translate_exception`, and the process-pool and memory-limit rules, which have
+   special cases for pyppmd today.
 9. The exact shape of the kernel helper, and whether a package may bring a kernel of
    its own or only use those of `archivey-codecs`.
 10. Parallel decoding for readers on `IndexedReader`. Today every stream such a reader

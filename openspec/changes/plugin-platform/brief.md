@@ -1,7 +1,8 @@
 # plugin-platform — one manifest for every format, and formats in separate packages
 
 **Status:** Plan only, written to circulate and be refined. The maintainer agreed the
-direction and all ten decisions on 2026-11-24 (design.md §Decisions). No spec deltas
+direction and ten decisions on 2026-11-24 and revised three of them on 2026-11-26
+(design.md §Decisions, R1 to R7). No spec deltas
 yet: each implementation PR brings the deltas for its step. No code until the
 maintainer has read this plan. It replaces `openspec/changes/plugin-api`, whose
 interface it keeps and whose registration, naming and packaging it rewrites.
@@ -30,12 +31,12 @@ anyone else's.
   the error and an archive is never read as another format.
 - Codecs register by name and bind to a container's method number. The Rust package
   stays a library that archivey imports, reached by any reader through one public
-  helper (proposed after review).
+  helper.
 - `archivey.formats` grows until our own packages import no private name, gets a
   version number, and takes the shorter thread rules of the concurrency cut, a separate
   change that lands first.
-- Three packages under `packages/`, released with core: `archivey-disk-images`,
-  `archivey-package-formats`, `archivey-legacy-formats`.
+- Four packages under `packages/`, released with core: `archivey-disk-images`,
+  `archivey-dmg`, `archivey-package-formats`, `archivey-legacy-formats`.
 
 **After it lands:** `pip install archivey` is the lean core, `archivey[recommended]`
 reads every format as today, and a format from outside the repo is installed with pip

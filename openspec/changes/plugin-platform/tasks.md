@@ -31,8 +31,11 @@
 - [ ] 2.1a Tests: a known name whose package is missing, a typo at resolution, and a
   value built from a stored string before any discovery
 - [ ] 2.2 Remove `PluginContainer`, `PluginStream` and the `Literal` spelling lists
+- [ ] 2.2a `ExtraKey` and the generic overloads on `MemberExtra` and
+  `ArchiveInfoExtra`; key constants for every format; the 62 per-key overloads
+  removed; the conformance check that a reader sets only declared keys (R3)
 - [ ] 2.3 `FormatInfo.provider` replaces `from_plugin`; `FormatPolicy(providers=...)`,
-  with `plugins=False` as a deprecated spelling of `providers={"archivey"}` (P2)
+  with `plugins=False` as a deprecated spelling of `providers={"archivey"}` (R2)
 - [ ] 2.4 `register_format` and `register_builtin_format` become one function that
   takes an entry
 - [ ] 2.5 `CHANGELOG.md` **Breaking:** lines; `dev-docs/api-surface.txt` updated
@@ -90,11 +93,14 @@
   member stay as fast as before
 - [ ] 4.4a `format_availability(ZIP)` counts core's and the hint table's methods
 - [ ] 4.5 The public kernel helper (revision check, panic guard, child), used by core
-  and by the moved readers; `archivey-codecs` unchanged (P1)
+  and by the moved readers; `archivey-codecs` unchanged (R1)
 - [ ] 4.6 `ReaderContext.decompress` by name, with the single-stream option (xar); the
   block call (SquashFS, DMG)
-- [ ] 4.6a The process-isolation limit for package codecs, stated in `docs/security.md`
-  and the threat model (P4)
+- [ ] 4.6a Process isolation for package codecs (R4): `native` on a codec entry,
+  `call.native(...)`, the child loading an allowed dotted path, the error mapping; a
+  test wheel with a native decoder that runs in the child under `NATIVE_DECODERS` and
+  in process otherwise; `docs/security.md` and the threat model state the undeclared
+  case
 - [ ] 4.7 Public listing-limit, timestamp and Unix-mode helpers (ISO, xar, CAB, DMG,
   LHA, ARJ)
 - [ ] 4.8 SFX stub scan declared on the entry (LHA, ARJ)
@@ -109,20 +115,20 @@
 
 ## 5. The other moves, one pack at a time
 
-- [ ] 5.1 The rest of `archivey-package-formats`: deb, xar, pkg, makeself
-- [ ] 5.2 `packages/archivey-legacy-formats`: CAB, LHA, ARJ, the legacy ZIP methods
-- [ ] 5.3 `packages/archivey-disk-images`: ISO, UDF, CD images, SquashFS, DMG
+- [ ] 5.1 The rest of `archivey-package-formats`: deb, xar, pkg, makeself, CAB
+- [ ] 5.2 `packages/archivey-legacy-formats`: LHA, ARJ, the legacy ZIP methods
+- [ ] 5.3 `packages/archivey-disk-images`: ISO, UDF, CD images, SquashFS
+- [ ] 5.3a `packages/archivey-dmg`: DMG with HFS+, APFS and encryption
+- [ ] 5.3b `VISION.md`: ISO comes with `[recommended]`, not with the bare install
 - [ ] 5.4 For each pack: the pilot checks, the public-imports test, and a corpus run on
   a core-only install (refused with the hint) and a full install (same results as
   before the move)
 - [ ] 5.5 `[recommended]`, `[all]`, `[free-threaded]` and `archivey-cli` include the
-  three; no extra named after a package; publish matrix rows; type checkers, fuzz
+  four; no extra named after a package; publish matrix rows; type checkers, fuzz
   targets and `--all-configs` cover each moved package
 - [ ] 5.6 The moved constants as deprecated aliases (13 containers, their
   `ArchiveFormat` constants, `StreamFormat.PBZX`, 11 methods), clean under both type
   checkers; importing archivey warns nothing
-- [ ] 5.6a The typed `extra` overloads of the moved formats leave core; typed
-  accessors in each package (P3)
 - [ ] 5.7 Spec deltas: `packaging-and-extras`, the moved format specs
 - [ ] 5.8 Remove `openspec/changes/plugin-api`, which this change replaces
 
