@@ -1703,3 +1703,25 @@ def test_found_rows_leave_the_prefixs_solid_pass_plan_as_it_was(
                 assert policy.member_refusal(info) is not None
     assert plans[True] == plans[False]
     assert plans[False][2] is not None
+
+
+@pytest.mark.parametrize(
+    "name", ["encrypted_header__.rar", "encrypted_header__rar4.rar"]
+)
+def test_a_parse_retried_with_a_password_records_each_skipped_region_once(
+    name: str, tmp_path: Path
+) -> None:
+    """A lost start whose first header says the headers are encrypted (a RAR5
+    ENCRYPTION header, a RAR 1.5-4 MAIN with the flag) starts the encrypted walk
+    there. The parse without a password fails, and the retry with one searches
+    from the start again: only the parse that stands records what it skipped."""
+    source = (_RAR / name).read_bytes()
+    signature = (
+        _RAR5_SIGNATURE if source.startswith(_RAR5_SIGNATURE) else (_RAR3_SIGNATURE)
+    )
+    path = _write(tmp_path, bytes(5) + source[len(signature) :])
+    salvage = _list(path, salvage=True, password="header_password")
+    assert salvage.names
+    regions = [(r.offset, r.length, r.reason) for r in salvage.regions()]
+    assert regions == [(0, 5, "no_header")]
+    assert len(salvage.of(DiagnosticCode.SALVAGE_UNAVAILABLE)) == 1

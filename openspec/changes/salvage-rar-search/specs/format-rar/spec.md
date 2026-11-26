@@ -59,6 +59,10 @@ close together the damage points are, each byte of a volume SHALL be read and sc
 by each finder a bounded number of times. Found members SHALL count against
 `ListingLimits`.
 
+Each `ARCHIVE_REGION_SKIPPED` SHALL be recorded once per open, from the parse that
+stands: a parse started over (a retry with a password, a file read again as a later
+volume) records nothing of its own.
+
 The pass SHALL end in the error the default ends in, naming the same first damage. When
 the default raises at open, salvage SHALL list what it finds and raise that error after
 the last member.

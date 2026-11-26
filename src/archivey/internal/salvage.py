@@ -253,9 +253,13 @@ class SalvageState:
         records nothing.
 
         Records :meth:`hold` kept back are dropped: they describe the walk that is
-        forgotten."""
+        forgotten. A state that holds goes on holding, for the walk that starts
+        over."""
         # Records held back for a walk that may start over (``hold``), or ``None``.
-        self._held: list[tuple[RegionSkippedContext, str]] | None = None
+        holding = getattr(self, "_held", None) is not None
+        self._held: list[tuple[RegionSkippedContext, str]] | None = (
+            [] if holding else None
+        )
         # Bytes the searches have examined, all layers together.
         self.searched_bytes = 0
         # Set once max_search_bytes stops a search; every later search stops at once.
@@ -393,8 +397,10 @@ class SalvageState:
         )
 
     def hold(self) -> None:
-        """Keep the records the next walk makes, for a walk that may start over
-        (:meth:`restart` drops them) or stand (:meth:`release` records them)."""
+        """Keep the records the walks make from now on, for a walk that may start
+        over (:meth:`restart` drops them) or stand (:meth:`release` records them).
+        A reader holds over every walk its open may start over: a retry with a
+        password, a file read again as a later volume."""
         self._held = []
 
     def release(self) -> None:

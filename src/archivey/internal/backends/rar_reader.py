@@ -2673,6 +2673,11 @@ class RarReader(BaseArchiveReader):
             if self._source is not None and self._source.is_lone_remote
             else None
         )
+        salvage = self._salvage_mode
+        if salvage.enabled:
+            # Each parse searches from the start again (``_parse_headers``): only
+            # the records of the parse that stands are made, once.
+            salvage.hold()
         try:
             try:
                 archive = self._parse_headers(None)
@@ -2714,6 +2719,9 @@ class RarReader(BaseArchiveReader):
                 source_format=exc.source_format,
                 archive_name=exc.archive_name,
             ) from exc
+        finally:
+            if salvage.enabled:
+                salvage.release()
 
     def _parse_headers(self, password: bytes | None) -> RarArchive:
         """Run the header parser over the source, in the shape the source has.
@@ -2805,11 +2813,6 @@ class RarReader(BaseArchiveReader):
             )
             handle.seek(self._origin)
             salvage = self._salvage_mode
-            # A file named as a later volume may turn out to be one only after its
-            # walk: the records of that walk are held until it stands.
-            speculative = salvage.enabled and self._lone_volume_number is not None
-            if speculative:
-                salvage.hold()
             try:
                 archive = parse_rar_archive(
                     handle,
@@ -2829,8 +2832,9 @@ class RarReader(BaseArchiveReader):
                 self._volume_numbers = [self._lone_volume_number]
                 handle.seek(self._origin)
                 if salvage.enabled:
-                    # Drops what the first walk held back: the walk below records
-                    # the same ranges, in volume ``_lone_volume_number``.
+                    # Drops what the first walk made, held back (``_parse_archive``):
+                    # the walk below records the same ranges, in volume
+                    # ``_lone_volume_number``.
                     salvage.restart()
                 return parse_rar_volumes(
                     [handle],
@@ -2843,10 +2847,6 @@ class RarReader(BaseArchiveReader):
                     name_encoding=self._encoding,
                     volume_numbers=self._volume_numbers,
                 )
-            finally:
-                if speculative:
-                    # The first walk stands (or failed otherwise): its records count.
-                    salvage.release()
             return archive
 
     def _parse_lone_stream(self, password: bytes | None) -> RarArchive:

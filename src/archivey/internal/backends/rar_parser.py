@@ -3621,13 +3621,17 @@ class _Rar3Walk:
         """Whether the plain header at ``offset``, which passed its CRC16, is
         confirmed: the position after its data confirms, by the predicate step 1
         uses for its second header (:meth:`_second_confirms`). A position past the
-        end of the volume confirms nothing."""
+        end of the volume confirms nothing. A ``MAIN`` that says the headers after
+        it are encrypted is confirmed as it stands: nothing plain follows it, and
+        the encrypted walk from it checks each header it decrypts."""
         assert self.salvage is not None
         try:
             _seek_to(self.source, offset)
             block = _read_rar3_block(self.source, offset, False)
             if block is None:
                 return False
+            if block.block_type == _RAR3_MAIN and block.flags & _RAR3_MAIN_PASSWORD:
+                return True
             if block.block_type == _RAR3_MAIN:
                 end = _packed_span_end(block.data_offset, block.add_size)
             else:
