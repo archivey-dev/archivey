@@ -1413,6 +1413,18 @@ class _Chain:
         self.note = ""
 
 
+@dataclass(frozen=True)
+class GlobalRecords:
+    """The PAX global records in force at one point of a walk
+    (:meth:`TarWalker.global_records`). A global header replaces the walker's
+    dictionary rather than changing it (``_apply_global``), so holding these
+    references keeps the records as they were."""
+
+    records: dict[bytes, PaxValue]
+    view: Mapping[bytes, PaxValue]
+    binary: bool
+
+
 class TarWalker:
     """Walks the headers of one TAR byte stream, one member per :meth:`next_entry`.
 
@@ -1750,6 +1762,19 @@ class TarWalker:
         self._replay = None
         self._unchecked_data_end = None
         self._damage_run = 0
+
+    def global_records(self) -> GlobalRecords:
+        """The PAX global records in force where the walk stands, to put back with
+        :meth:`restore_global_records` when a salvage pass walks there again."""
+        return GlobalRecords(self._global, self._global_view, self._global_binary)
+
+    def restore_global_records(self, records: GlobalRecords) -> None:
+        """Put back the PAX global records :meth:`global_records` gave: the walk
+        goes back to where they were in force, and a later global header applies
+        only to what comes after it in the archive."""
+        self._global = records.records
+        self._global_view = records.view
+        self._global_binary = records.binary
 
     def resume_after_zero_end(self) -> None:
         """Before a search from a zero block the walk ended on: a forward-only walk
@@ -2245,6 +2270,42 @@ class TarWalker:
             self.end = TarEnd(TarEndKind.REJECTED, offset, reason=parsed.reason)
         return self.end
 
+    def _charge_found(self, charge: _Charger, size: int, offset: int) -> None:
+        """Charge the data of an extended header in a chain a salvage search found.
+
+        The search found the header on its checksum and magic alone, so its size may
+        be noise. When the charge fails and the archive does not hold the data, or the
+        data alone weighs more than all of ``max_metadata_bytes``, the header names no
+        member: :class:`TruncatedError` passes it over, as for any found chain that
+        does not parse. A header the archive holds and that fits the cap but not what
+        is left of it stays a limit hit. A forward-only walk cannot tell whether it
+        holds the data without reading it, so the cap alone decides there.
+        """
+        try:
+            charge(size, "an extended header")
+        except ResourceLimitError:
+            end = offset + BLOCKSIZE + size
+            if size <= charge.cap and not self._ends_before(end):
+                raise
+            raise TruncatedError(
+                f"TAR archive: the extended header at offset {offset}, found by "
+                f"salvage's header search, names {size} bytes of data, more than "
+                "the archive holds or the listing limits allow"
+            ) from None
+
+    def _ends_before(self, end: int) -> bool:
+        """Whether the stream is known to end before ``end``: its length is a fact,
+        or a seekable stream read without a window has no byte at ``end - 1``.
+        A forward-only walk answers ``False``: it would have to read up to there."""
+        if self._end is not None:
+            return self._end < end
+        if self._eof_at is not None:
+            return self._eof_at < end
+        if not self._seekable or self._win is not None:
+            return False
+        self._seek(end - 1)
+        return not self._read(1)
+
     def _read_extended_header(
         self,
         parsed: HeaderBlock,
@@ -2275,7 +2336,10 @@ class TarWalker:
         # elsewhere.
         if _size_has_tail(block):
             chain.ambiguities.append((Ambiguity.FIELD_TAIL, typeflag + b" size"))
-        charge(parsed.size, "an extended header")
+        if chain.start == self._found_at:
+            self._charge_found(charge, parsed.size, offset)
+        else:
+            charge(parsed.size, "an extended header")
         data = self._read_header_bytes(parsed.size)
         if len(data) < parsed.size:
             raise TruncatedError(
