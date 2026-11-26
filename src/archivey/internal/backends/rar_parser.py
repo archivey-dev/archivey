@@ -835,6 +835,12 @@ class RarArchive:
     #: Salvage mode only: the walk of the last volume read ended in a search that
     #: ran to its end, not at an end block or the end of the file after a header.
     salvage_ended_in_damage: bool = False
+    #: Salvage mode only: the walk of the last volume read ended with bytes it lost
+    #: that no header after them claims (a search ran and no member was listed
+    #: after it), as when the search found the volume's own end block. The member
+    #: those bytes held may be the one the next volume's first member continues,
+    #: so that volume is merged as after a gap.
+    salvage_lost_at_end: bool = False
     #: Salvage mode only, set where salvage read past the point the default stops:
     #: the error the default ends in there, ``"truncated"`` or ``"damaged"``. Damage
     #: or a cut only salvage reaches is reported after it, never in its place.
@@ -975,7 +981,8 @@ def parse_rar_volumes(
     password_proven = False
     if salvage is not None and not salvage.enabled:
         salvage = None
-    # Set once a volume's walk ended in damage: every later volume is one only
+    # Set once a volume's walk ended in damage, or read its end block with lost
+    # bytes before it that no member claims: every later volume is one only
     # salvage goes on to, and the next one is read as after a gap.
     past_damaged_volume = False
     # Set once salvage listed a member of a volume past damage: the default walk
@@ -1131,7 +1138,10 @@ def parse_rar_volumes(
                 # so salvage walks every later volume given.
                 past_damaged_volume = True
                 continue
-            past_damaged_volume = False
+            # An end block read with lost bytes before it that no member claims:
+            # the next volume's first member may continue the member those bytes
+            # held, not the last one listed, so it joins nothing (after a gap).
+            past_damaged_volume = part.salvage_lost_at_end and not follows_default
         if not part.needs_next_volume:
             # Archive is complete; ignore trailing unused volume paths if any were listed.
             break
@@ -4460,6 +4470,7 @@ class _Rar3Walk:
             open_error=self.open_error,
             main_lost=self.main_lost,
             salvage_ended_in_damage=self.ended_in_damage,
+            salvage_lost_at_end=self.pending_lost is not None,
             default_stop=self.default_stop,
             default_needs_next=self.default_needs_next,
         )
@@ -6144,6 +6155,7 @@ class _Rar5Walk:
             open_error=self.open_error,
             main_lost=self.main_lost,
             salvage_ended_in_damage=self.ended_in_damage,
+            salvage_lost_at_end=self.pending_lost is not None,
             default_stop=self.default_stop,
             default_needs_next=self.default_needs_next,
         )

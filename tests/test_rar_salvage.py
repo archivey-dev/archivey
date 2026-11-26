@@ -1518,6 +1518,103 @@ def test_a_later_volume_only_salvage_reads_cannot_erase_the_listing(
     assert "volume 2 of the set" in str(salvage.error)
 
 
+def _write_set(tmp_path: Path, volumes: list[tuple[str, bytes]]) -> Path:
+    for name, data in volumes:
+        (tmp_path / name).write_bytes(data)
+    return tmp_path / volumes[0][0]
+
+
+def _fixture_set(prefix: str, names: list[str]) -> list[tuple[str, bytes]]:
+    return [
+        (f"{prefix}{n}.rar", (_RAR / f"{prefix}{n}.rar").read_bytes()) for n in names
+    ]
+
+
+def _rar29_set() -> list[tuple[str, bytes]]:
+    """A RAR 2.9 set of four stored members, ``b.txt`` and ``c.txt`` split."""
+    from tests.rar_util import write_rar29_stored_volumes
+
+    files = [
+        ("a.txt", b"A" * 300),
+        ("b.txt", b"B" * 500),
+        ("c.txt", b"C" * 700),
+        ("d.txt", b"D" * 100),
+    ]
+    volumes = write_rar29_stored_volumes(files, 600)
+    return [(f"x.part{i}.rar", data) for i, data in enumerate(volumes, 1)]
+
+
+_VOLUME_SETS = {
+    "tinyvol_cut": lambda: _fixture_set("tinyvol_cut.part", ["1", "2", "3"]),
+    "tinyvol_cut_solid": lambda: _fixture_set(
+        "tinyvol_cut_solid.part", ["01", "02", "03", "04"]
+    ),
+    "rar29": _rar29_set,
+}
+
+
+@pytest.mark.parametrize(
+    ("name", "volume", "offset", "joined"),
+    [
+        ("tinyvol_cut", 0, 1068, "b.txt"),
+        ("tinyvol_cut", 1, 759, "c.txt"),
+        ("tinyvol_cut_solid", 1, 344, "b.txt"),
+        ("tinyvol_cut_solid", 2, 530, "c.txt"),
+    ],
+)
+def test_a_split_member_whose_header_is_lost_starts_the_next_volume_alone(
+    name: str, volume: int, offset: int, joined: str, tmp_path: Path
+) -> None:
+    """The header of the member that splits into the next volume is damaged, and
+    the search after it finds the volume's end block, which says a volume follows.
+    The next volume's first member continues the lost one, not the member before
+    it: it is listed on its own, flagged, as after a gap. The open raised
+    "Mismatched RAR split continuation" and listed nothing."""
+    volumes = _VOLUME_SETS[name]()
+    data = bytearray(volumes[volume][1])
+    data[offset] ^= 0xFF
+    volumes[volume] = (volumes[volume][0], bytes(data))
+    path = _write_set(tmp_path, volumes)
+    default = _list(path)
+    salvage = _list(path, salvage=True)
+    assert salvage.names[: len(default.names)] == default.names
+    assert salvage.names[len(default.names)] == joined
+    assert salvage.found()[joined].method == "next_volume"
+    assert type(salvage.error) is type(default.error)
+
+
+@pytest.mark.parametrize("name", sorted(_VOLUME_SETS))
+def test_a_one_byte_flip_in_a_volume_set_lists_what_the_default_lists(
+    name: str, tmp_path: Path
+) -> None:
+    """Every third byte of each volume but the last, flipped: whatever the default
+    lists, salvage lists it first and does not raise at open."""
+    volumes = _VOLUME_SETS[name]()
+    path = tmp_path / volumes[0][0]
+    _write_set(tmp_path, volumes)
+    bad = []
+    for index, (volume_name, data) in enumerate(volumes[:-1]):
+        for offset in range(0, len(data), 3):
+            flipped = bytearray(data)
+            flipped[offset] ^= 0xFF
+            (tmp_path / volume_name).write_bytes(bytes(flipped))
+            try:
+                with open_archive(path) as reader:
+                    default = [m.name for m in reader.members_report().members]
+            except ArchiveyError:
+                continue
+            try:
+                with open_archive(path, salvage=True) as reader:
+                    salvage = [m.name for m in reader.members_report().members]
+            except ArchiveyError as exc:
+                bad.append((index, offset, repr(exc)))
+                continue
+            if salvage[: len(default)] != default:
+                bad.append((index, offset, salvage))
+        (tmp_path / volume_name).write_bytes(data)
+    assert bad == []
+
+
 def test_a_continuation_found_after_lost_bytes_is_not_joined_across_volumes(
     tmp_path: Path,
 ) -> None:

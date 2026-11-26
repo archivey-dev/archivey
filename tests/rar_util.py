@@ -79,3 +79,65 @@ def write_rar29_stored(files: list[tuple[str, bytes]]) -> bytes:
         out += data
     out += _rar3_block(0x7B, 0x4000, b"")
     return bytes(out)
+
+
+def write_rar29_stored_volumes(
+    files: list[tuple[str, bytes]], volume_data: int
+) -> list[bytes]:
+    """A RAR 2.9 volume set of ``files`` (name, data), stored, nonsolid, new
+    numbering (``.partN.rar``), each volume holding at most ``volume_data`` bytes of
+    packed data: a member that does not fit continues in the next volume.
+
+    The headers are :func:`write_rar29_stored`'s, with the volume flags: MAIN
+    ``VOLUME``, ``NEWNUMBERING`` and, on the first, ``FIRSTVOLUME``; FILE
+    ``SPLIT_BEFORE`` / ``SPLIT_AFTER``, with the part's own data CRC on every part
+    but the last, which has the whole file's; ENDARC ``NEXT_VOLUME`` on every
+    volume but the last. ``unrar t`` tests the result OK.
+    """
+    parts: list[list[tuple[str, bytes, bytes, bool, bool]]] = []
+    current: list[tuple[str, bytes, bytes, bool, bool]] = []
+    room = volume_data
+    for name, data in files:
+        pos = 0
+        while True:
+            take = min(room, len(data) - pos)
+            chunk = data[pos : pos + take]
+            before = pos > 0
+            pos += take
+            after = pos < len(data)
+            current.append((name, data, chunk, before, after))
+            room -= take
+            if after or room <= 0:
+                parts.append(current)
+                current, room = [], volume_data
+            if not after:
+                break
+    if current:
+        parts.append(current)
+    dos_time = ((2020 - 1980) << 25) | (1 << 21) | (1 << 16)
+    volumes = []
+    for index, members in enumerate(parts):
+        out = bytearray(b"Rar!\x1a\x07\x00")
+        main_flags = 0x0001 | 0x0010 | (0x0100 if index == 0 else 0)
+        out += _rar3_block(0x73, main_flags, b"\0" * 6)
+        for name, data, chunk, before, after in members:
+            raw = name.encode("utf-8")
+            body = struct.pack(
+                "<LLBLLBBHL",
+                len(chunk),
+                len(data),
+                3,  # Unix
+                zlib.crc32(chunk if after else data) & 0xFFFFFFFF,
+                dos_time,
+                29,
+                0x30,  # stored
+                len(raw),
+                0o100644,
+            )
+            flags = 0x8000 | (0x0001 if before else 0) | (0x0002 if after else 0)
+            out += _rar3_block(0x74, flags, body + raw)
+            out += chunk
+        last = index == len(parts) - 1
+        out += _rar3_block(0x7B, 0x4000 | (0 if last else 0x0001), b"")
+        volumes.append(bytes(out))
+    return volumes

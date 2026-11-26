@@ -56,17 +56,17 @@ a second header: a header that passes its CRC16 and parses, the end of the file,
 intact end block with only zeros after it, or a damaged header that step 1 follows to
 one of these. A confirmed member SHALL claim its header and data, and the normal walk
 SHALL go on after its data. An unconfirmed member SHALL be listed with
-`confirmed=False`, claim nothing, and the search SHALL go on at the byte after its
-first byte. A RAR 1.5-2.x COMMENT subblock after an unconfirmed header's CRC16 SHALL
-NOT be read: the member is listed with no comment. No byte of a volume SHALL be searched twice.
+`confirmed=False`, claim nothing, and the search SHALL go on at the byte after its first
+byte. A RAR 1.5-2.x COMMENT subblock after an unconfirmed header's CRC16 SHALL NOT be
+read: the member is listed with no comment. No byte of a volume SHALL be searched twice.
 
-**Headers that are not members.** A MAIN header found after the first, or after a
-MAIN that failed its CRC behind an intact signature, SHALL be skipped without reading
-its flags. A RAR5 ENCRYPTION header found after MAIN, or after a damaged
-MAIN, SHALL be skipped. An end block found after a search in the same volume SHALL end
-the volume when only zeros or the end of the volume follow it; otherwise the search SHALL
-go on after it, and when it finds no header to the volume's end, the end block SHALL end
-the volume as without a search before it. A found RAR5 FILE or SERVICE header that ends a
+**Headers that are not members.** A MAIN header found after the first, or after a MAIN
+that failed its CRC behind an intact signature, SHALL be skipped without reading its
+flags. A RAR5 ENCRYPTION header found after MAIN, or after a damaged MAIN, SHALL be
+skipped. An end block found after a search in the same volume SHALL end the volume when
+only zeros or the end of the volume follow it; otherwise the search SHALL go on after
+it, and when it finds no header to the volume's end, the end block SHALL end the volume
+as without a search before it. A found RAR5 FILE or SERVICE header that ends a
 quick-open cache record whose own CRC-32 passes SHALL NOT be listed; it SHALL claim only
 its own bytes. The damaged header where the walk stopped SHALL NOT be listed.
 
@@ -144,15 +144,18 @@ volume with an intact MAIN, and the search SHALL start at that volume's offset 0
 ### Requirement: Salvage mode goes on into later RAR volumes
 
 When the walk of a volume ends at damage, salvage SHALL search to the end of that volume
-and then walk every later volume supplied or discovered, from its offset 0, whatever
-the last member said. A member of such a volume SHALL carry `MEMBER_FOUND_BY_SCAN` with
+and then walk every later volume supplied or discovered, from its offset 0, whatever the
+last member said. A member of such a volume SHALL carry `MEMBER_FOUND_BY_SCAN` with
 `method="next_volume"`, `confirmed=True` and `unchecked=()`. The first member of the
 next volume SHALL be joined to the last member of the damaged volume only when that
 member was reached by the normal walk or confirmed, has the split-after flag, and its
 data ends where the volume's walk ended at its end block or the end of the file;
 otherwise it SHALL be listed on its own with `split_before`, as after a missing volume.
-A member found past lost bytes, or listed unconfirmed, SHALL NOT be joined to the
-member before it, in a volume or across volumes. Where the default goes on into the next
+A member found past lost bytes, or listed unconfirmed, SHALL NOT be joined to the member
+before it, in a volume or across volumes. A volume whose walk reads its end block with
+lost bytes before it that no member after them claims SHALL be followed as after a gap:
+the next volume's first member SHALL be listed on its own, flagged, since the lost bytes
+may hold the header of the member it continues. Where the default goes on into the next
 volume and salvage listed nothing past the default's stop in this one, the set SHALL go
 on as the default's does, whatever the search's budget or end. A later volume that only
 salvage reads and that cannot be read (another archive's file under the set's name)
@@ -164,6 +167,7 @@ salvage reaches SHALL be named after the default's error, never in its place.
 
 | Case | Expected |
 | --- | --- |
+| RAR5 set, the header of the member split into the next volume damaged, the search finds the end block | The members before it; the continuation listed on its own (`next_volume`); the later volumes walked; the default's error |
 | Five volumes, 1 KiB zeroed inside `part3` | Volumes 1 and 2 as today; `part3`'s members after the damage, found; `part4` and `part5` walked, `method="next_volume"`; `CorruptionError` at the end |
 | The same, `salvage=False` | The set ends at `part3`, as today |
 | `part3` missing | As today: every present volume listed; `TruncatedError` at the end |
@@ -190,15 +194,13 @@ A found member's read SHALL be decided before any program runs:
   `CorruptionError`; after a confirmed found member it SHALL read with
   `DIGEST_UNVERIFIABLE` (`reason="after_damaged_header"`).
 
-A found member whose header passed its check SHALL NOT emit `MEMBER_HEADER_DAMAGED`.
-A header past the search that fails its CRC and that step 1 follows SHALL be listed
-as the default lists it, with `MEMBER_HEADER_DAMAGED` on read, and its
-`MEMBER_FOUND_BY_SCAN` SHALL say it failed its CRC and was followed by its sizes.
-Each `MEMBER_FOUND_BY_SCAN` SHALL name the check that confirmed the member: a RAR5
-header's own CRC-32, the position after a RAR 1.5-4 member's data, or step 1's
-follow. Its `verifiable` SHALL be what
-the same member has without damage: `CHECKSUM` with a stored digest, `LENGTH` without
-one.
+A found member whose header passed its check SHALL NOT emit `MEMBER_HEADER_DAMAGED`. A
+header past the search that fails its CRC and that step 1 follows SHALL be listed as the
+default lists it, with `MEMBER_HEADER_DAMAGED` on read, and its `MEMBER_FOUND_BY_SCAN`
+SHALL say it failed its CRC and was followed by its sizes. Each `MEMBER_FOUND_BY_SCAN`
+SHALL name the check that confirmed the member: a RAR5 header's own CRC-32, the position
+after a RAR 1.5-4 member's data, or step 1's follow. Its `verifiable` SHALL be what the
+same member has without damage: `CHECKSUM` with a stored digest, `LENGTH` without one.
 
 #### Scenario: reading found members
 

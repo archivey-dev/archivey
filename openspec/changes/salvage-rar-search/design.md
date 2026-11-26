@@ -405,7 +405,12 @@ makes the whole set's open raise (§16, F2).
   where the volume's walk ended cleanly (its end block, or the end of the file).
   Otherwise the next volume is read as after a gap (`after_gap=True`): its first member
   is listed on its own with `split_before`, and its read raises `TruncatedError`, as
-  for a missing volume.
+  for a missing volume. So is the volume after one whose walk read its end block
+  while bytes it lost were still unclaimed (`RarArchive.salvage_lost_at_end`): a RAR5
+  search finds the end block, so a damaged header of the member split into the next
+  volume left the walk ending cleanly, and the continuation was joined to the member
+  before the damage (K7). A RAR 1.5-4 search finds no end block, so its walk ends in
+  damage there.
 - **What the default reaches stays.** A member found past lost bytes (in the next
   volume too, after its own lost start or damaged MAIN) or listed unconfirmed is never
   joined to the member before it. Where the default follows a volume into the next
@@ -638,8 +643,9 @@ open:
   not `"rar"` (§12).
 - **`next_volume` (§9)** applies to every member of a volume after one where salvage
   listed a member past damage, not only after a volume whose walk ended in damage: the
-  default reaches neither. Only after a volume that ended in damage is the next one
-  read as after a gap.
+  default reaches neither. Only after a volume that ended in damage, or with lost
+  bytes before its end block that no member claims, is the next one read as after a
+  gap.
 - **`SALVAGE_UNAVAILABLE` reasons.** Header-encrypted archives use
   `reason="no_salvage_search"`, the closer of the two (archivey has no search for
   encrypted headers), with a RAR-specific message. A RAR read forward only, inside
