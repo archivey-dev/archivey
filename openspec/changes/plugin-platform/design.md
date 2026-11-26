@@ -194,9 +194,14 @@ Rules:
   versions, by `format_availability()` and by the error on open (§5).
 - **A name is a value; a registry is asked when an operation resolves it.** Building
   `ContainerFormat("dmg")` or `ArchiveFormat("outside-format")` checks the spelling
-  only (lowercase letters, digits, `.`, `_`, `-`), touches no registry and starts no
+  only (ASCII letters, digits, `.`, `_`, `-`), touches no registry and starts no
   discovery. So a name read from a config file loads on a machine without the plugin,
   and building a value never depends on what is installed or on which call ran first.
+  Names are compared as written, with no case folding: core's `StreamFormat("Z")`
+  keeps its value, and a library name is an import name, which may have capitals
+  (`PIL`). New format and method names are lowercase by convention, and the registry
+  refuses two names that differ only in case. A test checks every core constant
+  against the spelling rule.
   Membership is checked when a call resolves the name against its effective registry
   and policy, before any I/O: `open_archive(path, format="dgm")` raises
   `ArchiveyUsageError` for a name nobody knows, and `PackageNotInstalledError` with the
@@ -300,7 +305,9 @@ Guardrails:
   Replacing a reader stays an explicit choice of the calling program,
   `FormatPolicy(replace=...)`.
 - **Allow-lists do not move.** `FormatPolicy.COMMON` and any `only=` policy name what
-  may run, whatever is installed.
+  is **read**, whatever is installed. An allow-list does not keep an installed
+  package's detection code from running (R9); `providers=` does. Whether `COMMON`
+  should also limit providers is Open Question 11.
 - **One off switch for a deployment.** `ARCHIVEY_PLUGIN_AUTOLOAD=0`, or
   `archivey.formats.disable_autoload()` before first use, skips the listing in point 2.
   It is a default for the process. A caller's policy works without it.
@@ -341,13 +348,33 @@ Detection has three phases, the same on every install:
      the xar table of contents, which no fixed signature or 4 KiB prefix can express.
      The check runs when the package is installed and the call's policy allows its
      **provider**, whatever the policy says about the format.
-   - A refinement and its base ship in one distribution. So when the package is
-     missing, the refusal names the right package even where core cannot tell pkg from
-     xar. This is the one place the guarantee is weaker, and it is stated: on a
+   - A refinement by code check and its base ship in one distribution. So when the
+     package is missing, the refusal names the right package even where core cannot
+     tell pkg from xar. A refinement from **another** distribution must be data (a
+     longer signature at a fixed offset, or a trailer) and sits in the owner's table:
+     core then decides it on any install and under any policy, and refuses with the
+     refining provider's name when that provider is missing or barred. Otherwise the
+     same file would be the base under one policy and the refinement under another,
+     which R9 rules out. This is the one place the guarantee is weaker, and it is stated: on a
      core-only install `detect_format()` reports the family (`xar`) with its provider
      missing, not the refinement.
 3. **Availability.** The format's provider is installed and allowed, or the call is
    refused with the hint.
+
+**Probes.** A format with no reliable signature (binary cpio today) names a probe by
+dotted path, and so may a codec's stream facet (§6). A probe is code, so it belongs
+to no data phase, and its rule is today's, kept:
+
+- It runs after phase 1, only when no signature settled the family, and only where
+  the name's extension says it is that format or the caller set
+  `always_probe_content` (`_probe_named`).
+- It runs on the bytes detection already holds: the prefix, or the first decoded
+  bytes inside a compressor, which is how a binary `initrd.cpio.gz` is found.
+- It runs only for a provider the call's policy allows (§3 point 4), under the
+  detection read budget and the caller's decoder limits. R9 applies to its result.
+- Core's own probes run first, then the others in distribution order.
+- A hinted format whose package is missing has no probe to run, so it is known by
+  its extension only (Open Question 3 asks whether that is enough).
 
 **Detect first, judge after (ruling R9).** Every format of an allowed provider takes
 part in detection, whatever the format policy says, and the format policy judges the
@@ -377,7 +404,8 @@ hint table lists the DMG trailer (and its encrypted headers) over core's bzip2 a
 signatures, so a UDBZ or ULMO image is never read as a `.bz2` or `.xz`, with or without
 the package. A package cannot refine or preempt ZIP on its own word, and a format
 layered on another project's format (an `.ipk` over ar, an AppImage over SquashFS)
-stays possible: by a line in the owner's table, or by the caller's choice.
+stays possible: by a data line in the owner's table (phase 2), or by the caller
+asking for the format by name.
 
 Every phase sees every entry. Discovery is complete before the first detection, and it
 is never put off until core's own signals have failed: a compressed UDIF image, an
@@ -839,7 +867,7 @@ For the next rounds of this plan. None blocks step 1.
    class attributes or reads them from its entry.
 2. The package name `archivey-legacy-formats`.
 3. Whether a known name with no installed package may be detected by signature, or by
-   extension only, when the signature needs a probe.
+   extension only, when the signature needs a probe (the last point of §4 Probes).
 4. The exact spelling of the off switch and of the provider query.
 5. How a method namespace is declared by a plugin container, and whether 7z coder ids
    are bytes or their hex spelling in an entry.

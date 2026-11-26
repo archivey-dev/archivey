@@ -85,8 +85,10 @@ Deltas are written with each implementation step, not in this plan.
   or is refused with a hint. Installing a package never changes how a file that already
   opened is read.
 - **Servers that read uploads.** An allow-list policy (`FormatPolicy.COMMON`, `only=`)
-  is not affected by installed packages. `plugins=False` allows less after the split,
-  because the moved formats are no longer core's: `providers=` replaces it, and the
+  reads the same formats whatever is installed. It does not keep an installed
+  package's detection code from running; `providers=` does (design.md, R9).
+  `plugins=False` allows less after the split, because the moved formats are no
+  longer core's: `providers=` replaces it, and the
   narrowing is a **Breaking:** line. `only_libraries` admits only the libraries it
   lists, a plugin's too. Under `NATIVE_DECODERS`, a package codec that declares its
   native object runs in the child.

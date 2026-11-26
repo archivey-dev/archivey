@@ -25,8 +25,9 @@ anyone else's.
 - Format, stream, method and library names become open strings. Core keeps constants for
   what it ships. `PluginContainer`, `PluginStream` and `FormatInfo.from_plugin` go.
 - Installed packages are found through an entry point, behind guardrails: a plugin adds
-  formats and never takes over a name, extension or signature; allow-list policies are
-  not affected; one switch turns discovery off.
+  formats and never takes over a name, extension or signature; an allow-list reads the
+  same formats whatever is installed, and `providers=` decides whose code runs; one
+  switch turns discovery off.
 - Core keeps a hint table of formats it does not ship, so a missing package is named in
   the error and an archive is never read as another format.
 - Codecs register by name and bind to a container's method number. The Rust package

@@ -4,7 +4,7 @@
   plugin-shaped readers and ZIP, TAR, 7z, RAR, single-file and directory
 - [ ] 1.2 Registry built from entries; handler modules imported on first open
 - [ ] 1.3 Detection in three phases (design.md §4): family from data, bounded
-  refinement after a signature match, availability
+  refinement after a signature match, availability; the probe step between them
 - [ ] 1.4 `refines` and `preempts` replace the deb-before-ar import order and the
   trailer preempt list; deb's refinement as a longer signature
 - [ ] 1.5 Remove the side-effect imports in `backends/__init__.py`
@@ -13,6 +13,8 @@
 - [ ] 1.7 Detection parity: pkg and plain xar, deb and plain ar, with correct, missing
   and misleading suffixes; `detect_format()` and `open_archive()` agree; read budgets
   measured on seekable and forward-only sources
+- [ ] 1.7c Probe parity: a binary `.cpio` and a binary `initrd.cpio.gz`, on a
+  core-only and a pilot install, named and unnamed
 - [ ] 1.7a One tail window for every trailer declaration: several declarations on a
   source that counts range reads, and on a member stream; a trailer over the cap
   refused at load
@@ -39,6 +41,8 @@
 - [ ] 2.1d One namespace for container and stream names (R10): the registry refuses a
   name the other role owns, the hint table reserves across roles, and a test pins
   that core's two lists do not overlap
+- [ ] 2.1e Every core constant of the four types passes the spelling rule; names are
+  case-sensitive and two names differing only in case are refused
 - [ ] 2.1c Each package exports a constant for every library it uses (R8)
 - [ ] 2.2 Remove `PluginContainer`, `PluginStream` and the `Literal` spelling lists
 - [ ] 2.2a `ExtraKey` and the generic overloads on `MemberExtra` and
@@ -67,7 +71,9 @@
   `plugins=False` and `FormatPolicy.COMMON`, in both orders
 - [ ] 3.4 Ownership: one owner per name and signature, longest signature first, a
   clashing extension dropped alone; `refines` and `preempts` only with the owner's
-  consent or the caller's choice; a bad manifest skipped
+  consent or the caller's choice; a refinement from another distribution is data
+  only, and the file is refused, never read as its base, when that provider is
+  missing or barred; a bad manifest skipped
 - [ ] 3.4a The provider query and `archivey --version -v`: found, refused, unparsable
   and incompatible providers, each with its reason
 - [ ] 3.5 The off switch (environment variable and function)
