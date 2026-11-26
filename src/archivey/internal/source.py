@@ -289,8 +289,9 @@ class PipeView(ReadOnlyIOStream):
     It gives no ``size`` or ``fileno()``, as a pipe of the same bytes would not, so
     nothing that measures it seeks ``inner`` or decodes ahead. It keeps ``name``, the
     one hint a pipe can carry, so that detection sees the same name whether the
-    caller's object could seek or not. Reads go through the shared adapters
-    (``read_blocking``, ``try_readinto``), as :class:`DelegatingStream`'s do.
+    caller's object could seek or not. ``read`` goes through ``read_blocking``, so a
+    stall raises rather than passing for EOF; ``readinto`` is the base class's, which
+    fills the buffer from ``read``.
 
     Not a :class:`DelegatingStream`: that class owns its inner and forwards seeking,
     and this one borrows a caller's stream (``owns=False``) and refuses to seek.
@@ -329,14 +330,6 @@ class PipeView(ReadOnlyIOStream):
     @override
     def read(self, n: int = -1, /) -> bytes:
         return read_blocking(self._open_inner(), n)
-
-    @override
-    def readinto(self, b: WriteableBuffer, /) -> int:
-        inner = self._open_inner()
-        n = try_readinto(inner, b)
-        if n is not None:
-            return n
-        return readinto_via_read(inner, b)
 
     @override
     def close(self) -> None:
@@ -550,11 +543,22 @@ class ArchiveSource(ReadOnlyIOStream):
         )
 
     @classmethod
-    def for_stream(cls, stream: BinaryIO) -> ArchiveSource:
-        """Borrow a caller's stream: full-count, never closed by archivey."""
+    def for_stream(cls, stream: BinaryIO, *, pipe: bool = False) -> ArchiveSource:
+        """Borrow a caller's stream: full-count, never closed by archivey.
+
+        Under ``pipe`` a seekable ``stream`` is read through a :class:`PipeView`,
+        wrapped before anything here measures it: measuring would seek it to the end
+        and back, or make a decompressor decode ahead, to learn a size that pipe mode
+        does not use. The result is marked ``piped_from_seekable``.
+        """
         raise_if_text_stream(stream)
         if isinstance(stream, ArchiveSource):
             return stream
+        if pipe and is_seekable(stream):
+            view = PipeView(stream, owns=False, name=source_name(stream))
+            piped = cls.for_stream(cast("BinaryIO", view))
+            piped.piped_from_seekable = True
+            return piped
         size = source_byte_size(stream)
         fact = source_size_fact(stream)
         name = source_name(stream)
@@ -627,13 +631,7 @@ class ArchiveSource(ReadOnlyIOStream):
         handed open. ``origin`` names the object for ``SOURCE_CHANGE_UNDETECTABLE``.
         Under ``pipe`` the decompressor is read through a :class:`PipeView`, so that
         measuring it decodes nothing ahead."""
-        read: BinaryIO = decoded
-        piped = pipe and is_seekable(decoded)
-        if piped:
-            view = PipeView(decoded, owns=False, name=source_name(decoded))
-            read = cast("BinaryIO", view)
-        source = cls.for_stream(read)
-        source.piped_from_seekable = piped
+        source = cls.for_stream(decoded, pipe=pipe)
         source._owned = decoded
         source._owned_beneath = raw
         source._fsspec_decompressed = origin
