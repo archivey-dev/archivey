@@ -52,6 +52,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends.rar_parser import RarMemberInfo
 from archivey.internal.backends.rar_search import (
     LostStartFinder,
     Rar3Finder,
@@ -1486,6 +1487,46 @@ def test_a_volume_merge_keeps_what_the_walk_left_apart() -> None:
     )
     assert [m.filename for m in merged.members] == ["a.txt", "b.txt", "x"]
     assert merged.members[2].after_lost == "lost bytes"
+
+
+@requires_binary("unrar")
+def test_an_unconfirmed_rar4_member_does_not_judge_the_password_candidates(
+    tmp_path: Path,
+) -> None:
+    """A RAR4 candidate list is judged by decoding one encrypted member, in a
+    nonsolid archive the smallest. An unconfirmed member claims nothing: its data
+    can be anything, here damaged, so it fails with every candidate and cannot judge
+    them. The confirmed member judges them and reads with two candidates.
+
+    Built from ``encryption__rar4.rar``: damage after MAIN, the smaller member with
+    a damaged data byte and junk after it (so nothing confirms it), then the larger
+    member and the end block."""
+    data = (_RAR / "encryption__rar4.rar").read_bytes()
+    with open_archive(io.BytesIO(data), password="password") as reader:
+        raws = [member._raw for member in reader.members()]
+    assert all(isinstance(raw, RarMemberInfo) for raw in raws)
+    small, big = sorted(raws, key=lambda raw: raw.compress_size)  # type: ignore[union-attr]
+
+    def block(raw: RarMemberInfo) -> bytearray:
+        return bytearray(data[raw.header_offset : raw.data_offset + raw.compress_size])
+
+    lost = block(small)
+    lost[-1] ^= 0xFF
+    first = min(raw.header_offset for raw in raws)  # type: ignore[union-attr]
+    end = max(raw.data_offset + raw.compress_size for raw in raws)  # type: ignore[union-attr]
+    crafted = data[:first] + b"\xff" * 9 + lost + b"\xff\xfe" + block(big) + data[end:]
+    path = _write(tmp_path, crafted)
+    with open_archive(path, salvage=True, password=["wrong", "password"]) as reader:
+        members = reader.members_report().members
+        by_name = {member.name: member for member in members}
+        found = {m.name: m._raw.found for m in members}  # type: ignore[union-attr]
+        assert found[small.filename] is not None
+        assert not found[small.filename].confirmed
+        assert found[big.filename] is not None and found[big.filename].confirmed
+        reference = reader._unchecked_reference_member()  # type: ignore[attr-defined]
+        assert reference is not None and reference.name == big.filename
+        with reader.open(by_name[big.filename]) as stream:
+            assert stream.read()
 
 
 @pytest.mark.parametrize("which", ["previous", "member"])

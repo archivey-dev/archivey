@@ -3069,6 +3069,10 @@ class RarReader(BaseArchiveReader):
             # with every candidate, so it cannot judge them.
             and self._cut_data_error(member, member._raw) is None
             and self._missing_data_error(member, member._raw) is None
+            # Nor can a found member that nothing confirms, whose data can be
+            # anything, or one whose solid stream runs through lost bytes.
+            and not (member._raw.found is not None and not member._raw.found.confirmed)
+            and self._lost_chain_error(member, member._raw) is None
         ]
         if not encrypted:
             return None
