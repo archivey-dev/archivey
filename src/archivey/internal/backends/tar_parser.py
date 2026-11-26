@@ -2336,23 +2336,21 @@ class TarWalker:
         """Charge the data of an extended header in a chain a salvage search found.
 
         The search found the header on its checksum and magic alone, so its size may
-        be noise. When the charge fails and the archive does not hold the data, or the
-        data alone weighs more than all of ``max_metadata_bytes``, the header names no
-        member: :class:`TruncatedError` passes it over, as for any found chain that
-        does not parse. A header the archive holds and that fits the cap but not what
-        is left of it stays a limit hit. A forward-only walk cannot tell whether it
-        holds the data without reading it, so the cap alone decides there.
+        be noise. When the charge fails and the walk knows the archive does not hold
+        the data, the header names no member: :class:`TruncatedError` passes it over,
+        as for any found chain that does not parse. A header the archive holds stays a
+        limit hit, as in the default walk, and so does one the walk cannot check
+        without reading it (a codec stream, a forward-only walk).
         """
         try:
             charge(size, "an extended header")
         except ResourceLimitError:
-            end = offset + BLOCKSIZE + size
-            if size <= charge.cap and not self._ends_before(end):
+            if not self._ends_before(offset + BLOCKSIZE + size):
                 raise
             raise TruncatedError(
                 f"TAR archive: the extended header at offset {offset}, found by "
-                f"salvage's header search, names {size} bytes of data, more than "
-                "the archive holds or the listing limits allow"
+                f"salvage's header search, names {size} bytes of data, past the end "
+                "of the archive"
             ) from None
 
     def _ends_before(self, end: int) -> bool:

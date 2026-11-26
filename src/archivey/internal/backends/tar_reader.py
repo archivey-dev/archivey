@@ -1526,14 +1526,17 @@ class TarReader(BaseArchiveReader):
         search_from: int | None = None
         unread = 0
         if (searched or past) and not confirmed and not trusted:
-            search_from = found + BLOCKSIZE
+            # After the member's own header: its data is searched, and the chain
+            # before it is not found again.
+            after_header = entry.header.offset + BLOCKSIZE
+            search_from = after_header
             if far and not walker.rewind_cheap(search_from):
                 # Not on an indexed codec, which goes back to the data by a seek.
                 search_from = walker.search_floor(search_from)
-                unread = search_from - found - BLOCKSIZE
+                unread = search_from - after_header
                 if gap is None and unread:
                     salvage.gaps.append(
-                        _Gap(found + BLOCKSIZE, search_from, walker.global_records())
+                        _Gap(after_header, search_from, walker.global_records())
                     )
         unchecked: tuple[str, ...] = ("position",)
         if searched and entry.header.offset == found and walker.found_name_full:

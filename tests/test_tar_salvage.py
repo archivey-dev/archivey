@@ -1956,9 +1956,86 @@ def test_a_found_extended_header_too_big_for_the_archive_is_passed_over(
     )
     if compress:
         data = gzip.compress(data)
+        # A codec walk cannot tell whether it holds the data without reading it:
+        # the limit stays a limit, as in the default walk.
+        with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+            _list(data, salvage=True)
+        return
     salvage = _list(data, salvage=True)
     assert salvage.names == ["before.txt", "after.txt"]
     assert isinstance(salvage.error, CorruptionError)
+
+
+def test_a_found_extended_header_within_the_cap_the_file_lacks_is_passed_over() -> None:
+    # The size fits max_metadata_bytes but not what before.txt left of it, and the
+    # file does not hold the data: the header is noise, not a limit hit.
+    data = (
+        _member("before.txt", b"before")
+        + b"X" * BLOCKSIZE
+        + _extended_header(tarfile.XHDTYPE, 99_999)
+        + _member("after.txt", b"after")
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    limits = ListingLimits(max_metadata_bytes=100_000)
+    salvage = _list(data, salvage=True, config=ArchiveyConfig(listing_limits=limits))
+    assert salvage.names == ["before.txt", "after.txt"]
+
+
+@pytest.mark.parametrize("compress", [False, True], ids=["plain", "gzip"])
+def test_a_found_extended_header_over_the_cap_the_archive_holds_hits_the_limit(
+    compress: bool,
+) -> None:
+    # The archive holds the found PAX member, whose x header alone weighs more
+    # than max_metadata_bytes: the default walk refuses it, and so does salvage,
+    # rather than list the member under its cut ustar name.
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        info = tarfile.TarInfo("dir/" + "L" * 150)
+        info.size = 1
+        info.pax_headers = {"comment": "c" * 1000}
+        tar.addfile(info, io.BytesIO(b"m"))
+    data = _member("before.txt", b"before") + b"X" * BLOCKSIZE + out.getvalue()
+    if compress:
+        data = gzip.compress(data)
+    limits = ListingLimits(max_metadata_bytes=1000)
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        _list(data, salvage=True, config=ArchiveyConfig(listing_limits=limits))
+
+
+@pytest.mark.parametrize(
+    "typeflag", [tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.GNUTYPE_LONGNAME]
+)
+def test_an_unconfirmed_found_member_after_extended_headers_is_listed_once(
+    typeflag: bytes,
+) -> None:
+    # The search finds m.txt's chain at its extended header, and nothing confirms
+    # m.txt (junk follows its data). The next search starts after m.txt's own
+    # header, not inside its chain, so the member header is not found again.
+    record = (
+        b"21 path=hijacked.txt\n"
+        if typeflag != tarfile.GNUTYPE_LONGNAME
+        else b"longname.txt\0"
+    )
+    payload = record + b"\0" * (-len(record) % BLOCKSIZE)
+    data = (
+        _member("before.txt", b"before")
+        + b"X" * BLOCKSIZE
+        + _extended_header(typeflag, len(record))
+        + payload
+        + _member("m.txt", b"m")
+        + b"Y" * BLOCKSIZE
+        + _member("real.txt", b"real")
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    salvage = _list(data, salvage=True)
+    # A g header that makes a member applies to it and to every later member.
+    expected = {
+        tarfile.XHDTYPE: ["before.txt", "hijacked.txt", "real.txt"],
+        tarfile.XGLTYPE: ["before.txt", "hijacked.txt", "hijacked.txt"],
+        tarfile.GNUTYPE_LONGNAME: ["before.txt", "longname.txt", "real.txt"],
+    }[typeflag]
+    assert salvage.names == expected
+    assert [content for _, _, content in salvage.members] == [b"before", b"m", b"real"]
 
 
 def test_a_found_extended_header_the_archive_holds_still_hits_the_limit() -> None:
