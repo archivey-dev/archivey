@@ -312,6 +312,25 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
     one-pass walk does. Pass 2 starts each gap with the PAX global records in force at
     its start, kept with the gap: a global header pass 1 read later applies only to
     what follows it.
+  - **The re-walk after a gap** (maintainer ruling, review round 4 of PR 1774, K10).
+    A global header inside a gap reaches only pass 2, so the members pass 1 held
+    after the gap were parsed with older records. When pass 2 ends a gap with
+    records other than the ones pass 1 parsed the next held member with, it parses
+    the held members' chains again, from that member on, with its records, and
+    replaces them. It reads forward from where pass 2 stands, so it decodes nothing
+    a second time: pass 2 decodes on past the last gap to the held headers, and the
+    layer still decodes at most twice. It stops at the first held member whose
+    records equal pass 1's (both read the same later global header), or at the next
+    gap's start, whose search then starts from the records the re-walk ended with.
+    A `size` record can move a member's end: the new end confirms it when pass 1
+    listed a member there or found the clean end there, and the held members before
+    that end are inside its data and dropped; otherwise the re-walk goes on with
+    the held members, which a search inside its data finds. **Limits:** the re-walk
+    stops, and pass 1's later members keep its records, when a chain no longer
+    makes a member with the new records, when it starts before what the window
+    keeps, or when a new end lies past the next gap's start. A chain pass 1 passed
+    over as noise, and a header pass 1 read as data inside a member whose end
+    moved, are not looked at again.
   - Total decode: two passes over the layer, whatever the member count (about
     1.1 to 2 times the compressed size on the test shapes: 40 found members that
     each claim 6 MiB, 20 that claim 12 MiB, 300 dense ones that claim 16 MiB). This

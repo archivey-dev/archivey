@@ -1093,11 +1093,12 @@ def test_an_indexed_codec_tar_lists_what_the_tar_lists_and_decodes_it_once(
     assert decoded <= len(data) + (1 << 20)
 
 
-def _two_gaps() -> bytes:
+def _two_gaps(global_records: dict[str, str] | None = None) -> bytes:
     """``a``, a damaged block, ``liar1`` claiming 8 MiB, eight 600 kB members,
     twelve 1 MB members, another damaged block, ``liar2`` claiming 8 MiB, eight
     600 kB members and the end marker: pass 1 records a gap inside each liar's
-    claim, and pass 2 searches both."""
+    claim, and pass 2 searches both. ``global_records`` puts a PAX global header
+    after ``s1``, inside the first gap."""
     rng = random.Random(7)
 
     def header(name: str, size: int) -> bytes:
@@ -1110,7 +1111,10 @@ def _two_gaps() -> bytes:
 
     damaged = b"\x01" * BLOCKSIZE
     out = member("a", 3) + damaged + header("liar1", 8 << 20)
-    out += b"".join(member(f"s{i}", 600_000) for i in range(8))
+    for i in range(8):
+        out += member(f"s{i}", 600_000)
+        if i == 1 and global_records is not None:
+            out += _global_header(global_records)
     out += b"".join(member(f"m{i}", 1_000_000) for i in range(12))
     out += damaged + header("liar2", 8 << 20)
     out += b"".join(member(f"u{i}", 600_000) for i in range(8))
@@ -1882,10 +1886,13 @@ def test_a_global_header_after_a_gap_does_not_apply_to_what_pass_two_finds() -> 
     assert owners(gzip.compress(data, compresslevel=1)) == plain
 
 
-def _gap_then_members() -> bytes:
+def _gap_then_members(
+    global_records: dict[str, str] | None = None, *, compress: bool = True
+) -> bytes:
     """A gzip tar: ``a``, a damaged block, ``liar`` claiming 8 MiB, eight 600 kB
     members and six 1 MB members. The first pass lists ``a`` and ``liar``, records
-    a gap inside the claim, and holds the members after it for the second pass."""
+    a gap inside the claim, and holds the members after it for the second pass.
+    ``global_records`` puts a PAX global header after ``s1``, inside the gap."""
     rng = random.Random(13)
 
     def member(name: str, size: int) -> bytes:
@@ -1898,9 +1905,68 @@ def _gap_then_members() -> bytes:
     liar.size = 8 << 20
     data = member("a", 3) + b"\x01" * BLOCKSIZE
     data += liar.tobuf(format=tarfile.USTAR_FORMAT)
-    data += b"".join(member(f"s{i}", 600_000) for i in range(8))
+    for i in range(8):
+        data += member(f"s{i}", 600_000)
+        if i == 1 and global_records is not None:
+            data += _global_header(global_records)
     data += b"".join(member(f"m{i}", 1_000_000) for i in range(6))
-    return gzip.compress(data + bytes(2 * BLOCKSIZE), compresslevel=1)
+    data += bytes(2 * BLOCKSIZE)
+    return gzip.compress(data, compresslevel=1) if compress else data
+
+
+def _global_header(records: dict[str, str]) -> bytes:
+    return tarfile.TarInfo._create_pax_generic_header(  # type: ignore[attr-defined]
+        records, tarfile.XGLTYPE, "utf-8"
+    )
+
+
+@pytest.mark.parametrize(
+    "build",
+    [lambda r: _gap_then_members(r, compress=False), _two_gaps],
+    ids=["one-gap", "two-gaps"],
+)
+@pytest.mark.parametrize(
+    "records",
+    [
+        {"uname": "mid"},
+        {"uname": "mid", "path": "renamed"},
+        {"uname": "mid", "size": "2000000"},
+        {"uname": "mid", "size": "300000"},
+        {"uname": "mid", "size": "1601024"},
+    ],
+    ids=["uname", "path", "size-up", "size-down", "size-skips"],
+)
+def test_a_global_header_inside_a_gap_applies_to_the_held_members(
+    records: dict[str, str], build: Callable[[dict[str, str]], bytes]
+) -> None:
+    """A PAX global header inside the gap the first pass reads past: only the
+    second pass reads it, and the members the first pass held after the gap are
+    read again with it (the re-walk), so the gzip tar lists what the plain tar
+    lists, with the same MEMBER_FOUND_BY_SCAN records. With two gaps, the second
+    one's search starts from the records the re-walk ended with. A ``size`` record
+    moves the held members' ends. The re-walk reads forward from where the second
+    pass stands, so the layer still decodes at most twice."""
+
+    def listed(source: bytes) -> tuple[list[object], list[object], int | None]:
+        with open_archive(io.BytesIO(source), salvage=True) as reader:
+            members = reader.members_report().members
+            decode = reader._listing_decode  # type: ignore[attr-defined]
+            drawn = None if decode is None else decode.drawn
+            found = [
+                (d.context.member_id, d.context.offset, d.context.confirmed)
+                for d in reader.diagnostics.retained
+                if isinstance(d.context, SalvageScanContext)
+            ]
+            return [(m.name, m.uname, m.size) for m in members], found, drawn
+
+    data = build(records)
+    plain, plain_found, _ = listed(data)
+    assert plain[-1][1] == "mid"
+    gz, gz_found, drawn = listed(gzip.compress(data, compresslevel=1))
+    assert gz == plain
+    assert gz_found == plain_found
+    assert drawn is not None
+    assert drawn <= 2 * len(data)
 
 
 @pytest.mark.parametrize(

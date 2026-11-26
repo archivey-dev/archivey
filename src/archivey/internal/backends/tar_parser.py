@@ -1786,6 +1786,21 @@ class TarWalker:
         self._unchecked_data_end = None
         self._damage_run = 0
 
+    def reread_at(self, offset: int) -> bool:
+        """Put the walk at ``offset``, where a chain the walk parsed before starts,
+        to parse it again with other PAX global records (``TarReader._rewalk``).
+        On a codec or forward-only walk, only when that does not go back before
+        what the window keeps, so nothing is decoded again; ``False``, with the
+        walk where it was, otherwise."""
+        if not self._seekable or self._rewind_costly:
+            window = self._window()
+            if offset < window.start:
+                return False
+            window.seek(offset)
+            self._stream_pos = offset
+        self.resume_at(offset)
+        return True
+
     def global_records(self) -> GlobalRecords:
         """The PAX global records in force where the walk stands, to put back with
         :meth:`restore_global_records` when a salvage pass walks there again."""

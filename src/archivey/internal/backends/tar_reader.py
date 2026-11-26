@@ -63,7 +63,7 @@ import re
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import BinaryIO, Literal, assert_never, cast
 
@@ -738,7 +738,8 @@ def _held_weight(entry: TarEntry) -> int:
 class _Gap:
     """A range of a found member's data the first salvage pass read past without
     searching it (``_SalvageWalk.gaps``), and the PAX global records in force at its
-    start, which the second pass puts back before it searches there."""
+    start, which the second pass puts back before it searches there, unless the
+    re-walk after the gap before it ended with others (``TarReader._rewalk``)."""
 
     start: int
     stop: int
@@ -813,6 +814,43 @@ class _Found:
     unchecked: tuple[str, ...]
     how: str
     search_from: int | None
+    searched: bool
+
+    def moved(self, confirmed: bool, after_header: int) -> _Found:
+        """This record for the member after the re-walk moved its data's end
+        (:meth:`TarReader._rewalk`): ``confirmed`` when the first pass listed a
+        member at the new end or found the clean end there, as the second pass
+        confirms past its gap; otherwise the search goes on from ``after_header``,
+        inside its data. The texts are :meth:`TarReader._check_found`'s."""
+        if self.searched:
+            how = (
+                "the header after its data passes the same checks, so its size is "
+                "confirmed"
+                if confirmed
+                else "nothing after its data confirms its size, so the search goes "
+                "on inside its data"
+            )
+        else:
+            how = "the walk reached it from a member the search found, " + (
+                "and the header after its data passes the same checks"
+                if confirmed
+                else "and its size ends where no header passes the same checks, so "
+                "the search goes on inside its data"
+            )
+        search_from = None if confirmed else after_header
+        return replace(self, confirmed=confirmed, how=how, search_from=search_from)
+
+
+@dataclass(frozen=True)
+class _Held:
+    """An entry a salvage pass holds until the second pass is done, with what
+    :meth:`TarReader._check_found` decided for it. ``records`` are the PAX global
+    records the first pass parsed its chain with, for the re-walk after a gap
+    (:meth:`TarReader._rewalk`); ``None`` for an entry the second pass found."""
+
+    entry: TarEntry
+    found: _Found
+    records: GlobalRecords | None
 
 
 class TarReader(BaseArchiveReader):
@@ -1269,7 +1307,9 @@ class TarReader(BaseArchiveReader):
         last_member: ArchiveMember | None = None
         # The members the first salvage pass lists after its first gap, held until
         # the second pass has searched the gaps, so the listing keeps archive order.
-        held: list[tuple[TarEntry, _Found]] = []
+        held: list[_Held] = []
+        # The PAX global records in force where the chain of ``entry`` starts.
+        chain_records = walker.global_records()
         # ``None`` once the salvage searches have found nothing more.
         entry: TarEntry | TarEnd | None = first
         if salvage.default_end is not None and isinstance(first, TarEnd):
@@ -1288,7 +1328,7 @@ class TarReader(BaseArchiveReader):
                     if defer:
                         salvage.note_listed(entry)
                         self._hold_entry(entry)
-                        held.append((entry, found))
+                        held.append(_Held(entry, found, chain_records))
                     else:
                         last_member = self._to_member(entry, index)
                         self._emit_found(last_member, index, found)
@@ -1300,6 +1340,7 @@ class TarReader(BaseArchiveReader):
                     salvage.note_listed(entry)
                     yield last_member
                     index += 1
+                chain_records = walker.global_records()
                 if search_from is not None:
                     entry = self._salvage_next(walker, search_from, salvage)
                 else:
@@ -1322,14 +1363,15 @@ class TarReader(BaseArchiveReader):
             if start is None:
                 break
             salvage.begin(entry, last_member, index)
+            chain_records = walker.global_records()
             entry = self._salvage_next(walker, start, salvage)
         if salvage.gaps and not salvage.limit_reached:
-            held += self._second_pass(walker, salvage)
-            held.sort(key=lambda item: item[1].offset)
-        for held_entry, found in held:
-            self._listing_tracker.release(held_entry)
-            member = self._to_member(held_entry, index)
-            self._emit_found(member, index, found)
+            held += self._second_pass(walker, salvage, held)
+            held.sort(key=lambda item: item.found.offset)
+        for item in held:
+            self._listing_tracker.release(item.entry)
+            member = self._to_member(item.entry, index)
+            self._emit_found(member, index, item.found)
             yield member
             index += 1
         self._refresh_member_levels()
@@ -1598,7 +1640,7 @@ class TarReader(BaseArchiveReader):
                 "nothing after its data confirms its size, so the search goes on "
                 "inside its data"
             )
-        return _Found(found, confirmed, unchecked, how, search_from)
+        return _Found(found, confirmed, unchecked, how, search_from, searched)
 
     def _emit_found(self, member: ArchiveMember, index: int, found: _Found) -> None:
         """Record ``MEMBER_FOUND_BY_SCAN`` for ``member``, listed at ``index``."""
@@ -1641,10 +1683,12 @@ class TarReader(BaseArchiveReader):
         )
 
     def _second_pass(
-        self, walker: TarWalker, salvage: _SalvageWalk
-    ) -> list[tuple[TarEntry, _Found]]:
+        self, walker: TarWalker, salvage: _SalvageWalk, held: list[_Held]
+    ) -> list[_Held]:
         """The second salvage pass of a codec walk: search the gaps the first pass
         recorded (``_SalvageWalk.gaps``), in order, and return what it lists there.
+        After each gap, the entries the first pass held after it (``held``) are
+        read again when the gap held a PAX global header (:meth:`_rewalk`).
 
         The walk goes back to the first gap once, which decodes the stream again
         from a restart point, and reads forward from there: each search is bounded
@@ -1653,12 +1697,16 @@ class TarReader(BaseArchiveReader):
         whatever the member count. A search the second pass would need behind where
         it stands searches the window it keeps instead (``_check_found``); there is
         no third pass."""
-        out: list[tuple[TarEntry, _Found]] = []
+        out: list[_Held] = []
         layer = self._salvage_layer
         reached = 0
         # The records in force at the first pass's end, for the walk after this one.
         final = walker.global_records()
-        for gap in salvage.gaps:
+        # The records the re-walk after the last gap ended with, at this gap's start.
+        rewalked: GlobalRecords | None = None
+        gaps = salvage.gaps
+        for number, gap in enumerate(gaps):
+            at_start, rewalked = rewalked, None
             gap_stop = gap.stop
             if gap_stop <= reached:
                 continue
@@ -1666,7 +1714,9 @@ class TarReader(BaseArchiveReader):
                 # A global header the first pass read after this gap does not
                 # apply to what the search finds in it. A walk that ran on into
                 # the gap from the one before has the records in force already.
-                walker.restore_global_records(gap.records)
+                walker.restore_global_records(
+                    gap.records if at_start is None else at_start
+                )
             start = max(gap.start, reached)
             salvage.gap = (start, gap_stop)
             try:
@@ -1676,7 +1726,7 @@ class TarReader(BaseArchiveReader):
                         found = self._check_found(walker, entry, salvage)
                         salvage.note_listed(entry)
                         self._hold_entry(entry)
-                        out.append((entry, found))
+                        out.append(_Held(entry, found, None))
                         if found.search_from is not None:
                             entry = self._salvage_next(
                                 walker, found.search_from, salvage, end=gap_stop
@@ -1697,8 +1747,104 @@ class TarReader(BaseArchiveReader):
                 salvage.gap = None
             if salvage.limit_reached:
                 break
+            in_force = walker.global_records()
+            following = gaps[number + 1].start if number + 1 < len(gaps) else None
+            rewalked = self._rewalk(walker, salvage, held, gap_stop, following)
+            walker.restore_global_records(in_force)
         walker.restore_global_records(final)
         return out
+
+    def _rewalk(
+        self,
+        walker: TarWalker,
+        salvage: _SalvageWalk,
+        held: list[_Held],
+        start: int,
+        stop: int | None,
+    ) -> GlobalRecords | None:
+        """Read again the chains of the entries the first pass held from ``start``,
+        a gap's end, to ``stop``, the next gap's start, with the PAX global records
+        the second pass has in force there; replace the entries in ``held``, and
+        return the records in force at the next gap's start, or ``None`` when that
+        gap's own (``_Gap.records``) stay right.
+
+        The first pass read past the gap, so a global header inside it reached only
+        the second pass: without this, the held members keep the older records,
+        and a ``.tar.gz`` lists other names or owners than the same plain ``.tar``
+        (design.md, "the two-pass rule"). The re-walk stops where its records
+        equal the first pass's (both read the same later global header), and the
+        first pass's entries stand from there. It reads forward from where the
+        second pass stands, never back past what the window keeps, so the layer
+        still decodes at most twice: before a later gap it reads bytes the second
+        pass decodes on its way there, and after the last gap it decodes on as far
+        as the held headers it reads.
+
+        A ``size`` record can move an entry's end. The new end confirms it when the
+        first pass listed a member there or found the clean end there, as past a
+        gap in the second pass: the held entries before it are inside its data and
+        are dropped. Otherwise the search would go inside its data, where it finds
+        the entries the first pass held, and the re-walk goes on with them. A new
+        end past the next gap's start, a chain that no longer makes a member, or
+        one behind what the walk's window keeps stops the re-walk; the first pass's
+        entries from there keep its records.
+        """
+        records = walker.global_records()
+        index = next(
+            (i for i, item in enumerate(held) if item.found.offset >= start),
+            len(held),
+        )
+        end = len(held)
+        if stop is not None:
+            end = next(
+                (i for i in range(index, end) if held[i].found.offset >= stop), end
+            )
+        if index == end:
+            return None
+        while index < end:
+            old = held[index]
+            if old.records == records:
+                return None
+            if not walker.reread_at(old.found.offset):
+                return None
+            walker.restore_global_records(records)
+            # Pass 1 already recorded each damaged header this chain follows.
+            followed = len(walker.followed)
+            try:
+                with self._translated_errors():
+                    entry = self._step(walker)
+            except CorruptionError as exc:
+                if from_source_callback(exc):
+                    raise
+                entry = None
+            del walker.followed[followed:]
+            if (
+                not isinstance(entry, TarEntry)
+                or entry.data_offset != old.entry.data_offset
+            ):
+                return None
+            found = old.found
+            data_end = entry.data_end
+            moved = data_end != old.entry.data_end
+            if moved:
+                confirmed = data_end in salvage.known or data_end == salvage.clean_end
+                found = found.moved(confirmed, entry.header.offset + BLOCKSIZE)
+            self._listing_tracker.release(old.entry)
+            self._hold_entry(entry)
+            held[index] = _Held(entry, found, records)
+            records = walker.global_records()
+            index += 1
+            if moved and found.confirmed:
+                if stop is not None and data_end > stop:
+                    return None
+                after = next(
+                    (i for i in range(index, end) if held[i].found.offset >= data_end),
+                    end,
+                )
+                for item in held[index:after]:
+                    self._listing_tracker.release(item.entry)
+                del held[index:after]
+                end -= after - index
+        return records
 
     def _raise_members_the_codec_checked(self) -> None:
         """Raise every listed file to ``CHECKSUM`` when the codec's checksum covered it.
