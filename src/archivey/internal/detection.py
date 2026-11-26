@@ -133,7 +133,12 @@ from archivey.internal.diagnostics_collector import (
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.logs import detection as logger
 from archivey.internal.overrides import override
-from archivey.internal.probe_verdict import PROBE_REJECTED, graded, is_match
+from archivey.internal.probe_verdict import (
+    PROBE_REJECTED,
+    ProbeVerdict,
+    graded,
+    is_match,
+)
 from archivey.internal.registry import BackendRegistry, ContentProbe, get_registry
 from archivey.internal.remote import (
     emit_source_change_undetectable,
@@ -682,11 +687,14 @@ def _inner_candidates(
         for f, c in registry.header_checks()
         if f.container is not ContainerFormat.RAW_STREAM
     ]
-    # A container's probes only: a codec's probe names no container to find here.
+    # A container's probes only, and only of a container read inside a stream (TAR,
+    # CPIO, a sequential plugin): a codec's probe names no container to find here, and
+    # an indexed format's would name a pair nothing reads.
+    pair_bases = set(registry.stream_pair_bases())
     probes = [
         (f, p)
         for f, p in registry.content_probes()
-        if f.container is not ContainerFormat.RAW_STREAM
+        if f.container is not ContainerFormat.RAW_STREAM and f in pair_bases
     ]
     kept_magic = [sig for sig in inner_magic if kept(sig.format.container)]
     kept_checks = [(f, c) for f, c in header_checks if kept(f.container)]
@@ -923,6 +931,7 @@ def _measure_within_completion_window(
 
 def _probe_completes(
     probe: ContentProbe,
+    verdict: ProbeVerdict,
     data: bytes,
     length: int | None,
     read_at: Callable[[int, int], bytes | None],
@@ -930,8 +939,10 @@ def _probe_completes(
     workspace: PrefixWorkspace,
     *,
     stream_format: str,
-) -> bool:
-    """Whether a probe that accepted the prefix still accepts the whole source.
+) -> ProbeVerdict:
+    """The verdict of a probe that matched the prefix (``verdict``), once it has seen
+    the whole source: the whole-source answer when the probe runs again on it, else
+    the window's ``verdict``.
 
     A probe handed only the detection window cannot tell a stream that goes on from one
     that turns invalid past the window: text that happens to decode for 4 KiB is a
@@ -957,35 +968,34 @@ def _probe_completes(
         if _record_tier_limit(
             workspace, "probe_completion", enabled=budget.completion_window_bytes > 0
         ):
-            return True
+            return verdict
         length = _measure_within_completion_window(data, workspace)
     if length is None or length <= len(data):
         # Unknown length: nothing to complete against. At or under the window: the
         # probe already had the whole source and ran its completeness check.
-        return True
+        return verdict
     # Off by policy (``FAST``): say so, since the hit stands on the window alone.
     if _record_tier_limit(
         workspace, "probe_completion", enabled=budget.completion_window_bytes > 0
     ):
-        return True
+        return verdict
     if length > min(budget.completion_window_bytes, workspace.read_ceiling):
         # A size bound, not a disabled tier: nothing is recorded.
-        return True
+        return verdict
     if not _decode_allowance_covers(workspace, length, "probe_completion"):
-        return True
+        return verdict
     whole = workspace.peek_prefix(length)
     workspace.charge_decode(input_bytes=len(whole))
     try:
         # Confirms the match or turns it away; the grade stays the window's.
-        return is_match(
-            probe(
-                whole,
-                source_length=length,
-                read_at=read_at,
-                charge_decode=charge_decode,
-                isolation=workspace.isolation,
-                decoder_limits=workspace.decoder_limits,
-            )
+        # The probe has seen more: its whole-source answer stands, weaker or stronger.
+        return probe(
+            whole,
+            source_length=length,
+            read_at=read_at,
+            charge_decode=charge_decode,
+            isolation=workspace.isolation,
+            decoder_limits=workspace.decoder_limits,
         )
     except ResourceLimitError as exc:
         # The whole-source decode reads up to 64 KiB, so a probe's clamped LZMA
@@ -1000,7 +1010,7 @@ def _probe_completes(
             "decode the whole source to confirm its format",
             exc,
         )
-        return True
+        return verdict
 
 
 # Short aliases that name a probe-only codec besides the one the extension map gives.
@@ -2315,6 +2325,10 @@ def _script_stream_payload(detection: _DetectionPass, found: FormatInfo) -> Form
         always_probe=detection.always_probe,
         formats=detection.formats,
     )
+    # The scan found the stream; a weak inner match is the evidence for the container
+    # inside it, so its grade holds here as on a stream at byte 0.
+    if resolved.confidence is DetectionConfidence.GUESS:
+        return replace(found, format=resolved.format, confidence=resolved.confidence)
     return replace(found, format=resolved.format)
 
 
@@ -2402,8 +2416,12 @@ def _self_checking_header(detection: _DetectionPass) -> FormatInfo | None:
                     always_probe=detection.always_probe,
                     formats=detection.formats,
                 ),
+                # The header checks itself; a weak inner match on its payload does
+                # not, and no corroboration hides a decode failure on it.
                 corroborated=True,
             )
+            if info.confidence is DetectionConfidence.GUESS:
+                info = replace(info, corroborated=False)
         return detection.conclude(info, _ConflictEvidence.CONTENT_PROBE)
     return None
 
@@ -2491,15 +2509,18 @@ def _content_probes(
                 exc,
             )
             verdict = PROBE_REJECTED
-        if is_match(verdict) and _probe_completes(
-            probe,
-            data,
-            length,
-            read_at,
-            charge_decode,
-            workspace,
-            stream_format=_stream_name(probe_fmt),
-        ):
+        if is_match(verdict):
+            verdict = _probe_completes(
+                probe,
+                verdict,
+                data,
+                length,
+                read_at,
+                charge_decode,
+                workspace,
+                stream_format=_stream_name(probe_fmt),
+            )
+        if is_match(verdict):
             # The probe grades its match; core adds that the extension agrees.
             confidence = graded(verdict, named=_probe_named(probe_fmt, ext_match))
             if probe_fmt.stream is StreamFormat.BROTLI:

@@ -377,7 +377,9 @@ named for another format falls through to that extension's `GUESS`.
 format), `GUESS` (a weak match) or `PROBABLE` (a match). It SHALL never answer a bool,
 `None` (so a forgotten `return` is a bug, not a quiet no) or `CERTAIN`, which only a
 signature gives. A probe that only tells yes from no answers `PROBABLE` or `REJECTED`;
-every built-in probe does. Detection SHALL report the verdict as the confidence, and
+every built-in probe does. When detection runs a probe again on the whole source (the
+completion check), that second verdict SHALL be the one graded; a probe not run again
+keeps its window verdict. Detection SHALL report the verdict as the confidence, and
 SHALL report a `GUESS` as `PROBABLE` when the source's extension names the format. The
 same rule SHALL hold for a container's probe on the first 512 decoded bytes inside a
 compressor. A plugin probe that answers anything else (a bool, `CERTAIN`, any other
@@ -1245,7 +1247,8 @@ evidenced than four bytes that happened to parse as a block header.
 | Extensionless stream, Brotli probe hits, decompressed prefix contains a TAR header | `TAR_BROTLI`, `PROBABLE`, `content_probe` — corroborated |
 | Same, and a later read fails | Ordinary error; `format_unconfirmed is False` |
 | Extensionless stream, Brotli probe hits, no TAR header in the decompressed prefix | Unchanged — the probe-only rules decide |
-| Extensionless stream, decompressed prefix weakly matched by a container probe (`GUESS`) | `(<container>, <stream>)`, `GUESS`, **not** corroborated: a weak match is no second signal, so a later read failure is `format_unconfirmed` |
+| Extensionless stream, decompressed prefix weakly matched by a container probe (`GUESS`) | `(<container>, <stream>)`, `GUESS`, **not** corroborated: a weak match is no second signal, so a later read failure is `format_unconfirmed`. The same behind a `#!` script and inside a uuencoded or base64 file |
+| gzip of an indexed plugin format whose probe matches the decoded bytes, `always_probe_content` | `GZ`: only a container read inside a stream (TAR, CPIO, a sequential plugin) is probed there |
 | `x.tar.br` (extension already corroborates) | Unchanged |
 
 ### Requirement: Detection confidence SHALL NOT be the trigger for error provenance
@@ -1400,8 +1403,9 @@ the answer, as the scan already chooses. A stream hit SHALL then be probed for a
 container from its offset, with the decode charged to the budget's `max_decode_input` as
 for a stream at byte 0, and reported as that container in the stream (`TAR_GZ`), or as
 the bare stream when nothing is recognised inside or the budget allows no decode. The
-answer SHALL keep `detected_by="sfx_scan"`, `confidence=PROBABLE`, `prefixed=True` and
-`payload_offset` at the stream's first byte, and `open_archive` SHALL read the TAR or
+answer SHALL keep `detected_by="sfx_scan"`, `confidence=PROBABLE` (`GUESS` when the
+container inside is a probe's weak match), `prefixed=True` and `payload_offset` at the
+stream's first byte, and `open_archive` SHALL read the TAR or
 the stream from there, from a path, a seekable stream or a pipe.
 
 A forced `format=TAR_GZ` (or another compressed TAR) on such a script SHALL still fail

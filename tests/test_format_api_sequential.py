@@ -9,6 +9,7 @@ their data, as CPIO's do. Each test registers it on a registry restored afterwar
 
 from __future__ import annotations
 
+import binascii
 import bz2
 import dataclasses
 import gzip
@@ -1051,6 +1052,50 @@ def test_a_weak_probe_match_inside_a_compression_stream_is_a_guess(
             DetectionConfidence.PROBABLE,
         )
         assert named.corroborated
+
+
+_SCRIPT = b'#!/bin/sh\necho "installing"\ntail -n +4 "$0" | tar xz\nexit 0\n'
+
+
+def _uu(data: bytes) -> bytes:
+    lines = [binascii.b2a_uu(data[i : i + 45]) for i in range(0, len(data), 45)]
+    return b"begin 640 stored.bin\n" + b"".join(lines) + b"`\nend\n"
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [_gz, lambda d: _SCRIPT + _gz(d), _uu],
+    ids=["gzip", "script-then-gzip", "uuencode"],
+)
+def test_a_weak_inner_match_is_a_guess_behind_any_wrapper(
+    wrap: Callable[[bytes], bytes],
+) -> None:
+    """The same weak verdict on the same decoded bytes gives the same answer, whatever
+    recognised the wrapper: ``GUESS``, and no corroboration a decode failure would
+    hide behind."""
+    fmt = ArchiveFormat(ToysContainer.PROBED, StreamFormat.UNCOMPRESSED)
+
+    class Probed(SequentialFormatHandler):
+        format = fmt
+        extensions = (".ptoys",)
+        probe = staticmethod(
+            lambda prefix: (
+                DetectionConfidence.GUESS
+                if prefix.startswith(_MAGIC)
+                else DetectionConfidence.REJECTED
+            )
+        )
+
+        def open_sequential(self, context: ReaderContext) -> ToysReader:
+            return ToysReader(context)
+
+    with registration_scope():
+        register_format(Probed)
+        probing = archivey.ArchiveyConfig(always_probe_content=True)
+        info = detect_format(io.BytesIO(wrap(build_toys(_ENTRIES))), config=probing)
+        assert info.format.container is ToysContainer.PROBED
+        assert info.confidence is DetectionConfidence.GUESS
+        assert not info.corroborated
 
 
 def test_compressed_bytes_that_are_not_the_format_stay_a_compressed_file(

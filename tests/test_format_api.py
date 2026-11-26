@@ -905,6 +905,52 @@ def test_a_probe_grades_its_match(clean_registry: None, tmp_path: Path) -> None:
         detect_format(io.BytesIO(data), config=config)
 
 
+def test_an_indexed_probe_does_not_claim_a_compressed_stream(
+    clean_registry: None,
+) -> None:
+    """An indexed format is not read inside a compressor, so its probe does not name
+    one there: the gzip stays a gzip, even with every probe asked for."""
+    plugin = _plugin_with(
+        "indexedprobe",
+        probe=lambda prefix: (
+            DetectionConfidence.PROBABLE
+            if prefix.startswith(_MAGIC)
+            else DetectionConfidence.REJECTED
+        ),
+    )
+    config = archivey.ArchiveyConfig(always_probe_content=True)
+    data = build_toya(_ENTRIES)
+    assert detect_format(io.BytesIO(data), config=config).format == plugin.format
+    info = detect_format(io.BytesIO(gzip.compress(data, mtime=0)), config=config)
+    assert info.format == ArchiveFormat.GZ
+
+
+@pytest.mark.parametrize(
+    ("window", "whole"),
+    [
+        (DetectionConfidence.GUESS, DetectionConfidence.PROBABLE),
+        (DetectionConfidence.PROBABLE, DetectionConfidence.GUESS),
+    ],
+)
+def test_the_whole_source_verdict_is_the_one_reported(
+    clean_registry: None, window: DetectionConfidence, whole: DetectionConfidence
+) -> None:
+    """When detection runs the probe again on the whole source, that answer stands:
+    the probe has seen more."""
+    footer = b"TOYA-END"
+
+    def probe(prefix: bytes) -> DetectionConfidence:
+        if not prefix.startswith(_MAGIC):
+            return DetectionConfidence.REJECTED
+        return whole if prefix.endswith(footer) else window
+
+    plugin = _plugin_with("footed", probe=probe)
+    data = build_toya(_ENTRIES) + b"\0" * 5000 + footer
+    config = archivey.ArchiveyConfig(always_probe_content=True)
+    info = detect_format(io.BytesIO(data), config=config)
+    assert (info.format, info.confidence) == (plugin.format, whole)
+
+
 @pytest.mark.parametrize(
     "answer",
     [None, True, 1, "yes", DetectionConfidence.CERTAIN],
