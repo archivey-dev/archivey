@@ -1,4 +1,5 @@
-"""The macOS DMG check retries ``hdiutil create`` only while the disk is busy."""
+"""The macOS DMG check tries an ``hdiutil`` call again only while it says the disk is
+busy."""
 
 from __future__ import annotations
 
@@ -14,6 +15,8 @@ SCRIPT = (
     Path(__file__).resolve().parents[2] / "scripts/investigations/dmg_macos_check.py"
 )
 
+BUSY = "hdiutil: create failed - Resource busy"
+
 
 def _load() -> ModuleType:
     spec = importlib.util.spec_from_file_location("dmg_macos_check", SCRIPT)
@@ -24,64 +27,73 @@ def _load() -> ModuleType:
     return module
 
 
-BUSY = "hdiutil: create failed - Resource busy"
-
-
 def _done(returncode: int, stderr: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(["hdiutil"], returncode, "", stderr)
 
 
-@pytest.fixture
-def check(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    module = _load()
-    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
-    return module
+class _Fake:
+    """``_run_once`` replayed from ``outcomes``; records each call and each sleep."""
 
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        outcomes: list[subprocess.CompletedProcess[str]],
+    ) -> None:
+        self.module = _load()
+        self.outcomes = outcomes
+        self.calls: list[tuple[str, ...]] = []
+        self.sleeps: list[float] = []
+        monkeypatch.setattr(self.module, "_run_once", self._run_once)
+        monkeypatch.setattr(self.module.time, "sleep", self.sleeps.append)
 
-def _replay(
-    monkeypatch: pytest.MonkeyPatch,
-    module: ModuleType,
-    outcomes: list[subprocess.CompletedProcess[str]],
-) -> list[tuple[str, ...]]:
-    calls: list[tuple[str, ...]] = []
-
-    def run(
-        *args: str, password: str | None = None
+    def _run_once(
+        self, *args: str, password: str | None = None
     ) -> subprocess.CompletedProcess[str]:
-        calls.append(args)
-        return outcomes[len(calls) - 1]
-
-    monkeypatch.setattr(module, "_run", run)
-    return calls
+        self.calls.append(args)
+        return self.outcomes[len(self.calls) - 1]
 
 
-def test_a_busy_create_is_tried_again_until_it_succeeds(
-    check: ModuleType, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("verb", ["create", "attach", "detach", "verify"])
+def test_a_busy_hdiutil_call_is_tried_again_until_it_succeeds(
+    monkeypatch: pytest.MonkeyPatch, verb: str
 ) -> None:
-    calls = _replay(monkeypatch, check, [_done(1, BUSY), _done(1, BUSY), _done(0)])
-    made = check._create_image("-format", "UDRO", "out.dmg")
-    assert made.returncode == 0
-    assert len(calls) == 3
-    assert all(call[:2] == ("hdiutil", "create") for call in calls)
+    fake = _Fake(monkeypatch, [_done(1, BUSY), _done(1, BUSY), _done(0)])
+    done = fake.module._run("hdiutil", verb, "image.dmg")
+    assert done.returncode == 0
+    assert fake.calls == [("hdiutil", verb, "image.dmg")] * 3
+    assert fake.sleeps == [5, 10]
 
 
-def test_a_create_still_busy_after_every_attempt_returns_the_last_failure(
-    check: ModuleType, monkeypatch: pytest.MonkeyPatch
+def test_a_call_still_busy_after_every_attempt_returns_the_last_failure(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    attempts = check.CREATE_ATTEMPTS
-    calls = _replay(monkeypatch, check, [_done(1, BUSY)] * attempts)
-    made = check._create_image("out.dmg")
-    assert made.returncode == 1
-    assert "Resource busy" in made.stderr
-    assert len(calls) == attempts
+    attempts = _load().HDIUTIL_ATTEMPTS
+    fake = _Fake(monkeypatch, [_done(1, BUSY)] * attempts)
+    done = fake.module._run("hdiutil", "create", "image.dmg")
+    assert done.returncode == 1
+    assert "Resource busy" in done.stderr
+    assert len(fake.calls) == attempts
+    # No wait after the last try.
+    assert fake.sleeps == [5, 10, 15]
 
 
-def test_a_create_that_fails_for_another_reason_is_not_tried_again(
-    check: ModuleType, monkeypatch: pytest.MonkeyPatch
+def test_a_call_that_fails_for_another_reason_is_not_tried_again(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls = _replay(
-        monkeypatch, check, [_done(1, "hdiutil: create failed - format not supported")]
+    fake = _Fake(
+        monkeypatch, [_done(1, "hdiutil: create failed - format not supported")]
     )
-    made = check._create_image("-format", "UDCO", "out.dmg")
-    assert made.returncode == 1
-    assert len(calls) == 1
+    done = fake.module._run("hdiutil", "create", "-format", "UDCO", "image.dmg")
+    assert done.returncode == 1
+    assert len(fake.calls) == 1
+    assert fake.sleeps == []
+
+
+def test_a_busy_answer_from_another_program_is_not_tried_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _Fake(monkeypatch, [_done(8, "fsck_hfs: Resource busy")])
+    done = fake.module._run("fsck_hfs", "-n", "/dev/disk4s1")
+    assert done.returncode == 8
+    assert len(fake.calls) == 1
+    assert fake.sleeps == []

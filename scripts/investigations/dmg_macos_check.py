@@ -48,10 +48,12 @@ _REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO))
 
 TIMEOUT = 300
-# hdiutil create can fail with "Resource busy" while diskimages-helper still holds
-# the previous image; it succeeds when tried again a few seconds later.
-CREATE_ATTEMPTS = 4
-CREATE_RETRY_SECONDS = 5
+# hdiutil create once failed with "Resource busy" right after the previous image was
+# detached (issue #1846), likely diskimages-helper still holding it. Every hdiutil
+# call (create, attach, detach, verify) runs right after a detach, so each one is
+# tried again, with a growing wait, while it gives that answer.
+HDIUTIL_ATTEMPTS = 4
+HDIUTIL_RETRY_SECONDS = 5
 FORMATS = ("UDZO", "UDBZ", "ULFO", "ULMO", "UDRO", "UDCO")
 # Formats that a newer hdiutil may no longer create; a refusal skips the row.
 OPTIONAL_FORMATS = frozenset({"UDCO"})
@@ -82,7 +84,9 @@ class Result:
         return "ok" if not self.problems else "FAILED"
 
 
-def _run(*args: str, password: str | None = None) -> subprocess.CompletedProcess[str]:
+def _run_once(
+    *args: str, password: str | None = None
+) -> subprocess.CompletedProcess[str]:
     """``args`` run; with ``password``, ``-stdinpass`` is added and the password sent
     on standard input, which ``hdiutil`` reads to its end."""
     if password is not None:
@@ -97,20 +101,18 @@ def _run(*args: str, password: str | None = None) -> subprocess.CompletedProcess
     )
 
 
-def _create_image(
-    *args: str, password: str | None = None
-) -> subprocess.CompletedProcess[str]:
-    """``hdiutil create`` with ``args``, tried again while it fails with "Resource busy".
-
-    Any other failure, and the last busy one, is returned as it is.
-    """
-    for attempt in range(1, CREATE_ATTEMPTS + 1):
-        made = _run("hdiutil", "create", *args, password=password)
-        if made.returncode == 0 or "Resource busy" not in made.stderr:
-            return made
-        if attempt < CREATE_ATTEMPTS:
-            time.sleep(CREATE_RETRY_SECONDS * attempt)
-    return made
+def _run(*args: str, password: str | None = None) -> subprocess.CompletedProcess[str]:
+    """``args`` run once; an ``hdiutil`` call is tried again while it fails with
+    "Resource busy". Any other failure, and the last busy one, is returned as it is."""
+    for attempt in range(1, HDIUTIL_ATTEMPTS + 1):
+        done = _run_once(*args, password=password)
+        if args[0] != "hdiutil" or done.returncode == 0:
+            return done
+        if "Resource busy" not in done.stderr:
+            return done
+        if attempt < HDIUTIL_ATTEMPTS:
+            time.sleep(HDIUTIL_RETRY_SECONDS * attempt)
+    return done
 
 
 def _nfc(text: str) -> str:
@@ -416,7 +418,9 @@ def _check_fresh_image(
     image = work / f"{label.replace(' ', '-')}-{fs.replace('+', 'P')}.dmg"
     password = None if encryption is None else PASSWORD
     cipher = () if encryption is None else ("-encryption", encryption)
-    made = _create_image(
+    made = _run(
+        "hdiutil",
+        "create",
         *cipher,
         "-srcfolder",
         str(src),
