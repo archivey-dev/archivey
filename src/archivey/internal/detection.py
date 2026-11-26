@@ -1073,11 +1073,16 @@ def _resolve_single_file_or_tar(
 
     A ``RAW_STREAM`` compressor (``.gz``/``.bz2``/``.xz``/…) is probed for an inner
     container (:func:`_probe_inner_container`); on a hit it becomes ``(TAR, <stream>)``
-    (e.g. ``TAR_GZ``), or ``(<plugin container>, <stream>)``, reported as ``PROBABLE`` /
-    ``content_probe`` (the inner test is structural, weaker than an exact magic).
-    An inner-container upgrade is corroboration for a probe hit — two independent signals
-    had to hold — so ``corroborated`` is set. Otherwise a matching extension (same stream
-    format) is the corroborating signal. ``peek_more`` gives the probe a bounded,
+    (e.g. ``TAR_GZ``), or ``(<plugin container>, <stream>)``, reported as
+    ``content_probe`` (the inner test is structural, weaker than an exact magic). The
+    TAR magic and a self-checking header report ``PROBABLE``; a container probe's match
+    reports its own grade, a ``GUESS`` raised to ``PROBABLE`` when the name names the
+    container (:func:`~archivey.internal.probe_verdict.graded`).
+    A ``PROBABLE`` inner-container upgrade is corroboration for a probe hit — two
+    independent signals had to hold — so ``corroborated`` is set. A ``GUESS`` is not:
+    a weak inner match is no second signal, so a decode failure on it is still marked
+    ``format_unconfirmed``. Otherwise a matching extension (same stream format) is the
+    corroborating signal. ``peek_more`` gives the probe a bounded,
     non-consuming view of the source to decode from; ``view_arrived`` says it is a
     view that returns what has arrived (:class:`_BoundedPeekReader`).
     """
@@ -1104,7 +1109,8 @@ def _resolve_single_file_or_tar(
             ArchiveFormat(inner_fmt.container, fmt.stream),
             inner_confidence,
             "content_probe",
-            corroborated=True,
+            # A weak inner match is a guess, not a second signal.
+            corroborated=inner_confidence is not DetectionConfidence.GUESS,
         )
     corroborated = base_detected_by == "content_probe" and _extension_corroborates(
         ext_match, fmt

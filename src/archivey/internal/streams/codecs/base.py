@@ -601,7 +601,8 @@ class StreamCodec:
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
         decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> ProbeVerdict:
-        """Whether ``prefix`` is recognized as this codec's stream.
+        """The verdict on ``prefix`` as this codec's stream: ``None`` when it is not,
+        ``GUESS`` for a weak match, ``PROBABLE`` for a match.
 
         Default: this codec has no content probe (it is identified by exact magic). Codecs
         without a usable magic (Brotli; zlib's too-unspecific header; LZMA Alone) override

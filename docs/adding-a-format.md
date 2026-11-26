@@ -506,7 +506,9 @@ bytes, from a file or a pipe.
   then decodes its first 512 bytes, the same bytes it decodes to find a TAR inside, and
   looks for your `magic` in them. So a sequential format's magic must end within the
   first 512 bytes, and registration refuses one that does not. A format found only by its
-  `probe` is not found inside a compressor: name it with its extension or `format=`.
+  `probe` is found inside a compressor where the name says so (`.cpio.gz`) or with
+  `always_probe_content=True`: the probe runs on those 512 decoded bytes, and its verdict
+  counts as on an uncompressed file.
 - **Cost.** One compression stream holds every member, so the archive is solid:
   `archive.info.is_solid` is `True`, the listing needs decompression, and with random
   access, reading a member before the last one read decodes again from the nearest

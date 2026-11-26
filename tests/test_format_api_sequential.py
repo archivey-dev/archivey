@@ -1038,11 +1038,15 @@ def test_a_weak_probe_match_inside_a_compression_stream_is_a_guess(
         probing = archivey.ArchiveyConfig(always_probe_content=True)
         info = detect_format(io.BytesIO(data), config=probing)
         assert (info.format, info.confidence) == (pair, DetectionConfidence.GUESS)
+        # A weak inner match is no second signal: a later decode failure on it is
+        # still stamped ``format_unconfirmed``.
+        assert not info.corroborated
         named = detect_format(_write(tmp_path, data, "t.ptoys.gz"))
         assert (named.format, named.confidence) == (
             pair,
             DetectionConfidence.PROBABLE,
         )
+        assert named.corroborated
 
 
 def test_compressed_bytes_that_are_not_the_format_stay_a_compressed_file(
