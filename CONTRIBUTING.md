@@ -359,6 +359,12 @@ maintainer.
   (`archivey/types.py`, `archivey/detection.py`, …), not under `internal/` and
   re-exported: its `__module__` is what `pickle` records. `tests/test_public_api.py`
   enforces this; `ArchiveStream` is the one listed exception.
+- **Readers bound for a plugin package use only public API.**
+  `tests/test_plugin_modules_use_public_api.py` lists the reader and codec modules that
+  import nothing from `archivey.internal` (apart from the registration call and
+  `override`, which the plugin plan replaces) and read no private attribute of an
+  archivey object. A module joins the list in the pull request that ports it to the
+  public interface, and does not leave it.
 - **The CLI uses only public API.** Nothing under `src/archivey/cli/` imports from
   `archivey.internal`; `tests/test_cli_uses_public_api.py` fails on one that does. One
   import is allowlisted in that test: `--track-io` imports
