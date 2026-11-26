@@ -3570,6 +3570,10 @@ class _Rar3Walk:
         if self.truncated is None:
             self.truncated = text
 
+    def _search_spent(self) -> bool:
+        """Whether ``SalvageLimits.max_search_bytes`` stopped the searches."""
+        return self.salvage is not None and self.salvage.limit_reached
+
     def _note_default_stop(self) -> None:
         """At the first search of the volume, where the default stops: record the
         error the default ends in there and whether it reads the next volume."""
@@ -3752,8 +3756,14 @@ class _Rar3Walk:
                 continue
             if block.block_type == _RAR3_ENDARC:
                 outcome = self._on_end_block(block)
-                if outcome is not None and self._salvage_resume(outcome):
-                    continue
+                if outcome is not None:
+                    if self._salvage_resume(outcome):
+                        continue
+                    if outcome > block.start and not self._search_spent():
+                        # An intact end block the search went on after, finding
+                        # nothing to the volume's end: it ends this volume.
+                        self.ended_in_damage = False
+                        self._on_end_block(block, searched_after=True)
                 break
             if block.block_type in (_RAR3_FILE, _RAR3_SUB):
                 if not self._on_file_header(block):
@@ -3875,13 +3885,16 @@ class _Rar3Walk:
             )
         _seek_after_packed(self.source, block.data_offset, block.add_size)
 
-    def _on_end_block(self, block: _Rar3Block) -> int | None:
+    def _on_end_block(
+        self, block: _Rar3Block, *, searched_after: bool = False
+    ) -> int | None:
         """Finish the walk at ``ENDARC``: record whether a volume follows.
 
         In salvage mode, returns where the search goes on instead: from the data of
         the last header read when the block is a damaged header, and from after the
         block when a search came before it and bytes other than zeros follow it
-        (it may be a nested archive's). ``None`` ends the walk.
+        (it may be a nested archive's). ``None`` ends the walk. ``searched_after``:
+        that search found nothing, so the block ends the volume after all.
         """
         source = self.source
         hdata = block.hdata
@@ -3919,7 +3932,11 @@ class _Rar3Walk:
             )
             return self.resume_from if self._can_salvage() else None
         end = _packed_span_end(block.data_offset, block.add_size)
-        if self.past_damage and not _only_zeros_after(source, end):
+        if (
+            self.past_damage
+            and not searched_after
+            and not _only_zeros_after(source, end)
+        ):
             return end
         self.needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
         _settle_damaged_split_after(self.members, self.needs_next_volume)
@@ -5399,6 +5416,10 @@ class _Rar5Walk:
         if self.truncated is None:
             self.truncated = text
 
+    def _search_spent(self) -> bool:
+        """Whether ``SalvageLimits.max_search_bytes`` stopped the searches."""
+        return self.salvage is not None and self.salvage.limit_reached
+
     def _note_default_stop(self) -> None:
         """At the first search of the volume, where the default stops: record the
         error the default ends in there and whether it reads the next volume."""
@@ -5500,10 +5521,13 @@ class _Rar5Walk:
                 end = _packed_span_end(block.data_offset, block.add_size)
                 if self.past_damage and not _only_zeros_after(source, end):
                     # After a search, an end block with more bytes after it may be
-                    # a nested archive's: search on after it.
+                    # a nested archive's: search on after it. When the search
+                    # finds nothing to its end, the block ends this volume.
                     if self._salvage_resume(end):
                         continue
-                    break
+                    if self._search_spent():
+                        break
+                    self.ended_in_damage = False
                 self._on_end_block(block)
                 break
             if block.block_type in (_RAR5_FILE, _RAR5_SERVICE):

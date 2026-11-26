@@ -285,7 +285,7 @@ pass the format's check.
 | MAIN, after the first one | Skipped, its flags not read: it may be a nested archive's. The normal walk goes on after it |
 | RAR5 ENCRYPTION, after MAIN | Skipped: a nested `-hp` archive. The search goes on after it (its headers are ciphertext) |
 | ENDARC, followed by only zeros or the end of the volume | The end of the volume, as today |
-| ENDARC, followed by other bytes in the volume | The search goes on after it. After damage, such a block may be a nested archive's; an end block that the walk reached with no search before it in the volume keeps today's rule (bytes after it are trailing data, and hidden content is a later step) |
+| ENDARC, followed by other bytes in the volume | The search goes on after it; when it finds nothing to the volume's end, the block ends the volume, its flags read and the bytes after it reported as trailing data. After damage, such a block may be a nested archive's; an end block that the walk reached with no search before it in the volume keeps today's rule (bytes after it are trailing data, and hidden content is a later step) |
 | A FILE or SERVICE header copy inside a QO record | Not listed (below) |
 
 **QO copies.** RAR5's quick-open service header (`QO`) holds, in its data area, a copy

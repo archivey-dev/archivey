@@ -1479,3 +1479,20 @@ def test_packed_data_cut_by_its_volume_never_reads_the_next_volume(
         member._raw.crc32 = None  # type: ignore[union-attr]  # nothing checks it
         with pytest.raises(TruncatedError, match="past the end of its volume"):
             reader.read(member)
+
+
+@pytest.mark.parametrize("key", ["rar5", "rar29"])
+def test_an_intact_end_block_after_a_search_ends_the_volume(
+    key: str, tmp_path: Path
+) -> None:
+    """Damage in the middle, then an intact end block with other bytes after it:
+    the search after the end block finds nothing, so the end block ends the volume
+    as it does without a search before it, its trailing bytes reported."""
+    data = _archive(key).data
+    damaged = _zeroed(data, len(data) // 2, 64) + random.Random(5).randbytes(256)
+    path = _write(tmp_path, damaged)
+    with open_archive(path, salvage=True) as reader:
+        reader.members_report()
+        archive = reader._archive  # type: ignore[attr-defined]
+        assert not archive.salvage_ended_in_damage
+        assert archive.trailing_data_volumes
