@@ -312,9 +312,9 @@ class ArReader(SequentialReader):
         ``salvage`` is given past damage in salvage mode. The header is then
         ``None`` when its data runs past the layer's end (``WalkSalvage.holds``),
         checked before anything past the header is read, charged or kept, and also
-        when it is a long-name table that the header after it does not confirm. And it
-        keeps a GNU ``/123`` name whose table is not there, and takes a second
-        long-name table."""
+        when it is a long-name or symbol table that the header after it does not
+        confirm. And it keeps a GNU ``/123`` name whose table is not there, and takes
+        a second long-name table."""
         salvaging = salvage is not None
         if len(raw) < HEADER_SIZE:
             raise TruncatedError(
@@ -328,6 +328,15 @@ class ArReader(SequentialReader):
         if salvage is not None and not salvage.holds(offset + HEADER_SIZE + size):
             return None
         unchecked: tuple[str, ...] = ("position",)
+
+        def confirmed() -> bool:
+            # Past the damage, a table (long names or symbols) is kept only when
+            # the header after it confirms it; one that is not is passed over
+            # before it changes any state.
+            return salvage is None or ar_confirmed(
+                salvage, offset + HEADER_SIZE + size + (size & 1)
+            )
+
         name_field = raw[:16].rstrip(b" ")
         if name_field.startswith(b"#1/"):
             name_size = _field(name_field[3:], 10, "name length", offset)
@@ -340,15 +349,20 @@ class ArReader(SequentialReader):
                     f"ar header at offset {offset}: a name of {name_size} bytes "
                     f"in a member of {size}"
                 )
-            self._dialect = self._dialect or "bsd"
             name = stream.read_exact(name_size).rstrip(b"\0")
             data_length = size - name_size
             if name in _BSD_SYMBOL_TABLES:
+                if not confirmed():
+                    return None
+                self._dialect = self._dialect or "bsd"
                 self._symbol_table = True
                 stream.skip(data_length)
                 stream.read(size & 1)
                 return _Entry(size)
+            self._dialect = self._dialect or "bsd"
         elif name_field in _GNU_SYMBOL_TABLES or name_field in _BSD_SYMBOL_TABLES:
+            if not confirmed():
+                return None
             # The symbol table's spelling names the dialect too.
             gnu = name_field in _GNU_SYMBOL_TABLES
             self._dialect = self._dialect or ("gnu" if gnu else "bsd")
@@ -357,17 +371,16 @@ class ArReader(SequentialReader):
             stream.read(size & 1)
             return _Entry(size)
         elif name_field == b"//":
-            self._dialect = "gnu"
             if names is not None and not salvaging:
                 raise CorruptionError(
                     f"ar archive has a second long-name table at offset {offset}"
                 )
-            if salvage is not None and not ar_confirmed(
-                salvage, offset + HEADER_SIZE + size + (size & 1)
-            ):
+            if not confirmed():
                 # Past the damage, a table nothing confirms is passed over before it
-                # is charged or read: the search goes on inside it.
+                # is charged or read, and leaves no state: the search goes on
+                # inside it.
                 return None
+            self._dialect = "gnu"
             # The table is held for the whole walk: text the listing retains.
             self._context.charge_metadata(size, what="the ar long-name table")
             table = stream.read_exact(size)

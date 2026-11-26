@@ -406,14 +406,14 @@ class CpioReader(SequentialReader):
                 # A conforming newc or crc writer stores the data with one link only.
                 # A later name that carries data of its own anyway is read as a file
                 # of its own, as GNU cpio's copy-in and 7-Zip extract it.
-                own_data = size > 0 and self._defers_link_data()
+                own_data = size > 0 and self._defers_link_data(header)
                 if group.name is not None and not own_data:
                     # A later link of a file already yielded. binary and odc repeat
                     # the data here, which is skipped as the span's unread bytes.
                     member.type = MemberType.HARDLINK
                     member.link_target = group.name
                     member.size = None
-                elif size == 0 and self._defers_link_data():
+                elif size == 0 and self._defers_link_data(header):
                     # newc keeps the data with the last link: hold this one back,
                     # counted toward the listing's limits while it waits.
                     self._context.hold(member, reason=_HELD)
@@ -544,10 +544,13 @@ class CpioReader(SequentialReader):
                     link_scan.report(salvage, link)
                 yield MemberSpan(link, 0)
 
-    def _defers_link_data(self) -> bool:
-        """True for newc and crc, which store a hard-linked file's data with one link
-        only, normally the last."""
-        return self._variant in (Variant.NEWC, Variant.CRC)
+    @staticmethod
+    def _defers_link_data(header: Header) -> bool:
+        """True for a newc or crc header, whose variant stores a hard-linked file's
+        data with one link only, normally the last. Decided by the header itself,
+        as ``_data_pad`` is: after a lost start the walk's variant can be unset
+        while an unconfirmed header is handled."""
+        return header.variant in (Variant.NEWC, Variant.CRC)
 
     def _read_header(self, stream: ForwardStream) -> Header:
         offset = stream.offset

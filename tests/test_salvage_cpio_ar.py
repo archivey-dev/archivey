@@ -1208,3 +1208,57 @@ def test_ar_unconfirmed_long_name_table_is_not_charged(tmp_path: Path) -> None:
     )
     assert [m[0] for m in members] == ["before", "after"]
     assert isinstance(error, CorruptionError)
+
+
+def _newc_link(name: str, data: bytes, ino: int) -> bytes:
+    """A newc header with ``nlink=2``."""
+    member = bytearray(_newc(name, data, ino))
+    member[6 + 4 * 8 : 6 + 5 * 8] = b"%08X" % 2
+    return bytes(member)
+
+
+def test_cpio_lost_start_unconfirmed_link_header_still_waits_for_its_data(
+    tmp_path: Path,
+) -> None:
+    """After a lost start, an unconfirmed newc header that shares an inode with
+    later links is held for its data like any newc link, so the later links point
+    at the member that carries the data, not at the empty stray header."""
+    raw = b"\x01" * 4 + _newc_link("bogus", b"", 7) + b"\x01" * 4
+    raw += _newc_link("a.txt", b"", 7) + _newc_link("b.txt", b"hello", 7)
+    raw += _newc("TRAILER!!!", b"", 0)
+    path = _write(tmp_path, raw, "a.cpio")
+    from archivey import core
+
+    original = core.requesting_salvage
+
+    def lost(requested: bool, *, supported: bool, lost_start: bool = False):  # type: ignore[no-untyped-def]
+        return original(requested, supported=supported, lost_start=True)
+
+    core.requesting_salvage = lost  # type: ignore[assignment]
+    try:
+        with open_archive(path, salvage=True, format="cpio") as reader:
+            members = {m.name: m for m in reader.members_report().members}
+    finally:
+        core.requesting_salvage = original  # type: ignore[assignment]
+    assert members["a.txt"].link_target == "b.txt"
+    assert members["b.txt"].size == 5
+
+
+def test_ar_unconfirmed_table_leaves_the_dialect_alone(tmp_path: Path) -> None:
+    """Past the damage, a ``//`` table nothing confirms is passed over without
+    changing the dialect the archive info reports."""
+
+    def bsd(name: bytes, data: bytes) -> bytes:
+        body = name + data
+        return (
+            _ar_header(b"#1/%d" % len(name), len(body)) + body + b"\n" * (len(body) & 1)
+        )
+
+    raw = b"!<arch>\n" + bsd(b"before.o", b"x" * 4) + b"J" * 60
+    raw += _ar_header(b"//", 40) + b"J" * 40 + b"J" * 60 + bsd(b"after.o", b"y" * 4)
+    path = _write(tmp_path, raw, "a.a")
+    with open_archive(path, salvage=True) as reader:
+        names = [m.name for m in reader.members_report().members]
+        dialect = reader.info.extra.get("ar.dialect")
+    assert names == ["before.o", "after.o"]
+    assert dialect == "bsd"
