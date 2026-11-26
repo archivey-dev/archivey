@@ -29,7 +29,7 @@ use too.
 
 ### New Capabilities
 
-- `codecs-package`: the `archivey-speedups` distribution, its API, versioning, wheels
+- `speedups-package`: the `archivey-speedups` distribution, its API, versioning, wheels
   and release.
 
 ### Modified Capabilities

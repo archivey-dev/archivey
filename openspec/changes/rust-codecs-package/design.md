@@ -26,10 +26,16 @@ LZMA); making any format depend on the package; a crates.io release.
 
 ## D1. Name and scope
 
-Distribution `archivey-speedups`, import `archivey_speedups` (question 2). The name says
-what is inside and keeps the link to archivey's tests and fuzzing, which are why anyone
-would trust it. `archivey-native` says how it is built, not what it does. All three
-candidate names were free on PyPI on 2026-11-21.
+Distribution `archivey-speedups`, import `archivey_speedups`. The name says what the
+package is for: native speedups for decoders archivey already has in Python, which it
+adds no format to. It keeps the link to archivey's tests and fuzzing, which are why
+anyone would trust it. `archivey-speedups` was free on PyPI and TestPyPI on 2026-11-26.
+
+The 2026-11-21 ruling (question 2) named it `archivey-codecs`, chosen over
+`archivey-native`, which says how it is built, not what it does. The maintainer renamed
+it on 2026-11-26, before any release, because "codecs" did not say that the package
+holds native accelerators (ruling R12 in the plugin platform plan, PR 1826). The
+questions below keep the names as they were asked.
 
 A kernel goes in when all four hold:
 
@@ -432,8 +438,8 @@ pass only sizes they read and checked.
 All ruled by the maintainer (davi, project thread, 2026-11-21, cards unless noted).
 
 1. Go ahead with a separately versioned package, starting from #1416? RULED yes.
-2. D1: name `archivey-speedups`? RULED yes.
-3. D6: same repo, `packages/archivey-speedups/`? RULED yes.
+2. D1: name `archivey-codecs`? RULED yes.
+3. D6: same repo, `packages/archivey-codecs/`? RULED yes.
 4. D3: streaming decoders in the `LZMADecompressor` shape, and one-shot
    `decompress(block, out_size=)` functions for codecs whose blocks stand alone (LZO,
    later ADC and LZFSE)? RULED yes (the split confirmed in the thread).
@@ -445,13 +451,13 @@ All ruled by the maintainer (davi, project thread, 2026-11-21, cards unless note
 6. D2: CRC `digest()` big-endian? RULED yes.
 7. D4: per-kernel revisions with a minimum per kernel in archivey, range `>=0.1,<1`?
    RULED yes.
-8. D5: public `OptionalLibrary.ARCHIVEY_SPEEDUPS`? RULED yes.
+8. D5: public `OptionalLibrary.ARCHIVEY_CODECS`? RULED yes.
 9. D5: `[recommended]` gains the package one archivey release after codecs 0.1? RULED
-   yes, and `archivey-cli` depends on `archivey[speedups]` from the first archivey
+   yes, and `archivey-cli` depends on `archivey[codecs]` from the first archivey
    release that knows the package (davi in words).
 10. D7: free-threaded wheels in 0.1, no PyPy wheels until measured? RULED yes.
-11. D5: LZO order archivey-speedups, then compress-utils, then Python? RULED yes.
-12. Name of the extra: `[speedups]`? RULED yes.
+11. D5: LZO order archivey-codecs, then compress-utils, then Python? RULED yes.
+12. Name of the extra: `[codecs]`? RULED yes.
 13. D5: under `ProcessIsolation.NATIVE_DECODERS`, where do the kernels run? RULED: in
     archivey's decoder child, like the other native decoders, so the setting keeps its
     promise and keeps the speed-up (card, after an earlier card had chosen Python

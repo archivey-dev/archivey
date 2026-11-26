@@ -275,8 +275,7 @@ def open_kernels(excluded: frozenset[OptionalLibrary]) -> ChildCodecs | None:
     interpreter, a refused start, an import that fails in the child): without that,
     every stream built would start a child only to see it fail, one per CAB folder or
     SquashFS block. An import failure is recorded on ``deps.archivey_speedups`` and
-    logged
-    once at WARNING, as for compress-utils; the others once at DEBUG."""
+    logged once at WARNING, as for compress-utils; the others once at DEBUG."""
     if OptionalLibrary.ARCHIVEY_SPEEDUPS in excluded:
         return None
     if not deps.archivey_speedups.available():
