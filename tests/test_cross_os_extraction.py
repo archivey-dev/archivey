@@ -40,7 +40,7 @@ from archivey.exceptions import (
     LinkTargetNotFoundError,
     ResourceLimitError,
 )
-from archivey.internal import extraction, long_paths
+from archivey.internal import extraction, long_paths, placements as placements_module
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.filters import apply_name_policy
 from archivey.internal.link_watch import LinkWatch
@@ -1429,15 +1429,21 @@ def test_symlink_to_a_later_directory_is_traversable_on_windows(
 
 
 def _alias_after_first(
-    dest: Path, first: str, alias: str
+    dest: Path, first: str, alias: str, monkeypatch: pytest.MonkeyPatch
 ) -> Callable[[ArchiveMember], ArchiveMember]:
     """A filter that makes ``alias`` a second name of ``first`` just before ``alias``
-    is written, as an 8.3 short name is on a volume that has them."""
+    is written, as an 8.3 short name is on a volume that has them.
+
+    The stand-in is a hard link, which a short name is not: the file's entry count
+    leaves it out, as a real short name adds no link."""
 
     def make_alias(member: ArchiveMember) -> ArchiveMember:
         # On a Windows volume that makes 8.3 names the alias is there already.
         if member.name == alias and not os.path.lexists(dest / alias):
             os.link(dest / first, dest / alias)
+            monkeypatch.setattr(
+                placements_module, "_entry_count", lambda st: st.st_nlink - 1
+            )
         return member
 
     return make_alias
@@ -1453,7 +1459,7 @@ def _alias_after_first(
     ],
 )
 def test_short_name_alias_collides_with_the_member_it_names(
-    tmp_path: Path, overwrite: OverwritePolicy
+    tmp_path: Path, overwrite: OverwritePolicy, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``LONGFI~1.TXT`` after ``longfilename.txt`` is a collision, not a file that was
     already there: the second name reaches the file this run just wrote."""
@@ -1464,7 +1470,9 @@ def test_short_name_alias_collides_with_the_member_it_names(
             _tar([("file", "longfilename.txt", b"1"), ("file", "LONGFI~1.TXT", b"2")])
         ),
         dest,
-        filter=_alias_after_first(dest, "longfilename.txt", "LONGFI~1.TXT"),
+        filter=_alias_after_first(
+            dest, "longfilename.txt", "LONGFI~1.TXT", monkeypatch
+        ),
         overwrite=overwrite,
         on_error=OnError.CONTINUE,
     )
@@ -1494,7 +1502,7 @@ def test_short_name_alias_collides_with_the_member_it_names(
     "policy", [ExtractionPolicy.STANDARD, ExtractionPolicy.TRUSTED]
 )
 def test_short_name_of_a_hard_linked_file_does_not_reach_its_other_link(
-    tmp_path: Path, policy: ExtractionPolicy
+    tmp_path: Path, policy: ExtractionPolicy, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``other.txt`` is a hard link of ``longfilename.txt``, so one file has two
     claimed entries, and the file alone cannot tell which of them ``LONGFI~1.TXT``
@@ -1512,7 +1520,9 @@ def test_short_name_of_a_hard_linked_file_does_not_reach_its_other_link(
             )
         ),
         dest,
-        filter=_alias_after_first(dest, "longfilename.txt", "LONGFI~1.TXT"),
+        filter=_alias_after_first(
+            dest, "longfilename.txt", "LONGFI~1.TXT", monkeypatch
+        ),
         policy=policy,
         overwrite=OverwritePolicy.REPLACE,
         on_error=OnError.CONTINUE,
@@ -1527,7 +1537,7 @@ def test_short_name_of_a_hard_linked_file_does_not_reach_its_other_link(
 
 @pytest.mark.parametrize("overwrite", [OverwritePolicy.ERROR, OverwritePolicy.REPLACE])
 def test_short_name_alias_is_a_file_already_there_under_trusted(
-    tmp_path: Path, overwrite: OverwritePolicy
+    tmp_path: Path, overwrite: OverwritePolicy, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``TRUSTED`` defers to the local OS: the alias meets an entry already there, so
     there is no collision event and the earlier member's result is not revised."""
@@ -1537,7 +1547,9 @@ def test_short_name_alias_is_a_file_already_there_under_trusted(
             _tar([("file", "longfilename.txt", b"1"), ("file", "LONGFI~1.TXT", b"2")])
         ),
         dest,
-        filter=_alias_after_first(dest, "longfilename.txt", "LONGFI~1.TXT"),
+        filter=_alias_after_first(
+            dest, "longfilename.txt", "LONGFI~1.TXT", monkeypatch
+        ),
         policy=ExtractionPolicy.TRUSTED,
         overwrite=overwrite,
         on_error=OnError.CONTINUE,

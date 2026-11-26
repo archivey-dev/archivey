@@ -13,6 +13,7 @@ import pytest
 
 from archivey import (
     ArchiveyConfig,
+    ArchiveyUsageError,
     ExtractionLimits,
     ListingLimits,
     ResourceLimitError,
@@ -796,9 +797,9 @@ def test_pass_within_the_caps_keeps_the_listing(tmp_path: Path) -> None:
 def test_concurrent_pass_and_members_beside_it_both_refuse_past_the_cap(
     tmp_path: Path,
 ) -> None:
-    """Under CONCURRENT, ``members()`` beside a pass refuses as it does alone, and the
-    pass still raises at the member that crosses the cap, past the members the
-    refusal walked."""
+    """Under CONCURRENT, ``members()`` inside a pass is refused as a call beside it,
+    and the pass still raises at the member that crosses the cap; ``members()`` after
+    it refuses past the cap as it does alone."""
     tar_path = _tar_of_empty_members(tmp_path / "many.tar", 4_000)
     cfg = ArchiveyConfig(listing_limits=ListingLimits(max_members=20))
     with open_archive(tar_path, config=cfg, concurrent_operations=True) as reader:
@@ -807,7 +808,7 @@ def test_concurrent_pass_and_members_beside_it_both_refuse_past_the_cap(
             for _member, _stream in reader.stream_members():
                 seen += 1
                 if seen == 10:
-                    with pytest.raises(ResourceLimitError, match="max_members"):
+                    with pytest.raises(ArchiveyUsageError, match="already active"):
                         reader.members()
         assert seen == 20
         with pytest.raises(ResourceLimitError, match="max_members"):

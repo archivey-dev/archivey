@@ -258,6 +258,21 @@ def _quiet() -> Iterator[None]:
     overwrite=OverwritePolicy.REPLACE,
     policy=ExtractionPolicy.STRICT,
 )
+# On a case-insensitive filesystem only: the hard link ``A`` lands on ``a``'s entry and
+# is taken back when the file ``A`` comes, which leaves a link to ``src1`` there. The
+# made run sent the file ``A`` over ``src1``, its file's only claim (#1814).
+@example(
+    specs=[
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("file", "a", b"f0"),
+        ("hard", "A", "src1"),
+        ("file", "A", b"f2"),
+        ("file", "a", b"f3"),
+    ],
+    overwrite=OverwritePolicy.REPLACE,
+    policy=ExtractionPolicy.STRICT,
+)
 def test_held_streamed_and_dry_runs_match_the_made_run(
     scratch: Path,
     specs: list[Spec],

@@ -129,10 +129,12 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.codecs.registry import save_codec_state
 from archivey.internal.streams.decompressor_stream import StreamChecksumError
+from archivey.internal.streams.kept_errors import KeptError
 from archivey.internal.streams.read_hints import mark_read_span, read_span_hint
 from archivey.internal.streams.respawn import RespawnStream
 from archivey.internal.streams.streamtools import (
     FullCountStream,
+    HandleLock,
     LockedStream,
     OneReadEachStream,
     ReadAheadStream,
@@ -281,13 +283,12 @@ class _PluginAdapter(BaseArchiveReader):
         # takes one lock (``_handle_guard``). The exception is ``translate_exception``,
         # which ``base_reader`` runs outside the lock. The views of ``ReaderSource``
         # need none, but archivey cannot tell which kind of reader it was given. A
-        # random-access pass's stored member data read through the walk takes
-        # ``_walk_lock`` instead (``_open_member_in_walk``): it reads archivey's own
-        # walk stream, not the plugin, and the walk is the only other reader of that
-        # stream. Decoded member data (``MemberSpan.data``) is the plugin's stream, so
-        # it takes this lock too.
+        # random-access pass's stored member data read through the walk takes neither
+        # (``_open_member_in_walk``): it reads archivey's own walk stream, not the
+        # plugin, and the pass has the reader to itself. Decoded member data
+        # (``MemberSpan.data``) is the plugin's stream, so it takes this lock too.
         if MemberStreams.CONCURRENT in member_streams:
-            self._handle_lock = threading.Lock()
+            self._handle_lock = HandleLock()
         # Views over a seekable source, when the reader shape uses them.
         self._shared: SharedSource | None = None
         # The member decoder config, as ZIP builds its own: the compressed bytes a
@@ -354,16 +355,44 @@ class _PluginAdapter(BaseArchiveReader):
         # check that passes does not raise them (``SpanningCheck.passed``).
         self._failed_reads: frozenset[int] = frozenset()
         context._spanning_pass = self._spanning_passes.append
+        # Only verify_all() runs the passes (``_run_spanning_passes``).
+        context._checkpoint = functools.partial(self._state.check_open, "verify_all()")
         context._decompress_coder = self._decompress_coder
         context._keep_metadata = self._listing_tracker.keep
         if self._listing_decode is not None:
             context._listing_draw = self._listing_decode.draw
         self._reader = self._open_reader(context)
         self._reader_open = True
+        # What kept the first ``info`` from being published at open
+        # (``_validate_at_open``), if anything.
+        self._info_open_error: KeptError | None = None
 
     def _open_reader(self, context: ReaderContext) -> FormatReader:
         """Call the plugin's ``open``, and check what it returned."""
         raise NotImplementedError
+
+    @override
+    def _validate_at_open(self) -> None:
+        super()._validate_at_open()
+        # Publish the first ``info`` now, so one read inside a callback (which may
+        # run under the plugin's handle lock) has a snapshot to answer. A plugin whose
+        # ``archive_info()`` fails still opens: the first live ``info`` raises it.
+        try:
+            self._info_snapshot = self._get_archive_info()
+        except Exception as exc:  # noqa: BLE001 - raised again by the first live info
+            self._info_open_error = KeptError.of(exc)
+
+    @override
+    def _info_unpublished_in_callback(self) -> ArchiveInfo:
+        # Never call the plugin's archive_info() here, in either mode: the call that
+        # ran this callback may hold the plugin's handle lock, or be inside a plugin
+        # method (an archive_info() whose source read runs the callback) that is not
+        # re-entrant. Nothing is published only when it failed at open, so raise
+        # that failure again.
+        kept = self._info_open_error
+        if kept is not None:
+            kept.raise_again()
+        return self._get_archive_info()
 
     def _charge_key_derivation(self, rounds: int) -> None:
         """``ReaderContext.charge_key_derivation``: the reader's one budget."""
@@ -2500,7 +2529,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         it (random access), over the decoded bytes when the format is compressed."""
         if self._streaming:
             # The walk and the member windows read one stream, as a TAR pass does.
-            self._handle_lock = self._handle_lock or threading.Lock()
+            self._handle_lock = self._handle_lock or HandleLock()
         if self._compressed:
             codec = self._codec_stream = self._open_outer_codec_stream(
                 source,
@@ -3093,37 +3122,23 @@ class SequentialReaderAdapter(_PluginAdapter):
                     if self._decoded_in_place(decoded)
                     else None
                 )
-                # Only the open made here may ask the provider: a reopen once the
-                # stream is handed off is a replacement open inside its read.
-                handed_off = False
                 verdict = [record.unlocked]
-                # The winners the data handed out was unlocked with: the listing
-                # walk's when it reads through the walk, else the first reopen's.
-                winners = dict(self._listing_walk.winners) if window is not None else {}
-
-                def reopen(start: int) -> BinaryIO:
-                    return self._decoded_by_walk(
-                        decoded,
-                        start,
-                        allow_provider=not handed_off,
-                        verdict=verdict,
-                        winners=winners,
-                    )
-
-                stream = self._walk_handoff_locked(window, reopen)
-                handed_off = True
+                stream: BinaryIO
+                if window is not None:
+                    stream = window
+                else:
+                    # The walk has moved past the member: a view of its own, from the
+                    # start, unlocked by its own open.
+                    stream = self._decoded_by_walk(decoded, 0, verdict=verdict)
             return self._decoded_parts(member, record, decoded, stream, verdict=verdict)
         shared = record.layer.shared
         assert shared is not None
 
-        def reopen(start: int) -> BinaryIO:
-            return self._span_view(record, start)
-
-        # Stored data: _walk_lock, not _handle_guard: the window reads the walk's own
-        # stream (not the plugin's, as decoded data above does), which
-        # only the walk also reads, and every walk step runs under _walk_lock; the
-        # walk detaches this stream before it moves (_before_pull_locked). The views
-        # it falls back to are serialized by the SharedSource.
+        # Stored data: _walk_lock to decide, not _handle_guard: the window reads the
+        # walk's own stream (not the plugin's, as decoded data above does), which only
+        # the walk also reads. Nothing but the pass moves the walk while it runs, and
+        # it is done with this stream when it steps on. The view it falls back to is
+        # serialized by the SharedSource.
         with self._walk_lock:
             forward = record.layer.forward
             # The walk is at the data's start only while it is on the member's
@@ -3133,9 +3148,10 @@ class SequentialReaderAdapter(_PluginAdapter):
                 and forward is self._listing_walk.layer.forward
                 and forward.offset == record.offset
             )
-            stream = self._walk_handoff_locked(
-                _SpanWindow(forward, record, self._archive_what) if in_place else None,
-                reopen,
+            stream = (
+                _SpanWindow(forward, record, self._archive_what)
+                if in_place
+                else self._span_view(record)
             )
         return self._span_parts(member, record, stream)
 
@@ -3213,15 +3229,13 @@ class SequentialReaderAdapter(_PluginAdapter):
         # Built once: it is read on every member open, and the format never changes.
         return f"{self._format.display_name} archive"
 
-    def _span_view(self, record: _Span, start: int) -> BinaryIO:
-        """``record``'s data from ``start`` for a pass the walk has left: a view that
-        raises ``TruncatedError`` at a cut (:class:`MemberDataView`), as the window it
-        takes over from does."""
+    def _span_view(self, record: _Span) -> BinaryIO:
+        """``record``'s data for a pass the walk has left: a view that raises
+        ``TruncatedError`` at a cut (:class:`MemberDataView`), as the window it stands
+        in for does."""
         shared = record.layer.shared
         assert shared is not None
         view = shared.view(record.offset, record.length)
-        if start:
-            view.seek(start)
         return MemberDataView(
             view, record.offset, record.length, what=self._archive_what
         )

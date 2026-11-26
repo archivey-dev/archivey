@@ -61,6 +61,15 @@ capped at 32 MiB. It declares no seek demand, so
 accelerator `AUTO` resolves as before, and member streams stay as `seekable_members`
 says. A streaming open keeps none.
 
+**Amended (2026-11-24, davitf, concurrency cut, PR #1830):** `concurrent_operations`
+keeps its name with a narrower meaning. It still allows any number of open member
+streams and lookup calls (`open()`, `read()`, `get()`, `members()`, iteration) from
+several threads, but passes (`stream_members()`, `extract_all()`, `verify_all()`) no
+longer run beside other calls: a pass has the reader to itself in both modes, and
+refuses to start beside another call or an open member stream. `close()` marks the
+reader closed and returns, in both modes; the last running call tears down. The
+one-stream default stays, as the trap for the solid-archive open-order cost.
+
 ## Consequences
 
 - Default path: no shared-handle locks, no seek tables, no accelerators, except the

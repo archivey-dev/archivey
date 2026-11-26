@@ -354,12 +354,11 @@ def test_crc16_parity() -> None:
         data = rng.randbytes(rng.randint(0, 5000))
         start = rng.randrange(1 << 16)
         assert PYTHON.crc16_arc(data, start) == RUST.crc16_arc(data, start)
-        running = archivey_codecs.Crc16Arc()
-        expected = 0
+        running = expected = 0
         for chunk in filter_chunks(data, rng):
-            running.update(chunk)
+            running = RUST.crc16_arc(chunk, running)
             expected = PYTHON.crc16_arc(chunk, expected)
-        assert running.digest() == expected.to_bytes(2, "big")
+        assert running == expected
 
 
 # ── ZipCrypto ──────────────────────────────────────────────────────────────────────
@@ -552,6 +551,41 @@ def test_lzx_refuses_to_grow_a_stream_past_a_short_frame(codecs: object) -> None
     d.set_output_size(5)
     with pytest.raises(ValueError, match="last frame ended short at 5 bytes"):
         d.set_output_size(5 + 32768)
+
+
+@BOTH
+def test_lzx_output_size_is_given_only_between_frames(codecs: object) -> None:
+    """The CAB reader's late size: before each frame it sets the size to the end of
+    that frame, and the last frame comes out short. A size while a frame waits for
+    input, or after a decode error, is refused with the same message on both sides."""
+    from cab_util import FRAME, LzxEncoder
+
+    rng = random.Random(15)
+    data = sample_data(rng, 2 * FRAME + 100)
+    stream = b"".join(LzxEncoder(window_bits=15, block_size=20000).encode(data))
+    d = codecs.lzx.Decompressor(15)
+    out = b""
+    for end in (FRAME, 2 * FRAME, 2 * FRAME + 100):
+        d.set_output_size(end)
+        out += d.decompress(stream if not out else b"", FRAME)
+    assert out + d.flush() == data
+    assert d.eof
+
+    d = codecs.lzx.Decompressor(15)
+    assert d.decompress(stream[:100]) == b""
+    with pytest.raises(ValueError, match="^set_output_size\\(\\) while a frame waits"):
+        d.set_output_size(FRAME)
+
+    r_regs = (1).to_bytes(4, "little") * 3
+    first = bytes.fromhex("0030a000") + r_regs + b"0123456789"
+    bad = bytes.fromhex("00e000000000")  # block type 7, after the first block
+    d = codecs.lzx.Decompressor(15)
+    with pytest.raises((archivey_codecs.CorruptDataError, CorruptionError)):
+        d.decompress(first + bad)
+    with pytest.raises(
+        ValueError, match="^set_output_size\\(\\) after a decode error$"
+    ):
+        d.set_output_size(10)
 
 
 @BOTH
@@ -1281,40 +1315,6 @@ def test_lzx_input_fed_byte_by_byte_resumes_where_it_stopped() -> None:
             out += d.decompress(s[i : i + 1])
             assert i + 1 - d.total_in <= 12, (layout, i)
         assert bytes(out + d.flush()) == data, layout
-
-
-@BOTH
-def test_lzx_output_size_given_late_gives_back_what_follows_the_stream(
-    codecs: object,
-) -> None:
-    """A stream that ends on a frame boundary, followed by other bytes: without an
-    output size the decoder starts the next frame and reads them as a block header
-    (and may fail on them). A late ``set_output_size()`` that ends the output there
-    gives them back: they are unused data (in the package's ``unused_data``), and no
-    error is left for them."""
-    from cab_util import FRAME, LzxEncoder
-
-    rng = random.Random(14)
-    lzx = codecs.lzx
-    data = bytes(rng.randrange(4) + 97 for _ in range(FRAME))
-    stream = b"".join(LzxEncoder(window_bits=15, blocks=("uncompressed",)).encode(data))
-    for tail in (bytes(8), bytes.fromhex("20000080") + bytes(range(39))):
-        d = lzx.Decompressor(15)
-        out = d.decompress(stream + tail)
-        try:
-            out += d.decompress(b"")
-        except (archivey_codecs.CorruptDataError, CorruptionError):
-            pass
-        d.set_output_size(FRAME)
-        assert out == data, tail
-        assert d.eof, tail
-        assert d.flush() == b"", tail
-        if not has_state(codecs):
-            continue
-        assert d.unused_data == tail, tail
-        assert d.total_in == len(stream), tail
-        restored = lzx.Decompressor.from_state(d.getstate())
-        assert restored.total_in == len(stream), tail
 
 
 def test_lzw_state_restores_with_clear_padding_still_to_come() -> None:

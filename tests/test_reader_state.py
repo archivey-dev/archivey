@@ -1,7 +1,8 @@
 """Reader lifecycle bookkeeping (``internal/reader_state.py``) and link-chain walks.
 
-Covers the same-thread re-entry diagnosis (S21-K4), a close whose drain is interrupted
-while a second closer waits (S21-K5), and long symlink chains: listing must be linear
+Covers the same-thread re-entry diagnosis (S21-K4), close() from a callback of the
+reader's own call (it cancels the call), a close interrupted after its transition
+(S21-K5), and long symlink chains: listing must be linear
 in the chain length (S17-K10), and opening a dangling or cyclic chain must raise the
 library's own errors rather than ``RecursionError`` (S17-K11).
 """
@@ -31,7 +32,6 @@ from archivey.exceptions import (
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.reader_state import (
     LifecycleState,
-    OperationToken,
     ReaderState,
 )
 from archivey.reader import ArchiveReader
@@ -44,7 +44,7 @@ from tests.test_concurrent_cooperative import (
 )
 
 REENTRY = "re-entered from inside its own"
-CLOSE_FROM_INSIDE = "from inside one of its own calls"
+CLOSED = "after the archive reader has been closed"
 
 
 def _state(*, concurrent: bool = False) -> ReaderState:
@@ -63,22 +63,44 @@ def _in_thread(fn: Callable[[], object]) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("concurrent", [False, True])
-def test_close_inside_own_pass_names_the_callback(concurrent: bool) -> None:
-    state = _state(concurrent=concurrent)
-    state.acquire_pass("members")
-    with pytest.raises(ArchiveyUsageError, match=CLOSE_FROM_INSIDE):
-        state.mark_reader_closed()
-    assert state.lifecycle is LifecycleState.OPEN
+def _counting_hook(state: ReaderState) -> list[int]:
+    calls: list[int] = []
+
+    def hook(_entry_exc: BaseException | None) -> None:
+        calls.append(1)
+
+    state.teardown_hook = lambda: hook  # what a weak reference gives while alive
+    return calls
 
 
 @pytest.mark.parametrize("concurrent", [False, True])
-def test_close_inside_own_worker_names_the_callback(concurrent: bool) -> None:
+def test_close_inside_own_pass_cancels_the_pass(concurrent: bool) -> None:
+    """close() from a callback of the reader's own pass returns at once; the pass
+    stops at its next checkpoint, and the last call out tears down."""
     state = _state(concurrent=concurrent)
-    state.acquire_worker("open")
-    with pytest.raises(ArchiveyUsageError, match=CLOSE_FROM_INSIDE):
-        state.mark_reader_closed()
-    assert state.lifecycle is LifecycleState.OPEN
+    teardowns = _counting_hook(state)
+    token = state.acquire_pass("members")
+    assert state.mark_reader_closed() is False
+    assert state.lifecycle is LifecycleState.READER_CLOSED
+    with pytest.raises(ArchiveyUsageError, match=CLOSED):
+        state.check_open("members()")
+    assert not teardowns
+    state.release_pass(token)
+    assert teardowns == [1]
+    assert state.claim_teardown()
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_close_inside_own_worker_cancels_the_worker(concurrent: bool) -> None:
+    state = _state(concurrent=concurrent)
+    teardowns = _counting_hook(state)
+    token = state.acquire_worker("open")
+    assert state.mark_reader_closed() is False
+    with pytest.raises(ArchiveyUsageError, match=CLOSED):
+        state.check_open("read()")
+    assert not teardowns
+    state.release_worker(token)
+    assert teardowns == [1]
 
 
 @pytest.mark.parametrize("concurrent", [False, True])
@@ -102,10 +124,8 @@ def test_another_threads_pass_keeps_the_generic_message() -> None:
     state = _state()
     _in_thread(lambda: state.acquire_pass("members"))
     with pytest.raises(ArchiveyUsageError, match="another reader operation") as ei:
-        state.mark_reader_closed()
-    assert REENTRY not in str(ei.value)
-    with pytest.raises(ArchiveyUsageError, match="another reader operation"):
         state.acquire_pass("members")
+    assert REENTRY not in str(ei.value)
 
 
 def test_suspended_pass_is_not_diagnosed_as_a_callback() -> None:
@@ -119,26 +139,60 @@ def test_suspended_pass_is_not_diagnosed_as_a_callback() -> None:
     state.set_suspended(token, False)
     with pytest.raises(ArchiveyUsageError, match=REENTRY):
         state.acquire_worker("open")
-    with pytest.raises(ArchiveyUsageError, match=CLOSE_FROM_INSIDE):
-        state.mark_reader_closed()
-    # Suspended again: the close comes from the caller's loop body, and a suspended
-    # pass does not block it. The reader closes under the pass.
+
+
+def test_close_while_the_pass_runs_stops_it_at_the_next_yield() -> None:
+    """A close from inside a step: the pass may not hand out another member."""
+    state = _state()
+    teardowns = _counting_hook(state)
+    token = state.acquire_pass("stream_members")
+    state.set_pass_closer(token, lambda: None)
+    assert state.mark_reader_closed() is False
+    with pytest.raises(ArchiveyUsageError, match=CLOSED):
+        state.set_suspended(token, True)
+    # The running pass keeps its own closer: close() did not take it.
+    assert state.take_pass_wind_down() is None
+    assert state.keep_own_closer(token)
+    state.release_pass(token)
+    assert teardowns == [1]
+
+
+def test_close_while_the_pass_is_suspended_takes_its_closer() -> None:
+    """A close from the caller's loop body: a suspended pass does not block it, and
+    close() winds the pass down before teardown."""
+    state = _state()
+    teardowns = _counting_hook(state)
+    wound: list[int] = []
+    token = state.acquire_pass("stream_members")
+    state.set_pass_closer(token, lambda: wound.append(1))
     state.set_suspended(token, True)
-    state.mark_reader_closed()
-    assert state.lifecycle is not LifecycleState.OPEN
+    assert state.mark_reader_closed() is False  # the wind-down lease holds it
+    assert not state.keep_own_closer(token)
+    wind_down = state.take_pass_wind_down()
+    assert wind_down is not None
+    wind_down()
+    assert wound == [1]
+    ticket = object()
+    assert state.claim_stream_shutdown(ticket)
+    state.finish_stream_shutdown(ticket)
+    assert state.claim_teardown()
+    assert not teardowns  # nobody released: close() claims teardown itself
 
 
-def test_internal_open_window_still_admits_children() -> None:
+def test_internal_open_window_admits_no_pass_and_no_worker() -> None:
+    """The window exempts only the live-stream gate: a pass or a worker call from
+    inside it is refused as re-entry, like any call beside the running pass."""
     state = _state()
     root = state.acquire_pass("extract_all")
     state.begin_internal_opens()
     try:
-        child = state.acquire_pass("stream_members")
-        worker = state.acquire_worker("open")
+        with pytest.raises(ArchiveyUsageError, match="re-entered"):
+            state.acquire_pass("stream_members")
+        with pytest.raises(ArchiveyUsageError, match="re-entered"):
+            state.acquire_worker("open")
     finally:
         state.end_internal_opens()
-    assert child.parent is root
-    assert worker.parent is root
+        state.release_pass(root)
 
 
 def _zip_with_bidi_name() -> bytes:
@@ -149,24 +203,26 @@ def _zip_with_bidi_name() -> bytes:
     return buf.getvalue()
 
 
-def test_default_reader_callback_close_during_members_names_the_callback() -> None:
-    """End to end: the case the sweep measured on a default (non-concurrent) reader."""
+def test_default_reader_callback_close_during_members_cancels_the_listing() -> None:
+    """End to end: close() from a callback of members() returns, members() raises the
+    closed error after the callback, and the reader tears down once, on the way out."""
     assert unicodedata.bidirectional("\u202e") == "RLO"
-    errors: list[BaseException] = []
     holder: list[ArchiveReader] = []
+    closed_in_callback: list[bool] = []
 
     def on_diagnostic(_diag: object) -> None:
-        try:
+        if not closed_in_callback:
             holder[0].close()
-        except ArchiveyUsageError as exc:
-            errors.append(exc)
+            closed_in_callback.append(True)
 
     config = ArchiveyConfig(on_diagnostic=on_diagnostic)
-    with open_archive(io.BytesIO(_zip_with_bidi_name()), config=config) as reader:
-        holder.append(reader)
+    reader = open_archive(io.BytesIO(_zip_with_bidi_name()), config=config)
+    assert isinstance(reader, BaseArchiveReader)
+    holder.append(reader)
+    with pytest.raises(ArchiveyUsageError, match=CLOSED):
         reader.members()
-    assert errors, "fixture must emit a diagnostic during listing"
-    assert CLOSE_FROM_INSIDE in str(errors[0])
+    assert closed_in_callback, "fixture must emit a diagnostic during listing"
+    assert reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
 def _zip_with_a_duplicate_name() -> bytes:
@@ -180,29 +236,26 @@ def _zip_with_a_duplicate_name() -> bytes:
     return buf.getvalue()
 
 
-def test_default_reader_callback_close_during_index_peek_names_the_callback() -> None:
+def test_default_reader_callback_close_during_index_peek_cancels_the_drain() -> None:
     """members_report_if_available() drains the walk on an upfront index: a close()
-    from a callback there is refused, not let through to tear the walk down under
-    the drain (an AssertionError in the next pull)."""
-    errors: list[BaseException] = []
+    from a callback there stops the drain at its next batch, and teardown waits for
+    the drain to leave (no AssertionError from a walk torn down under it)."""
     holder: list[ArchiveReader] = []
+    closed_in_callback: list[bool] = []
 
     def on_diagnostic(_diag: object) -> None:
-        try:
+        if not closed_in_callback:
             holder[0].close()
-        except ArchiveyUsageError as exc:
-            errors.append(exc)
+            closed_in_callback.append(True)
 
     config = ArchiveyConfig(on_diagnostic=on_diagnostic)
-    with open_archive(
-        io.BytesIO(_zip_with_a_duplicate_name()), config=config
-    ) as reader:
-        holder.append(reader)
-        report = reader.members_report_if_available()
-    assert report is not None
-    assert [m.name for m in report.members] == ["a", "a", "b"]
-    assert errors, "fixture must emit a diagnostic during the drain"
-    assert CLOSE_FROM_INSIDE in str(errors[0])
+    reader = open_archive(io.BytesIO(_zip_with_a_duplicate_name()), config=config)
+    assert isinstance(reader, BaseArchiveReader)
+    holder.append(reader)
+    with pytest.raises(ArchiveyUsageError, match=CLOSED):
+        reader.members_report_if_available()
+    assert closed_in_callback, "fixture must emit a diagnostic during the drain"
+    assert reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
 def test_callback_inside_stream_members_step_names_the_callback() -> None:
@@ -241,96 +294,8 @@ def test_loop_body_of_stream_members_keeps_the_generic_message() -> None:
 
 
 # ---------------------------------------------------------------------------
-# S21-K5: an interrupted drain must not tell a waiting closer the reader closed
+# S21-K5: a close interrupted after its transition is finished by the next close
 # ---------------------------------------------------------------------------
-
-
-def test_interrupted_drain_hands_close_to_the_waiting_closer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state = _state(concurrent=True)
-    worker_box: list[OperationToken] = []
-    _in_thread(lambda: worker_box.append(state.acquire_worker("open")))
-
-    real_workers_wait = state._workers_cv.wait
-    real_close_wait = state._close_cv.wait
-    second_waiting = threading.Event()
-    first_closer: list[threading.Thread] = []
-
-    def workers_wait(timeout: float | None = None) -> bool:
-        if threading.current_thread() in first_closer:
-            # Hold the drain until the second closer is parked, then abort it the
-            # way Ctrl-C does during Condition.wait().
-            deadline = time.monotonic() + 5
-            while not second_waiting.is_set() and time.monotonic() < deadline:
-                real_workers_wait(0.01)
-            raise KeyboardInterrupt
-        return real_workers_wait(timeout)
-
-    def close_wait(timeout: float | None = None) -> bool:
-        second_waiting.set()
-        return real_close_wait(timeout)
-
-    monkeypatch.setattr(state._workers_cv, "wait", workers_wait)
-    monkeypatch.setattr(state._close_cv, "wait", close_wait)
-
-    first_raised: list[BaseException] = []
-    second_result: list[bool] = []
-
-    def first() -> None:
-        first_closer.append(threading.current_thread())
-        try:
-            state.mark_reader_closed()
-        except KeyboardInterrupt as exc:
-            first_raised.append(exc)
-
-    def second() -> None:
-        # Enter only once the first closer is draining.
-        deadline = time.monotonic() + 5
-        while not state._closing and time.monotonic() < deadline:
-            time.sleep(0.001)
-        second_result.append(state.mark_reader_closed())
-
-    t1 = threading.Thread(target=first, daemon=True)
-    t2 = threading.Thread(target=second, daemon=True)
-    t1.start()
-    t2.start()
-    t1.join(5)
-    assert first_raised, "the first closer's drain must have been interrupted"
-    # The second closer must now be draining itself, not reporting a peer's close.
-    time.sleep(0.05)
-    assert not second_result
-    assert state.lifecycle is LifecycleState.OPEN
-    state.release_worker(worker_box[0])
-    t2.join(5)
-    assert not t2.is_alive()
-    assert second_result == [True]
-    assert state.lifecycle is LifecycleState.READER_CLOSED
-    assert state.claim_teardown()
-
-
-def test_interrupt_after_the_transition_still_tears_down(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Ctrl-C on the closers' notify, after the reader moved to READER_CLOSED."""
-    reader = open_archive(io.BytesIO(_zip_with_bidi_name()))
-    assert isinstance(reader, BaseArchiveReader)
-    state = reader._state
-    real_notify = state._close_cv.notify_all
-    calls: list[int] = []
-
-    def notify_all() -> None:
-        calls.append(1)
-        if len(calls) == 1:
-            raise KeyboardInterrupt
-        real_notify()
-
-    monkeypatch.setattr(state._close_cv, "notify_all", notify_all)
-    with pytest.raises(KeyboardInterrupt):
-        reader.close()
-    assert state.lifecycle is LifecycleState.READER_CLOSED
-    reader.close()
-    assert state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
 @pytest.mark.parametrize(
@@ -790,19 +755,20 @@ def test_an_error_out_of_the_orphan_pass_closes_it(
     monkeypatch.setattr(ExtractionCoordinator, "_fill_held_source", fail)
     with open_archive(_tar_with_orphaned_hardlink(tmp_path)) as reader:
         passes = []
-        real = reader.stream_members
+        real = reader._stream_members
 
-        def kept(*args: object, **kwargs: object) -> object:
+        def kept(*args: object, **kwargs: object) -> Iterator[object]:
             source = real(*args, **kwargs)  # type: ignore[arg-type]
             passes.append(source)
             return source
 
-        monkeypatch.setattr(reader, "stream_members", kept)
+        monkeypatch.setattr(reader, "_stream_members", kept)
         with pytest.raises(RuntimeError, match="linking failed") as excinfo:
             reader.extract_all(tmp_path / "out", members=["link.txt"], policy="trusted")
         assert excinfo.value is not None  # the traceback is still held here
-        (orphan_pass,) = passes
-        assert orphan_pass._pass.gi_frame is None
+        # The main pass, then the orphan pass for the link's source: both closed.
+        assert len(passes) == 2
+        assert all(source.gi_frame is None for source in passes)
 
 
 def test_a_failed_pass_close_does_not_hide_the_extraction_error() -> None:

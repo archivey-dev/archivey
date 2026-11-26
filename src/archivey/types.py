@@ -57,11 +57,12 @@ class MemberStreams(Flag):
 
     ``CONCURRENT``
         Multiple overlapping ``open()`` calls are allowed. First-touch member
-        materialization is coordinated (one build; waiters share the snapshot);
-        ``close()`` drains in-flight worker calls. Callers still synchronize any
-        *shared* stream objects they hand around. ``__iter__`` and
-        ``stream_members`` and ``extract_all`` run beside random access and beside
-        one another.
+        materialization is coordinated (one build; waiters share the snapshot).
+        ``close()`` does not wait for calls in flight: they raise
+        ``ArchiveyUsageError`` at their next checkpoint. Callers still synchronize
+        any *shared* stream objects they hand around. A pass (``__iter__``,
+        ``stream_members``, ``extract_all``, ``verify_all``) has the reader to
+        itself, as without the flag.
         Does **not** remove solid open-order cost — see :class:`~archivey.AccessCost`.
 
     ``SEEKABLE``
@@ -2411,7 +2412,10 @@ class SourceProgress:
     """For a local file or stream, where in the file the latest read started: that
     read took the bytes from here to :attr:`position`. With
     ``ArchiveyConfig(source_read_step=0)`` every read is reported, so these ranges are
-    every read of the file. ``None`` for a URL source, whose ``request_*`` fields give
+    every read of the file, except where archivey's own thread reads (the RAR volume
+    feeder): those reports merge, and only the latest range is kept, while
+    :attr:`bytes_read` still counts every byte. ``None`` for a URL source, whose
+    ``request_*`` fields give
     each request's range."""
 
     nest_level: int = 0

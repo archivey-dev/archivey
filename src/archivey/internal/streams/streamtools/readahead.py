@@ -25,6 +25,8 @@ from collections.abc import Callable
 from typing import BinaryIO, Protocol, cast
 
 from archivey.internal.overrides import override
+from archivey.internal.streams.callers_source import from_callers_source
+from archivey.internal.streams.kept_errors import KeptError
 from archivey.internal.streams.streamtools.base import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
     ask_resume_offset,
@@ -80,6 +82,12 @@ class ReadAheadStream(DelegatingStream):
         # buffered: those bytes went to the caller first, and the next read raises it.
         # A seek drops it, as it drops the buffer.
         self._held: Exception | None = None
+        # An exception from the caller's source or ``on_source_read`` (a stop) that a
+        # fill raised. It is raised at once, never held behind buffered bytes, and
+        # every later read raises it again, also one the buffer could answer. Only a
+        # stop from ``on_source_read`` survives a seek: it holds for the whole file.
+        # The caller's source failing clears there, and the next fill tries again.
+        self._stop: KeptError | None = None
         self._buffer_size = buffer_size
         self._rewind_oversize = rewind_oversize
         # The inner's ``read_ahead`` (an ArchiveStream's) when ``fill_arrived``.
@@ -93,6 +101,8 @@ class ReadAheadStream(DelegatingStream):
         n = check_read_size(n)
         if self.closed:
             raise ValueError("I/O operation on closed file.")
+        if self._stop is not None:
+            self._stop.raise_again()
         if self._held is not None:
             err, self._held = self._held, None
             raise err
@@ -121,8 +131,15 @@ class ReadAheadStream(DelegatingStream):
                     mark = None
                 try:
                     return read_blocking(self._inner, n)
-                except Exception as err:
-                    if mark is not None and _seek_to(self._inner, mark + len(held)):
+                except BaseException as err:
+                    if from_callers_source(err):
+                        self._stop = KeptError.of(err)
+                        raise
+                    if (
+                        isinstance(err, Exception)
+                        and mark is not None
+                        and _seek_to(self._inner, mark + len(held))
+                    ):
                         self._held = err
                         return held
                     raise
@@ -132,8 +149,11 @@ class ReadAheadStream(DelegatingStream):
                 data = self._read_ahead(n - buffered, want)
             else:
                 data = read_blocking(self._inner, want)
-        except Exception as err:
-            if not held:
+        except BaseException as err:
+            if from_callers_source(err):
+                self._stop = KeptError.of(err)
+                raise
+            if not held or not isinstance(err, Exception):
                 raise
             self._held = err
             return held
@@ -154,7 +174,12 @@ class ReadAheadStream(DelegatingStream):
         if self.closed:
             raise ValueError("I/O operation on closed file.")
         buffered = len(self._buffer) - self._offset
-        if buffered or self._held is not None or self._read_ahead is None:
+        if (
+            buffered
+            or self._held is not None
+            or self._stop is not None
+            or self._read_ahead is None
+        ):
             return self.read(min(n, buffered) if buffered else n)
         return self._read_ahead(1, n)
 
@@ -177,6 +202,8 @@ class ReadAheadStream(DelegatingStream):
         self._buffer = b""
         self._offset = 0
         self._held = None
+        if self._stop is not None and not self._stop.source_callback:
+            self._stop = None
         return position
 
     @override

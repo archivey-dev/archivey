@@ -43,6 +43,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.hashing import crc32_digest
+from archivey.internal.reader_state import LifecycleState
 from archivey.types import CreateSystem, HashAlgorithm
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
@@ -367,13 +368,11 @@ def test_encryption_header_larger_than_declared_size_is_corruption(
 
 
 @pytest.mark.usefixtures("zip_general_path")
-def test_archive_close_waits_for_an_in_flight_member_read() -> None:
-    """Closing waits for a member stream's read that is inside the archive's source.
-
-    The reader lifecycle waits for in-flight reader calls, not for a read on a stream
-    the caller already holds; zipfile's lock, taken by every member read and by
-    ``_close_archive``, is what keeps the handle open under that read.
-    """
+def test_archive_close_defers_teardown_past_an_in_flight_member_read() -> None:
+    """Closing beside a member stream's read that is inside the archive's source
+    returns at once; the read finishes on the open handle, then raises the
+    closed-file error instead of returning its bytes, and the archive is torn down when it is
+    out (the last call out)."""
     import threading
 
     in_read = threading.Event()
@@ -395,32 +394,46 @@ def test_archive_close_waits_for_an_in_flight_member_read() -> None:
     source = _BlockingSource(buf.getvalue())
     ar = open_archive(source, concurrent_operations=True)
     stream = ar.open("a.txt")
-    got: list[bytes] = []
+    got: list[object] = []
+
+    def read() -> None:
+        try:
+            got.append(stream.read())
+        except ValueError as exc:
+            got.append(exc)
+
     source.armed = True
-    reader = threading.Thread(target=lambda: got.append(stream.read()))
+    reader = threading.Thread(target=read)
     reader.start()
     assert in_read.wait(5)
     closed = threading.Event()
     closer = threading.Thread(target=lambda: (ar.close(), closed.set()))
     closer.start()
     try:
-        assert not closed.wait(0.2)
+        assert closed.wait(5)
+        # Closed to the caller at once; its inner close waits for the read.
+        assert stream.closed
+        assert not stream._inner_closed()  # type: ignore[attr-defined]
+        assert ar._state.lifecycle is LifecycleState.READER_CLOSED
     finally:
         release.set()
-    assert closed.wait(5)
     reader.join(5)
     closer.join(5)
-    assert got == [b"data"]
+    assert len(got) == 1 and isinstance(got[0], ValueError), got
+    assert "closed file" in str(got[0])
+    assert stream.closed
+    assert ar._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
 @pytest.mark.usefixtures("zip_general_path")
 def test_archive_closed_before_the_overrun_probe() -> None:
-    """A close between the last declared byte and the over-run probe keeps the read.
+    """A close between the last declared byte and the over-run probe stops the read.
 
     The read that delivers a stored member's bytes closes the archive (the lock it
     waits on is re-entrant, so this is the threaded race above, made deterministic).
     The verifier's probe past the declared size then meets the member's closed view,
-    which is "no more data", not a usage error: every declared byte was delivered.
+    which is "no more data", not a damage error. The read was running when close()
+    came, so it raises the closed-file error before it returns.
     """
     data = b"data" * 10
     buf = io.BytesIO()
@@ -443,7 +456,8 @@ def test_archive_closed_before_the_overrun_probe() -> None:
     ar = open_archive(source, concurrent_operations=True)
     with ar.open("a.txt") as stream:
         source.armed = True
-        assert stream.read() == data
+        with pytest.raises(ValueError, match="closed file"):
+            stream.read()
     assert source.fired  # the close happened inside the member's read
 
 

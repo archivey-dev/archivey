@@ -829,7 +829,7 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
         or a run does not decode, or why it could not be checked."""
         table = self._image.tables[t]
         try:
-            crc = self._image.table_crc(table, draw)
+            crc = self._image.table_crc(table, draw, self._context._checkpoint)
         except CorruptionError as exc:
             if from_source_callback(exc):
                 raise
@@ -869,7 +869,7 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
                 )
         stored = crc32_value(koly.data_checksum)
         if stored is not None:
-            got = image.data_fork_crc()
+            got = image.data_fork_crc(self._context._checkpoint)
             if got != stored:
                 return CorruptionError(
                     f"the UDIF data fork ({koly.data_fork_length} bytes at offset "

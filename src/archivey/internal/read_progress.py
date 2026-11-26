@@ -39,10 +39,13 @@ import threading
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from archivey.internal.callback_scope import user_callback
 from archivey.internal.streams.callers_source import mark_source_callback
 from archivey.types import SourceProgress
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     from archivey.types import OnSourceRead
 
 LOCAL_REPORT_STEP = 1 << 20
@@ -82,6 +85,7 @@ class SourceReadReporter:
         self._in_flight = 0
         # What the callback raised, once it has: every later report raises it again.
         self._stopped: BaseException | None = None
+        self._stopped_traceback: TracebackType | None = None
         # A report due while archivey's own thread read: the next report on a
         # caller's thread, or :meth:`flush`, delivers it.
         self._deferred: SourceProgress | None = None
@@ -197,11 +201,13 @@ class SourceReadReporter:
 
     def _call(self, progress: SourceProgress) -> None:
         try:
-            self.callback(progress)
+            with user_callback():
+                self.callback(progress)
         except BaseException as exc:
             # The caller's own exception: every error boundary passes it on as itself.
             mark_source_callback(exc)
             self._stopped = exc
+            self._stopped_traceback = exc.__traceback__
             raise
 
     def raise_if_stopped(self) -> None:
@@ -215,7 +221,9 @@ class SourceReadReporter:
         """
         stopped = self._stopped
         if stopped is not None and not _on_archivey_thread():
-            raise stopped
+            # The traceback it had when the callback raised: a raise adds its frames
+            # to the one on the instance, which would grow with every retry.
+            raise stopped.with_traceback(self._stopped_traceback)
 
     def _remote_progress(
         self, start: int, end: int, received: int, *, done: bool, position: int

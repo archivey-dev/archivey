@@ -487,14 +487,20 @@ def test_a_stream_racing_the_finding_of_an_unchecked_frame_does_not_raise_it_bac
         with reader.open(member) as a:
             a.read(10)
 
+            opened: list[object] = []
+
             def read_b() -> None:
-                with reader.open(member) as b:
-                    assert b.read() == _DATA * 2
-                    assert member.verifiable is LENGTH
+                # Closed after A's query returns: a stream's close from inside a call
+                # on a sibling is a callback's, which close() refuses.
+                b = reader.open(member)
+                opened.append(b)
+                assert b.read() == _DATA * 2
+                assert member.verifiable is LENGTH
 
             armed.append(read_b)
             assert a.verifiable is LENGTH
             assert not armed
+            opened.pop().close()  # type: ignore[attr-defined]
             assert member.verifiable is LENGTH
             a.read(10)
             assert member.verifiable is LENGTH
