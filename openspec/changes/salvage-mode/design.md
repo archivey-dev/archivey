@@ -246,22 +246,32 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
 - **The v7 rule needs a listed header.** A block with no magic passes only when at least
   one header was listed and every one listed was v7, so a lost start never accepts a v7
   block on its checksum alone. In v7 mode a v7 header confirms a found member.
-- **A found header that makes no member** (its chain does not parse, or it raises
-  `CorruptionError`) is passed over: the search goes on at the block after it. An
-  extended header in a found chain whose data does not fit what is left of
-  `max_metadata_bytes` is passed over the same way when the walk knows the archive
-  does not hold that data (a file shorter than the size says). When the archive holds
-  it, or the walk cannot tell without reading it (a codec stream, a forward-only walk),
-  it stays a `ResourceLimitError`, as in the default walk.
-- **A found `g` header counts for later members only once its member is confirmed**
-  (davi, 2026-11-26). A member a forward-only walk trusts counts once the header after
-  its data confirms it. When its chain makes no member, or a member nothing confirms,
-  the global records stay as they were before it; it still applies to its own
-  unconfirmed member, and that member's `MEMBER_FOUND_BY_SCAN` message says so. This
-  departs from GNU tar on purpose: GNU tar `--ignore-zeros` applies such a header to
-  later members, but a chain with no confirmed member is noise. A `g` header the walk
-  itself reaches applies to later members as in GNU tar.
-- **An unconfirmed found member's next search starts after its member header**, not
+- **A found chain is provisional until its member is confirmed.** One rule covers every
+  walk (a file, a codec stream, a deb's forward-only `data.tar`, a `stream_members()`
+  pass): a found chain whose member is not confirmed changes nothing that outlives it.
+  The search's start puts back what the chain changed (the PAX global records and the
+  v7 rule's record of what was listed), and a confirmation keeps it. A member is
+  confirmed only when the block after its data passes the search's own checks, or is
+  the clean end. A member a forward-only walk trusts (below) is confirmed when the
+  walk reads that block, on the same checks. So a found `g` header counts for later
+  members only once its member is confirmed (davi, 2026-11-26), and a found member
+  nothing confirms neither ends nor starts the v7 rule. The `g` header still applies
+  to its own unconfirmed member, and that member's `MEMBER_FOUND_BY_SCAN` message says
+  so. This departs from GNU tar on purpose: GNU tar `--ignore-zeros` applies such a
+  header to later members, but a chain with no confirmed member is noise. A `g` header
+  the walk itself reaches applies to later members as in GNU tar.
+- **A found chain hits a limit only for what the archive can hold.** A found header's
+  numbers may be noise. When a charge against `max_metadata_bytes` fails for data a
+  found header claims (an extended header's data, a PAX 1.0 sparse map's entry count)
+  and the walk knows the archive cannot hold that data (a file shorter than the claim,
+  or a map that does not fit its member's data area), the chain makes no member and is
+  passed over like any found header whose chain does not parse: the search goes on at
+  the block after it. When the archive holds it, or the walk cannot tell without
+  reading it (a codec stream, a forward-only walk), it stays a `ResourceLimitError`,
+  as in the default walk.
+- **A found header whose chain makes no member** (it does not parse, or it raises
+  `CorruptionError`) is passed over: the search goes on at the block after it. **An
+  unconfirmed found member's next search starts after its member header**, not
   inside its chain, so that a member with extended headers before it is listed once.
   Past the default's end, `CorruptionError` inside a walked chain ends that chain as a
   rejected header does, and the search starts at the chain. Damage in the codec stream

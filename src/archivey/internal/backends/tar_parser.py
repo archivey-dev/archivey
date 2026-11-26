@@ -1325,14 +1325,20 @@ Budget = tuple[int, int] | None
 class _Charger:
     """The :data:`Charge` of one member: its extended headers and sparse map draw on
     one budget. The limit message names the member once :meth:`name_member` has
-    given its name, and "a TAR member" before."""
+    given its name, and "a TAR member" before.
 
-    __slots__ = ("_name", "_raw_name", "cap", "left")
+    ``lacks`` is set for a chain a salvage search found (:meth:`TarWalker._ends_before`):
+    see :meth:`claim`."""
 
-    def __init__(self, budget: Budget) -> None:
+    __slots__ = ("_lacks", "_name", "_raw_name", "cap", "left")
+
+    def __init__(
+        self, budget: Budget, lacks: Callable[[int], bool] | None = None
+    ) -> None:
         self.left, self.cap = budget if budget is not None else (-1, -1)
         self._name: str | None = "a TAR member"
         self._raw_name = b""
+        self._lacks = lacks
 
     @property
     def name(self) -> str:
@@ -1355,6 +1361,34 @@ class _Charger:
                 f"{self.name} weighs {nbytes} bytes, {max(self.left, 0)} left)"
             )
         self.left -= nbytes
+
+    def claim(
+        self, nbytes: int, what: str, *, needs: int, within: int | None = None
+    ) -> None:
+        """Charge ``nbytes`` for ``what``, which a header claims and which needs the
+        stream to hold at least the bytes before offset ``needs`` (and, for a map
+        in a member's data area, no more than that area, which ends at ``within``).
+
+        In a chain a salvage search found, the header's numbers may be noise. When
+        the charge fails and the claim cannot be held (``needs`` past ``within``,
+        or past where the walk knows the stream ends), the chain names no member:
+        :class:`TruncatedError`, which the search passes over as any found chain
+        that does not parse. Anywhere else, and when the walk cannot tell without
+        reading, the limit stays a limit, as in the default walk.
+        """
+        try:
+            self(nbytes, what)
+        except ResourceLimitError:
+            lacks = self._lacks
+            if lacks is None or not (
+                (within is not None and needs > within) or lacks(needs)
+            ):
+                raise
+            raise TruncatedError(
+                f"TAR archive: {what} of {self.name}, found by salvage's header "
+                f"search, needs data up to offset {needs}, more than the archive "
+                "holds there"
+            ) from None
 
 
 class _Chain:
@@ -1500,6 +1534,10 @@ class TarWalker:
         # 100-byte name field (no NUL in it).
         self._found_at = -1
         self.found_name_full = False
+        # Where the block after the data of a found member whose size the walk
+        # trusted starts (salvage_confirms), with the v7 rule of its search: that
+        # block confirms the member only if it passes the same checks.
+        self._confirm_at: tuple[int, bool] | None = None
         # The stream as a window (_Window), once a look ahead on a forward-only walk
         # or a salvage search on a stream that is costly to seek back needs one.
         self._win: _Window | None = None
@@ -1762,6 +1800,7 @@ class TarWalker:
         self._replay = None
         self._unchecked_data_end = None
         self._damage_run = 0
+        self._confirm_at = None
 
     def global_records(self) -> GlobalRecords:
         """The PAX global records in force where the walk stands, to put back with
@@ -1809,7 +1848,10 @@ class TarWalker:
         nothing can look there before the walk reads the member's data. The reader
         then trusts the member's size, as GNU tar reads a pipe, and searches the
         last bytes the window keeps if the block there does not confirm it
-        (:meth:`search_floor`).
+        (:meth:`search_floor`). The walk checks that block when it reads it: one
+        that is not a zero block and does not pass the same checks ends the walk
+        there as a header that does not parse, so a later entry confirms the
+        member only on the checks a look makes.
 
         A walk over a codec stream looks further by decoding forward to the block,
         which the walk decodes next anyway when the member is confirmed. For a
@@ -1828,7 +1870,11 @@ class TarWalker:
             self._seek(pos)
         look = self._look_ahead(pos, BLOCKSIZE)
         if isinstance(look, _HoldExceeded):
-            return None if not self._seekable else False
+            if self._seekable:
+                return False
+            if searched:
+                self._confirm_at = (pos, v7)
+            return None
         confirmed = len(look) == BLOCKSIZE and (
             passes_header_search(look, v7=v7)
             or (look == _ZERO_BLOCK and self.zeros_to_end(pos + BLOCKSIZE))
@@ -1903,15 +1949,32 @@ class TarWalker:
            (:meth:`_record_member_ambiguities`), and :meth:`_place_next_header` sets
            where the next call starts.
         """
-        charge = _Charger(budget)
         offset = self._pos
+        # A chain a salvage search found: a limit its numbers hit is checked against
+        # what the archive holds (_Charger.claim).
+        charge = _Charger(
+            budget, self._ends_before if offset == self._found_at else None
+        )
         # Two facts the last call left for this one's first block.
         unchecked = self._unchecked_data_end
         self._unchecked_data_end = None
         zero_span = self._zero_span
         self._zero_span = None
+        confirm_at, self._confirm_at = self._confirm_at, None
         while True:
             block = self._read_block(offset)
+            if (
+                confirm_at is not None
+                and offset == confirm_at[0]
+                and len(block) == BLOCKSIZE
+                and block != _ZERO_BLOCK
+                and not passes_header_search(block, v7=confirm_at[1])
+            ):
+                return self._reject(
+                    offset,
+                    "the block after a trusted member's data does not pass "
+                    "salvage's header checks",
+                )
             if len(block) < BLOCKSIZE:
                 if not block and offset == unchecked:
                     # Only an empty read leaves it open whether the last member's data
@@ -2270,27 +2333,6 @@ class TarWalker:
             self.end = TarEnd(TarEndKind.REJECTED, offset, reason=parsed.reason)
         return self.end
 
-    def _charge_found(self, charge: _Charger, size: int, offset: int) -> None:
-        """Charge the data of an extended header in a chain a salvage search found.
-
-        The search found the header on its checksum and magic alone, so its size may
-        be noise. When the charge fails and the walk knows the archive does not hold
-        the data, the header names no member: :class:`TruncatedError` passes it over,
-        as for any found chain that does not parse. A header the archive holds stays a
-        limit hit, as in the default walk, and so does one the walk cannot check
-        without reading it (a codec stream, a forward-only walk).
-        """
-        try:
-            charge(size, "an extended header")
-        except ResourceLimitError:
-            if not self._ends_before(offset + BLOCKSIZE + size):
-                raise
-            raise TruncatedError(
-                f"TAR archive: the extended header at offset {offset}, found by "
-                f"salvage's header search, names {size} bytes of data, past the end "
-                "of the archive"
-            ) from None
-
     def _ends_before(self, end: int) -> bool:
         """Whether the stream is known to end before ``end``: its length is a fact,
         or a seekable stream read without a window has no byte at ``end - 1``.
@@ -2334,10 +2376,9 @@ class TarWalker:
         # elsewhere.
         if _size_has_tail(block):
             chain.ambiguities.append((Ambiguity.FIELD_TAIL, typeflag + b" size"))
-        if chain.start == self._found_at:
-            self._charge_found(charge, parsed.size, offset)
-        else:
-            charge(parsed.size, "an extended header")
+        charge.claim(
+            parsed.size, "an extended header", needs=offset + BLOCKSIZE + parsed.size
+        )
         data = self._read_header_bytes(parsed.size)
         if len(data) < parsed.size:
             raise TruncatedError(
@@ -2770,8 +2811,18 @@ class TarWalker:
             # tarfile and GNU tar read it, so a bad map fails the listing as in the
             # other encodings and its entries count against this member's budget.
             self._seek(data_offset)
+            map_start, map_end = data_offset, data_offset + stored_size
+
+            def charge_map(nbytes: int, what: str) -> None:
+                # The only charge: the entry count, before the entries are read.
+                # Each entry is two numbers of at least "0\n".
+                entries = nbytes // SPARSE_ENTRY_BYTES
+                charge.claim(
+                    nbytes, what, needs=map_start + 4 * entries, within=map_end
+                )
+
             sparse, used = read_sparse_map_1_0(
-                self._read, stored_size, charge.name, charge
+                self._read, stored_size, charge.name, charge_map
             )
             whole_size = stored_size
             data_offset += used
