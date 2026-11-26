@@ -20,6 +20,7 @@ from archivey import (
 from archivey.config import ArchiveyConfig
 from archivey.exceptions import FormatDetectionError
 from archivey.internal.detection_workspace import DETECTION_LIMIT
+from archivey.internal.probe_verdict import PROBE_MATCH
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.codecs import BrotliCodec, LzmaAloneCodec, ZlibCodec
 from archivey.internal.streams.codecs.brotli_framing import (
@@ -67,7 +68,7 @@ def test_small_real_brotli_survives_completeness() -> None:
     for payload in (b"", b"hello", b"x" * 50, b"payload " * 10):
         data = brotli.compress(payload)
         assert len(data) <= DETECTION_LIMIT
-        assert BrotliCodec().content_probe(data, source_length=len(data)) is True
+        assert BrotliCodec().content_probe(data, source_length=len(data)) is PROBE_MATCH
         info = detect_format(io.BytesIO(data), config=PROBE_ALL)
         assert info.format == ArchiveFormat.BROTLI
 
@@ -113,16 +114,19 @@ def test_zlib_completeness_rejects_truncated_high_ratio_stream() -> None:
     # correctly cannot disprove (see format-detection completeness requirement).
     for n in (20, 60):
         blob = full[:n]
-        assert ZlibCodec().content_probe(blob, source_length=len(blob)) is False
+        assert ZlibCodec().content_probe(blob, source_length=len(blob)) is None
     over_drain = full[:100]
-    assert ZlibCodec().content_probe(over_drain, source_length=len(over_drain)) is True
+    assert (
+        ZlibCodec().content_probe(over_drain, source_length=len(over_drain))
+        is PROBE_MATCH
+    )
 
 
 @requires("brotli")
 def test_completeness_rejects_tiny_nonterminating_file() -> None:
     blob = b"hello"
     assert parse_metablock(blob).outcome is BrotliBlock.COMPRESSED
-    assert BrotliCodec().content_probe(blob, source_length=len(blob)) is False
+    assert BrotliCodec().content_probe(blob, source_length=len(blob)) is None
     with pytest.raises(FormatDetectionError):
         detect_format(io.BytesIO(blob), config=PROBE_ALL)
 
@@ -134,7 +138,7 @@ def test_completeness_skipped_when_source_larger_than_prefix() -> None:
     data = brotli.compress(os.urandom(64 * 1024))
     assert len(data) > DETECTION_LIMIT
     prefix = data[:DETECTION_LIMIT]
-    assert BrotliCodec().content_probe(prefix, source_length=len(data)) is True
+    assert BrotliCodec().content_probe(prefix, source_length=len(data)) is PROBE_MATCH
 
 
 @requires("brotli")
@@ -158,7 +162,7 @@ def test_real_brotli_corpus_includes_sub_100_byte_payloads() -> None:
 def test_zlib_completeness_rejects_fully_visible_nonterminating() -> None:
     # Recognized CMF/FLG plus bytes that start a deflate block but never finish.
     blob = b"\x78\x9c\x01\x00\x00"
-    assert ZlibCodec().content_probe(blob, source_length=len(blob)) is False
+    assert ZlibCodec().content_probe(blob, source_length=len(blob)) is None
 
 
 def test_zlib_complete_small_stream_still_accepted() -> None:
@@ -166,7 +170,7 @@ def test_zlib_complete_small_stream_still_accepted() -> None:
     assert (
         detect_format(io.BytesIO(data), config=PROBE_ALL).format == ArchiveFormat.ZLIB
     )
-    assert ZlibCodec().content_probe(data, source_length=len(data)) is True
+    assert ZlibCodec().content_probe(data, source_length=len(data)) is PROBE_MATCH
 
 
 def test_lzma_alone_completeness_on_fully_visible_nonterminating() -> None:
@@ -177,8 +181,8 @@ def test_lzma_alone_completeness_on_fully_visible_nonterminating() -> None:
     blob = stream[:-10]
     # Prefix-only must match; when the whole source is visible and does not terminate,
     # completeness must reject.
-    assert alone.content_probe(blob, source_length=None) is True
-    assert alone.content_probe(blob, source_length=len(blob)) is False
+    assert alone.content_probe(blob, source_length=None) is PROBE_MATCH
+    assert alone.content_probe(blob, source_length=len(blob)) is None
 
 
 @requires("brotli")
@@ -271,7 +275,7 @@ def test_ole_coff_residuals_still_accepted_above_prefix() -> None:
     # OLE signature in any case.
     assert (
         BrotliCodec().content_probe(prefix, source_length=len(ole), read_at=read_at)
-        is False
+        is None
     )
     with pytest.raises(FormatDetectionError):
         detect_format(io.BytesIO(ole), config=PROBE_ALL)
@@ -295,8 +299,8 @@ def test_ole_coff_residuals_still_accepted_above_prefix() -> None:
 @requires("brotli")
 def test_unknown_length_keeps_today_behaviour_for_both_rules() -> None:
     blob = b"MZ" + b"\x90" * 8000
-    assert BrotliCodec().content_probe(blob, source_length=None) is True
-    assert BrotliCodec().content_probe(blob, source_length=len(blob)) is False
+    assert BrotliCodec().content_probe(blob, source_length=None) is PROBE_MATCH
+    assert BrotliCodec().content_probe(blob, source_length=len(blob)) is None
 
 
 @requires("brotli")
@@ -337,7 +341,7 @@ def test_sixteen_mib_vacuous_first_block_caught_by_walk(tmp_path: Path) -> None:
             source_length=size,
             read_at=read_at,
         )
-        is False
+        is None
     )
 
 

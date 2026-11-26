@@ -33,17 +33,20 @@ class DetectionConfidence(Enum):
     """
 
     CERTAIN = "certain"
-    """An exact magic-byte match at the expected offset."""
+    """An exact magic-byte match at the expected offset. Never a content probe's
+    verdict."""
 
     PROBABLE = "probable"
     """A structural or content probe matched: the inner-TAR probe, the SFX scan, or a
     content probe hit (LZMA-alone, zlib, or Brotli whose first meta-block is
-    compressed or whose extension agrees)."""
+    compressed or whose extension agrees), or a probe's weak match the extension
+    agrees with."""
 
     GUESS = "guess"
     """No confirmation strong enough to rely on: an extension-only guess, or a content
-    probe hit in the weak evidence class (today: extensionless Brotli whose first
-    meta-block is uncompressed or metadata)."""
+    probe hit in the weak evidence class (extensionless Brotli whose first
+    meta-block is uncompressed or metadata, or a plugin probe's weak match on a
+    source whose extension does not name the format)."""
 
 
 @dataclass(frozen=True)

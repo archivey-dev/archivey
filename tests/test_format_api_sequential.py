@@ -36,6 +36,7 @@ from archivey import (
     ArchiveyUsageError,
     CorruptionError,
     DecoderLimits,
+    DetectionConfidence,
     MemberType,
     PluginContainer,
     PluginStream,
@@ -991,7 +992,11 @@ def test_a_probe_only_format_is_found_inside_a_compression_stream(
     class Probed(SequentialFormatHandler):
         format = fmt
         extensions = (".ptoys",)
-        probe = staticmethod(lambda prefix: prefix.startswith(_MAGIC))
+        probe = staticmethod(
+            lambda prefix: (
+                DetectionConfidence.PROBABLE if prefix.startswith(_MAGIC) else None
+            )
+        )
 
         def open_sequential(self, context: ReaderContext) -> ToysReader:
             return ToysReader(context)
@@ -1005,6 +1010,39 @@ def test_a_probe_only_format_is_found_inside_a_compression_stream(
         assert detect_format(io.BytesIO(data)).format == ArchiveFormat.GZ
         probing = archivey.ArchiveyConfig(always_probe_content=True)
         assert detect_format(io.BytesIO(data), config=probing).format == pair
+
+
+def test_a_weak_probe_match_inside_a_compression_stream_is_a_guess(
+    tmp_path: Path,
+) -> None:
+    """The probe's grade holds inside a compressor too: a weak match on an unnamed
+    source is a ``GUESS``, and the extension naming the format raises it."""
+    fmt = ArchiveFormat(ToysContainer.PROBED, StreamFormat.UNCOMPRESSED)
+
+    class Probed(SequentialFormatHandler):
+        format = fmt
+        extensions = (".ptoys",)
+        probe = staticmethod(
+            lambda prefix: (
+                DetectionConfidence.GUESS if prefix.startswith(_MAGIC) else None
+            )
+        )
+
+        def open_sequential(self, context: ReaderContext) -> ToysReader:
+            return ToysReader(context)
+
+    pair = ArchiveFormat(ToysContainer.PROBED, StreamFormat.GZIP)
+    data = _gz(build_toys(_ENTRIES))
+    with registration_scope():
+        register_format(Probed)
+        probing = archivey.ArchiveyConfig(always_probe_content=True)
+        info = detect_format(io.BytesIO(data), config=probing)
+        assert (info.format, info.confidence) == (pair, DetectionConfidence.GUESS)
+        named = detect_format(_write(tmp_path, data, "t.ptoys.gz"))
+        assert (named.format, named.confidence) == (
+            pair,
+            DetectionConfidence.PROBABLE,
+        )
 
 
 def test_compressed_bytes_that_are_not_the_format_stay_a_compressed_file(

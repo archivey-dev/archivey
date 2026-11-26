@@ -34,6 +34,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.overrides import override
+from archivey.internal.probe_verdict import ProbeVerdict, probe_verdict
 from archivey.internal.streams.archive_stream import ExceptionTranslator
 from archivey.internal.streams.codecs.base import (
     Codec,
@@ -640,7 +641,7 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         charge_decode: ProbeChargeDecode | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
         decoder_limits: DecoderLimits = DecoderLimits(),
-    ) -> bool:
+    ) -> ProbeVerdict:
         """Recognize LZMA Alone: plausible 13-byte header that then yields decode output.
 
         A source no longer than the 13-byte header carries no range-coder payload and
@@ -654,17 +655,19 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         requires a positive output length (an empty successful read is not a claim).
         """
         if not _alone_header_plausible(prefix) or not self.available():
-            return False
+            return None
         if _alone_payload_has_zero_run(prefix):
-            return False
+            return None
         if source_length is not None and source_length <= _ALONE_HEADER_SIZE:
-            return False
-        return self._decodes_sample(
-            prefix,
-            source_length=source_length,
-            require_output=True,
-            isolation=isolation,
-            decoder_limits=decoder_limits,
+            return None
+        return probe_verdict(
+            self._decodes_sample(
+                prefix,
+                source_length=source_length,
+                require_output=True,
+                isolation=isolation,
+                decoder_limits=decoder_limits,
+            )
         )
 
 

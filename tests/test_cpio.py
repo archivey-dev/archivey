@@ -269,6 +269,15 @@ def _binary(name: bytes) -> bytes:
     return out
 
 
+def test_the_binary_probe_answers_with_a_verdict() -> None:
+    """The probe knows yes from no, so it answers a match or no."""
+    probe = cpio_reader.CpioHandler.probe
+    assert probe is not None
+    assert probe(_binary(b"hello")) is archivey.DetectionConfidence.PROBABLE
+    assert probe(b"\xc7\x71" + b"\0" * 30) is None
+    assert probe(b"not a cpio archive at all") is None
+
+
 def test_a_big_endian_binary_archive() -> None:
     """GNU cpio writes the binary header in host order; a big-endian host's archive
     starts ``71 C7`` and reads the same, as ``bin-be``."""

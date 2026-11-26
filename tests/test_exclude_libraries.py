@@ -27,6 +27,7 @@ from archivey import (
     ArchiveyConfig,
     ArchiveyUsageError,
     ContainerFormat,
+    DetectionConfidence,
     FormatDetectionError,
     FormatPolicy,
     FormatSupport,
@@ -206,9 +207,9 @@ def test_a_plugin_probe_does_not_run_when_its_package_is_excluded(
     # an excluded package on untrusted bytes.
     calls: list[bytes] = []
 
-    def probe(prefix: bytes) -> bool:
+    def probe(prefix: bytes) -> DetectionConfidence | None:
         calls.append(prefix)
-        return prefix.startswith(_MAGIC)
+        return DetectionConfidence.PROBABLE if prefix.startswith(_MAGIC) else None
 
     plugin = _plugin_with("probedneedy", probe=probe, requires=("cryptography",))
     data = build_toya(_ENTRIES)

@@ -910,7 +910,7 @@ def test_lzma_alone_zero_output_gate_costs_no_real_stream(tmp_path: Path) -> Non
         codecs_module.LzmaAloneCodec().content_probe(
             sdk_empty, source_length=len(sdk_empty)
         )
-        is False
+        is None
     )
     path = tmp_path / "empty.lzma"
     path.write_bytes(sdk_empty)

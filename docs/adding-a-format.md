@@ -933,8 +933,14 @@ archivey recognises a plugin's format by its `magic`, its `extensions`, and an o
   image's at 32 KiB. So detection reads about 32 KiB of a file before it decides that the
   file is in your format, not the 4 KiB a built-in magic near the start needs.
 - An **extension** that a built-in format uses is refused at registration.
-- A **probe** is a function that takes the first bytes of the source and returns `True`
-  for your format. It gets only the bytes detection has already read, and runs after
+- A **probe** is a function that takes the first bytes of the source and returns a
+  verdict: `None` when the bytes are not your format, `DetectionConfidence.GUESS` when
+  they might be, and `DetectionConfidence.PROBABLE` when they are. A probe that can only
+  tell yes from no returns `PROBABLE` or `None`. `detect_format()` reports the verdict as
+  the confidence, and reports a `GUESS` as `PROBABLE` when the source's name has one of
+  your extensions. `CERTAIN` is for exact signatures only: a probe that returns it, or
+  returns `True` or `False`, counts as no match, with the same warning as a probe that
+  raises. The probe gets only the bytes detection has already read, and runs after
   every built-in check. Like a built-in format's probe, it runs when the source's name
   has one of your extensions, when the source has no name at all (a stream passed to
   `open_stream()`), or when `ArchiveyConfig(always_probe_content=True)` is set. So it

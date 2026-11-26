@@ -26,6 +26,7 @@ from archivey import ArchiveFormat, ArchiveyConfig, detect_format
 from archivey.detection_cost import TierSkip, TierSkipReason
 from archivey.exceptions import TruncatedError
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, probe_lzma_dictionary
+from archivey.internal.probe_verdict import PROBE_MATCH
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.codecs.lzma_codec import LzmaAloneCodec
 from archivey.internal.streams.codecs.xz_decoder import _decode_xz_head
@@ -170,7 +171,10 @@ def test_alone_probe_never_builds_a_dictionary_over_its_sample(
 ) -> None:
     written = lzma.compress(_TARBALL, format=lzma.FORMAT_ALONE)
     hostile = _declare_alone_dictionary(written, _FOUR_GIB_MINUS_ONE)
-    assert LzmaAloneCodec().content_probe(hostile, source_length=len(hostile)) is True
+    assert (
+        LzmaAloneCodec().content_probe(hostile, source_length=len(hostile))
+        is PROBE_MATCH
+    )
     assert lzma_decoders, "the probe built no decoder"
     assert _largest_dictionary(lzma_decoders) <= 64 * 1024 + 1 + 64
 
@@ -194,7 +198,7 @@ def test_concatenated_alone_streams_are_each_clamped(
     data = _declare_alone_dictionary(one, _FOUR_GIB_MINUS_ONE) + (
         _declare_alone_dictionary(two, _FOUR_GIB_MINUS_ONE)
     )
-    assert LzmaAloneCodec().content_probe(data, source_length=len(data)) is True
+    assert LzmaAloneCodec().content_probe(data, source_length=len(data)) is PROBE_MATCH
     assert len([d for d in lzma_decoders if "dict_size" in d]) == 2
     assert _largest_dictionary(lzma_decoders) <= 64 * 1024 + 1 + 64
 
@@ -206,7 +210,7 @@ def test_memory_error_in_a_probe_is_cant_tell(monkeypatch: pytest.MonkeyPatch) -
         raise MemoryError
 
     monkeypatch.setattr(lzma, "LZMADecompressor", refuse)
-    assert LzmaAloneCodec().content_probe(written, source_length=len(written)) is False
+    assert LzmaAloneCodec().content_probe(written, source_length=len(written)) is None
     xz = lzma.compress(_TARBALL, format=lzma.FORMAT_XZ)
     with monkeypatch.context() as m:
         m.setattr(lzma, "LZMADecompressor", refuse)

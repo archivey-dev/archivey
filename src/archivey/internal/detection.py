@@ -133,6 +133,7 @@ from archivey.internal.diagnostics_collector import (
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.logs import detection as logger
 from archivey.internal.overrides import override
+from archivey.internal.probe_verdict import graded
 from archivey.internal.registry import BackendRegistry, ContentProbe, get_registry
 from archivey.internal.remote import (
     emit_source_change_undetectable,
@@ -462,9 +463,9 @@ def _probe_inner_container(
     named: ArchiveFormat | None = None,
     always_probe: bool = False,
     formats: FormatPolicy | None = None,
-) -> ArchiveFormat | None:
-    """The container decompressing the source yields, as its uncompressed format, or
-    ``None``.
+) -> tuple[ArchiveFormat, DetectionConfidence] | None:
+    """The container decompressing the source yields, as its uncompressed format, and
+    how sure detection is of it, or ``None``.
 
     The codec layer decodes the compressed source and the first 512 decoded bytes are
     matched against the registry's inner-container magic (``ReadBackend.INNER_MAGIC``):
@@ -636,22 +637,25 @@ class _InnerCandidates:
 
     def match(
         self, head: bytes, *, named: ArchiveFormat | None, always_probe: bool
-    ) -> ArchiveFormat | None:
-        """The container the decoded ``head`` shows: magic first, then a header that
-        checks itself, then a probe."""
+    ) -> tuple[ArchiveFormat, DetectionConfidence] | None:
+        """The container the decoded ``head`` shows, and how sure: magic first, then a
+        header that checks itself, then a probe, which grades its own match."""
         for sig in self.magic:
             if head[sig.offset : sig.offset + len(sig.magic)] == sig.magic:
-                return sig.format
+                return sig.format, DetectionConfidence.PROBABLE
         # A first header that checks itself: a v7 tar has no magic.
         for fmt, check in self.header_checks:
             if fmt.container is ContainerFormat.TAR and check(head):
-                return fmt
+                return fmt, DetectionConfidence.PROBABLE
         # A container with no reliable magic, found by its own probe where the name
         # says it is that container (the rule and its scope are on _probe_named).
         # Prefix only: the decoded head is all there is.
         for fmt, probe in self.probes:
-            if (always_probe or fmt == named) and head and probe(head):
-                return fmt
+            if not (always_probe or fmt == named) or not head:
+                continue
+            verdict = probe(head)
+            if verdict is not None:
+                return fmt, graded(verdict, named=fmt == named)
         return None
 
 
@@ -972,13 +976,17 @@ def _probe_completes(
     whole = workspace.peek_prefix(length)
     workspace.charge_decode(input_bytes=len(whole))
     try:
-        return probe(
-            whole,
-            source_length=length,
-            read_at=read_at,
-            charge_decode=charge_decode,
-            isolation=workspace.isolation,
-            decoder_limits=workspace.decoder_limits,
+        # Confirms the match or turns it away; the grade stays the window's.
+        return (
+            probe(
+                whole,
+                source_length=length,
+                read_at=read_at,
+                charge_decode=charge_decode,
+                isolation=workspace.isolation,
+                decoder_limits=workspace.decoder_limits,
+            )
+            is not None
         )
     except ResourceLimitError as exc:
         # The whole-source decode reads up to 64 KiB, so a probe's clamped LZMA
@@ -1091,9 +1099,10 @@ def _resolve_single_file_or_tar(
         else None
     )
     if inner is not None:
+        inner_fmt, inner_confidence = inner
         return FormatInfo(
-            ArchiveFormat(inner.container, fmt.stream),
-            DetectionConfidence.PROBABLE,
+            ArchiveFormat(inner_fmt.container, fmt.stream),
+            inner_confidence,
             "content_probe",
             corroborated=True,
         )
@@ -2454,7 +2463,7 @@ def _content_probes(
         # up to 1 MiB, for Brotli's chain decode).
         workspace.charge_decode(input_bytes=len(data))
         try:
-            hit = probe(
+            verdict = probe(
                 data,
                 source_length=length,
                 read_at=read_at,
@@ -2476,8 +2485,8 @@ def _content_probes(
                 f"try the {probe_fmt} content probe",
                 exc,
             )
-            hit = False
-        if hit and _probe_completes(
+            verdict = None
+        if verdict is not None and _probe_completes(
             probe,
             data,
             length,
@@ -2486,7 +2495,8 @@ def _content_probes(
             workspace,
             stream_format=_stream_name(probe_fmt),
         ):
-            confidence = DetectionConfidence.PROBABLE
+            # The probe grades its match; core adds that the extension agrees.
+            confidence = graded(verdict, named=_probe_named(probe_fmt, ext_match))
             if probe_fmt.stream is StreamFormat.BROTLI:
                 confidence = _brotli_probe_confidence(data, ext_match)
             info = _resolve_single_file_or_tar(

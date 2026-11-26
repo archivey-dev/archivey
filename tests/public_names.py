@@ -11,12 +11,14 @@ from pathlib import Path
 import archivey
 
 # The public modules a reader may import from, with the names each makes public.
-# ``archivey.types`` and ``archivey.exceptions`` hold names ``archivey`` re-exports, and
-# a module inside archivey imports them from there to avoid an import cycle.
+# ``archivey.types``, ``archivey.exceptions`` and ``archivey.detection`` hold names
+# ``archivey`` re-exports, and a module inside archivey imports them from there to
+# avoid an import cycle.
 _PUBLIC = {
     "archivey": archivey.__all__,
     "archivey.types": archivey.__all__,
     "archivey.exceptions": archivey.__all__,
+    "archivey.detection": archivey.__all__,
     "archivey.formats": importlib.import_module("archivey.formats").__all__,
     "archivey.diagnostics": importlib.import_module("archivey.diagnostics").__all__,
     "archivey.terminal": importlib.import_module("archivey.terminal").__all__,
