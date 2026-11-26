@@ -18,7 +18,7 @@ support limit, not a validity bound); no decoder pull SHALL return more than the
 size plus one byte. Runs SHALL be decoded through `ReaderContext.decompress` for zlib,
 bzip2 and xz and through archivey's own decoders for LZFSE, LZVN and ADC, whose output
 is bounded by the run's size: the pure-Python decoders, or for LZFSE and LZVN the
-`archivey-codecs` kernels when that package is installed and the call allows them,
+`archivey-speedups` kernels when that package is installed and the call allows them,
 with the same bytes and errors. A run that decodes to another length, runs
 that overlap or leave their table's sector range, and stored ranges outside the data
 fork SHALL raise `CorruptionError`; a file that ends inside a run or the property list

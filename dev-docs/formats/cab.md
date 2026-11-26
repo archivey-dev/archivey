@@ -15,7 +15,7 @@ SquashFS and ar are.
 | Source | A file or a stream that can seek. Not a pipe: the file table points at folders anywhere in the file |
 | Listing cost | From the index (the `CFFILE` table) |
 | Access cost | `SOLID` when any folder is compressed, else `DIRECT` |
-| Core dependencies | None. MSZIP through stdlib `zlib`; LZX through `internal/streams/codecs/lzx_decoder.py`, archivey's own, in Python, or `archivey-codecs`' port of it when installed |
+| Core dependencies | None. MSZIP through stdlib `zlib`; LZX through `internal/streams/codecs/lzx_decoder.py`, archivey's own, in Python, or `archivey-speedups`' port of it when installed |
 | Encryption | None in the format |
 | Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format. The `_A_NAME_IS_UTF` attribute adds nothing: valid UTF-8 already wins |
 | Checksums | A 32-bit XOR checksum per data block, over its stored bytes and two size fields; 0 means none |
@@ -169,15 +169,16 @@ missing bytes, as cabextract 1.11 does, and 3 bytes short is refused. It runs at
 5-10 MB/s.
 
 The reader decodes through `kernels.lzx(...).Decompressor`, the API of
-`archivey_codecs.lzx`: archivey-codecs' Rust port of this decoder when it is installed
-and allowed (in the decoder child under `NATIVE_DECODERS`), else the Python twin in
-`kernels/python/lzx.py`, which runs `LzxDecoder` in push mode. Both take input pushed to
-them and keep their place when it runs out inside a frame, so `_FolderStream._lzx_frame`
-gives the decoder the next block only when it has used all it was given, where the pull
-decoder would ask for it. A block whose checksum fails raises from the same frame with
-either. `tests/test_kernels.py` compares the two on clean, cut and damaged cabinets,
-including unchecked damage before a failed block, `tests/test_cab.py` runs with each,
-and the package's parity tests drive both through the same code.
+`archivey_speedups.lzx`: archivey-speedups' Rust port of this decoder when it is
+installed and allowed (in the decoder child under `NATIVE_DECODERS`), else the Python
+twin in `kernels/python/lzx.py`, which runs `LzxDecoder` in push mode. Both take input
+pushed to them and keep their place when it runs out inside a frame, so
+`_FolderStream._lzx_frame` gives the decoder the next block only when it has used all it
+was given, where the pull decoder would ask for it. A block whose checksum fails raises
+from the same frame with either. `tests/test_kernels.py` compares the two on clean, cut
+and damaged cabinets, including unchecked damage before a failed block,
+`tests/test_cab.py` runs with each, and the package's parity tests drive both through
+the same code.
 
 ## 3. Tests
 

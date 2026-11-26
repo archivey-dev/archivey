@@ -1,4 +1,4 @@
-//! Python bindings for archivey-codecs.
+//! Python bindings for archivey-speedups.
 //!
 //! The kernels (`kernels/`) know nothing about Python. This module gives them the
 //! standard-library shapes of archivey's design (openspec change
@@ -25,25 +25,25 @@ use pyo3::types::{PyByteArray, PyBytes, PyDict, PyMemoryView};
 use pyo3::{PyTraverseError, PyVisit};
 
 pyo3::create_exception!(
-    _codecs,
+    _speedups,
     CodecError,
     PyValueError,
     "A codec refused its input."
 );
 pyo3::create_exception!(
-    _codecs,
+    _speedups,
     CorruptDataError,
     CodecError,
     "The data is damaged."
 );
 pyo3::create_exception!(
-    _codecs,
+    _speedups,
     TruncatedDataError,
     CodecError,
     "The data ends early."
 );
 pyo3::create_exception!(
-    _codecs,
+    _speedups,
     UnsupportedDataError,
     CodecError,
     "The data, or a saved state, uses something this kernel does not read."
@@ -540,7 +540,7 @@ impl BranchState {
 
 macro_rules! branch_decoder {
     ($rust:ident, $name:literal, $kind:expr) => {
-        #[pyclass(skip_from_py_object, module = "archivey_codecs.filters", name = $name)]
+        #[pyclass(skip_from_py_object, module = "archivey_speedups.filters", name = $name)]
         #[derive(Clone)]
         struct $rust {
             inner: BranchState,
@@ -617,7 +617,7 @@ branch_decoder!(RiscvDecoder, "RiscvDecoder", Branch::Riscv);
 /// exactly as many bytes as it is given.
 #[pyclass(
     skip_from_py_object,
-    module = "archivey_codecs.zipcrypto",
+    module = "archivey_speedups.zipcrypto",
     name = "Decryptor"
 )]
 #[derive(Clone)]
@@ -696,7 +696,7 @@ impl ZipCryptoDecryptor {
 /// final, uncapped pass runs only once less than one code of input is left.
 #[pyclass(
     skip_from_py_object,
-    module = "archivey_codecs.lzw",
+    module = "archivey_speedups.lzw",
     name = "Decompressor"
 )]
 #[derive(Clone)]
@@ -1116,7 +1116,7 @@ fn lzx_error_again(err: &(u8, String)) -> PyErr {
 /// input, as libmspack's lzxd does.
 #[pyclass(
     skip_from_py_object,
-    module = "archivey_codecs.lzx",
+    module = "archivey_speedups.lzx",
     name = "Decompressor"
 )]
 #[derive(Clone)]
@@ -1568,7 +1568,7 @@ impl bcj2::Streams for PyStreams<'_, '_> {
 /// call or jump after the last output byte raise `CorruptDataError`. The bytes
 /// decoded before an error are returned first; the error comes with the next call.
 /// No `copy()`: two copies would share the streams' read positions.
-#[pyclass(module = "archivey_codecs.bcj2", name = "Decompressor")]
+#[pyclass(module = "archivey_speedups.bcj2", name = "Decompressor")]
 struct Bcj2Decompressor {
     inner: bcj2::Bcj2,
     /// `None` once the garbage collector cleared them: a stream object may hold the
@@ -1836,7 +1836,7 @@ impl Bcj2Decompressor {
 }
 
 #[pymodule(gil_used = false)]
-fn _codecs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _speedups(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
     let kernels = PyDict::new(py);
     for (name, rev) in KERNELS {

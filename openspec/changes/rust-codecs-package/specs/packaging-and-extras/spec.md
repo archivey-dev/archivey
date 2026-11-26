@@ -3,7 +3,7 @@
 ### Requirement: Optional extras enable specific capabilities
 
 The system SHALL expose exactly **six** user-facing extras (`[recommended]`,
-`[seekable]`, `[free-threaded]`, `[all]`, `[bzip3]`, `[codecs]`), each answering a
+`[seekable]`, `[free-threaded]`, `[all]`, `[bzip3]`, `[speedups]`), each answering a
 question a user asks about their own environment rather than naming an internal
 dependency group. 7z and RAR reading are native for the common case, so extras cover
 less-common member codecs, encryption, seeking accelerators, and the CLI.
@@ -13,10 +13,10 @@ less-common member codecs, encryption, seeking accelerators, and the CLI.
 | *(none)* | stdlib only + native parsers | ZIP, TAR + stdlib compressed TAR variants including `.tar.Z`, GZ, BZ2, XZ, Z (unix-compress), directory, ISO (ISO 9660, Joliet, Rock Ridge, UDF), 7z read for common codecs (including every BCJ branch filter), RAR metadata/listing; RAR data still needs RARLAB `unrar` |
 | `[recommended]` | `pyppmd`, `inflate64`, `brotli`, `lz4`, `backports.zstd` on Python <3.14, `cryptography`, `tqdm` | Every format and codec that installs everywhere: PPMd, Deflate64, Zstd, Brotli, LZ4, AES/crypto (7z, RAR headers, WinZip AES ZIP), CLI progress |
 | `[seekable]` | `rapidgzip` | Faster gzip/bzip2 decompression and random access via rapidgzip / bundled `IndexedBzip2File` |
-| `[free-threaded]` | `lz4`, `tqdm`, `backports.zstd` on Python <3.14, `cryptography` on Python >=3.14, `archivey-codecs` where it has wheels | The subset that keeps the GIL **disabled** on free-threaded builds |
+| `[free-threaded]` | `lz4`, `tqdm`, `backports.zstd` on Python <3.14, `cryptography` on Python >=3.14, `archivey-speedups` where it has wheels | The subset that keeps the GIL **disabled** on free-threaded builds |
 | `[all]` | `[recommended]` + `[seekable]` | Everything above |
 | `[bzip3]` | `bzip3` | `.bz3` files and `.tar.bz3`; in neither `[recommended]` nor `[all]` |
-| `[codecs]` | `archivey-codecs`, only on CPython for Linux, macOS and Windows on x86_64 or arm64 | Rust versions of the decoders archivey runs in Python (LZX, `.Z`, LZO, ZipCrypto, BCJ2, ARM64 and RISC-V filters, CRC-16/ARC); same results, faster. `[recommended]` (and so `[all]`) includes it one archivey release after its first release |
+| `[speedups]` | `archivey-speedups`, only on CPython for Linux, macOS and Windows on x86_64 or arm64 | Rust versions of the decoders archivey runs in Python (LZX, `.Z`, LZO, ZipCrypto, BCJ2, ARM64 and RISC-V filters, CRC-16/ARC); same results, faster. `[recommended]` (and so `[all]`) includes it one archivey release after its first release |
 
 The system SHALL make `[recommended]` the sensible all-useful install and `[seekable]`
 an opt-in on top of it. `[seekable]` MUST remain separate rather than folded into
@@ -122,8 +122,8 @@ system SHALL NOT list `uncompresspy` in any user-facing extra or the `dev` group
 | Any optional package absent, compared across both channels | The hint in the raised error and the one reported by `format_availability()` are the same string |
 | A package archivey does not use under PyPy that lowers format support (lz4, pyppmd, inflate64), installed, running under PyPy | Treated as absent; both channels give the reason archivey does not use it there, not install advice |
 | `pip install archivey[7z]` | Fails: the extra no longer exists |
-| `pip install archivey[codecs]` on linux armv7l, ppc64le, s390x or i686, or 32-bit Windows | archivey installs; `archivey-codecs` is not requested |
-| `pip install archivey[codecs]` on PyPy | archivey installs; `archivey-codecs` is not requested |
+| `pip install archivey[speedups]` on linux armv7l, ppc64le, s390x or i686, or 32-bit Windows | archivey installs; `archivey-speedups` is not requested |
+| `pip install archivey[speedups]` on PyPy | archivey installs; `archivey-speedups` is not requested |
 
 ### Requirement: an archivey-cli companion distribution installs the CLI with [recommended]
 
@@ -131,8 +131,8 @@ The repository SHALL ship a second distribution, `archivey-cli`, from
 `packages/archivey-cli/`. It SHALL contain no Python modules. It SHALL depend on
 `archivey[recommended]` pinned with `==` to its own version, which SHALL equal the root
 `archivey` version, plus `fsspec` and `aiohttp` for URL arguments. It SHALL also depend
-on the packages of the root's `[bzip3]`, `[seekable]` and `[codecs]` extras, at the same
-floors, each behind an environment marker that keeps it to the platforms where it
+on the packages of the root's `[bzip3]`, `[seekable]` and `[speedups]` extras, at the
+same floors, each behind an environment marker that keeps it to the platforms where it
 installs from a wheel, so installing the CLI does not compile them. The one exception is
 rapidgzip on free-threaded CPython 3.14 for Windows, which has no wheel and which no
 environment marker can tell apart from the regular build. It SHALL install two console
@@ -151,22 +151,22 @@ Reason: Python packaging has no default extras, so `uvx archivey` runs the core 
 | `pipx install archivey-cli` then `archivey --version` | Command runs |
 | Root version bumped without the companion's version or pin | `tests/test_cli_companion_package.py` fails |
 | Tag `vX.Y.Z` where either built wheel has another version | `publish.yml` build job fails before upload |
-| `pip install archivey-cli` on CPython for Linux x86_64 | `archivey-codecs` installed from a wheel |
-| `pip install archivey-cli` on linux armv7l | Installs without `archivey-codecs` and without a Rust toolchain |
+| `pip install archivey-cli` on CPython for Linux x86_64 | `archivey-speedups` installed from a wheel |
+| `pip install archivey-cli` on linux armv7l | Installs without `archivey-speedups` and without a Rust toolchain |
 
 ## ADDED Requirements
 
-### Requirement: archivey-codecs is an optional accelerator with a Python fallback
+### Requirement: archivey-speedups is an optional accelerator with a Python fallback
 
-archivey SHALL NOT require `archivey-codecs`. archivey SHALL use a kernel only when the
-installed package reports it in `KERNELS` at a revision at or above the one archivey
+archivey SHALL NOT require `archivey-speedups`. archivey SHALL use a kernel only when
+the installed package reports it in `KERNELS` at a revision at or above the one archivey
 was released with, and SHALL otherwise use its Python decoder, logging the fallback once
-at DEBUG. At the revisions archivey was released with, results, error types and
-messages SHALL be the same with and without the package; a newer revision MAY give the
-fixed bytes or messages of a later archivey. A panic in a kernel SHALL reach the caller
-as `CorruptionError` with the panic as its cause, never as `PanicException`, and the
-decoder object SHALL refuse every later method call. `OptionalLibrary.ARCHIVEY_CODECS` in
-`FormatPolicy.exclude_libraries` SHALL turn every kernel off for that call. Under
+at DEBUG. At the revisions archivey was released with, results, error types and messages
+SHALL be the same with and without the package; a newer revision MAY give the fixed
+bytes or messages of a later archivey. A panic in a kernel SHALL reach the caller as
+`CorruptionError` with the panic as its cause, never as `PanicException`, and the
+decoder object SHALL refuse every later method call. `OptionalLibrary.ARCHIVEY_SPEEDUPS`
+in `FormatPolicy.exclude_libraries` SHALL turn every kernel off for that call. Under
 `ProcessIsolation.KNOWN_CRASHES` and `NONE` the kernels SHALL run in the caller's
 process. Under `NATIVE_DECODERS` the decoding kernels (LZX, LZW, LZO, ARM64, RISC-V,
 LZFSE and LZVN) SHALL run in archivey's decoder child process, as other native decoders
@@ -174,9 +174,9 @@ do, and BCJ2, whose four inputs the child does not carry yet, SHALL use its Pyth
 decoder in the caller's process; CRC-16/ARC and ZipCrypto SHALL run in the caller's
 process under every setting, as checksums and AES decryption do. A kernel panic in the
 child SHALL reach the caller as `CorruptionError`. When no child process can start under
-`NATIVE_DECODERS`, archivey SHALL choose a decoder as if `ARCHIVEY_CODECS` were excluded:
-the Python decoder in the caller's process, except for LZO, which goes to compress-utils
-when it is installed, as today.
+`NATIVE_DECODERS`, archivey SHALL choose a decoder as if `ARCHIVEY_SPEEDUPS` were
+excluded: the Python decoder in the caller's process, except for LZO, which goes to
+compress-utils when it is installed, as today.
 
 #### Scenario: accelerator selection
 
@@ -186,7 +186,7 @@ when it is installed, as today.
 | Package present, `KERNELS["lzx"]` at or above the needed revision | Rust LZX |
 | Package present, `KERNELS["lzw"]` below the needed revision | Python LZW; other kernels still Rust |
 | Package present, kernel missing from `KERNELS` | Python decoder for that kernel |
-| `exclude_libraries={OptionalLibrary.ARCHIVEY_CODECS}` | Python decoders for that call only |
+| `exclude_libraries={OptionalLibrary.ARCHIVEY_SPEEDUPS}` | Python decoders for that call only |
 | `ProcessIsolation.NATIVE_DECODERS`, an `.lzo` file | Rust LZO in the decoder child; never in the caller's process |
 | `ProcessIsolation.NATIVE_DECODERS`, a CAB with LZX | Rust LZX in the decoder child; same bytes and errors as in-process |
 | `ProcessIsolation.NATIVE_DECODERS`, an ULFO disk image | Rust LZFSE and LZVN in the decoder child; same bytes as the Python decoders |

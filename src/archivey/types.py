@@ -560,8 +560,8 @@ class OptionalLibrary(StrEnum):
     CRC32C = "crc32c"
     """``crc32c``: the CRC-32C of ``.sz`` files, used when ``google-crc32c`` is not
     installed."""
-    ARCHIVEY_CODECS = "archivey_codecs"
-    """``archivey-codecs``: Rust versions of decoders archivey otherwise runs in
+    ARCHIVEY_SPEEDUPS = "archivey_speedups"
+    """``archivey-speedups``: Rust versions of decoders archivey otherwise runs in
     Python: CAB's LZX, Unix ``compress`` (``.Z``), LZO, 7z's BCJ2, ARM64 and RISC-V
     filters, traditional ZIP encryption, the CRC-16 of LHA archives, and the LZFSE
     and LZVN of DMG images. They give the same bytes and the same errors, faster.
@@ -586,8 +586,8 @@ OptionalLibraryStr = Literal[
     "google_crc32c",
     "google-crc32c",
     "crc32c",
-    "archivey_codecs",
-    "archivey-codecs",
+    "archivey_speedups",
+    "archivey-speedups",
 ]
 """The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
 

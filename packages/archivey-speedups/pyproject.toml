@@ -3,9 +3,9 @@ requires = ["maturin>=1.9,<2"]
 build-backend = "maturin"
 
 [project]
-name = "archivey-codecs"
+name = "archivey-speedups"
 dynamic = ["version"]
-description = "Rust codecs with a standard-library-shaped Python API, used by archivey"
+description = "Native (Rust) speedups for archivey: faster versions of its pure-Python decoders"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -16,9 +16,9 @@ classifiers = [
 
 [project.urls]
 Repository = "https://github.com/archivey-dev/archivey"
-Changelog = "https://github.com/archivey-dev/archivey/blob/main/packages/archivey-codecs/CHANGELOG.md"
+Changelog = "https://github.com/archivey-dev/archivey/blob/main/packages/archivey-speedups/CHANGELOG.md"
 
 [tool.maturin]
 python-source = "python"
-module-name = "archivey_codecs._codecs"
+module-name = "archivey_speedups._speedups"
 features = ["pyo3/extension-module"]

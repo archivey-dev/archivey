@@ -1,7 +1,7 @@
 """BCJ2 (7-Zip's four-stream x86 branch converter, 7z method ``0x0303011B``) as a
 stream over its four input streams.
 
-The decoder is :func:`archivey.internal.kernels.bcj2`'s: archivey-codecs' when it is
+The decoder is :func:`archivey.internal.kernels.bcj2`'s: archivey-speedups' when it is
 installed and allowed, else the Python one in :mod:`archivey.internal.kernels.python.bcj2`,
 which describes the format. Both give the same bytes and errors.
 """
