@@ -11,8 +11,9 @@ of a 256-member RAR5 archive over 15 damaged copies, `unrar` 2 207, and a header
 3 355 (`design.md` §1).
 
 Step 3 (`salvage-mode`) adds `open_archive(salvage=True)`, the search driver, its
-budget and its diagnostics, and uses them for TAR, CPIO and ar. This change uses the
-same API for RAR, the format the salvage design measured as having the most to gain.
+budget and its diagnostics; every format it ships reads as before under it and records
+`SALVAGE_UNAVAILABLE`. This change makes RAR the first format that searches, the format
+the salvage design measured as having the most to gain.
 
 ## What Changes
 
@@ -78,4 +79,5 @@ None.
 - `src/archivey/diagnostics.py`: the two context fields.
 - `internal/salvage.py` (step 3): window size from the overlap; reject a candidate
   without ending the region (`design.md` §15).
-- `dev-docs/formats/rar.md`, `docs/` salvage page: the RAR rules.
+- `dev-docs/formats/rar.md`: the RAR rules; `docs/security.md`: RAR has salvage
+  support. A user salvage page is task 4.1, not yet written.

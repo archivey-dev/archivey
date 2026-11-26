@@ -361,8 +361,9 @@ def rar5_search() -> HeaderSearch:
 
 
 # The bytes a quick-open cache record holds before the header it copies: its CRC-32,
-# then four vints (the record size, its flags, the offset and the copy's size).
-_QO_RECORD_PREFIX_MAX = 4 + 4 * 10
+# then four vints (the record size, its flags, the offset and the copy's size), each
+# as long as :func:`load_vint` reads one.
+_QO_RECORD_PREFIX_MAX = 4 + 4 * RAR5_VINT_MAX_BYTES
 
 
 def is_rar5_qo_copy(read_at: Callable[[int, int], bytes], header_at: int) -> bool:

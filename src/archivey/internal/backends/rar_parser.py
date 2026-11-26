@@ -2165,24 +2165,34 @@ def _followed_damaged_header(exc: CorruptionError, start: int) -> str:
 # crafted archive of thousands of damaged headers cannot grow the error with its size.
 _NAMED_DAMAGES = 4
 _MORE_DAMAGES = re.compile(
-    r"; and ([0-9]+) more damaged headers? (?:was|were) followed\Z"
+    r"; and ([0-9]+) more damaged headers? (?:was|were) "
+    r"(followed|followed or searched past)\Z"
 )
+_SEARCHED_PAST = "found by salvage's header search"
+"""In a ``damaged`` text from :func:`_salvaged_damage`: the walk stopped there and
+salvage searched on, so an overflow count names both kinds."""
 
 
 def _add_damage(current: str | None, text: str) -> str:
     """``RarArchive.damaged`` with ``text`` added: the first damage leads, a later one,
     past a followed header, is named after it, and past :data:`_NAMED_DAMAGES` of them
-    the rest are only counted."""
+    the rest are only counted. Once salvage searched past a header in it, the count
+    says the headers were followed or searched past: in salvage mode a stop is
+    counted with the followed headers."""
     if current is None:
         return text
     more = _MORE_DAMAGES.search(current)
+    searched = _SEARCHED_PAST in text or _SEARCHED_PAST in current
+    verb = "followed or searched past" if searched else "followed"
     if more is not None:
         count = int(more.group(1)) + 1
+        if more.group(2) != "followed":
+            verb = more.group(2)
         return (
-            f"{current[: more.start()]}; and {count} more damaged headers were followed"
+            f"{current[: more.start()]}; and {count} more damaged headers were {verb}"
         )
     if current.count("; also ") + 1 >= _NAMED_DAMAGES:
-        return f"{current}; and 1 more damaged header was followed"
+        return f"{current}; and 1 more damaged header was {verb}"
     return f"{current}; also {text}"
 
 
@@ -5340,7 +5350,12 @@ class _Rar5Walk:
     for the next header that passes its CRC-32 (:meth:`_salvage_resume`), and walks
     on from it; so does an invalid header after ``MAIN``, and a ``MAIN`` that fails
     its CRC (the walk then reads without it). Every member listed past that point
-    is flagged (``RarMemberInfo.found``).
+    is flagged (``RarMemberInfo.found``). The search starts at the header that
+    failed, not at the data of the member before it (as the RAR 1.5-4 walk does):
+    that member's header passed a 32-bit CRC, so it claims its declared data, and
+    a nested archive inside that data is not searched. The cost is that a header
+    the deletion of bytes inside that data moved into the declared span is passed
+    over (``design.md`` §2).
     """
 
     def __init__(

@@ -466,6 +466,28 @@ def test_quick_open_copies_are_told_from_member_headers() -> None:
     assert copies
 
 
+@pytest.mark.parametrize("width", [1, 10, 11])
+def test_a_quick_open_record_with_vints_as_long_as_the_walk_reads_is_a_copy(
+    width: int,
+) -> None:
+    """A quick-open cache record whose four vints take ``width`` bytes each, the
+    longest :func:`load_vint` decodes being 11: the header it holds is a copy,
+    whatever width the walk accepts."""
+
+    def vint(value: int) -> bytes:
+        assert value < 0x80
+        if width == 1:
+            return bytes([value])
+        return bytes([value | 0x80]) + b"\x80" * (width - 2) + b"\x00"
+
+    header = _RAR5_EMPTY_FILE
+    body = vint(0) + vint(0) + vint(len(header)) + header
+    framed = vint(len(body)) + body
+    record = zlib.crc32(framed).to_bytes(4, "little") + framed
+    data = bytes(64) + record
+    assert is_rar5_qo_copy(_reader(data), len(data) - len(header))
+
+
 # ---------------------------------------------------------------------------
 # The damage corpus
 # ---------------------------------------------------------------------------
@@ -1124,6 +1146,18 @@ class _Work:
 def _open_salvage(data: bytes, **kwargs: object) -> object:
     with open_archive(io.BytesIO(data), salvage=True, **kwargs) as reader:  # type: ignore[arg-type]
         return reader.members_report()
+
+
+def test_the_count_of_more_damage_names_the_headers_salvage_searched_past() -> None:
+    """Eight RAR5 headers each followed by a junk byte: each stop is a header the walk
+    stopped at and salvage searched past, so the count after the first four does not
+    call them followed headers only."""
+    data = _RAR5_SIGNATURE + _RAR5_MAIN + (_RAR5_EMPTY_FILE + b"\xff") * 8
+    with open_archive(io.BytesIO(data), salvage=True) as reader:
+        reader.members_report()
+        damaged = reader._archive.damaged  # type: ignore[attr-defined]
+    assert damaged.count("found by salvage's header search") == 4
+    assert damaged.endswith("more damaged headers were followed or searched past")
 
 
 def test_dense_rar5_damage_reads_each_byte_a_bounded_number_of_times(
