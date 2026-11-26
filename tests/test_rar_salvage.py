@@ -16,6 +16,7 @@ import io
 import random
 import shutil
 import subprocess
+import threading
 import time
 import zlib
 from collections.abc import Iterator
@@ -400,6 +401,44 @@ def test_prefix_crcs_equal_direct_crcs() -> None:
             zlib.crc32(data[:a]), zlib.crc32(data[:b]), b - a
         ) == (direct)
         assert window.crc(data, a, b) == direct
+
+
+def test_concurrent_first_use_of_the_shift_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two threads that first need a long CRC at once both get the right one: the
+    shift tables are published whole, never one level at a time."""
+    from archivey.internal.backends import rar_search
+
+    monkeypatch.setattr(rar_search, "_shift_tables", [])
+    build = rar_search._tables_from_basis
+
+    def slow_build(basis: list[int]) -> tuple[list[int], ...]:
+        time.sleep(0.002)  # lets the other thread run between two levels
+        return build(basis)
+
+    monkeypatch.setattr(rar_search, "_tables_from_basis", slow_build)
+    data = random.Random(3).randbytes(3 << 20)
+    want = zlib.crc32(data[5:])
+    results: list[object] = []
+
+    def run() -> None:
+        try:
+            results.append(
+                crc32_from_prefixes(
+                    zlib.crc32(data[:5]), zlib.crc32(data), len(data) - 5
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - the test reports any failure
+            results.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+        time.sleep(0.005)
+    for thread in threads:
+        thread.join()
+    assert results == [want] * 4
 
 
 def test_quick_open_copies_are_told_from_member_headers() -> None:

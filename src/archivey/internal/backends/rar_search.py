@@ -92,7 +92,9 @@ _RAR3_CANDIDATE_OR_MAIN = re.compile(rb"(?=[\x00-\xff]{2}[\x73\x74\x7a])", re.DO
 # 256-entry tables, one per byte of the register, and shift(c, n) applies the
 # tables of the bits set in n. 23 levels cover a RAR5 header (2 MiB + 7 bytes).
 _SHIFT_LEVELS = 23
-_shift_tables: list[tuple[list[int], ...]] = []
+# Built on first use and published whole, as one tuple: readers on other threads see
+# either no tables or every level, never a list still growing.
+_shift_tables: tuple[tuple[list[int], ...], ...] = ()
 
 
 def _tables_from_basis(basis: list[int]) -> tuple[list[int], ...]:
@@ -119,26 +121,33 @@ def _apply(tables: tuple[list[int], ...], value: int) -> int:
     )
 
 
-def _ensure_shift_tables() -> None:
-    if _shift_tables:
-        return
+def _shift_table_levels() -> tuple[tuple[list[int], ...], ...]:
+    """Every level of the shift tables, built on first use. Two threads that both
+    build them get equal tables; whichever is published last stays."""
+    global _shift_tables
+    tables = _shift_tables
+    if tables:
+        return tables
     zero = zlib.crc32(b"\0")
     # One zero byte, from zlib itself: crc32(b"\0", c) ^ crc32(b"\0", 0).
     basis = [zlib.crc32(b"\0", 1 << bit) ^ zero for bit in range(32)]
+    levels = []
     for _ in range(_SHIFT_LEVELS):
-        tables = _tables_from_basis(basis)
-        _shift_tables.append(tables)
+        level = _tables_from_basis(basis)
+        levels.append(level)
         # Twice the bytes: the map applied to itself.
-        basis = [_apply(tables, image) for image in basis]
+        basis = [_apply(level, image) for image in basis]
+    tables = _shift_tables = tuple(levels)
+    return tables
 
 
 def _shift(crc: int, length: int) -> int:
     """``crc`` advanced through ``length`` zero bytes."""
-    _ensure_shift_tables()
+    tables = _shift_table_levels()
     level = 0
     while length:
         if length & 1:
-            crc = _apply(_shift_tables[level], crc)
+            crc = _apply(tables[level], crc)
         length >>= 1
         level += 1
     return crc
