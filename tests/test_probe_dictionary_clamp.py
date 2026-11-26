@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from archivey import ArchiveFormat, ArchiveyConfig, detect_format
+from archivey import ArchiveFormat, ArchiveyConfig, DetectionConfidence, detect_format
 from archivey.detection_cost import TierSkip, TierSkipReason
 from archivey.exceptions import TruncatedError
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, probe_lzma_dictionary
@@ -210,7 +210,10 @@ def test_memory_error_in_a_probe_is_cant_tell(monkeypatch: pytest.MonkeyPatch) -
         raise MemoryError
 
     monkeypatch.setattr(lzma, "LZMADecompressor", refuse)
-    assert LzmaAloneCodec().content_probe(written, source_length=len(written)) is None
+    assert (
+        LzmaAloneCodec().content_probe(written, source_length=len(written))
+        is DetectionConfidence.REJECTED
+    )
     xz = lzma.compress(_TARBALL, format=lzma.FORMAT_XZ)
     with monkeypatch.context() as m:
         m.setattr(lzma, "LZMADecompressor", refuse)

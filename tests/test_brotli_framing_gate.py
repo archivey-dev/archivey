@@ -143,7 +143,10 @@ def test_framing_gate_rejects_random_overrunning_blobs() -> None:
 
 def test_lzma_alone_rejects_header_only_source() -> None:
     alone = LzmaAloneCodec()
-    assert alone.content_probe(b"cryptography\n", source_length=13) is None
+    assert (
+        alone.content_probe(b"cryptography\n", source_length=13)
+        is DetectionConfidence.REJECTED
+    )
     with pytest.raises(FormatDetectionError):
         detect_format(io.BytesIO(b"cryptography\n"), config=PROBE_ALL)
 
@@ -173,7 +176,7 @@ def test_ole_and_coff_residuals_honest_detect_format() -> None:
 
     assert (
         BrotliCodec().content_probe(prefix, source_length=len(ole), read_at=read_at)
-        is None
+        is DetectionConfidence.REJECTED
     )
     with pytest.raises(FormatDetectionError):
         detect_format(io.BytesIO(ole), config=PROBE_ALL)
@@ -204,7 +207,7 @@ def test_ole_and_coff_residuals_honest_detect_format() -> None:
         BrotliCodec().content_probe(
             coff_prefix, source_length=len(coff), read_at=coff_read_at
         )
-        is None
+        is DetectionConfidence.REJECTED
     )
     assert int.from_bytes(coff[5:13], "little") == 0  # why Alone declines this one
     with pytest.raises(FormatDetectionError):
@@ -288,7 +291,10 @@ def test_unknown_length_skips_framing_gate() -> None:
     # decode sample today and must stay accepted when source_length is omitted.
     blob = b"MZ" + b"\x90" * 8000
     assert BrotliCodec().content_probe(blob, source_length=None) is PROBE_MATCH
-    assert BrotliCodec().content_probe(blob, source_length=len(blob)) is None
+    assert (
+        BrotliCodec().content_probe(blob, source_length=len(blob))
+        is DetectionConfidence.REJECTED
+    )
 
 
 @requires("brotli")
@@ -400,7 +406,10 @@ def test_zlib_probe_uses_source_length_for_completeness() -> None:
     # Completeness: a fully-visible incomplete zlib header must not match.
     from archivey.internal.streams.codecs import ZlibCodec
 
-    assert ZlibCodec().content_probe(b"\x78\x9c\x01\x00\x00", source_length=5) is None
+    assert (
+        ZlibCodec().content_probe(b"\x78\x9c\x01\x00\x00", source_length=5)
+        is DetectionConfidence.REJECTED
+    )
 
 
 def test_first_metablock_parser_vectors() -> None:

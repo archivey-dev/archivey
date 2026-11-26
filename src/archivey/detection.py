@@ -42,6 +42,10 @@ class DetectionConfidence(Enum):
     compressed or whose extension agrees), or a probe's weak match the extension
     agrees with."""
 
+    REJECTED = "rejected"
+    """A content probe's answer that the bytes are not its format. Never the
+    confidence of a :class:`FormatInfo`: detection reports no format from it."""
+
     GUESS = "guess"
     """No confirmation strong enough to rely on: an extension-only guess, or a content
     probe hit in the weak evidence class (extensionless Brotli whose first

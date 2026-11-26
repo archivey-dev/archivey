@@ -58,7 +58,7 @@ from typing import TYPE_CHECKING
 from archivey.config import DecoderLimits, ProcessIsolation
 from archivey.exceptions import CorruptionError
 from archivey.internal.overrides import override
-from archivey.internal.probe_verdict import ProbeVerdict, probe_verdict
+from archivey.internal.probe_verdict import PROBE_REJECTED, ProbeVerdict, probe_verdict
 from archivey.internal.streams.codecs.base import (
     Codec,
     CodecParams,
@@ -568,7 +568,7 @@ class Base64Codec(StreamCodec):
             # bytes mix letter cases and digits, so a line of one kind of character
             # is turned away; under 16 characters it must end in padding as well.
             if not _mixed(line.rstrip(b"=")):
-                return None
+                return PROBE_REJECTED
             if whole:
                 # The whole source: it must decode as it is, padding and all.
                 short_ok = len(line) >= 16 or line.endswith(b"=")

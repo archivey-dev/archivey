@@ -529,12 +529,12 @@ class CpioReader(SequentialReader):
             scanned += len(chunk)
 
 
-def _binary_probe(prefix: bytes) -> DetectionConfidence | None:
+def _binary_probe(prefix: bytes) -> DetectionConfidence:
     """A binary CPIO header: the two-byte magic alone is too weak a signature, so the
     header must also hold a name of the size it declares, ending in a NUL. The check
     tells yes from no, so a match is ``PROBABLE``."""
     if len(prefix) < 26:
-        return None
+        return DetectionConfidence.REJECTED
     for order, magic in (("<", _BINARY_LE), (">", _BINARY_BE)):
         if prefix[:2] != magic:
             continue
@@ -542,8 +542,8 @@ def _binary_probe(prefix: bytes) -> DetectionConfidence | None:
         end = 26 + name_size
         if 1 < name_size and end <= len(prefix) and prefix[end - 1] == 0:
             return DetectionConfidence.PROBABLE
-        return None
-    return None
+        return DetectionConfidence.REJECTED
+    return DetectionConfidence.REJECTED
 
 
 class CpioHandler(SequentialFormatHandler):

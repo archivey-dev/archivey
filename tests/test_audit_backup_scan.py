@@ -28,6 +28,7 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     CompressionAlgorithm,
+    DetectionConfidence,
     DiagnosticCode,
     DiagnosticPolicy,
     FormatDetectionError,
@@ -104,7 +105,7 @@ def test_ole_magic_then_zeros_is_not_lzma_alone() -> None:
         archivey.detect_format(io.BytesIO(data), config=ALWAYS_PROBE)
     # The probe refuses it on its own too: the stopping signature is defence in depth.
     probe = codecs_module.LzmaAloneCodec().content_probe
-    assert probe(data, source_length=len(data)) is None
+    assert probe(data, source_length=len(data)) is DetectionConfidence.REJECTED
 
 
 def test_zero_run_after_an_alone_header_decodes_without_error() -> None:

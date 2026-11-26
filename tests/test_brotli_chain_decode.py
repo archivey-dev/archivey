@@ -73,7 +73,7 @@ def _read_at(blob: bytes):
     return read_at
 
 
-def _probe(blob: bytes, **kwargs) -> DetectionConfidence | None:
+def _probe(blob: bytes, **kwargs) -> DetectionConfidence:
     return BrotliCodec().content_probe(
         blob[:DETECTION_LIMIT],
         source_length=len(blob),
@@ -173,7 +173,7 @@ def test_data_that_fails_past_the_window_is_not_brotli(tmp_path: Path, make) -> 
     compressed_at = _passes_the_earlier_checks(blob)
     assert compressed_at + CHAIN_DECODE_MARGIN < PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE
 
-    assert _probe(blob) is None
+    assert _probe(blob) is DetectionConfidence.REJECTED
     # Detection keeps only the extension guess; the decode was charged.
     info = _detect_named(tmp_path, blob)
     assert info.detected_by == "extension"
@@ -193,7 +193,7 @@ def test_random_blobs_over_the_completion_window_are_not_claimed() -> None:
     claimed = 0
     for seed in range(400):
         blob = random.Random(seed).randbytes(80 * 1024)
-        claimed += _probe(blob) is not None
+        claimed += _probe(blob) is not DetectionConfidence.REJECTED
     assert claimed == 0
 
 

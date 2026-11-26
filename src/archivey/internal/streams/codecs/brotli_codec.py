@@ -25,7 +25,12 @@ from archivey.internal.detection_workspace import (
     PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE,
 )
 from archivey.internal.overrides import override
-from archivey.internal.probe_verdict import PROBE_MATCH, ProbeVerdict, probe_verdict
+from archivey.internal.probe_verdict import (
+    PROBE_MATCH,
+    PROBE_REJECTED,
+    ProbeVerdict,
+    probe_verdict,
+)
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     Codec,
@@ -204,7 +209,7 @@ class BrotliCodec(StreamCodec):
         if source_length is not None and first_block_overruns_source(
             prefix, source_length
         ):
-            return None
+            return PROBE_REJECTED
         read_available = (
             read_at.available if isinstance(read_at, ProbeReadAccess) else None
         )
@@ -212,7 +217,7 @@ class BrotliCodec(StreamCodec):
             prefix, source_length, read_at=read_at, read_available=read_available
         )
         if walk.proves_invalid:
-            return None
+            return PROBE_REJECTED
         compressed_at = walk.compressed_at
         if not self._decodes_sample(
             prefix,
@@ -220,7 +225,7 @@ class BrotliCodec(StreamCodec):
             isolation=isolation,
             decoder_limits=decoder_limits,
         ):
-            return None
+            return PROBE_REJECTED
         if compressed_at is None:
             return PROBE_MATCH
         return probe_verdict(

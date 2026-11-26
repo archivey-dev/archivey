@@ -36,7 +36,7 @@ from archivey.internal.config import (
 from archivey.internal.detection_workspace import DETECTION_LIMIT
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS, as_excluded
 from archivey.internal.overrides import override
-from archivey.internal.probe_verdict import ProbeVerdict
+from archivey.internal.probe_verdict import PROBE_REJECTED, ProbeVerdict
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
@@ -614,7 +614,7 @@ class StreamCodec:
         peeked prefix; absent by default. ``charge_decode`` meters a decode past the
         sample (see ``ProbeChargeDecode``); absent means the probe is not metered.
         """
-        return None
+        return PROBE_REJECTED
 
     def magic_behind_prefix(self, prefix: bytes) -> bool:
         """Whether this codec's exact magic sits behind a structural prefix it defines.

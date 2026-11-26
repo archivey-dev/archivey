@@ -151,10 +151,10 @@ The system SHALL execute format detection with this algorithm:
    its checksum field as spaces and every numeric field is a number, and the name SHALL
    be non-empty. Match → `PROBABLE` / `detected_by="content_probe"`. This SHALL run on
    every source, whatever its name, after trailer magic and before the content probes.
-7. **Content probes** — formats with no exact magic. Match → `detected_by="content_probe"`,
-   at the grade the probe's verdict gives (see *Magic-less formats are detected by a
-   content probe*).
-   Unless `ArchiveyConfig.always_probe_content` is set, only the probe of a stream format
+7. **Content probes** — formats with no exact magic. Match →
+   `detected_by="content_probe"`, at the grade the probe's verdict gives (see
+   *Magic-less formats are detected by a content probe*). Unless
+   `ArchiveyConfig.always_probe_content` is set, only the probe of a stream format
    the source's extension names SHALL run (see *Magic-less formats are detected by a
    content probe*); `open_stream` SHALL run every probe.
 8. **Leading-bytes scan** — the scan of step 3's requirement, run with no executable cue:
@@ -315,7 +315,7 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 | A plugin format's probe answers `GUESS`, no name, `always_probe_content` | The plugin format, `GUESS`, `content_probe` |
 | The same, named with the plugin's extension | The plugin format, `PROBABLE`, `content_probe` |
 | gzip of a plugin sequential format whose probe answers `GUESS`, no name, `always_probe_content`; the same named `.<ext>.gz` | `(<plugin>, GZIP)`, `GUESS`, not corroborated; named, `PROBABLE`, corroborated |
-| A plugin probe answers `True`, `CERTAIN` or another non-verdict | No match; one WARNING on `archivey.detection` |
+| A plugin probe answers `None`, `True`, `CERTAIN` or another non-verdict | No match; one WARNING on `archivey.detection` |
 | Raw CD sector sync at 0 | ISO, `CERTAIN`, `magic`; a Mode 1 or Mode 2 Form 1 image opens, other layouts raise `UnsupportedFeatureError` |
 | `koly` block at offset 0 | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
 | `koly` trailer, and no earlier step matched | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
@@ -371,15 +371,16 @@ format does not name does not run, so the extension decides between them; a stre
 named for another format falls through to that extension's `GUESS`.
 
 **A probe answers with a verdict.** Every content probe, built-in or a plugin's
-(`FormatHandler.probe`, `CodecHandler.probe`), SHALL answer `None` (not this format),
-`GUESS` (a weak match) or `PROBABLE` (a match), never a bool and never `CERTAIN`, which
-only a signature gives. A probe that only tells yes from no answers `PROBABLE` or
-`None`; every built-in probe does. Detection SHALL report the verdict as the confidence,
-and SHALL report a `GUESS` as `PROBABLE` when the source's extension names the format.
-The same rule SHALL hold for a container's probe on the first 512 decoded bytes inside a
+(`FormatHandler.probe`, `CodecHandler.probe`), SHALL answer `REJECTED` (not this
+format), `GUESS` (a weak match) or `PROBABLE` (a match). It SHALL never answer a bool,
+`None` (so a forgotten `return` is a bug, not a quiet no) or `CERTAIN`, which only a
+signature gives. A probe that only tells yes from no answers `PROBABLE` or `REJECTED`;
+every built-in probe does. Detection SHALL report the verdict as the confidence, and
+SHALL report a `GUESS` as `PROBABLE` when the source's extension names the format. The
+same rule SHALL hold for a container's probe on the first 512 decoded bytes inside a
 compressor. A plugin probe that answers anything else (a bool, `CERTAIN`, any other
-object) SHALL count as no match and be logged on `archivey.detection` as a probe that
-raises is: WARNING the first time, DEBUG after.
+object, `None`) SHALL count as no match and be logged on `archivey.detection` as a probe
+that raises is: WARNING the first time, DEBUG after.
 
 A probe match SHALL report `detected_by="content_probe"`. For **Brotli specifically**,
 confidence SHALL be `PROBABLE` when the file extension corroborates the format **or**

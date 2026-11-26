@@ -133,7 +133,7 @@ from archivey.internal.diagnostics_collector import (
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.logs import detection as logger
 from archivey.internal.overrides import override
-from archivey.internal.probe_verdict import graded
+from archivey.internal.probe_verdict import PROBE_REJECTED, graded, is_match
 from archivey.internal.registry import BackendRegistry, ContentProbe, get_registry
 from archivey.internal.remote import (
     emit_source_change_undetectable,
@@ -654,7 +654,7 @@ class _InnerCandidates:
             if not (always_probe or fmt == named) or not head:
                 continue
             verdict = probe(head)
-            if verdict is not None:
+            if is_match(verdict):
                 return fmt, graded(verdict, named=fmt == named)
         return None
 
@@ -977,7 +977,7 @@ def _probe_completes(
     workspace.charge_decode(input_bytes=len(whole))
     try:
         # Confirms the match or turns it away; the grade stays the window's.
-        return (
+        return is_match(
             probe(
                 whole,
                 source_length=length,
@@ -986,7 +986,6 @@ def _probe_completes(
                 isolation=workspace.isolation,
                 decoder_limits=workspace.decoder_limits,
             )
-            is not None
         )
     except ResourceLimitError as exc:
         # The whole-source decode reads up to 64 KiB, so a probe's clamped LZMA
@@ -2491,8 +2490,8 @@ def _content_probes(
                 f"try the {probe_fmt} content probe",
                 exc,
             )
-            verdict = None
-        if verdict is not None and _probe_completes(
+            verdict = PROBE_REJECTED
+        if is_match(verdict) and _probe_completes(
             probe,
             data,
             length,

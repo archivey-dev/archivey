@@ -144,8 +144,8 @@ def codec_call(params: CodecParams, config: StreamConfig) -> CodecCall:
 
 
 def _content_probe(
-    probe: Callable[[bytes], DetectionConfidence | None],
-) -> Callable[..., DetectionConfidence | None]:
+    probe: Callable[[bytes], DetectionConfidence],
+) -> Callable[..., DetectionConfidence]:
     """A handler's ``probe(prefix)`` as :meth:`StreamCodec.content_probe`.
 
     A format plugin's probe wrapper (``format_adapter.prefix_probe``) does the work:
@@ -163,7 +163,7 @@ def _content_probe(
         charge_decode: object = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
         decoder_limits: DecoderLimits = DecoderLimits(),
-    ) -> DetectionConfidence | None:
+    ) -> DetectionConfidence:
         del self, source_length, read_at, charge_decode, isolation, decoder_limits
         return check(prefix)
 

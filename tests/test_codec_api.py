@@ -353,7 +353,9 @@ class ProbedHandler(CodecHandler):
     stream_format = ProbedStream.PROBED
     probe = staticmethod(
         lambda prefix: (
-            DetectionConfidence.PROBABLE if prefix.startswith(_PROBED_MAGIC) else None
+            DetectionConfidence.PROBABLE
+            if prefix.startswith(_PROBED_MAGIC)
+            else DetectionConfidence.REJECTED
         )
     )
 
@@ -392,7 +394,9 @@ def test_a_codec_probe_grades_its_match(tmp_path: Path) -> None:
 
     GuessingHandler.probe = staticmethod(
         lambda prefix: (
-            DetectionConfidence.GUESS if prefix.startswith(_PROBED_MAGIC) else None
+            DetectionConfidence.GUESS
+            if prefix.startswith(_PROBED_MAGIC)
+            else DetectionConfidence.REJECTED
         )
     )
     data = _probed(_TEXT)

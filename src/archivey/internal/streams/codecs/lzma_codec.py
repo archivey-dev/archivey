@@ -34,7 +34,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.overrides import override
-from archivey.internal.probe_verdict import ProbeVerdict, probe_verdict
+from archivey.internal.probe_verdict import PROBE_REJECTED, ProbeVerdict, probe_verdict
 from archivey.internal.streams.archive_stream import ExceptionTranslator
 from archivey.internal.streams.codecs.base import (
     Codec,
@@ -655,11 +655,11 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         requires a positive output length (an empty successful read is not a claim).
         """
         if not _alone_header_plausible(prefix) or not self.available():
-            return None
+            return PROBE_REJECTED
         if _alone_payload_has_zero_run(prefix):
-            return None
+            return PROBE_REJECTED
         if source_length is not None and source_length <= _ALONE_HEADER_SIZE:
-            return None
+            return PROBE_REJECTED
         return probe_verdict(
             self._decodes_sample(
                 prefix,

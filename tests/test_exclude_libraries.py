@@ -207,9 +207,13 @@ def test_a_plugin_probe_does_not_run_when_its_package_is_excluded(
     # an excluded package on untrusted bytes.
     calls: list[bytes] = []
 
-    def probe(prefix: bytes) -> DetectionConfidence | None:
+    def probe(prefix: bytes) -> DetectionConfidence:
         calls.append(prefix)
-        return DetectionConfidence.PROBABLE if prefix.startswith(_MAGIC) else None
+        return (
+            DetectionConfidence.PROBABLE
+            if prefix.startswith(_MAGIC)
+            else DetectionConfidence.REJECTED
+        )
 
     plugin = _plugin_with("probedneedy", probe=probe, requires=("cryptography",))
     data = build_toya(_ENTRIES)

@@ -313,9 +313,13 @@ def test_an_off_plugin_runs_no_probe_even_when_every_probe_is_asked_for(
 ) -> None:
     calls: list[bytes] = []
 
-    def probe(prefix: bytes) -> DetectionConfidence | None:
+    def probe(prefix: bytes) -> DetectionConfidence:
         calls.append(prefix)
-        return DetectionConfidence.PROBABLE if prefix.startswith(_MAGIC) else None
+        return (
+            DetectionConfidence.PROBABLE
+            if prefix.startswith(_MAGIC)
+            else DetectionConfidence.REJECTED
+        )
 
     plugin = _plugin_with("probed", probe=probe)
     data = build_toya(_ENTRIES)
@@ -355,9 +359,13 @@ def _probe_only_sequential(
     calls."""
     fmt = ArchiveFormat(ToysContainer.PROBED, S.UNCOMPRESSED)
 
-    def probe(prefix: bytes) -> DetectionConfidence | None:
+    def probe(prefix: bytes) -> DetectionConfidence:
         calls.append(prefix)
-        return DetectionConfidence.PROBABLE if prefix.startswith(_TOYS_MAGIC) else None
+        return (
+            DetectionConfidence.PROBABLE
+            if prefix.startswith(_TOYS_MAGIC)
+            else DetectionConfidence.REJECTED
+        )
 
     class Probed(SequentialFormatHandler):
         format = fmt

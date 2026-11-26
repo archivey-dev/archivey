@@ -19,6 +19,7 @@ import pytest
 import archivey
 from archivey import (
     CorruptionError,
+    DetectionConfidence,
     MemberType,
     ResourceLimitError,
     TruncatedError,
@@ -276,8 +277,8 @@ def test_the_binary_probe_answers_with_a_verdict() -> None:
     probe = CpioHandler.probe
     assert probe is not None
     assert probe(_binary(b"hello")) is archivey.DetectionConfidence.PROBABLE
-    assert probe(b"\xc7\x71" + b"\0" * 30) is None
-    assert probe(b"not a cpio archive at all") is None
+    assert probe(b"\xc7\x71" + b"\0" * 30) is DetectionConfidence.REJECTED
+    assert probe(b"not a cpio archive at all") is DetectionConfidence.REJECTED
 
 
 def test_a_big_endian_binary_archive() -> None:

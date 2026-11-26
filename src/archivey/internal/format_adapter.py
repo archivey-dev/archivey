@@ -109,7 +109,7 @@ from archivey.internal.plugin_passwords import (
     SavedWinner,
     resolve_request,
 )
-from archivey.internal.probe_verdict import PROBE_MATCHES, ProbeVerdict
+from archivey.internal.probe_verdict import PROBE_REJECTED, PROBE_VERDICTS, ProbeVerdict
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.resource_usage import handler_name
@@ -3832,9 +3832,9 @@ def prefix_probe(probe: object) -> ContentProbe:
 
     The plugin gets the peeked prefix only: no ``read_at`` and no decode allowance, so
     it cannot make detection read more of an untrusted source. Its answer must be a
-    verdict (``None``, ``GUESS`` or ``PROBABLE``). Any other answer, a bool or
-    ``CERTAIN`` among them, is a plugin bug and taken as no match, logged as a probe
-    that raises is.
+    verdict (``REJECTED``, ``GUESS`` or ``PROBABLE``). Any other answer, ``None``, a
+    bool or ``CERTAIN`` among them, is a plugin bug and taken as no match, logged as a
+    probe that raises is.
     """
     assert callable(probe)
     # Per registration, so the probe need not be hashable and nothing outlives it.
@@ -3868,21 +3868,19 @@ def prefix_probe(probe: object) -> ContentProbe:
                 exc_info=True,
             )
             warned = True
-            return None
-        if verdict is None:
-            return None
+            return PROBE_REJECTED
         # By identity, so an unhashable answer is a plugin bug too, not a TypeError.
-        for match in PROBE_MATCHES:
-            if verdict is match:
-                return match
+        for known in PROBE_VERDICTS:
+            if verdict is known:
+                return known
         detection_logger.log(
             logging.DEBUG if warned else logging.WARNING,
-            "plugin probe %r answered %r, not None, GUESS or PROBABLE; taken as no match",
+            "plugin probe %r answered %r, not REJECTED, GUESS or PROBABLE; taken as no match",
             probe,
             verdict,
         )
         warned = True
-        return None
+        return PROBE_REJECTED
 
     return content_probe
 

@@ -994,7 +994,9 @@ def test_a_probe_only_format_is_found_inside_a_compression_stream(
         extensions = (".ptoys",)
         probe = staticmethod(
             lambda prefix: (
-                DetectionConfidence.PROBABLE if prefix.startswith(_MAGIC) else None
+                DetectionConfidence.PROBABLE
+                if prefix.startswith(_MAGIC)
+                else DetectionConfidence.REJECTED
             )
         )
 
@@ -1024,7 +1026,9 @@ def test_a_weak_probe_match_inside_a_compression_stream_is_a_guess(
         extensions = (".ptoys",)
         probe = staticmethod(
             lambda prefix: (
-                DetectionConfidence.GUESS if prefix.startswith(_MAGIC) else None
+                DetectionConfidence.GUESS
+                if prefix.startswith(_MAGIC)
+                else DetectionConfidence.REJECTED
             )
         )
 
