@@ -330,40 +330,37 @@ class CpioReader(SequentialReader):
         # damage the walk met, where the next search starts, and the origin of the
         # candidate positions (0, or a header found after a lost start).
         salvage = self._context._salvage(stream) if self._context._salvage else None
-        if salvage is not None and salvage.lost_start:
-            # After a lost start, the first header this walk finds names the variant
-            # and the alignment of the later searches. A variant an earlier walk left
-            # (one a listing limit stopped) would make the search start at offset 0
-            # with that variant's step, and miss a header off it.
-            self._variant = None
         damage: CorruptionError | None = None
         search_from: int | None = None
+        # What the walk carries from one header to the next: the variant and the
+        # origin of the candidate positions (0, or the header that set the variant
+        # after a lost start). This walk's own, so a walk started over (after a
+        # limit, or to reach member data) decides them again from the archive, and
+        # set in one place below, from a header the walk counts.
+        variant: Variant | None = None
         base = 0
         while True:
             # Whether the search found this header, or the walk walked on to it.
             searched = search_from is not None
-            # A lost start's search for any variant: only a header something
-            # confirms names the variant and the alignment of the later searches.
-            any_variant = (base, self._variant)
             if search_from is not None:
                 assert salvage is not None and damage is not None
-                hit = self._search(salvage, stream, search_from, base)
+                hit = self._search(salvage, stream, search_from, base, variant)
                 search_from = None
                 if hit is None:
                     # The pass ends in the damage error, with no trailer: the links
                     # still held for data are listed as at a trailer (recall first).
                     yield from self._flush(groups, salvage)
                     raise salvage.ending(damage)
-                header, raw, base = hit
+                header, raw = hit
             else:
                 offset = stream.offset
                 try:
-                    header, raw = self._read_entry(stream)
+                    header, raw = self._read_entry(stream, variant)
                 except CorruptionError as err:
                     if (
                         salvage is None
                         or not salvage.is_damage(err)
-                        or self._search_magics(salvage) is None
+                        or self._search_magics(salvage, variant) is None
                     ):
                         raise
                     # Damage: the walk searches on from the damaged header, and the
@@ -372,6 +369,8 @@ class CpioReader(SequentialReader):
                     search_from = offset
                     continue
             if raw == TRAILER:
+                if variant is None:
+                    self._variant = header.variant
                 yield from self._flush(groups, salvage)
                 self._check_end(stream)
                 if salvage is not None:
@@ -379,7 +378,6 @@ class CpioReader(SequentialReader):
                         raise salvage.ending(damage)
                     salvage.state.finish()
                 return
-            member = self._member(header, raw)
             scan: _Scan | None = None
             if damage is not None:
                 # Past the damage every member is one the default does not list: the
@@ -399,15 +397,19 @@ class CpioReader(SequentialReader):
                     # No claim on its data: the search goes on inside it, past this
                     # header, which it must not find again.
                     search_from = salvage.after(header.offset)
-                    if searched and any_variant[1] is None:
-                        base, self._variant = any_variant
+            # The one place a header's effects on the rest of the walk are decided.
+            # A header nothing confirms (``unconfirmed``) is listed, and changes
+            # nothing else: not the variant or the alignment of later searches, and
+            # not a hard-link group (it never becomes the group's file, whose name
+            # and data the group's links take, and releases no held link).
+            unconfirmed = scan is not None and not scan.confirmed
+            if variant is None and not unconfirmed:
+                variant = self._variant = header.variant
+                base = header.offset
+            member = self._member(header, raw)
             size = header.file_size
             # A file that shares its inode with another.
             key = (header.dev, header.ino)
-            # A header nothing confirms never decides a link group's file (the name
-            # and the data the group's links take): it is listed as a file of its
-            # own, or held as a newc link waiting for data, and releases nothing.
-            unconfirmed = scan is not None and not scan.confirmed
             linked = member.type is MemberType.FILE and header.nlink > 1
             if linked:
                 group = groups.setdefault(key, _LinkGroup())
@@ -452,9 +454,12 @@ class CpioReader(SequentialReader):
                     yield MemberSpan(link, 0)
                 group.held.clear()
 
-    def _read_entry(self, stream: ForwardStream) -> tuple[Header, bytes]:
-        """The next header and its name, the NUL taken off, and the name's padding."""
-        header = self._read_header(stream)
+    def _read_entry(
+        self, stream: ForwardStream, variant: Variant | None
+    ) -> tuple[Header, bytes]:
+        """The next header and its name, the NUL taken off, and the name's padding.
+        A header of another variant than ``variant``, the walk's, is damage."""
+        header = self._read_header(stream, variant)
         raw = stream.read_exact(header.name_size)
         if raw[-1:] != b"\0":
             raise CorruptionError(
@@ -465,11 +470,13 @@ class CpioReader(SequentialReader):
 
     # Salvage ------------------------------------------------------------------------
 
-    def _search_magics(self, salvage: WalkSalvage) -> frozenset[bytes] | None:
-        """The magics the salvage search looks for: the variant the archive showed,
-        any of the three ASCII ones after a lost start, or ``None`` for a binary
-        archive, which has no search."""
-        variant = self._variant
+    @staticmethod
+    def _search_magics(
+        salvage: WalkSalvage, variant: Variant | None
+    ) -> frozenset[bytes] | None:
+        """The magics the salvage search looks for: ``variant``, the one the archive
+        showed, any of the three ASCII ones after a lost start, or ``None`` for a
+        binary archive, which has no search."""
         if variant is None:
             if salvage.lost_start:
                 return _ASCII_MAGICS
@@ -481,19 +488,21 @@ class CpioReader(SequentialReader):
         return _VARIANT_MAGICS.get(variant)
 
     def _search(
-        self, salvage: WalkSalvage, stream: ForwardStream, start: int, base: int
-    ) -> tuple[Header, bytes, int] | None:
-        """The next header the salvage search finds from ``start`` that the walk
-        reads and whose data the layer holds, with the base of the later searches; the
-        stream is moved to after its name. ``None`` when none is
-        found."""
-        # A search for any variant (a lost start) runs at every byte; the header it
-        # finds sets the alignment of the later ones.
-        any_variant = self._variant is None
+        self,
+        salvage: WalkSalvage,
+        stream: ForwardStream,
+        start: int,
+        base: int,
+        variant: Variant | None,
+    ) -> tuple[Header, bytes] | None:
+        """The next header of ``variant`` (any ASCII one while it is ``None`` after
+        a lost start, at every byte) the salvage search finds from ``start`` that
+        the walk reads and whose data the layer holds; the stream is moved to after
+        its name. ``None`` when none is found."""
+        magics = self._search_magics(salvage, variant)
+        assert magics is not None
+        step = 1 if _ODC in magics else 4
         while True:
-            magics = self._search_magics(salvage)
-            assert magics is not None
-            step = 1 if _ODC in magics else 4
             result = salvage.search(
                 _header_search(magics, step), start=start, base=base % step
             )
@@ -501,22 +510,17 @@ class CpioReader(SequentialReader):
                 return None
             at = result.found
             salvage.seek(at)
-            # A lost start's first header sets the variant (``_read_header``); one
-            # the search passes over must not narrow the searches after it.
-            variant = self._variant
             try:
-                header, raw = self._read_entry(stream)
+                header, raw = self._read_entry(stream, variant)
             except CorruptionError as exc:
                 if not salvage.is_damage(exc):
                     raise
-                self._variant = variant
                 start = at
                 continue
             if not salvage.holds(stream.offset + header.file_size):
-                self._variant = variant
                 start = at
                 continue
-            return header, raw, at if any_variant else base
+            return header, raw
 
     def _confirmed(self, salvage: WalkSalvage, header: Header, data_at: int) -> bool:
         """Whether the header after a found member's data, which starts at
@@ -562,7 +566,9 @@ class CpioReader(SequentialReader):
         while an unconfirmed header is handled."""
         return header.variant in (Variant.NEWC, Variant.CRC)
 
-    def _read_header(self, stream: ForwardStream) -> Header:
+    def _read_header(self, stream: ForwardStream, walks: Variant | None) -> Header:
+        """The next header; one of another variant than ``walks``, the walk's
+        variant once a header settled it, is damage."""
         offset = stream.offset
         magic = stream.read(2)
         if len(magic) < 2:
@@ -585,12 +591,10 @@ class CpioReader(SequentialReader):
                 header = self._newc_header(stream, variant, offset)
             else:
                 raise CorruptionError(f"No CPIO header at offset {offset}")
-        if self._variant is None:
-            self._variant = header.variant
-        elif header.variant is not self._variant:
+        if walks is not None and header.variant is not walks:
             raise CorruptionError(
                 f"CPIO header at offset {offset} is {header.variant.value}, in a "
-                f"{self._variant.value} archive"
+                f"{walks.value} archive"
             )
         if header.name_size == 0 or header.name_size > MAX_NAME_BYTES:
             raise CorruptionError(

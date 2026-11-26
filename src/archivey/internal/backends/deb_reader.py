@@ -577,7 +577,13 @@ class DebReader(SequentialReader):
                 continue
             fmt = None if control else _tar_format(name, b"control", _CONTROL_STREAMS)
             if fmt is not None:
-                spans = self._opened(self._control(stream.take(size), fmt), damage)
+                # Only a control tar the walk counts (``confirmed``) is the package's:
+                # its fields, its md5sums and the end of the search for one. One
+                # nothing confirms is listed and changes nothing else, so a later
+                # control tar is still read.
+                spans = self._opened(
+                    self._control(stream.take(size), fmt, settles=confirmed), damage
+                )
                 if spans is None:
                     # Past the damage, a control tar that does not open is not one:
                     # the search goes on past its header.
@@ -587,7 +593,7 @@ class DebReader(SequentialReader):
                 whole = yield from self._found(
                     salvage if damage else None, spans, offset, confirmed, searched
                 )
-                control = True
+                control = control or confirmed
                 if not whole:
                     # The control tar failed after listing members: the search goes
                     # on past its header, for the data tar.
@@ -756,11 +762,15 @@ class DebReader(SequentialReader):
             )
         self._version = version.decode("ascii", "replace")
 
-    def _control(self, data: BinaryIO, fmt: ArchiveFormat) -> Iterator[MemberSpan]:
+    def _control(
+        self, data: BinaryIO, fmt: ArchiveFormat, *, settles: bool = True
+    ) -> Iterator[MemberSpan]:
         """The control tar's members, under ``DEBIAN/``.
 
         ``control`` and ``md5sums`` are read whole on the way, for the archive info and
-        the data files' digests, so their spans are served from those held bytes. A
+        the data files' digests, so their spans are served from those held bytes.
+        Not when ``settles`` is false (a tar past damage that nothing confirms): its
+        members are listed as they are, and it holds and charges nothing. A
         member whose prefixed name extracts outside ``DEBIAN/`` (``../usr/x``) is
         refused, and so is a hard link whose prefixed target does.
         """
@@ -785,7 +795,11 @@ class DebReader(SequentialReader):
                         member_name=member.name,
                         link_target=member.link_target,
                     )
-            if member.type is MemberType.FILE and inner in ("control", "md5sums"):
+            if (
+                settles
+                and member.type is MemberType.FILE
+                and inner in ("control", "md5sums")
+            ):
                 held = self._hold(span, inner)
                 if inner == "control":
                     self._read_control(held)

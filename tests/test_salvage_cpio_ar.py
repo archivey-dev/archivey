@@ -1335,3 +1335,177 @@ def test_cpio_held_links_are_listed_when_the_pass_ends_in_damage(
     names, _diagnostics, error = _open_lost_start(path)
     assert sorted(names) == ["bogus", "c.txt"]
     assert isinstance(error, CorruptionError)
+
+
+# Only a confirmed header changes what the walk carries forward -----------------------
+#
+# One rule for every format here (design.md, "Notes from the CPIO and ar PR"): a header
+# the default walk does not read, or that nothing confirms, is listed, and changes no
+# state of the walk or the reader. Each case below is one piece of that state.
+
+
+def _binary_header_at_zero() -> bytes:
+    """A binary CPIO magic at offset 0 whose header holds a name size of 0."""
+    return b"\xc7\x71" + bytes(24)
+
+
+def _newc_without_its_nul() -> bytes:
+    """A newc header at offset 0 whose fields parse and whose name has no NUL."""
+    header = bytearray(_newc("zz", b"", 5))
+    header[110 + 2] = ord("X")
+    return bytes(header)
+
+
+@pytest.mark.parametrize(
+    "head",
+    [_newc_without_its_nul(), _binary_header_at_zero()],
+    ids=["newc-name-without-nul", "binary-magic"],
+)
+def test_cpio_lost_start_failed_header_at_zero_does_not_set_the_variant(
+    head: bytes, tmp_path: Path
+) -> None:
+    """After a lost start, a header at offset 0 that the walk reads and then fails is
+    damage like any other: it does not choose the variant the search looks for, so
+    the odc members after it are found."""
+    raw = head + b"\x01" + _odc("real.txt", b"hello", 1)
+    raw += _odc("real2.txt", b"world", 2) + _odc("TRAILER!!!", b"", 0)
+    path = _write(tmp_path, raw, "a.cpio")
+    names, _diagnostics, error = _open_lost_start(path)
+    assert names == ["real.txt", "real2.txt"]
+    assert isinstance(error, CorruptionError)
+
+
+def _with_mode_and_size(member: bytes, variant: str, mode: int, size: int) -> bytes:
+    out = bytearray(member)
+    if variant == "odc":
+        out[18:24] = b"%06o" % mode
+        out[65:76] = b"%011o" % size
+    else:
+        out[14:22] = b"%08X" % mode
+        out[54:62] = b"%08X" % size
+    return bytes(out)
+
+
+@pytest.mark.parametrize("variant", ["newc", "odc"])
+@pytest.mark.parametrize(
+    ("mode", "code"),
+    [
+        (0o130644, DiagnosticCode.MEMBER_TYPE_UNKNOWN),
+        (0o010644, DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA),
+    ],
+    ids=["unknown-type", "fifo-with-data"],
+)
+def test_cpio_walked_on_header_not_listed_reports_nothing(
+    variant: str, mode: int, code: DiagnosticCode, tmp_path: Path
+) -> None:
+    """Past the damage, a walked-on header whose data runs past the end is not
+    listed, and records no diagnostic about the member it would have been."""
+    member = _odc if variant == "odc" else _newc
+    raw = member("x.txt", b"xxxx", 1) + _zeroed_magic(member("y.txt", b"yyyy", 2))
+    raw += member("c.txt", b"cccc", 3)
+    raw += _with_mode_and_size(member("late", b"", 4), variant, mode, 1 << 20)
+    path = _write(tmp_path, raw + bytes(64), "a.cpio")
+    members, diagnostics, error = _read(path, salvage=True)
+    assert [m[0] for m in members] == ["x.txt", "c.txt"]
+    assert code not in [c for c, _context in diagnostics]
+    assert isinstance(error, CorruptionError)
+
+
+def _bsd(name: bytes, data: bytes) -> bytes:
+    body = name + data
+    return _ar_header(b"#1/%d" % len(name), len(body)) + body + b"\n" * (len(body) & 1)
+
+
+_BSD_AFTER = _bsd(b"after.o", b"y" * 4)
+_GNU_AFTER = _ar_header(b"after/", 4) + b"yyyy"
+
+
+@pytest.mark.parametrize(
+    ("first", "stray", "after", "dialect"),
+    [
+        (_bsd(b"before.o", b"x" * 4), b"stray/", _BSD_AFTER, "bsd"),
+        (_bsd(b"before.o", b"x" * 4), b"/0", _BSD_AFTER, "bsd"),
+        # The damage at the first header: nothing has shown a dialect yet.
+        (b"J" * 68, b"stray/", _BSD_AFTER, "bsd"),
+        # A BSD spelling never replaced a dialect: this one held before the fix.
+        (_ar_header(b"before/", 4) + b"xxxx", b"stray", _GNU_AFTER, "gnu"),
+    ],
+    ids=["gnu-name-in-bsd", "gnu-long-name-in-bsd", "gnu-name-first", "bsd-in-gnu"],
+)
+def test_ar_unconfirmed_member_leaves_the_dialect_alone(
+    first: bytes, stray: bytes, after: bytes, dialect: str, tmp_path: Path
+) -> None:
+    """Past the damage, a member nothing confirms is listed, but its name's
+    spelling does not change the dialect the archive info reports: only the
+    headers the walk counts do."""
+    raw = b"!<arch>\n" + first + b"J" * 60
+    raw += _ar_header(stray, 4) + b"J" * 4 + b"J" * 60 + after
+    path = _write(tmp_path, raw, "a.a")
+    with open_archive(path, salvage=True) as reader:
+        names = [m.name for m in reader.members_report().members]
+        shown = reader.info.extra.get("ar.dialect")
+    # The stray is listed (unconfirmed), and the member after it too.
+    assert names[-2:] == [
+        stray.removesuffix(b"/").decode(),
+        "after.o" if dialect == "bsd" else "after",
+    ]
+    assert shown == dialect
+
+
+def test_deb_unconfirmed_control_tar_does_not_take_the_package(
+    tmp_path: Path,
+) -> None:
+    """Past the damage, a control tar nothing confirms is listed, but its fields
+    and md5sums are not the package's, and the control tar after it is read: the
+    archive info shows the real fields and the data file reads with the real
+    digest."""
+    from tests.test_deb import CONTROL, _ar, _md5sums, _tar
+
+    stray = _tar(
+        [
+            ("./", None),
+            ("./control", b"Package: stray\nVersion: 9\nArchitecture: all\n"),
+            ("./md5sums", _md5sums({"usr/a": b"other"})),
+        ]
+    )
+    control = _tar(
+        [("./", None), ("./control", CONTROL), ("./md5sums", _md5sums({"usr/a": b"x"}))]
+    )
+    data = _tar([("./", None), ("./usr/", None), ("./usr/a", b"x")])
+    raw = _ar((b"debian-binary", b"2.0\n")) + bytes(60)
+    raw += _ar((b"control.tar", stray))[8:] + b"J" * 60
+    raw += _ar((b"control.tar", control), (b"data.tar", data))[8:]
+    path = _write(tmp_path, raw, "a.deb")
+    with open_archive(path, salvage=True, format="deb") as reader:
+        report = reader.members_report()
+        names = [m.name for m in report.members]
+        package = reader.info.extra.get("deb.package")
+        data_a = reader.read("usr/a")
+    # Both control tars are listed, each flagged; the real one is the package's.
+    assert names.count("DEBIAN/control") == 2
+    assert names[-3:] == [".", "usr/", "usr/a"]
+    assert package == "tiny"
+    assert data_a == b"x"
+    assert isinstance(report.error, CorruptionError)
+
+
+def test_deb_unconfirmed_control_tar_holds_nothing(tmp_path: Path) -> None:
+    """Past the damage, a control tar nothing confirms is not read whole, so its
+    control file is not charged against ``max_metadata_bytes``: the pass lists the
+    real package and ends in the first damage, not in the limit."""
+    from tests.test_deb import CONTROL, _ar, _tar
+
+    stray = _tar([("./", None), ("./control", b"Package: stray\n" + b"#" * 5000)])
+    control = _tar([("./", None), ("./control", CONTROL)])
+    data = _tar([("./", None), ("./usr/", None), ("./usr/a", b"x")])
+    raw = _ar((b"debian-binary", b"2.0\n")) + bytes(60)
+    raw += _ar((b"control.tar", stray))[8:] + b"J" * 60
+    raw += _ar((b"control.tar", control), (b"data.tar", data))[8:]
+    path = _write(tmp_path, raw, "a.deb")
+    limits = ListingLimits(max_metadata_bytes=4000)
+    members, _diagnostics, error = _read(
+        path, salvage=True, format="deb", config=ArchiveyConfig(listing_limits=limits)
+    )
+    assert [m[0] for m in members][-3:] == [".", "usr/", "usr/a"]
+    assert members[1] == ("DEBIAN/control", 5015, b"Package: stray\n" + b"#" * 5000)
+    assert isinstance(error, CorruptionError)

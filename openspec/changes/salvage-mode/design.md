@@ -253,13 +253,23 @@ Choices made while building PR 3, and where it departs from the decisions above:
   there, as the default does. A probe for that check, or for a confirmation, that
   reaches damage in a codec stream (a `.cpio.gz` whose gzip data is damaged) reads
   that damage as the layer's end. The search itself still stops with the codec error.
-- **A CPIO header nothing confirms never decides a hard-link group's file.** It is
-  listed as a file of its own, or held as a newc/crc link waiting for data, and it
-  takes no held links. Links still held when the pass ends in the damage error (no
-  trailer) are listed as empty files, as at a trailer.
-- **An ar long-name table past the damage that nothing confirms is passed over**
-  before it is charged against `max_metadata_bytes` or read: the search goes on inside
-  it, as inside an unconfirmed member's data.
+- **Only a header the walk counts changes what the walk carries forward.** A header
+  counts when the default walk reads it whole or, past the damage, when the header
+  after it confirms it. Any other header (a candidate the search passes over, a header
+  that fails after it is read, a found or walked-on header nothing confirms) is listed
+  when it passes, flagged, and changes nothing else. Each reader decides this in one
+  place in its walk, and its header parsing changes no state. The state it covers:
+  CPIO's variant and the alignment of later searches (kept per walk, so a walk started
+  over decides them again) and its hard-link groups (such a header never becomes a
+  group's file, whose name and data the links take, and releases no held link); ar's
+  alignment, its long-name and symbol tables (passed over before they are charged
+  against `max_metadata_bytes` or read; the search goes on inside them) and the
+  dialect the archive info reports; a deb's control tar (its fields, its md5sums, and
+  whether a later control tar is still read). A member that is not listed records no
+  diagnostic.
+- **Every member the walk has read is listed at every end of the pass**: at a
+  trailer, and where the pass ends in the damage error with no trailer. CPIO links
+  still held for data are listed as empty files there, as at a trailer.
 - **Many candidates cost about one pass over a decoded layer**, not one each: a
   probe of a data end or of the next header reads forward only past what earlier
   probes read, and stops at the end once one reached it; each `search_forward` call
@@ -271,12 +281,11 @@ Choices made while building PR 3, and where it departs from the decisions above:
   needed it), so the search runs for that variant. Binary CPIO has no search.
 - **Lost start (reader side).** `SalvageRequest.lost_start` / `SalvageState.lost_start`
   (`requesting_salvage(..., lost_start=True)`, the TAR PR's shape). With it, a CPIO
-  whose first header fails searches all three ASCII magics at every byte; the first
-  found header that the header after it confirms sets the variant and the alignment of
-  later `newc`/`crc` searches. An ar whose magic is missing searches from 0 at **every
+  whose first header fails searches all three ASCII magics at every byte until a
+  header counts (rule above), which sets the variant and the alignment of later
+  `newc`/`crc` searches. An ar whose magic is missing searches from 0 at **every
   byte** (not 2: the bytes lost may be odd), then at 2-byte steps from the first
-  confirmed header. A found header nothing confirms is listed, and the search after
-  it still looks for every variant at every byte.
+  header that counts.
 - **deb.** A damaged ar header after `debian-binary` starts the ar search; a found
   `control.tar*` or `data.tar*` is read as the walk reads one, each inner member
   flagged with the ar header's offset. A found header with another name is passed

@@ -103,13 +103,21 @@ _DIGITS_AND_SPACES = re.compile(rb"[0-9 ]*\Z")
 
 class _Entry(NamedTuple):
     """What one ar header holds: its size field, and a member (with how many of its
-    bytes are data), a long-name table, or neither (a symbol table)."""
+    bytes are data), a long-name table, or neither (a symbol table).
+
+    ``dialect`` is the dialect the header shows, ``None`` for none; with
+    ``dialect_wins`` it replaces one an earlier header showed (a GNU name), else it
+    only fills an unset one. The walk applies it, and ``symbol_table``, to the
+    archive info (``ArReader._settle``)."""
 
     size: int
     member: ArchiveMember | None = None
     data_length: int = 0
     unchecked: tuple[str, ...] = ("position",)
     table: bytes | None = None
+    dialect: str | None = None
+    dialect_wins: bool = False
+    symbol_table: bool = False
 
 
 def _passes(window: bytes, at: int) -> bool:
@@ -274,6 +282,12 @@ class ArReader(SequentialReader):
                     # must not find again.
                     search_from = salvage.after(offset)
                     base = base_before
+            if confirmed:
+                # The one place a header's effects on the rest of the walk are
+                # decided: a header nothing confirms is listed and changes nothing
+                # else (not the alignment above, the long-name table, nor what the
+                # archive info says). Its tables never get here (``_entry``).
+                self._settle(entry)
             if entry.table is not None:
                 names = entry.table
                 continue
@@ -297,6 +311,12 @@ class ArReader(SequentialReader):
                 # into the data to search on instead.
                 stream.read(entry.size & 1)
 
+    def _settle(self, entry: _Entry) -> None:
+        """What ``entry``, a header the walk counts, shows about the archive."""
+        if entry.dialect is not None and (entry.dialect_wins or self._dialect is None):
+            self._dialect = entry.dialect
+        self._symbol_table = self._symbol_table or entry.symbol_table
+
     def _entry(
         self,
         stream: ForwardStream,
@@ -307,7 +327,8 @@ class ArReader(SequentialReader):
         salvage: WalkSalvage | None,
     ) -> _Entry | None:
         """What the header ``raw`` at ``offset`` holds, the stream moved past what
-        the walk reads of it: a member's data is left for archivey.
+        the walk reads of it: a member's data is left for archivey. It changes no
+        state of the reader: the walk does, from what it returns (``_settle``).
 
         ``salvage`` is given past damage in salvage mode. The header is then
         ``None`` when its data runs past the layer's end (``WalkSalvage.holds``),
@@ -354,22 +375,18 @@ class ArReader(SequentialReader):
             if name in _BSD_SYMBOL_TABLES:
                 if not confirmed():
                     return None
-                self._dialect = self._dialect or "bsd"
-                self._symbol_table = True
                 stream.skip(data_length)
                 stream.read(size & 1)
-                return _Entry(size)
-            self._dialect = self._dialect or "bsd"
+                return _Entry(size, dialect="bsd", symbol_table=True)
+            dialect, wins = "bsd", False
         elif name_field in _GNU_SYMBOL_TABLES or name_field in _BSD_SYMBOL_TABLES:
             if not confirmed():
                 return None
             # The symbol table's spelling names the dialect too.
             gnu = name_field in _GNU_SYMBOL_TABLES
-            self._dialect = self._dialect or ("gnu" if gnu else "bsd")
-            self._symbol_table = True
             stream.skip(size)
             stream.read(size & 1)
-            return _Entry(size)
+            return _Entry(size, dialect="gnu" if gnu else "bsd", symbol_table=True)
         elif name_field == b"//":
             if names is not None and not salvaging:
                 raise CorruptionError(
@@ -380,14 +397,15 @@ class ArReader(SequentialReader):
                 # is charged or read, and leaves no state: the search goes on
                 # inside it.
                 return None
-            self._dialect = "gnu"
             # The table is held for the whole walk: text the listing retains.
             self._context.charge_metadata(size, what="the ar long-name table")
             table = stream.read_exact(size)
             stream.read(size & 1)
-            return _Entry(size, table=table)
+            return _Entry(size, table=table, dialect="gnu", dialect_wins=True)
         else:
-            found = self._short_name(name_field, names, offset, salvaging=salvaging)
+            found, dialect, wins = self._short_name(
+                name_field, names, offset, salvaging=salvaging
+            )
             if found is None:
                 # A long name whose table the damage took: the raw name stays.
                 name = name_field
@@ -398,7 +416,14 @@ class ArReader(SequentialReader):
         if not name:
             raise CorruptionError(f"ar header at offset {offset} has no name")
         member = self._member(raw, name, data_length, offset)
-        return _Entry(size, member=member, data_length=data_length, unchecked=unchecked)
+        return _Entry(
+            size,
+            member=member,
+            data_length=data_length,
+            unchecked=unchecked,
+            dialect=dialect,
+            dialect_wins=wins,
+        )
 
     def _search(
         self,
@@ -432,16 +457,17 @@ class ArReader(SequentialReader):
                 continue
             return at, entry
 
+    @staticmethod
     def _short_name(
-        self, field: bytes, names: bytes | None, offset: int, *, salvaging: bool = False
-    ) -> bytes | None:
-        """The name a GNU or short BSD name field gives; ``None``, when
-        ``salvaging``, for a long name the table does not hold."""
+        field: bytes, names: bytes | None, offset: int, *, salvaging: bool = False
+    ) -> tuple[bytes | None, str, bool]:
+        """The name a GNU or short BSD name field gives (``None``, when
+        ``salvaging``, for a long name the table does not hold), the dialect it
+        shows, and whether that replaces one an earlier header showed."""
         if field.startswith(b"/") and field[1:].isdigit():
-            self._dialect = "gnu"
             if names is None:
                 if salvaging:
-                    return None
+                    return None, "gnu", True
                 raise CorruptionError(
                     f"ar header at offset {offset} names entry {field[1:].decode()} "
                     "of a long-name table the archive has not given"
@@ -449,7 +475,7 @@ class ArReader(SequentialReader):
             at = int(field[1:])
             if at >= len(names):
                 if salvaging:
-                    return None
+                    return None, "gnu", True
                 raise CorruptionError(
                     f"ar header at offset {offset}: long-name offset {at} is past the "
                     f"{len(names)}-byte table"
@@ -459,12 +485,10 @@ class ArReader(SequentialReader):
             # length and not the table's, and only the entry is sliced.
             found = _NAME_END.search(names, at)
             stop = len(names) if found is None else found.start()
-            return names[at:stop].removesuffix(b"/")
+            return names[at:stop].removesuffix(b"/"), "gnu", True
         if field.endswith(b"/"):
-            self._dialect = "gnu"
-            return field[:-1]
-        self._dialect = self._dialect or "bsd"
-        return field
+            return field[:-1], "gnu", True
+        return field, "bsd", False
 
     def _member(self, raw: bytes, name: bytes, size: int, offset: int) -> ArchiveMember:
         context = self._context
