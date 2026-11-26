@@ -2075,3 +2075,21 @@ def test_a_found_global_header_whose_chain_makes_no_member_changes_nothing() -> 
     salvage = _list(data, salvage=True)
     assert salvage.names == ["before.txt", "real.txt"]
     assert salvage.members[1][2] == b"real"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["日本語のファイル名.txt".encode(), "café".encode(), b"plain", b"bad\xff\xfe"],
+    ids=["cjk", "accent", "ascii", "not-utf8"],
+)
+def test_held_text_weighs_what_its_member_keeps(raw: bytes) -> None:
+    """A held entry's text is charged what the decoded text weighs in the listing
+    limits, not four bytes per byte; bytes that are not UTF-8 keep the upper bound."""
+    from archivey.internal.backends.tar_reader import _text_weight
+    from archivey.internal.listing_limits import str_retained_bytes
+
+    weight = _text_weight(raw)
+    try:
+        assert weight == str_retained_bytes(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        assert weight == 4 * len(raw)

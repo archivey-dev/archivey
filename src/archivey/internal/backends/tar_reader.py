@@ -701,8 +701,15 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
 
 def _text_weight(raw: bytes) -> int:
     """At least what the text decoded from ``raw`` weighs in the listing limits
-    (``str_retained_bytes``): a character takes at least one byte."""
-    return len(raw) if raw.isascii() else 4 * len(raw)
+    (``str_retained_bytes``). Valid UTF-8 is what the member keeps (a valid UTF-8
+    name wins over ``encoding=``), so it weighs exactly that. Other bytes may
+    decode to one character each, so they weigh the upper bound, four per byte."""
+    if raw.isascii():
+        return len(raw)
+    try:
+        return 4 * len(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        return 4 * len(raw)
 
 
 def _held_weight(entry: TarEntry) -> int:
