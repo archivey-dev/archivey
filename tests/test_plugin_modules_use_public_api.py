@@ -109,3 +109,23 @@ def test_the_attribute_guard_admits_the_named_tuple_api(tmp_path: Path) -> None:
         "def move(locator):\n    return locator._replace(offset=0)\n", encoding="utf-8"
     )
     assert foreign_private_reads(probe) == []
+
+
+def test_the_attribute_guard_sees_a_write_to_a_core_private_attribute(
+    tmp_path: Path,
+) -> None:
+    """A write onto another object is a dependency on its state, and does not make
+    the name the module's own: later reads of it are still reported."""
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "def f(context, source):\n"
+        "    context._nest = 1\n"
+        "    source._origin += 1\n"
+        "    return context._nest\n",
+        encoding="utf-8",
+    )
+    assert foreign_private_reads(probe) == [
+        "probe.py:2 context._nest",
+        "probe.py:3 source._origin",
+        "probe.py:4 context._nest",
+    ]

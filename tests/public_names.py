@@ -60,14 +60,21 @@ _NAMEDTUPLE_API = frozenset(
 
 def _own_private_names(tree: ast.Module) -> set[str]:
     """The private names a module defines itself: its functions, classes and class or
-    module variables, and each attribute it assigns (``self._seen = ...``)."""
+    module variables, and each attribute it assigns on ``self`` or ``cls``
+    (``self._seen = ...``). A store onto another object is not the module's own."""
     own: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             own.add(node.name)
         elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             own.add(node.id)
-        elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store):
+        elif (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.ctx, ast.Store)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in {"self", "cls"}
+        ):
+            # Only a store on itself: ``context._nest = 1`` writes core state.
             own.add(node.attr)
     return {name for name in own if name.startswith("_")}
 
