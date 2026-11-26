@@ -101,7 +101,6 @@ from archivey.internal.backends.tar_parser import (
     Ambiguity,
     Budget,
     GlobalRecords,
-    HeaderFormat,
     LinkData,
     NameSource,
     PaxValue,
@@ -738,14 +737,11 @@ def _held_weight(entry: TarEntry) -> int:
 @dataclass(frozen=True)
 class _WalkState:
     """What a found chain may change for the rest of the walk, at one point of it:
-    the PAX global records and the v7 rule's record of what was listed. It is kept
-    from before a found chain until its member is confirmed
-    (``_SalvageWalk.provisional``), and from the start of each gap for the second
-    pass (``_Gap.state``)."""
+    the PAX global records. It is kept from before a found chain until its member is
+    confirmed (``_SalvageWalk.provisional``), and from the start of each gap for the
+    second pass (``_Gap.state``)."""
 
     records: GlobalRecords
-    listed: bool
-    listed_non_v7: bool
 
 
 @dataclass(frozen=True)
@@ -769,8 +765,7 @@ class _SalvageWalk:
     ``default_end`` is the end the walk would stop on without salvage, with the last
     member and the member count at that point: the pass ends in its error once the
     searches are done (Q3). ``found_at`` is where the chain of the entry about to be
-    listed starts, when a search found it. ``v7`` is the v7 rule the last search
-    used, for the confirmation of what it found. ``trusted`` is, for the member
+    listed starts, when a search found it. ``trusted`` is, for the member
     just listed, its member header's offset, when a forward-only walk trusted its
     size (``TarWalker.salvage_confirms``).
 
@@ -800,11 +795,7 @@ class _SalvageWalk:
     found_at: int | None = None
     provisional: _WalkState | None = None
     trusted: int | None = None
-    v7: bool = False
     limit_reached: bool = False
-    # Whether any member was listed, and whether one had a header other than v7.
-    listed: bool = False
-    listed_non_v7: bool = False
     gaps: list[_Gap] = field(default_factory=list)
     known: set[int] = field(default_factory=set)
     clean_end: int | None = None
@@ -813,12 +804,10 @@ class _SalvageWalk:
     def search_starts(self, walker: TarWalker) -> None:
         """Before a search: the found chain before it, if not confirmed, changed
         nothing that outlives it. Its member was not confirmed, so the PAX global
-        records and the v7 rule go back to where they stood before it."""
+        records go back to where they stood before it."""
         before, self.provisional = self.provisional, None
         if before is not None:
             walker.restore_global_records(before.records)
-            self.listed = before.listed
-            self.listed_non_v7 = before.listed_non_v7
         self.trusted = None
 
     def chain_found(self, walker: TarWalker) -> None:
@@ -826,7 +815,7 @@ class _SalvageWalk:
         self.provisional = self._state(walker)
 
     def _state(self, walker: TarWalker) -> _WalkState:
-        return _WalkState(walker.global_records(), self.listed, self.listed_non_v7)
+        return _WalkState(walker.global_records())
 
     def search_state(self, walker: TarWalker) -> _WalkState:
         """The state a search from here starts from: the one before the pending
@@ -840,11 +829,8 @@ class _SalvageWalk:
     ) -> None:
         """Before the second pass searches a gap: the state at its start, with
         ``records`` in place of its records when the re-walk after the gap before
-        ended with others. What the second pass listed before also counts for the
-        v7 rule: the flags only grow along the archive."""
+        ended with others."""
         walker.restore_global_records(state.records if records is None else records)
-        self.listed = state.listed or self.listed
-        self.listed_non_v7 = state.listed_non_v7 or self.listed_non_v7
         self.provisional = None
         self.trusted = None
 
@@ -859,17 +845,6 @@ class _SalvageWalk:
             self.default_end = end
             self.default_last = last
             self.default_count = count
-
-    def note_listed(self, entry: TarEntry) -> None:
-        self.listed = True
-        if entry.header.format is not HeaderFormat.V7:
-            self.listed_non_v7 = True
-
-    @property
-    def v7_allowed(self) -> bool:
-        """The v7 rule: a block with no magic passes the search only when every
-        header listed before it was v7, and at least one was."""
-        return self.listed and not self.listed_non_v7
 
 
 @dataclass(frozen=True)
@@ -1382,7 +1357,6 @@ class TarReader(BaseArchiveReader):
                         index += 1
                 else:
                     last_member = self._to_member(entry, index)
-                    salvage.note_listed(entry)
                     yield last_member
                     index += 1
                 if search_from is not None:
@@ -1512,7 +1486,6 @@ class TarReader(BaseArchiveReader):
         """
         while True:
             salvage.search_starts(walker)
-            salvage.v7 = salvage.v7_allowed
             if end is not None and start >= end:
                 return None
             try:
@@ -1520,7 +1493,6 @@ class TarReader(BaseArchiveReader):
                     result = walker.salvage_search(
                         self._salvage_mode,
                         start,
-                        v7=salvage.v7,
                         layer=self._salvage_layer,
                         end=end,
                     )
@@ -1571,10 +1543,6 @@ class TarReader(BaseArchiveReader):
         member whose data ends past the gap is confirmed when the first pass listed
         a member there or found the clean end there.
         """
-        # Listed here, before anything below reads the state: a gap this member
-        # leaves starts from it when it is reached, and from the state before its
-        # chain when it is found and nothing confirms it (search_state).
-        salvage.note_listed(entry)
         searched = salvage.found_at is not None
         found = salvage.found_at if searched else entry.header_offset
         assert found is not None
@@ -1582,9 +1550,7 @@ class TarReader(BaseArchiveReader):
         gap = salvage.gap
         try:
             with self._translated_errors(), self._walk_guard():
-                looked = walker.salvage_confirms(
-                    v7=salvage.v7, far_to=None if gap is None else gap[1]
-                )
+                looked = walker.salvage_confirms(far_to=None if gap is None else gap[1])
         except CorruptionError as exc:
             if from_source_callback(exc):
                 raise
@@ -1774,9 +1740,6 @@ class TarReader(BaseArchiveReader):
         # The records the re-walk after the last gap ended with, at this gap's start.
         rewalked: GlobalRecords | None = None
         gaps = salvage.gaps
-        # The v7 rule's flags start from each gap's own (enter_gap), plus what the
-        # second pass lists, not from all the first pass listed after the gap.
-        salvage.listed = salvage.listed_non_v7 = False
         for number, gap in enumerate(gaps):
             at_start, rewalked = rewalked, None
             gap_stop = gap.stop
@@ -1784,9 +1747,8 @@ class TarReader(BaseArchiveReader):
                 continue
             if gap.start >= reached:
                 # A global header the first pass read after this gap does not
-                # apply to what the search finds in it, nor does a member it listed
-                # there count for the v7 rule. A walk that ran on into the gap from
-                # the one before has the state in force already.
+                # apply to what the search finds in it. A walk that ran on into the
+                # gap from the one before has the state in force already.
                 salvage.enter_gap(walker, gap.state, at_start)
             start = max(gap.start, reached)
             salvage.gap = (start, gap_stop)
@@ -1924,7 +1886,6 @@ class TarReader(BaseArchiveReader):
                 return None
             if not walker.reread_at(offset):
                 return None
-            salvage.v7 = salvage.v7_allowed
             if not reached:
                 salvage.found_at = offset
                 salvage.chain_found(walker)

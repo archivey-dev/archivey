@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from archivey import (
+    ArchiveFormat,
     ArchiveyConfig,
     DecoderLimits,
     DiagnosticCode,
@@ -226,39 +227,101 @@ def _assert_found_are_real(tar: _Tar, listing: _Listing, start: int = 0) -> None
 # ---------------------------------------------------------------------------
 
 
-def test_find_header_takes_ustar_and_gnu_magic_on_block_boundaries() -> None:
+def _as_v7(header: bytes, checksum: bytes = b"%06o\x00 ") -> bytes:
+    """``header`` (one block) with no magic, its checksum field ``checksum`` % sum."""
+    block = bytearray(header[:BLOCKSIZE])
+    block[257:265] = bytes(8)
+    block[148:156] = b" " * 8
+    block[148:156] = (checksum % sum(block)).ljust(8, b"\x00")
+    return bytes(block)
+
+
+def test_find_header_takes_ustar_gnu_and_v7_headers_on_block_boundaries() -> None:
     gnu = _build(2, fmt=tarfile.GNU_FORMAT).data
     ustar = _build(2, fmt=tarfile.USTAR_FORMAT).data
-    v7 = _build(2, fmt=tarfile.USTAR_FORMAT).data
-    v7_block = bytearray(v7[:BLOCKSIZE])
-    v7_block[257:265] = bytes(8)
-    v7_block[148:156] = b" " * 8
-    v7_block[148:156] = b"%06o\x00 " % sum(v7_block)
-    assert passes_header_search(gnu[:BLOCKSIZE], v7=False)
-    assert passes_header_search(ustar[:BLOCKSIZE], v7=False)
-    assert not passes_header_search(bytes(v7_block), v7=False)
-    assert passes_header_search(bytes(v7_block), v7=True)
-    assert not passes_header_search(bytes(BLOCKSIZE), v7=True)
+    v7_block = _as_v7(ustar)
+    assert passes_header_search(gnu[:BLOCKSIZE])
+    assert passes_header_search(ustar[:BLOCKSIZE])
+    assert passes_header_search(v7_block)
+    assert not passes_header_search(bytes(BLOCKSIZE))
     # A bad checksum fails, whatever the magic.
-    assert not passes_header_search(_flipped(gnu[:BLOCKSIZE], 10), v7=False)
+    assert not passes_header_search(_flipped(gnu[:BLOCKSIZE], 10))
+    assert not passes_header_search(_flipped(v7_block, 10))
 
-    find = tar_header_search(v7=False).find_header
-    window = bytes(3 * BLOCKSIZE) + gnu[:BLOCKSIZE]
-    assert find(window, 0, len(window)) == 3 * BLOCKSIZE
-    assert find(window, 4 * BLOCKSIZE, len(window)) is None
-    # Off a block boundary, a header is not seen.
-    off = bytes(100) + gnu[:BLOCKSIZE] + bytes(BLOCKSIZE)
-    assert find(off, 0, len(off)) is None
+    find = tar_header_search().find_header
+    for header in (gnu[:BLOCKSIZE], v7_block):
+        window = bytes(3 * BLOCKSIZE) + header
+        assert find(window, 0, len(window)) == 3 * BLOCKSIZE
+        assert find(window, 4 * BLOCKSIZE, len(window)) is None
+        # Off a block boundary, a header is not seen.
+        off = bytes(100) + header + bytes(BLOCKSIZE)
+        assert find(off, 0, len(off)) is None
+        # A header at ``stop`` or past it is not examined, though the window holds
+        # it.
+        assert find(window, 0, 3 * BLOCKSIZE) is None
+        assert find(window, 0, 3 * BLOCKSIZE + 1) == 3 * BLOCKSIZE
     # "ustar" in data before the header does not hide it.
     junk = bytearray(2 * BLOCKSIZE)
     junk[300:305] = b"ustar"
     junk[257:262] = b"ustar"
     assert find(bytes(junk) + gnu[:BLOCKSIZE], 0, 3 * BLOCKSIZE) == 2 * BLOCKSIZE
-    # A header at ``stop`` or past it is not examined, though the window holds it.
-    for v7_rule in (False, True):
-        bounded = tar_header_search(v7=v7_rule).find_header
-        assert bounded(window, 0, 3 * BLOCKSIZE) is None
-        assert bounded(window, 0, 3 * BLOCKSIZE + 1) == 3 * BLOCKSIZE
+    # The first header of either kind, whichever comes first.
+    both = bytes(BLOCKSIZE) + v7_block + gnu[:BLOCKSIZE]
+    assert find(both, 0, len(both)) == BLOCKSIZE
+    both = bytes(BLOCKSIZE) + gnu[:BLOCKSIZE] + v7_block
+    assert find(both, 0, len(both)) == BLOCKSIZE
+    assert find(both, 2 * BLOCKSIZE, len(both)) == 2 * BLOCKSIZE
+
+
+@pytest.mark.parametrize(
+    "checksum",
+    [b"%06o\x00 ", b"%6o\x00 ", b"%07o\x00", b"%07o ", b"\x00%06o ", b"%o\x00"],
+)
+def test_a_v7_header_passes_in_each_spelling_writers_give_its_checksum(
+    checksum: bytes,
+) -> None:
+    # GNU tar and tarfile write "%06o\0 ", v7 and others leading spaces, a
+    # seventh digit, or the digits alone; the walk reads each the same way.
+    block = _as_v7(_build(1, fmt=tarfile.USTAR_FORMAT).data, checksum)
+    assert passes_header_search(block)
+    window = bytes(BLOCKSIZE) + block
+    assert tar_header_search().find_header(window, 0, len(window)) == BLOCKSIZE
+
+
+def _with_field(block: bytes, lo: int, hi: int, value: bytes) -> bytes:
+    """The v7 ``block`` with bytes ``lo``..``hi`` set to ``value``, checksum fixed."""
+    out = bytearray(block)
+    out[lo:hi] = value.ljust(hi - lo, b"\x00")
+    return _as_v7(bytes(out))
+
+
+@pytest.mark.parametrize(
+    ("lo", "hi", "value"),
+    [
+        (124, 136, b"\x80" + (5).to_bytes(11, "big")),  # base-256 size
+        (100, 108, b"\xff" * 8),  # base-256 mode
+        (108, 116, b""),  # an empty uid: no digits
+        (136, 148, b"12x45670123"),  # not octal
+        (116, 124, b" 9"),  # 9 is not octal
+    ],
+)
+def test_a_block_with_no_magic_needs_octal_number_fields(
+    lo: int, hi: int, value: bytes
+) -> None:
+    # Its checksum matches, but a field a v7 writer always fills with octal text
+    # holds something else: the search does not take it (davi, 2026-11-26).
+    block = _with_field(_as_v7(_build(1, fmt=tarfile.USTAR_FORMAT).data), lo, hi, value)
+    assert not passes_header_search(block)
+    window = bytes(BLOCKSIZE) + block
+    assert tar_header_search().find_header(window, 0, len(window)) is None
+
+
+def test_a_v7_checksum_field_must_be_octal_text() -> None:
+    # A base-256 checksum, as a block that sums to it might hold, is not text.
+    plain = _as_v7(_build(1, fmt=tarfile.USTAR_FORMAT).data)
+    out = bytearray(plain)
+    out[148:156] = b"\x80" + int(plain[148:154], 8).to_bytes(7, "big")
+    assert not passes_header_search(bytes(out))
 
 
 # ---------------------------------------------------------------------------
@@ -699,9 +762,9 @@ def _walk(data: bytes, *, seekable: bool) -> list[tuple[str, int, bool]]:
     while True:
         if isinstance(entry, TarEntry):
             out.append((entry.name.decode(), entry.header_offset, found))
-            if found and not walker.salvage_confirms(v7=False):
+            if found and not walker.salvage_confirms():
                 result = walker.salvage_search(
-                    state, entry.header_offset + BLOCKSIZE, v7=False, layer="archive"
+                    state, entry.header_offset + BLOCKSIZE, layer="archive"
                 )
                 if result.found is None:
                     break
@@ -712,7 +775,7 @@ def _walk(data: bytes, *, seekable: bool) -> list[tuple[str, int, bool]]:
             continue
         if entry.kind is not TarEndKind.REJECTED:
             break
-        result = walker.salvage_search(state, entry.offset, v7=False, layer="archive")
+        result = walker.salvage_search(state, entry.offset, layer="archive")
         if result.found is None:
             break
         found = True
@@ -2275,26 +2338,50 @@ def _v7_member(name: str, content: bytes) -> bytes:
 
 
 @pytest.mark.parametrize("path", _PATHS)
-@pytest.mark.parametrize("claim", ["unconfirmed", "trusted"])
-def test_a_found_member_nothing_confirms_leaves_the_v7_rule_as_it_was(
-    claim: str, path: str
+@pytest.mark.parametrize("first", ["ustar", "v7"])
+def test_salvage_finds_v7_and_ustar_headers_after_either_kind(
+    first: str, path: str
 ) -> None:
-    # A v7 archive, damage, then a ustar header nothing confirms (junk after its
-    # data, or a size that lies past the hold, which a forward-only walk trusts
-    # and then finds unconfirmed). Only a confirmed member may end the v7 rule:
-    # the v7 members after the noise are still found.
-    info = tarfile.TarInfo("noise")
-    info.size = 0 if claim == "unconfirmed" else 8 << 20
+    # A mixed archive: a member of either kind, then damage before each of a v7
+    # and a ustar member. The search takes both kinds wherever it runs, whatever
+    # the walk listed before (davi, 2026-11-26).
+    make = _member if first == "ustar" else _v7_member
     data = (
-        _v7_member("a.txt", b"a")
+        make("first.txt", b"first")
         + b"X" * BLOCKSIZE
-        + info.tobuf(tarfile.USTAR_FORMAT)
+        + _v7_member("v7.txt", b"v7")
+        + _member("ustar.txt", b"u")
         + b"Y" * BLOCKSIZE
-        + _v7_member("real.txt", b"real")
-        + _v7_member("real2.txt", b"r2")
+        + _v7_member("v7b.txt", b"v7b")
+        + _member("ustar2.txt", b"u2")
         + b"\0" * (2 * BLOCKSIZE)
     )
-    assert _names_on(path, data) == ["a.txt", "noise", "real.txt", "real2.txt"]
+    assert _names_on(path, data) == [
+        "first.txt",
+        "v7.txt",
+        "ustar.txt",
+        "v7b.txt",
+        "ustar2.txt",
+    ]
+
+
+@pytest.mark.parametrize("path", ["plain", "gzip"])
+@pytest.mark.parametrize("lost", [BLOCKSIZE, 4096])
+def test_salvage_finds_a_v7_member_past_a_lost_start(path: str, lost: int) -> None:
+    # A v7 archive whose first bytes are lost: nothing was listed before the
+    # damage, and the search still takes the v7 headers after it.
+    data = b"".join(
+        _v7_member(f"m{i}.txt", bytes([65 + i]) * (300 + 700 * i)) for i in range(6)
+    )
+    damaged = b"Q" * lost + data[lost:] + b"\0" * (2 * BLOCKSIZE)
+    fmt = ArchiveFormat.TAR if path == "plain" else ArchiveFormat.TAR_GZ
+    source = damaged if path == "plain" else gzip.compress(damaged, 1)
+    listing = _list(source, salvage=True, format=fmt)
+    names = [name for name, _, _ in listing.members]
+    assert names and names == [f"m{i}.txt" for i in range(6 - len(names), 6)]
+    for name, _, content in listing.members:
+        i = int(name[1])
+        assert content == bytes([65 + i]) * (300 + 700 * i)
 
 
 @pytest.mark.parametrize("path", _PATHS)
@@ -2326,23 +2413,30 @@ def test_a_found_global_header_nothing_confirms_renames_nothing_after(
 
 
 @pytest.mark.parametrize("path", _PATHS)
+@pytest.mark.parametrize("after", ["v7", "ustar", "junk"])
 def test_a_trusted_member_is_confirmed_only_by_a_header_that_passes_the_checks(
-    path: str,
+    path: str, after: str
 ) -> None:
-    # big.bin is larger than the hold, so a forward-only walk trusts its size. The
-    # block after its data is a v7 header, which does not pass the search's checks
-    # in a ustar archive: it confirms nothing on any walk, so the search goes back
-    # inside big.bin's data and finds after.txt, as a seekable walk does.
+    # big.bin is larger than the hold, so a forward-only walk trusts its size. A v7
+    # or ustar header after its data confirms it on every walk. A block that is
+    # neither confirms nothing, so the search goes back inside big.bin's data and
+    # finds after.txt, as a seekable walk does.
     big = random.Random(3).randbytes(5 << 20)
+    next_member = {
+        "v7": _v7_member("next.txt", b"v"),
+        "ustar": _member("next.txt", b"v"),
+        "junk": b"J" * BLOCKSIZE,
+    }[after]
     data = (
         _member("before.txt", b"before")
         + b"X" * BLOCKSIZE
         + _member("big.bin", big)
-        + _v7_member("v7.txt", b"v")
+        + next_member
         + _member("after.txt", b"after")
         + b"\0" * (2 * BLOCKSIZE)
     )
-    assert _names_on(path, data) == ["before.txt", "big.bin", "after.txt"]
+    expected = ["before.txt", "big.bin"] + (["next.txt"] if after != "junk" else [])
+    assert _names_on(path, data) == [*expected, "after.txt"]
 
 
 def _pax_record(key: str, value: str) -> bytes:
@@ -2445,10 +2539,9 @@ def _pax_listing(data: bytes) -> list[tuple[str, object]]:
         return [(m.name, m.extra.get("tar.pax_headers")) for m in members]
 
 
-def test_the_second_pass_searches_a_gap_with_the_v7_rule_of_its_start() -> None:
-    # A v7 archive: the v7 members in the gap are found by the first pass's v7
-    # rule at the gap's start, not ended by the ustar members the first pass
-    # listed after the gap.
+def test_the_second_pass_finds_v7_members_in_a_gap_before_ustar_ones() -> None:
+    # A v7 archive with ustar members after a gap: the second pass finds the v7
+    # members in the gap, as the one pass over the plain tar does.
     data = (
         _v7_member("a.txt", b"a")
         + b"X" * BLOCKSIZE
@@ -2523,18 +2616,23 @@ def _salvage_snapshot(source: bytes) -> tuple[list[tuple[object, ...]], str]:
         return members, type(report.error).__name__
 
 
-def _generated_tar(seed: int, *, v7: bool = False) -> bytes:
+def _generated_tar(seed: int, *, kind: str = "ustar") -> bytes:
     """A damaged tar of 10 to 25 random items after ``a`` and a damaged block:
     members up to 1.3 MB, headers that claim 5 to 12 MiB they do not hold, damaged
     blocks, and PAX global headers (``uname``, ``size`` or ``path``) before a
-    member or a liar. With ``v7``, every header has no magic."""
+    member or a liar. With ``kind`` ``"v7"`` every header has no magic; with
+    ``"mixed"``, ``a`` has none, and each later one has none by chance (one liar in
+    two, four members in five)."""
     rng = random.Random(seed)
 
-    def header(name: str, size: int) -> bytes:
+    def header(name: str, size: int, share: float | None = None) -> bytes:
+        no_magic = kind == "v7" or (
+            kind == "mixed" and (share is None or rng.random() < share)
+        )
         info = tarfile.TarInfo(name)
         info.size = size
         block = bytearray(info.tobuf(tarfile.USTAR_FORMAT))
-        if v7:
+        if no_magic:
             block[257:265] = bytes(8)
             block[148:156] = b" " * 8
             block[148:156] = b"%06o\x00 " % sum(block)
@@ -2556,30 +2654,36 @@ def _generated_tar(seed: int, *, v7: bool = False) -> bytes:
             out += _global_header({key: value})
             draw = rng.random() * 0.75
         if draw < 0.15:
-            out += header(f"l{i}", rng.randrange(5 << 20, 12 << 20))
+            out += header(f"l{i}", rng.randrange(5 << 20, 12 << 20), 0.5)
             out += body(rng.randrange(0, 4) * BLOCKSIZE)
         elif draw < 0.25:
             out += b"\x01" * BLOCKSIZE
         else:
             size = rng.randrange(0, 1_300_000)
-            out += header(f"r{i}", size) + body(size)
+            out += header(f"r{i}", size, 0.8) + body(size)
     return out + bytes(2 * BLOCKSIZE)
 
 
 # Seeds whose gzip listing differed from the plain one (names, owners, sizes, or
 # the MEMBER_FOUND_BY_SCAN record), and a few that never did. A wider sweep of
-# 2000 USTAR seeds and 500 pure-v7 seeds lists the same on both.
+# 2000 USTAR seeds, 500 pure-v7 seeds and 500 mixed ones lists the same on both.
 _PARITY_SEEDS = [0, 1, 11, 15, 32, 35, 36, 38, 44, 156, 158, 179, 205, 244, 248]
+# Mixed seeds that differed under the v7 rule (a v7 header found only after v7
+# ones) at some point of the two-pass work; four still did at c413ef59.
+_MIXED_SEEDS = [11, 28, 45, 79, 83, 85, 102, 125, 151, 180]
 
 
-@pytest.mark.parametrize("v7", [False, True], ids=["ustar", "v7"])
-@pytest.mark.parametrize("seed", _PARITY_SEEDS)
-def test_a_gzip_tar_salvages_what_the_same_tar_salvages(seed: int, v7: bool) -> None:
+@pytest.mark.parametrize(
+    ("seed", "kind"),
+    [(seed, kind) for kind in ("ustar", "v7") for seed in _PARITY_SEEDS]
+    + [(seed, "mixed") for seed in _MIXED_SEEDS],
+)
+def test_a_gzip_tar_salvages_what_the_same_tar_salvages(seed: int, kind: str) -> None:
     """The two-pass walk of a codec stream lists what the one pass over the plain
     tar lists: whether a chain is found by a search or reached from a confirmed
     member is decided as the one pass decides it, also when the second pass
     confirms a member whose data ends at a chain the first pass found."""
-    data = _generated_tar(seed, v7=v7)
+    data = _generated_tar(seed, kind=kind)
     assert _salvage_snapshot(gzip.compress(data, 1)) == _salvage_snapshot(data)
 
 
