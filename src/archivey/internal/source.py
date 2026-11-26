@@ -549,7 +549,9 @@ class ArchiveSource(ReadOnlyIOStream):
         Under ``pipe`` a seekable ``stream`` is read through a :class:`PipeView`,
         wrapped before anything here measures it: measuring would seek it to the end
         and back, or make a decompressor decode ahead, to learn a size that pipe mode
-        does not use. The result is marked ``piped_from_seekable``.
+        does not use. The result is marked ``piped_from_seekable``. An
+        :class:`ArchiveSource` is returned as it is, ``pipe`` or not: ``open_archive``
+        pipes a seekable one itself (:meth:`read_as_pipe`), which takes ownership.
         """
         raise_if_text_stream(stream)
         if isinstance(stream, ArchiveSource):

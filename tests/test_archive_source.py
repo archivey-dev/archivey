@@ -1709,3 +1709,10 @@ def test_for_stream_pipe_leaves_a_non_seekable_stream_unmarked() -> None:
     wrapped = ArchiveSource.for_stream(NonSeekableBytesIO(b"abc"), pipe=True)  # type: ignore[arg-type]
     assert not wrapped.piped_from_seekable
     assert wrapped.read() == b"abc"
+
+
+def test_for_stream_pipe_returns_an_archive_source_as_it_is() -> None:
+    # ``open_archive`` pipes a seekable ArchiveSource itself (``read_as_pipe``),
+    # which owns the view; wrapping it here as well would borrow it instead.
+    inner = ArchiveSource.for_stream(io.BytesIO(b"abc"))
+    assert ArchiveSource.for_stream(inner, pipe=True) is inner
