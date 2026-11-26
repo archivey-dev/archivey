@@ -163,17 +163,16 @@ cut, prints "Unexpected end of archive" and exits nonzero. Until then archivey r
 `CorruptionError` at open ("Unexpected EOF while reading RAR3 block header" or "… header
 body", and the RAR5 equivalents) and listed nothing. Only a file that ends before the
 header's declared bytes counts as a cut: a declared size that is invalid while the bytes
-are present (a RAR3 size below 7, a RAR5 size vint over 3 bytes, the RAR5 note's
-limit, which keeps a header under 2 MiB) stays `CorruptionError`. A cut exactly at a
-header boundary lists the members before the cut, then warns: RAR5 writers always close
-a volume with `ENDARC`, so a RAR5 walk
-that reaches end of file without one emits `ARCHIVE_EOF_MARKER_MISSING`
-(`expected_marker="end_of_archive_block"`, `format="rar"`, `observed_kind="absent"`)
-once per archive after the members, naming the volumes that lacked it. That is TAR's
-missing-trailer rule: the listing completes, and `DiagnosticPolicy.STRICT` refuses it
-after delivery. A volume in a set needs the block too — its flags are what say another
-volume follows — so a set whose volumes all end in `ENDARC` emits nothing. RAR 1.5-4 is
-left alone: old writers may omit the end block,
+are present (a RAR3 size below 7, a RAR5 size vint over 3 bytes, the RAR5 note's limit,
+which keeps a header under 2 MiB) stays `CorruptionError`. A cut exactly at a header
+boundary lists the members before the cut, then warns: RAR5 writers always close a
+volume with `ENDARC`, so a RAR5 walk that reaches end of file without one emits
+`ARCHIVE_EOF_MARKER_MISSING` (`expected_marker="end_of_archive_block"`, `format="rar"`,
+`observed_kind="absent"`) once per archive after the members, naming the volumes that
+lacked it. That is TAR's missing-trailer rule: the listing completes, and
+`DiagnosticPolicy.STRICT` refuses it after delivery. A volume in a set needs the block
+too — its flags are what say another volume follows — so a set whose volumes all end in
+`ENDARC` emits nothing. RAR 1.5-4 is left alone: old writers may omit the end block,
 so its absence there is not evidence of a cut. **With header encryption (`-hp`) a cut
 inside a header is a truncated listing too.** Each header there is a salt (RAR3, 8 bytes)
 or IV (RAR5, 16 bytes) and then whole 16-byte cipher blocks, and a writer never stops

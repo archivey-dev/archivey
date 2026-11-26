@@ -233,11 +233,11 @@ def test_encrypted_header_plaintext_tell_breaks_the_walk(
     """Red-green for thread 1: if ``tell`` subtracted leftover ``_buf``, listing
     these fixtures fails — the next salt/IV is read from inside AES padding.
 
-    The misread IV decrypts a garbage RAR5 header size vint, longer than the 3 bytes
-    the walk reads, which raises. In RAR3 the
-    misread salt decrypts a garbage header after file1.txt's header has proved the key
-    by its CRC16, and its size runs to the end of the file, so the walk lists
-    file1.txt and reports a cut in the header that starts at byte 114.
+    The misread IV decrypts a garbage RAR5 header size vint, longer than the 3 bytes the
+    walk reads, which raises. In RAR3 the misread salt decrypts a garbage header after
+    file1.txt's header has proved the key by its CRC16, and its size runs to the end of
+    the file, so the walk lists file1.txt and reports a cut in the header that starts at
+    byte 114.
     """
     from archivey.internal.backends import rar_parser
 

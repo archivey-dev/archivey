@@ -8,14 +8,13 @@ The shared search driver (:mod:`archivey.internal.salvage`) asks a format for a
   lost start) that passes its CRC16.
 
 Before a CRC is hashed, each finder checks only what the walk in
-:mod:`~archivey.internal.backends.rar_parser` would also reject: the RAR5
-header-size vint is 1 to ``RAR5_HEADER_SIZE_VINT_MAX_BYTES`` (3) bytes for both, as
-the RAR5 technical note and ``unrar`` 7 require. Neither puts a condition on the
-header flags or on a field
-value the walk lists (method, dictionary size, host OS), because a filter there
-drops real headers: the last FILE header of every volume but the last has the
-split-after flag ``0x10`` set. Every other vint is compared as the walk decodes it,
-in any encoding :func:`load_vint` decodes, the type's included.
+:mod:`~archivey.internal.backends.rar_parser` would also reject: the RAR5 header-size
+vint is 1 to ``RAR5_HEADER_SIZE_VINT_MAX_BYTES`` (3) bytes for both, as the RAR5
+technical note and ``unrar`` 7 require. Neither puts a condition on the header flags or
+on a field value the walk lists (method, dictionary size, host OS), because a filter
+there drops real headers: the last FILE header of every volume but the last has the
+split-after flag ``0x10`` set. Every other vint is compared as the walk decodes it, in
+any encoding :func:`load_vint` decodes, the type's included.
 
 A RAR5 header can be 2 MiB long. Hashing such a candidate at each byte would make the
 work grow with what crafted bytes declare, not with the input, so the CRC of a

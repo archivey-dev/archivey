@@ -4165,14 +4165,14 @@ class RarReader(BaseArchiveReader):
         stream runs through bytes salvage lost (``after_lost``).
 
         Decided from the listing, before any program runs, by the members' own solid
-        flags, which the decoder follows whatever the main header says. A stored plaintext or
-        stored encrypted member is read by archivey itself before this is asked.
-        From the member back, the first member that restarts the decoder ends the
-        stream: one with its own solid flag clear that is not a directory (which has
-        no data, so restarts nothing). Lost bytes before any member up to that one,
-        that one excluded, break the stream. An unconfirmed member claims nothing,
-        so the member found after it is past lost bytes too (``after_lost``): a
-        stream through it is refused here, before any program runs.
+        flags, which the decoder follows whatever the main header says. A stored
+        plaintext or stored encrypted member is read by archivey itself before this is
+        asked. From the member back, the first member that restarts the decoder ends the
+        stream: one with its own solid flag clear that is not a directory (which has no
+        data, so restarts nothing). Lost bytes before any member up to that one, that
+        one excluded, break the stream. An unconfirmed member claims nothing, so the
+        member found after it is past lost bytes too (``after_lost``): a stream through
+        it is refused here, before any program runs.
         """
         if info.found is None:
             return None
