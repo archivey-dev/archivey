@@ -714,6 +714,14 @@ class TrailingData(NamedTuple):
     offset: int
 
 
+def walked_members(members: list[RarMemberInfo]) -> Iterator[RarMemberInfo]:
+    """The members the default walk lists: every one salvage did not find past
+    damage (``RarMemberInfo.found``). A solid pass plans its run over the original
+    archive from these alone: a found row is read on its own, so it changes nothing
+    for them, under ``unrar`` or ``unar``."""
+    return (info for info in members if info.found is None)
+
+
 @dataclass(slots=True)
 class RarArchive:
     version: int  # 4 = RAR3-on-disk family (1.5/2/3); 5 = RAR5 (not "RAR 4.x")

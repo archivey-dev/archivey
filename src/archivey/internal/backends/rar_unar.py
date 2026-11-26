@@ -27,7 +27,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from archivey.internal.backends.rar_parser import RarArchive, RarMemberInfo
+from archivey.internal.backends.rar_parser import (
+    RarArchive,
+    RarMemberInfo,
+    walked_members,
+)
 from archivey.terminal import quoted
 
 # Compression versions below 2.0 are decoded by a separate RAR 1.5 algorithm, which
@@ -451,7 +455,7 @@ class UnarRarPolicy:
         # A row salvage found is not in the run: the pass serves it on its own,
         # where ``member_refusal`` refuses it. Leaving it out keeps the run the
         # default walk's listing gets, every entry selected included.
-        walked = [info for info in self._archive.members if info.found is None]
+        walked = list(walked_members(self._archive.members))
         payload = [info for info in walked if info.is_payload_file()]
         for info in payload:
             reason = self.member_refusal(info)
@@ -539,8 +543,7 @@ class UnarRarPolicy:
             )
         return any(
             unar_emitted_size(info) > 0
-            for info in self._archive.members
-            if info.found is None
+            for info in walked_members(self._archive.members)
         )
 
     def solid_pass_needs_password(self) -> bool:
@@ -558,9 +561,12 @@ class UnarRarPolicy:
             return True
         return any(
             info.is_encrypted
-            for info in self._archive.members
-            if (self._pass_indexes is None and info.found is None)
-            or id(info) in self._pass_selected
+            for info in (
+                walked_members(self._archive.members)
+                if self._pass_indexes is None
+                else self._archive.members
+            )
+            if self._pass_indexes is None or id(info) in self._pass_selected
         )
 
     def solid_pass_offset(self, info: RarMemberInfo) -> int | None:

@@ -34,6 +34,7 @@ from archivey import (
     ListingLimits,
     RarDecompressor,
     SalvageLimits,
+    SpoolLimits,
     open_archive,
 )
 from archivey.diagnostics import (
@@ -1578,8 +1579,97 @@ def test_each_found_row_names_the_check_that_confirmed_it(
         assert "the header after its data passes too" not in message
 
 
+# A RAR5 FILE header for a 4-byte member compressed with RAR5 compression version
+# 2, which no decompressor archivey runs decodes: type 2, header flags 0x02 (a data
+# size follows), data size 4, file flags 0, unpacked size 4, attributes 0,
+# compression information version 2 with method 3 (0x182), host OS 0, name "u".
+_RAR5_UNKNOWN_VERSION = (
+    _rar5_block_bytes(bytes([2, 0x02, 4, 0, 4, 0, 0x82, 0x03, 0, 1]) + b"u") + b"data"
+)
+_RAR5_EMPTY_E = _rar5_block_bytes(bytes([2, 0, 0, 0, 0, 0, 0, 1]) + b"e")
+_RAR5_END = _rar5_block_bytes(b"\x05\x00\x00")
+
+
+def _many_solid_groups_then_found(tail: bytes) -> bytes:
+    """``solid_groups__.rar``'s four members (two solid streams) ten times over, then
+    46 bytes no header passes in, then ``tail``, which salvage finds: a prefix of
+    twenty solid streams whose whole copy is far larger than one stream's."""
+    src = (_RAR / "solid_groups__.rar").read_bytes()
+    return src[:24] + src[24:264] * 10 + bytes(46) + tail + _RAR5_END
+
+
+_FOUND_TAILS = {
+    "empty": _RAR5_EMPTY_E,
+    # A found member of an unknown compression version, and one after it.
+    "unknown_version": _RAR5_UNKNOWN_VERSION + _RAR5_EMPTY_E,
+}
+
+
+def _pass_outcomes(reader: object, access: str, dest: Path) -> list[object]:
+    """Each payload member's outcome through one public pass: for
+    ``stream_members``, in listing order, its bytes or the type of the error its
+    read raised; for ``extract_all``, the files written, by path."""
+    out: list[object] = []
+    if access == "stream_members":
+        try:
+            for member, stream in reader.stream_members():  # type: ignore[attr-defined]
+                if stream is None or not member.is_file:
+                    continue
+                try:
+                    out.append(stream.read())
+                except ArchiveyError as exc:
+                    out.append(type(exc))
+        except ArchiveyError:
+            pass
+        return out
+    try:
+        reader.extract_all(  # type: ignore[attr-defined]
+            dest, on_error="continue", overwrite="rename"
+        )
+    except ArchiveyError:
+        pass  # the listing's own error ends the call
+    return [
+        (path.relative_to(dest).as_posix(), path.read_bytes())
+        for path in sorted(dest.rglob("*"))
+        if path.is_file()
+    ]
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("access", ["stream_members", "extract_all"])
+@pytest.mark.parametrize("tail", sorted(_FOUND_TAILS))
+def test_a_stream_pass_with_found_rows_reads_the_prefix_as_the_default_does(
+    access: str, tail: str, tmp_path: Path
+) -> None:
+    """Through each public pass over a stream source, under a spool limit the
+    default's plan (one solid stream per run) fits and a copy of the whole source
+    does not: the default's members read as they do without salvage. Before the
+    planners read only the default's rows, any found row sent the pass to the
+    whole-source copy, and every prefix member was refused."""
+    data = _many_solid_groups_then_found(_FOUND_TAILS[tail])
+    config = ArchiveyConfig(spool_limits=SpoolLimits(max_bytes=400))
+    outcomes = {}
+    for salvage in (False, True):
+        with open_archive(
+            io.BytesIO(data), salvage=salvage, format="rar", config=config
+        ) as reader:
+            outcomes[salvage] = _pass_outcomes(
+                reader, access, tmp_path / f"out-{salvage}"
+            )
+    default = outcomes[False]
+    if access == "stream_members":
+        assert len(default) == 40
+        assert all(isinstance(got, bytes) and got for got in default)
+        assert outcomes[True][: len(default)] == default
+    else:
+        # A later member of the same name replaces the file: four paths.
+        assert [path for path, _ in default] == ["a.txt", "b.txt", "c.txt", "d.txt"]
+        assert set(default) <= set(outcomes[True])
+
+
+@pytest.mark.parametrize("tail", [None, *sorted(_FOUND_TAILS)])
 def test_found_rows_leave_the_prefixs_solid_pass_plan_as_it_was(
-    tmp_path: Path,
+    tail: str | None, tmp_path: Path
 ) -> None:
     """A row salvage found is read on its own, so it changes neither decompressor's
     plan for the members the default walk lists: ``unar``'s run still selects every
@@ -1588,7 +1678,11 @@ def test_found_rows_leave_the_prefixs_solid_pass_plan_as_it_was(
     from archivey.internal.backends.rar_reader import RarReader
     from archivey.internal.backends.rar_unar import UnarRarPolicy
 
-    data = _solid_groups(tmp_path, 100, 110).read_bytes()
+    data = (
+        _solid_groups(tmp_path, 100, 110).read_bytes()
+        if tail is None
+        else _many_solid_groups_then_found(_FOUND_TAILS[tail])
+    )
     plans = {}
     for salvage in (False, True):
         with open_archive(io.BytesIO(data), salvage=salvage, format="rar") as reader:
@@ -1609,49 +1703,3 @@ def test_found_rows_leave_the_prefixs_solid_pass_plan_as_it_was(
                 assert policy.member_refusal(info) is not None
     assert plans[True] == plans[False]
     assert plans[False][2] is not None
-
-
-@pytest.mark.parametrize(
-    "decompressor",
-    [
-        pytest.param(RarDecompressor.UNRAR, marks=requires_binary("unrar")),
-        pytest.param(RarDecompressor.UNAR, marks=requires_binary("unar")),
-    ],
-)
-def test_a_stream_pass_with_found_rows_reads_the_prefix_as_the_default_does(
-    decompressor: RarDecompressor, tmp_path: Path
-) -> None:
-    """Through the public pass over a stream source: the default's members read as
-    they do without salvage, and each found row as it reads on its own."""
-    data = _solid_groups(tmp_path, 100, 110).read_bytes()
-    config = ArchiveyConfig(rar_decompressor=decompressor)
-
-    def outcome(read: object) -> object:
-        try:
-            return read()  # type: ignore[operator]
-        except ArchiveyError as exc:
-            return type(exc)
-
-    def passed(salvage: bool) -> dict[str, object]:
-        out: dict[str, object] = {}
-        with open_archive(
-            io.BytesIO(data), salvage=salvage, format="rar", config=config
-        ) as reader:
-            try:
-                for member, stream in reader.stream_members():
-                    if stream is not None and member.is_file:
-                        out[member.name] = outcome(stream.read)
-            except ArchiveyError:
-                pass
-        return out
-
-    def alone() -> dict[str, object]:
-        with open_archive(
-            io.BytesIO(data), salvage=True, format="rar", config=config
-        ) as reader:
-            members = reader.members_report().members
-            return {m.name: outcome(lambda m=m: reader.read(m)) for m in members}
-
-    default, salvage = passed(False), passed(True)
-    assert default == {"a.txt": alone()["a.txt"]}
-    assert salvage == alone()

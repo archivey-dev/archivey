@@ -129,6 +129,7 @@ from archivey.internal.backends.rar_parser import (
     parse_rar_volumes,
     rar5_data_key,
     rar5_hash_key,
+    walked_members,
 )
 from archivey.internal.backends.rar_rolling import (
     RollingVolumes,
@@ -4353,10 +4354,8 @@ class RarReader(BaseArchiveReader):
         # Bare ``unrar p`` omits ``-ver`` history from the ALL pipe; pass ``-ver``
         # when any versioned payload FILE is present so demux stays aligned.
         version_control = any(
-            isinstance(m._raw, RarMemberInfo)
-            and m._raw.is_payload_file()
-            and m._raw.is_file_version_history()
-            for m in self._members
+            info.is_payload_file() and info.is_file_version_history()
+            for info in walked_members(self._archive.members)
         )
 
         groups = self._solid_pass_groups()
@@ -4745,9 +4744,11 @@ class RarReader(BaseArchiveReader):
         the original archive's pipe does, so the demultiplexing offsets do not
         change. A group that is empty is left out.
         """
-        if self._volume_paths or self._solid_after_unknown:
-            return None
         members = self._archive.members
+        if self._volume_paths or any(
+            id(info) in self._solid_after_unknown for info in walked_members(members)
+        ):
+            return None
         groups: list[_PassRun] = []
         stream_start = -1
         group_start = -2
