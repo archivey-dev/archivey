@@ -1569,6 +1569,14 @@ class _RarSalvage:
         return result.found
 
 
+def _lost_start_text(salvage: _RarSalvage, start: int, first: int) -> str:
+    """What was lost before ``first``, the first header a lost start's search found
+    from ``start``: the ``after_lost`` of the first member listed."""
+    if first > start:
+        return f"the bytes before {salvage.where(first)}"
+    return f"the archive's lost start, before {salvage.where(first)}"
+
+
 def _salvaged_damage(exc: CorruptionError, start: int) -> str:
     """The ``RarArchive.damaged`` text for a member header that failed its CRC and
     stopped the walk, in salvage mode: the members after it come from the search."""
@@ -3434,8 +3442,10 @@ class _Rar3Walk:
         if not found:
             self.pending_search = start
             return
-        if found[0] > start:
-            self.pending_lost = f"the bytes before {self.salvage.where(found[0])}"
+        # The stream before the first header found is lost even when that header
+        # is at ``start``: the source holds none of it. A MAIN found first clears
+        # this (``_on_main``): then only the signature was lost.
+        self.pending_lost = _lost_start_text(self.salvage, start, found[0])
         self.prefound = found
         self.prefound_confirmed = last_confirmed
 
@@ -3500,7 +3510,9 @@ class _Rar3Walk:
         if member is None:
             return
         member.found = RarFound("header_search", offset, confirmed=False, searched=True)
-        member.after_lost, self.pending_lost = self.pending_lost, None
+        # It claims nothing, so the member listed next still comes after the same
+        # lost bytes: the boundary is kept for it.
+        member.after_lost = self.pending_lost
         if block.flags & _RAR3_FILE_COMMENT:
             member.comment = _parse_rar3_old_comment_subblocks(
                 block.hdata, crc_pos, encoding=self.name_encoding
@@ -3723,6 +3735,9 @@ class _Rar3Walk:
         self.main_seen = True
         self.main_found_first = self.main_lost and self.start_lost
         self.main_lost = False
+        if self.main_found_first and not self.members:
+            # Only the signature before this MAIN was lost, no member's bytes.
+            self.pending_lost = None
         self.resume_from = block.data_offset
         if flags & _RAR3_MAIN_COMMENT:
             self.comment = _parse_rar3_old_comment_subblocks(
@@ -5190,8 +5205,8 @@ class _Rar5Walk:
         if first is None:
             self.pending_search = start
             return
-        if first > start:
-            self.pending_lost = f"the bytes before {self.salvage.where(first)}"
+        # As in the RAR 1.5-4 walk: lost even when ``first`` is ``start``.
+        self.pending_lost = _lost_start_text(self.salvage, start, first)
         self.found_at = first
         _seek_to(self.source, first)
 
@@ -5564,6 +5579,9 @@ class _Rar5Walk:
         # not replace them. After a lost start it is the archive's own, comment too.
         self.main_found_first = self.main_lost and self.start_lost
         self.main_lost = False
+        if self.main_found_first and not self.members:
+            # Only the signature before this MAIN was lost, no member's bytes.
+            self.pending_lost = None
         _seek_after_packed(source, block.data_offset, block.add_size)
         # Header-encrypted QO stores IV+ciphertext header copies and
         # file-encrypts the QO payload; reconstructed data_offset then

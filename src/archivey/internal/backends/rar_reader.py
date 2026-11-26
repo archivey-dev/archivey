@@ -4085,15 +4085,27 @@ class RarReader(BaseArchiveReader):
 
         Decided from the listing, before any program runs. A stored plaintext or
         stored encrypted member is read by archivey itself before this is asked.
+        From the member back, the first member that restarts the decoder ends the
+        stream: one with its own solid flag clear, with data (a directory restarts
+        nothing) and not an unconfirmed candidate (which may be a false header). Lost
+        bytes before any member up to that one, that one excluded, break the stream.
         """
         if info.found is None or not self._archive.is_solid:
             return None
         members = self._archive.members
-        span = solid_chain(members, self._member_position(member))
-        start = span.start
-        for position in span:
-            lost = members[position].after_lost
-            if lost is not None and (position > start or members[start].file_solid):
+        position = self._member_position(member)
+        while True:
+            current = members[position]
+            found = current.found
+            restarts = (
+                not current.file_solid
+                and not current.is_directory
+                and (found is None or found.confirmed)
+            )
+            if restarts:
+                return None
+            lost = current.after_lost
+            if lost is not None:
                 return CorruptionError(
                     f"RAR member {quoted(member.name)} cannot be decoded: salvage "
                     f"found it past damage, and its solid stream runs through {lost}, "
@@ -4103,7 +4115,9 @@ class RarReader(BaseArchiveReader):
                     member_name=member.name,
                     source_format=ArchiveFormat.RAR,
                 )
-        return None
+            if position == 0:
+                return None
+            position -= 1
 
     def _resolve_file_copies(self) -> None:
         """Point each RAR5 file copy's ``link_target_member`` at its source.

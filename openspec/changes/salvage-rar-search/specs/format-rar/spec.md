@@ -137,10 +137,12 @@ A missing volume SHALL be handled as today.
 
 A found member's read SHALL be decided before any program runs:
 
-- A member whose solid chain (from the last member at or before it with its own solid
-  flag clear) crosses lost bytes (a skipped region, a damaged header not listed, a
-  volume that is missing or ended at damage) SHALL raise `CorruptionError` naming the
-  first lost range, unless it is stored plaintext.
+- A member whose solid stream (back to the last member at or before it that restarts
+  the decoder: its own solid flag clear, not a directory, and not an unconfirmed
+  candidate) crosses lost bytes (a skipped region, a damaged header not listed, a
+  volume that is missing or ended at damage, or a lost start, even one that leaves no
+  byte before the first header found) SHALL raise `CorruptionError` naming the lost
+  range, unless it is stored plaintext.
 - Stored plaintext SHALL be read directly and checked by its CRC. Stored AES SHALL be
   decrypted as today.
 - Any other read SHALL go through a synthetic archive of its chain, under `unrar`,

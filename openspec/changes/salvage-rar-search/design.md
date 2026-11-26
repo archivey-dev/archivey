@@ -311,11 +311,17 @@ members left. RAR's codecs have no restart point inside a stream. So:
   compression information bit 6, RAR 2.0-4 file flag `0x10`, and for RAR 1.3-1.5
   writers the MAIN flag (`_settle_rar15_solid`).
 - **A found member whose chain crosses lost bytes raises `CorruptionError` on read,
-  before any program runs.** The message names the first lost range. Lost bytes are an
-  `ARCHIVE_REGION_SKIPPED` range, a damaged header that was not listed, or a volume
-  that is missing or that ended at damage. `unrar` gives checksum errors for these
-  members, and the measured `-s` archive confirms it: 0 of 123 decode. This follows the
-  existing rule for a solid member past a missing volume.
+  before any program runs.** The message names the lost range. Lost bytes are an
+  `ARCHIVE_REGION_SKIPPED` range, a damaged header that was not listed, a volume that
+  is missing or that ended at damage, or a lost start: the stream before the first
+  header found is lost even when that header is at offset 0, unless the header is
+  MAIN (only the signature was lost). For this check the stream starts at a member that
+  restarts the decoder: its own solid flag clear, not a directory (no data, so no
+  restart), and not an unconfirmed candidate (it may be a false header). An unconfirmed
+  candidate claims nothing, so the member after it also comes after the lost bytes.
+  `unrar` gives checksum errors for these members, and the measured `-s` archive
+  confirms it: 0 of 123 decode. This follows the existing rule for a solid member past
+  a missing volume.
 - **A found member whose chain starts after the lost bytes reads**, through a synthetic
   archive of its chain (§11). In `-s<N>` and `-se` archives, on each member
   that starts a group, the solid flag is clear. An `-sv` set clears it on some members

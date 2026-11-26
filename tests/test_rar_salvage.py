@@ -1204,3 +1204,58 @@ def test_a_type_vint_as_long_as_the_walk_reads_is_found() -> None:
     at = len(_RAR5_SIGNATURE + _RAR5_MAIN)
     assert Rar5Finder().find(archive, 0, None) == len(_RAR5_SIGNATURE)  # MAIN
     assert Rar5Finder().find(archive, at, None) == at
+
+
+@pytest.mark.parametrize(
+    ("name", "member"),
+    [("solid_groups__.rar", "b.txt"), ("basic_solid__rar4.rar", "file1.txt")],
+)
+def test_a_lost_start_at_a_solid_continuation_is_refused(
+    name: str, member: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The source starts exactly at the header of a member that continues a solid
+    stream: no byte before it is in the source, but the stream's start is lost all
+    the same. Its read is refused before any program runs."""
+    with open_archive(_RAR / name) as reader:
+        offset = next(
+            m._raw.header_offset  # type: ignore[union-attr]
+            for m in reader.members()
+            if m.name == member
+        )
+    path = _write(tmp_path, (_RAR / name).read_bytes()[offset:])
+
+    def no_program(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a program ran for a refused member")
+
+    monkeypatch.setattr(subprocess, "Popen", no_program)
+    with open_archive(path, salvage=True) as reader:
+        members = reader.members_report().members
+        assert members[0].name == member
+        with pytest.raises(CorruptionError, match="solid stream runs through"):
+            reader.read(members[0])
+
+
+@pytest.mark.parametrize("kind", ["unconfirmed", "directory"])
+def test_a_lost_boundary_on_a_member_that_starts_no_stream_still_refuses(
+    kind: str,
+) -> None:
+    """The member right after lost bytes has its solid flag clear but starts no
+    stream: an unconfirmed candidate (it may be a false header) or a directory (no
+    data, so no decoder restart). The solid member after it still continues a stream
+    through the lost bytes, and is refused."""
+    from archivey.internal.backends.rar_parser import RarFound
+
+    with open_archive(_RAR / "solid_groups__.rar", salvage=True) as reader:
+        members = reader.members_report().members
+        raws = [m._raw for m in members]
+        c, d = raws[2], raws[3]
+        assert not c.file_solid and d.file_solid  # type: ignore[union-attr]
+        c.after_lost = "the lost bytes"  # type: ignore[union-attr]
+        c.found = RarFound(
+            "header_search", 0, confirmed=kind != "unconfirmed", searched=True
+        )  # type: ignore[union-attr]
+        if kind == "directory":
+            c.is_directory = True  # type: ignore[union-attr]
+        d.found = RarFound("header_search", 0, confirmed=True, searched=False)  # type: ignore[union-attr]
+        error = reader._lost_chain_error(members[3], d)  # type: ignore[attr-defined]
+        assert error is not None and "the lost bytes" in str(error)
