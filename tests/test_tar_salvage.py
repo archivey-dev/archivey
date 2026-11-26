@@ -2493,3 +2493,120 @@ def test_the_rewalk_after_a_gap_does_not_carry_an_unconfirmed_global_header() ->
         ("real2.txt", {"uname": "gone1"}),
     ]
     assert _pax_listing(gzip.compress(data, 1)) == plain
+
+
+# ---------------------------------------------------------------------------
+# Two passes list what one pass lists: plain against gzip on generated tars
+# ---------------------------------------------------------------------------
+
+
+def _salvage_snapshot(source: bytes) -> tuple[list[tuple[object, ...]], str]:
+    """Each listed member's name, uname, size, and its ``MEMBER_FOUND_BY_SCAN``
+    record (confirmed, and whether the walk reached it rather than a search), and
+    the type of the error the listing ends in."""
+    with open_archive(io.BytesIO(source), salvage=True) as reader:
+        report = reader.members_report()
+        scans = {
+            d.context.member_id: (d.context.confirmed, "walk reached it" in d.message)
+            for d in reader.diagnostics.retained
+            if isinstance(d.context, SalvageScanContext)
+        }
+        members = [
+            (m.name, m.uname, m.size, scans.get(i))
+            for i, m in enumerate(report.members)
+        ]
+        return members, type(report.error).__name__
+
+
+def _generated_tar(seed: int, *, v7: bool = False) -> bytes:
+    """A damaged tar of 10 to 25 random items after ``a`` and a damaged block:
+    members up to 1.3 MB, headers that claim 5 to 12 MiB they do not hold, damaged
+    blocks, and PAX global headers (``uname``, ``size`` or ``path``) before a
+    member or a liar. With ``v7``, every header has no magic."""
+    rng = random.Random(seed)
+
+    def header(name: str, size: int) -> bytes:
+        info = tarfile.TarInfo(name)
+        info.size = size
+        block = bytearray(info.tobuf(tarfile.USTAR_FORMAT))
+        if v7:
+            block[257:265] = bytes(8)
+            block[148:156] = b" " * 8
+            block[148:156] = b"%06o\x00 " % sum(block)
+        return bytes(block)
+
+    def body(size: int) -> bytes:
+        return bytes([rng.randrange(1, 255)]) * size + bytes(-size % BLOCKSIZE)
+
+    out = header("a", 3) + body(3) + b"\x01" * BLOCKSIZE
+    for i in range(rng.randrange(10, 26)):
+        draw = rng.random()
+        if draw < 0.15:
+            key = rng.choice(["uname", "size", "path"])
+            value = {
+                "uname": f"u{i}",
+                "size": str(rng.randrange(1, 1_000_000)),
+                "path": f"p{i}",
+            }[key]
+            out += _global_header({key: value})
+            draw = rng.random() * 0.75
+        if draw < 0.15:
+            out += header(f"l{i}", rng.randrange(5 << 20, 12 << 20))
+            out += body(rng.randrange(0, 4) * BLOCKSIZE)
+        elif draw < 0.25:
+            out += b"\x01" * BLOCKSIZE
+        else:
+            size = rng.randrange(0, 1_300_000)
+            out += header(f"r{i}", size) + body(size)
+    return out + bytes(2 * BLOCKSIZE)
+
+
+# Seeds whose gzip listing differed from the plain one (names, owners, sizes, or
+# the MEMBER_FOUND_BY_SCAN record), and a few that never did. A wider sweep of
+# 2000 USTAR seeds and 500 pure-v7 seeds lists the same on both.
+_PARITY_SEEDS = [0, 1, 11, 15, 32, 35, 36, 38, 44, 156, 158, 179, 205, 244, 248]
+
+
+@pytest.mark.parametrize("v7", [False, True], ids=["ustar", "v7"])
+@pytest.mark.parametrize("seed", _PARITY_SEEDS)
+def test_a_gzip_tar_salvages_what_the_same_tar_salvages(seed: int, v7: bool) -> None:
+    """The two-pass walk of a codec stream lists what the one pass over the plain
+    tar lists: whether a chain is found by a search or reached from a confirmed
+    member is decided as the one pass decides it, also when the second pass
+    confirms a member whose data ends at a chain the first pass found."""
+    data = _generated_tar(seed, v7=v7)
+    assert _salvage_snapshot(gzip.compress(data, 1)) == _salvage_snapshot(data)
+
+
+def test_a_chain_where_a_second_pass_member_ends_is_reached() -> None:
+    """The first pass finds ``g uname=u2`` + ``l3`` by a search inside ``r1``'s
+    data and holds them provisional. The second pass confirms ``r1``, in the gap,
+    and ``r1``'s data ends at that chain: the one pass reaches it from ``r1``, so
+    its global header applies to ``r4`` and ``r5``."""
+    rng = random.Random(16)
+
+    def member(name: str, size: int) -> bytes:
+        return _member(name, rng.randbytes(size))
+
+    liar = tarfile.TarInfo("liar")
+    liar.size = 8 << 20
+    l3 = tarfile.TarInfo("l3")
+    l3.size = 6 << 20
+    data = (
+        _member("a", b"a")
+        + b"\x01" * BLOCKSIZE
+        + liar.tobuf(tarfile.USTAR_FORMAT)
+        + member("r1", 3_500_000)
+        + _global_header({"uname": "u2"})
+        + l3.tobuf(tarfile.USTAR_FORMAT)
+        + member("r4", 1_800_000)
+        + member("r5", 1_800_000)
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    plain = _salvage_snapshot(data)
+    assert [(name, uname) for name, uname, _, _ in plain[0]][-2:] == [
+        ("r4", "u2"),
+        ("r5", "u2"),
+    ]
+    assert plain[0][3] == ("l3", "u2", 6 << 20, (False, True))
+    assert _salvage_snapshot(gzip.compress(data, 1)) == plain

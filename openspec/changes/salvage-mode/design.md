@@ -330,25 +330,31 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
     has in a one-pass walk (the PAX global records and the v7 rule's flags), kept with
     the gap: a global header pass 1 read later applies only to what follows it, and a
     member pass 1 listed later does not end the v7 rule inside the gap.
-  - **The re-walk after a gap** (maintainer ruling, review round 4 of PR 1774, K10).
-    A global header inside a gap reaches only pass 2, so the members pass 1 held
-    after the gap were parsed with older records. When pass 2 ends a gap with
-    records other than the ones pass 1 parsed the next held member with, it parses
-    the held members' chains again, from that member on, with its records, and
-    replaces them. It reads forward from where pass 2 stands, so it decodes nothing
-    a second time: pass 2 decodes on past the last gap to the held headers, and the
-    layer still decodes at most twice. It stops at the first held member whose
-    records equal pass 1's (both read the same later global header), or at the next
-    gap's start, whose search then starts from the records the re-walk ended with.
-    A `size` record can move a member's end: the new end confirms it when pass 1
-    listed a member there or found the clean end there, and the held members before
-    that end are inside its data and dropped; otherwise the re-walk goes on with
-    the held members, which a search inside its data finds. **Limits:** the re-walk
-    stops, and pass 1's later members keep its records, when a chain no longer
-    makes a member with the new records, when it starts before what the window
-    keeps, or when a new end lies past the next gap's start. A chain pass 1 passed
-    over as noise, and a header pass 1 read as data inside a member whose end
-    moved, are not looked at again.
+  - **The re-walk after a gap** (maintainer ruling, review round 4 of PR 1774, K10;
+    round 5, K12). Pass 2 learns two things pass 1 could not know, and both change
+    how the one pass reads the held members. A global header inside a gap reaches
+    only pass 2, so the held members were parsed with older records. And a member
+    pass 2 confirms may end where the one pass goes on: the held members before
+    that end are inside its data and dropped, and the chain there is reached, not
+    found by a search, so it is not provisional (a `g` header in it applies to later
+    members, and a member pass 1 found there is listed as reached). The re-walk
+    decides the held members again, in order, from that point, with the same check
+    the passes use (`_check_found`), each found chain provisional as in pass 1. A
+    member it confirms makes the next chain reached in turn; when the one pass
+    would reach a chain pass 1 passed over as noise, the re-walk reads it, so a `g`
+    header in it applies. It stops at the first held member that it reaches in the
+    state pass 1 read it in (the same records, and reached or found as there), or at
+    the next gap's start, whose search then starts from the records the re-walk
+    ended with. It reads forward from where pass 2 stands, so it decodes nothing a
+    second time, and the layer still decodes at most twice. **Limits:** the re-walk
+    stops, and pass 1's later members keep its decisions, when a chain no longer
+    makes a member, when a reached chain makes a member pass 1 did not list, when
+    it starts before what the window keeps, or when a confirmed end lies past the
+    next gap's start. A header pass 1 read as data inside a member that is now
+    confirmed is not looked at again, and the re-walk records no new gap. Pass 1's
+    searches after a gap use the v7 rule as it stands before pass 2 lists the gap's
+    members, so on an archive that mixes v7 and ustar headers the two listings can
+    differ (13 of 500 generated mixed archives; none of 500 all-v7 ones).
   - Total decode: two passes over the layer, whatever the member count (about
     1.1 to 2 times the compressed size on the test shapes: 40 found members that
     each claim 6 MiB, 20 that claim 12 MiB, 300 dense ones that claim 16 MiB). This

@@ -63,7 +63,7 @@ import re
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import BinaryIO, Literal, assert_never, cast
 
@@ -96,6 +96,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends.tar_parser import (
     BLOCKSIZE,
+    MAX_OFFSET,
     SPARSE_ENTRY_BYTES,
     Ambiguity,
     Budget,
@@ -885,30 +886,6 @@ class _Found:
     search_from: int | None
     searched: bool
 
-    def moved(self, confirmed: bool, after_header: int) -> _Found:
-        """This record for the member after the re-walk moved its data's end
-        (:meth:`TarReader._rewalk`): ``confirmed`` when the first pass listed a
-        member at the new end or found the clean end there, as the second pass
-        confirms past its gap; otherwise the search goes on from ``after_header``,
-        inside its data. The texts are :meth:`TarReader._check_found`'s."""
-        if self.searched:
-            how = (
-                "the header after its data passes the same checks, so its size is "
-                "confirmed"
-                if confirmed
-                else "nothing after its data confirms its size, so the search goes "
-                "on inside its data"
-            )
-        else:
-            how = "the walk reached it from a member the search found, " + (
-                "and the header after its data passes the same checks"
-                if confirmed
-                else "and its size ends where no header passes the same checks, so "
-                "the search goes on inside its data"
-            )
-        search_from = None if confirmed else after_header
-        return replace(self, confirmed=confirmed, how=how, search_from=search_from)
-
 
 @dataclass(frozen=True)
 class _Held:
@@ -1396,13 +1373,11 @@ class TarReader(BaseArchiveReader):
                     found = self._check_found(walker, entry, salvage)
                     search_from = found.search_from
                     if defer:
-                        salvage.note_listed(entry)
                         self._hold_entry(entry)
                         held.append(_Held(entry, found, walker.chain_records))
                     else:
                         last_member = self._to_member(entry, index)
                         self._emit_found(last_member, index, found)
-                        salvage.note_listed(entry)
                         yield last_member
                         index += 1
                 else:
@@ -1596,6 +1571,10 @@ class TarReader(BaseArchiveReader):
         member whose data ends past the gap is confirmed when the first pass listed
         a member there or found the clean end there.
         """
+        # Listed here, before anything below reads the state: a gap this member
+        # leaves starts from it when it is reached, and from the state before its
+        # chain when it is found and nothing confirms it (search_state).
+        salvage.note_listed(entry)
         searched = salvage.found_at is not None
         found = salvage.found_at if searched else entry.header_offset
         assert found is not None
@@ -1777,7 +1756,8 @@ class TarReader(BaseArchiveReader):
         """The second salvage pass of a codec walk: search the gaps the first pass
         recorded (``_SalvageWalk.gaps``), in order, and return what it lists there.
         After each gap, the entries the first pass held after it (``held``) are
-        read again when the gap held a PAX global header (:meth:`_rewalk`).
+        decided again when the gap held a PAX global header, or when a member found
+        there ends where the one pass goes on (:meth:`_rewalk`).
 
         The walk goes back to the first gap once, which decodes the stream again
         from a restart point, and reads forward from there: each search is bounded
@@ -1810,14 +1790,17 @@ class TarReader(BaseArchiveReader):
                 salvage.enter_gap(walker, gap.state, at_start)
             start = max(gap.start, reached)
             salvage.gap = (start, gap_stop)
+            confirmed_end: int | None = None
             try:
                 with self._salvage_mode.revisiting(layer, start, gap_stop):
                     entry = self._salvage_next(walker, start, salvage, end=gap_stop)
                     while entry is not None:
                         found = self._check_found(walker, entry, salvage)
-                        salvage.note_listed(entry)
                         self._hold_entry(entry)
                         out.append(_Held(entry, found, None))
+                        confirmed_end = None
+                        if found.search_from is None:
+                            confirmed_end = walker.position
                         if found.search_from is not None:
                             entry = self._salvage_next(
                                 walker, found.search_from, salvage, end=gap_stop
@@ -1840,7 +1823,16 @@ class TarReader(BaseArchiveReader):
                 break
             in_force = walker.global_records()
             following = gaps[number + 1].start if number + 1 < len(gaps) else None
-            rewalked = self._rewalk(walker, salvage, held, gap_stop, following)
+            # A member the second pass confirmed whose data ends past the gap: the
+            # one-pass walk goes on there.
+            reached_at = (
+                confirmed_end
+                if confirmed_end is not None and confirmed_end >= gap_stop
+                else None
+            )
+            rewalked = self._rewalk(
+                walker, salvage, held, gap_stop, following, reached_at
+            )
             walker.restore_global_records(in_force)
         walker.restore_global_records(final)
         return out
@@ -1852,34 +1844,37 @@ class TarReader(BaseArchiveReader):
         held: list[_Held],
         start: int,
         stop: int | None,
+        reached_at: int | None,
     ) -> GlobalRecords | None:
-        """Read again the chains of the entries the first pass held from ``start``,
-        a gap's end, to ``stop``, the next gap's start, with the PAX global records
-        the second pass has in force there; replace the entries in ``held``, and
-        return the records in force at the next gap's start, or ``None`` when that
-        gap's own (``_Gap.records``) stay right.
+        """Decide again the entries the first pass held from ``start``, a gap's end,
+        to ``stop``, the next gap's start, as the one-pass walk decides them, now
+        that the second pass has searched the gap; replace them in ``held``, and
+        return the PAX global records in force at the next gap's start, or ``None``
+        when that gap's own (``_Gap.state``) stay right.
 
-        The first pass read past the gap, so a global header inside it reached only
-        the second pass: without this, the held members keep the older records,
-        and a ``.tar.gz`` lists other names or owners than the same plain ``.tar``
-        (design.md, "the two-pass rule"). The re-walk stops where its records
-        equal the first pass's (both read the same later global header), and the
-        first pass's entries stand from there. It reads forward from where the
-        second pass stands, never back past what the window keeps, so the layer
-        still decodes at most twice: before a later gap it reads bytes the second
-        pass decodes on its way there, and after the last gap it decodes on as far
-        as the held headers it reads.
+        Two things the first pass could not know change how the one-pass walk
+        reads a held entry. A global header inside the gap reached only the second
+        pass, so the held entries were parsed with older records (design.md, "the
+        two-pass rule"). And a member the second pass confirmed ends where the one
+        pass goes on (``reached_at``): the held entries before that end are inside
+        its data and dropped, and the entry there is reached, not found by a
+        search, so its chain is no longer provisional. Each entry decided again can
+        change the next one the same way: its records, and whether it is confirmed
+        and so reaches the next.
 
-        A ``size`` record can move an entry's end. The new end confirms it when the
-        first pass listed a member there or found the clean end there, as past a
-        gap in the second pass: the held entries before it are inside its data and
-        are dropped. Otherwise the search would go inside its data, where it finds
-        the entries the first pass held, and the re-walk goes on with them. A new
-        end past the next gap's start, a chain that no longer makes a member, or
-        one behind what the walk's window keeps stops the re-walk; the first pass's
-        entries from there keep its records.
+        Each entry is decided by :meth:`_check_found`, with its chain provisional
+        when it was found (``_SalvageWalk.chain_found``), as in the first pass. The
+        re-walk stops where the walk's state equals the first pass's (the same
+        records, and the entry reached or found as there), and the first pass's
+        entries stand from there. It reads forward from where the second pass
+        stands, never back past what the window keeps, so the layer still decodes
+        at most twice. A confirmed end past the next gap's start, a chain that no
+        longer makes a member, or one behind what the walk's window keeps stops the
+        re-walk; the first pass's entries from there keep its decisions. A chain the
+        first pass passed over as noise, and a header it read as data inside a
+        member that is now confirmed, are not looked at again, and no new gap is
+        recorded.
         """
-        records = walker.global_records()
         index = next(
             (i for i, item in enumerate(held) if item.found.offset >= start),
             len(held),
@@ -1889,15 +1884,50 @@ class TarReader(BaseArchiveReader):
             end = next(
                 (i for i in range(index, end) if held[i].found.offset >= stop), end
             )
-        if index == end:
-            return None
-        while index < end:
+        # Where the last confirmed member's data ends, while the walk goes on there.
+        confirmed_end = reached_at
+        changed = False
+        while index < end or confirmed_end is not None:
+            if confirmed_end is not None:
+                if stop is not None and confirmed_end > stop:
+                    return None
+                # The held entries inside a confirmed member's data: the one pass
+                # never reads them as headers.
+                inside = next(
+                    (
+                        i
+                        for i in range(index, end)
+                        if held[i].found.offset >= confirmed_end
+                    ),
+                    end,
+                )
+                for item in held[index:inside]:
+                    self._listing_tracker.release(item.entry)
+                del held[index:inside]
+                end -= inside - index
+                if index == end or held[index].found.offset != confirmed_end:
+                    # No held entry where the one pass goes on: the first pass
+                    # passed a chain there over as noise, or read no header there.
+                    # The one pass reaches it: a global header in it applies.
+                    if not self._reread_reached_chain(walker, confirmed_end):
+                        return None
+                    changed = True
+                    confirmed_end = None
+                    continue
             old = held[index]
-            if old.records == records:
+            offset = old.found.offset
+            reached = confirmed_end == offset
+            records = walker.global_records()
+            if old.records == records and reached != old.found.searched:
+                # The state the first pass read this entry in: its decisions
+                # stand from here.
                 return None
-            if not walker.reread_at(old.found.offset):
+            if not walker.reread_at(offset):
                 return None
-            walker.restore_global_records(records)
+            salvage.v7 = salvage.v7_allowed
+            if not reached:
+                salvage.found_at = offset
+                salvage.chain_found(walker)
             # Pass 1 already recorded each damaged header this chain follows.
             followed = len(walker.followed)
             try:
@@ -1912,33 +1942,51 @@ class TarReader(BaseArchiveReader):
                 not isinstance(entry, TarEntry)
                 or entry.data_offset != old.entry.data_offset
             ):
+                salvage.found_at = None
+                salvage.search_starts(walker)
                 return None
-            found = old.found
-            data_end = entry.data_end
-            moved = data_end != old.entry.data_end
-            if moved:
-                confirmed = data_end in salvage.known or data_end == salvage.clean_end
-                found = found.moved(confirmed, entry.header.offset + BLOCKSIZE)
+            salvage.gap = (start, MAX_OFFSET if stop is None else stop)
+            try:
+                found = self._check_found(walker, entry, salvage)
+            finally:
+                salvage.gap = None
+            changed = True
             self._listing_tracker.release(old.entry)
             self._hold_entry(entry)
             held[index] = _Held(entry, found, records)
-            if found.confirmed or not found.searched:
-                # As in the first pass: a found chain whose member nothing
-                # confirms changes nothing for the members after it.
-                records = walker.global_records()
             index += 1
-            if moved and found.confirmed:
-                if stop is not None and data_end > stop:
-                    return None
-                after = next(
-                    (i for i in range(index, end) if held[i].found.offset >= data_end),
-                    end,
-                )
-                for item in held[index:after]:
-                    self._listing_tracker.release(item.entry)
-                del held[index:after]
-                end -= after - index
-        return records
+            if found.search_from is None:
+                salvage.confirm()
+                confirmed_end = entry.data_end
+            else:
+                # Its chain was found and nothing confirms it: what it changed goes
+                # back, as at the search that follows it in the first pass. A
+                # member the walk reached keeps what its chain changed.
+                if found.searched:
+                    salvage.search_starts(walker)
+                confirmed_end = None
+        return walker.global_records() if changed else None
+
+    def _reread_reached_chain(self, walker: TarWalker, offset: int) -> bool:
+        """Read the chain at ``offset``, where a confirmed member's data ends and the
+        first pass listed nothing, as the one-pass walk reaches it (``_rewalk``):
+        a global header in it applies to what follows, as in any reached chain,
+        and the walk ends there, so the next entry is found by a search. ``False``
+        when the window no longer keeps it, or when it makes a member the first
+        pass did not list: the re-walk stops there."""
+        if not walker.reread_at(offset):
+            return False
+        # Pass 1 already recorded each damaged header this chain follows.
+        followed = len(walker.followed)
+        try:
+            with self._translated_errors():
+                entry = self._step(walker)
+        except CorruptionError as exc:
+            if from_source_callback(exc):
+                raise
+            entry = None
+        del walker.followed[followed:]
+        return not isinstance(entry, TarEntry)
 
     def _raise_members_the_codec_checked(self) -> None:
         """Raise every listed file to ``CHECKSUM`` when the codec's checksum covered it.
