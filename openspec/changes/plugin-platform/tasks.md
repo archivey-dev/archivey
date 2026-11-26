@@ -16,9 +16,6 @@
 - [ ] 1.7a One tail window for every trailer declaration: several declarations on a
   source that counts range reads, and on a member stream; a trailer over the cap
   refused at load
-- [ ] 1.7b Detect first, judge after (R9): a policy that allows a base and bars its
-  refinement refuses the refined file and names the refinement; a barred provider's
-  check never runs; the 2026-10-28 "left out of detection" tests are rewritten
 - [ ] 1.7c Probe parity: a binary `.cpio` and a binary `initrd.cpio.gz`, on a
   core-only and a pilot install, named and unnamed
 - [ ] 1.8 Spec deltas: `format-manifest` (new), `backend-registry`, `format-detection`
@@ -44,12 +41,22 @@
   that core's two lists do not overlap
 - [ ] 2.1e Every core constant of the four types passes the spelling rule; names are
   case-sensitive and two names differing only in case are refused
+- [ ] 2.1f `format="ZIP"`, a mixed-case extension and a spelling alias still resolve,
+  on an explicit open and in `format_availability()`
 - [ ] 2.2 Remove `PluginContainer`, `PluginStream` and the `Literal` spelling lists
 - [ ] 2.2a `ExtraKey` and the generic overloads on `MemberExtra` and
   `ArchiveInfoExtra`; key constants for every format; the 62 per-key overloads
   removed; the conformance check that a reader sets only declared keys (R3)
 - [ ] 2.3 `FormatInfo.provider` replaces `from_plugin`; `FormatPolicy(providers=...)`,
   with `plugins=False` as a deprecated spelling of `providers={"archivey"}` (R2)
+- [ ] 2.3a Detect first, judge after (R9), in the same pull request as `providers=`: a
+  policy that allows a base and bars its refinement refuses the refined file and
+  names the refinement; a barred provider's check and probe never run; the
+  2026-10-28 "left out of detection" tests are rewritten. Until this lands, a plugin
+  format the policy turns off stays out of detection
+- [ ] 2.3b `FormatPolicy.COMMON` gains `providers={"archivey"}` (R11) with 2.3a, with a
+  **Breaking:** line; the recorder test uses a file that would run an outside probe
+  and one that would run an outside refinement check under another policy
 - [ ] 2.4 `register_format` and `register_builtin_format` become one function that
   takes an entry
 - [ ] 2.5 `CHANGELOG.md` **Breaking:** lines; `dev-docs/api-surface.txt` updated
@@ -63,12 +70,15 @@
 - [ ] 3.1a Owner before code: a manifest's module names belong to one distribution, the
   manifest's own, and the resolved file is that distribution's; checked for handlers,
   probes, refinement checks, decoders and the child's `native` target; two
-  distributions with one import name are both refused and reported
+  distributions with one import name are both refused and reported; `find_spec`
+  never called on a dotted name; a dotted target the file list does not show is
+  refused with the parent's initializer not run
 - [ ] 3.2 Policy before import: no dotted path of an installed package is imported
   before the call's policy allows its provider and format
 - [ ] 3.3 The recorder test: a wheel whose `__init__` records that it ran; discovery,
   opening a core ZIP and `format_availability()` under the default policy,
-  `plugins=False` and `FormatPolicy.COMMON`, in both orders
+  `plugins=False` and `FormatPolicy.COMMON`, in both orders; and the files of 2.3b,
+  since opening a ZIP alone cannot show that a probe ran
 - [ ] 3.4 Ownership: one owner per name and signature, longest signature first, a
   clashing extension dropped alone; `refines` and `preempts` only with the owner's
   consent or the caller's choice; a refinement from another distribution is data
@@ -156,11 +166,11 @@
 - [ ] 5.3a `packages/archivey-dmg`: DMG with HFS+, APFS and encryption
 - [ ] 5.3c `packages/archivey-compressors` (R11): lz4, mozlz4, Brotli, lzop,
   bzip3, Snappy as codec entries with stream facets; the 7z LZ4 and Brotli bindings;
-  their dependencies leave core's `[recommended]` list; `.Z` joins the legacy package;
+  their libraries stay in core's extras as today (`brotli` out of `[free-threaded]`,
+  `bzip3` in `[bzip3]` only); the wheel resolves on macOS and 3.13t, and LZ4 is read in
+  the free-threaded job; `.Z` joins the legacy package;
   SquashFS with LZ4 or LZO, and a 7z with those methods, refused with the hint when
   the package is missing
-- [ ] 5.3d `FormatPolicy.COMMON` gains `providers={"archivey"}` (R11), with a
-  **Breaking:** line
 - [ ] 5.3b `VISION.md`: ISO comes with `[recommended]`, not with the bare install
 - [ ] 5.4 For each pack: the pilot checks, the public-imports test, and a corpus run on
   a core-only install (refused with the hint) and a full install (same results as

@@ -198,11 +198,15 @@ Rules:
   only (ASCII letters, digits, `.`, `_`, `-`), touches no registry and starts no
   discovery. So a name read from a config file loads on a machine without the plugin,
   and building a value never depends on what is installed or on which call ran first.
-  Names are compared as written, with no case folding: core's `StreamFormat("Z")`
-  keeps its value, and a library name is an import name, which may have capitals
+  Canonical names are compared as written, with no case folding: core's
+  `StreamFormat("Z")` keeps its value, and a library name is an import name, which may have capitals
   (`PIL`). New format and method names are lowercase by convention, and the registry
   refuses two names that differ only in case. A test checks every core constant
-  against the spelling rule.
+  against the spelling rule. The caller's side keeps today's rule (`backend-registry`:
+  a format "by its name and by its file extension, in any case"): `format="ZIP"`, an
+  extension and a spelling alias are folded when a call resolves them, and the result
+  is the canonical name. That lookup is unambiguous because no two names differ only
+  in case. Library names are not folded.
   Membership is checked when a call resolves the name against its effective registry
   and policy, before any I/O: `open_archive(path, format="dgm")` raises
   `ArchiveyUsageError` for a name nobody knows, and `PackageNotInstalledError` with the
@@ -286,16 +290,25 @@ Guardrails:
   - a top-level module named by a manifest must belong to exactly one installed
     distribution, and that one must be the manifest's own. A name two distributions
     expose is refused for both and reported;
-  - the module the import system would load (`find_spec`, which runs no package code)
-    must be a file of that distribution, where its file list says so;
+  - the top-level module the import system would load must be a file of that
+    distribution, where its file list says so. `find_spec` answers this without
+    running package code for a top-level name only: asked for `pkg.reader`, it imports
+    `pkg` first and runs its initializer. So core never calls it on a dotted name;
+  - a dotted target (`pkg.reader:Handler`) is checked against the distribution's file
+    list alone: the file for each part of the path must be listed there. Only then is
+    anything imported. Where the file list cannot show it (some editable installs, a
+    custom import hook), the provider is refused and reported before any lookup that
+    could run an initializer;
   - this holds for the manifest, a handler, a probe, a refinement check and a decoder,
     in the caller's process and in the decoder child alike;
   - a codec's `native` object usually lives in a dependency (the library it wraps), not
     in the package. Its module must be one the entry lists in `requires`, the library
     policy (`exclude_libraries`, `only_libraries`) governs it, and the one-owner check
     applies to its top-level name too.
-  Test: two distributions that expose the same import name, one allowed by
-  `providers=` and one not, with the recorder of the next point in both. Neither runs.
+  Tests: two distributions that expose the same import name, one allowed by
+  `providers=` and one not, with the recorder of the next point in both, and neither
+  runs; and a dotted target whose file the distribution does not list, with a
+  recorder in the parent package's initializer that stays empty.
 - **Policy before import** (point 4). The test: a wheel whose `__init__` records that it
   ran, installed beside core. Discovery, opening a core ZIP, and
   `format_availability()` are run under the default policy, `plugins=False` and
@@ -357,7 +370,12 @@ Detection has three phases, the same on every install:
      pkg's check looks at the suffix and, for an unnamed file, reads up to 256 KiB of
      the xar table of contents, which no fixed signature or 4 KiB prefix can express.
      The check runs when the package is installed and the call's policy allows its
-     **provider**, whatever the policy says about the format.
+     **provider**, whatever the policy says about the format. This rule and
+     `providers=` arrive in the same step (step 2), and `COMMON` gains
+     `providers={"archivey"}` in that step too, before step 3 turns discovery on: at
+     no release does the upload preset let an installed package's code identify a
+     file. Until then a plugin format the policy turns off stays out of detection, as
+     today.
    - A refinement by code check and its base ship in one distribution. So when the
      package is missing, the refusal names the right package even where core cannot
      tell pkg from xar. A refinement from **another** distribution must be data (a
@@ -741,9 +759,10 @@ for formats (rulings R6 and R7) and one for compressions (R11); sizes measured o
   implode and DCL implode as registered codecs; and Unix compress (`.Z`), whose LZW
   code Shrink shares. About 4,800 lines.
 - `archivey-compressors` (R11, named by R12): lz4 and mozlz4,
-  Brotli, lzop, bzip3 and Snappy, about 3,900 lines, with the `lz4`, `brotli`,
-  `bzip3`, `compress-utils` and CRC-32C dependencies that leave core's
-  `[recommended]` list for this package's own. Each is a codec entry with a stream
+  Brotli, lzop, bzip3 and Snappy, about 3,900 lines. The wheel is pure Python and
+  requires none of their libraries, as core does not today: each codec entry names
+  its library in `requires`, and a missing one raises the same error that names it.
+  Each is a codec entry with a stream
   facet (§6), so it also serves other readers by name: SquashFS blocks in LZ4 or LZO,
   and the 7z methods `04 F7 11 02` (Brotli) and `04 F7 11 04` (LZ4), which only the
   7-Zip-zstd fork writes and which this package binds in the `"7z"` namespace. Without
@@ -755,9 +774,16 @@ for formats (rulings R6 and R7) and one for compressions (R11); sizes measured o
   `archivey_speedups`, so that it is not taken for the package that adds compressors.
   The rename is its own change, outside this plan's steps.
 
-`[recommended]`, `[all]`, `[free-threaded]` and `archivey-cli` include all five (the
-compression package under the platform markers its dependencies carry today). The
-format packages are pure Python, so they keep the GIL off, and leaving them out of
+`[recommended]`, `[all]`, `[free-threaded]` and `archivey-cli` include all five. The
+libraries the compressors use stay where they are selected today, in core's extras,
+one capability at a time: `lz4`, `brotli`, `compress-utils` and the CRC-32C package in
+`[recommended]` with their markers, `brotli` left out of `[free-threaded]` because it
+can turn the GIL back on, and `bzip3` in its own `[bzip3]` extra and in none of the
+others. Putting them behind the wheel as its requirements would give every install
+profile the same set and lose those choices. Because they remain direct requirements
+of archivey's extras, `tests/check_free_threaded_gil.py`, which reads that metadata,
+still imports each of them. The packages themselves are pure Python, so they keep the
+GIL off, and leaving them out of
 `[free-threaded]` would drop 13 formats from those installs and from the 3.13t and
 3.15t jobs. There is no extra named after a package: `packaging-and-extras` already
 rules out format-named extras, because a published extra can never be removed, and
