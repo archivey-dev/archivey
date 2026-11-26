@@ -2346,7 +2346,8 @@ class RarReader(BaseArchiveReader):
     def _missing_data_error(
         self, member: ArchiveMember, info: RarMemberInfo
     ) -> TruncatedError | None:
-        """Why this member's data cannot be read for a missing volume, or ``None``.
+        """Why this member's data cannot be read for a missing volume, or a volume
+        cut inside it (``packed_cut``), or ``None``.
 
         Decided from the listing, before any decompressor runs. A member that runs
         into a missing volume, or starts in one, has part of its data missing
@@ -2354,7 +2355,12 @@ class RarReader(BaseArchiveReader):
         archive a member past a gap needs the solid stream that ran through the
         missing volume; ``unrar`` reports checksum errors for those.
         """
-        if info.split_after:
+        if info.packed_cut:
+            detail = (
+                "is cut short: its packed data runs past the end of its volume, "
+                "where the next volume's bytes start"
+            )
+        elif info.split_after:
             detail = "continues into a volume that is missing from the set"
         elif info.split_before:
             detail = "starts in a volume that is missing from the set"

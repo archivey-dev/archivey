@@ -47,6 +47,7 @@ from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
     ResourceLimitError,
+    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.rar_search import (
@@ -1461,3 +1462,20 @@ def test_an_unconfirmed_member_is_never_joined(which: str) -> None:
         members, second, max_members=None, max_metadata_bytes=None
     )
     assert len(members) == 2
+
+
+@pytest.mark.parametrize("salvage", [False, True])
+def test_packed_data_cut_by_its_volume_never_reads_the_next_volume(
+    salvage: bool, tmp_path: Path
+) -> None:
+    """Part 1 of ``tinyvol`` is cut inside ``payload.bin``'s packed data, and part 2
+    follows. The member's first part declares more bytes than its volume holds: its
+    read is refused as cut, never filled with part 2's bytes (which only a digest
+    would catch)."""
+    data = (_RAR / "tinyvol.part1.rar").read_bytes()
+    path = _tinyvol(tmp_path, data[:800])
+    with open_archive(path, salvage=salvage) as reader:
+        [member] = reader.members_report().members
+        member._raw.crc32 = None  # type: ignore[union-attr]  # nothing checks it
+        with pytest.raises(TruncatedError, match="past the end of its volume"):
+            reader.read(member)

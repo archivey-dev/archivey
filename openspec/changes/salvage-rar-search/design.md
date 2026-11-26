@@ -412,6 +412,11 @@ makes the whole set's open raise (§16, F2).
   set's name) counts as one that ended in damage; the members before it stay. The
   listing ends in the default's error (`RarArchive.default_stop`): a cut or a missing
   volume only salvage reaches is named after the default's damage, not in its place.
+- **A packed span stays in its volume.** A member whose packed data, as its header
+  declares it, runs past the end of its volume file, with another volume after that
+  file, is refused as cut (`RarMemberInfo.packed_cut`): read in the volumes laid end to
+  end, the span would take the next volume's bytes as its own, and only a digest would
+  notice. This holds for the default's members too.
 - **A missing volume** (a gap in the numbers, or a missing last volume) is unchanged.
   The default already lists every volume present (the 2026-10-06 ruling), which is more
   than `unrar` gives (measured: 196 members against 118 from `part1` and 78 from

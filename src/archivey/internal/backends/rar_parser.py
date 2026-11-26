@@ -568,6 +568,10 @@ class RarMemberInfo:
     # has no digest to check its bytes with: it flags one after ``"member"``, and
     # refuses one after either of the others.
     after_damaged_header: Literal["member", "service", "unconfirmed"] | None = None
+    # In a set, a part of the member's packed data runs past the end of the volume
+    # file it is in, and another volume follows that file: the bytes after that end
+    # are the next volume's, not this member's, so the read refuses it as cut.
+    packed_cut: bool = False
     # Salvage mode only: how the member was reached past the default walk's end
     # (:class:`RarFound`); ``None`` for every member the default lists.
     found: RarFound | None = None
@@ -1036,6 +1040,15 @@ def parse_rar_volumes(
             continue
         password_proven = part.password_proven
 
+        if volume is not volumes[-1]:
+            # Before the offsets join the volumes: a packed span past this file's
+            # end would read the next volume's bytes as its own.
+            here = volume.tell()
+            volume_size = volume.seek(0, 2)
+            volume.seek(here)
+            for member in part.members:
+                if member.data_offset + member.compress_size > volume_size:
+                    member.packed_cut = True
         if past_damaged_volume or salvage_reached:
             _mark_next_volume(part, number, after_damage=past_damaged_volume)
         _rebase_member_offsets(part, base_offset)
@@ -2681,6 +2694,7 @@ def _merge_split_member(
     )
     old.split_after = new.split_after
     old.spanned_volumes = True
+    old.packed_cut = old.packed_cut or new.packed_cut
     # One damaged part makes the member's header damaged: its digest, or the split
     # that joins it, rests on a header no CRC checked.
     if old.damaged_header is None:
