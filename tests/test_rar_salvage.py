@@ -1760,3 +1760,38 @@ def test_a_found_member_with_its_own_solid_flag_across_lost_bytes_is_refused(
                         stream.read()
                     seen.append(member.name)
         assert seen == ["d.txt"]
+
+
+@requires_binary("unrar")
+@pytest.mark.parametrize("access", ["stream_members", "extract_all"])
+def test_a_pass_decodes_found_solid_streams_in_a_bounded_number_of_runs(
+    access: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Forty found members in twenty solid streams, after a lost first header:
+    a pass reads them from runs over synthetic archives of whole found streams,
+    not from one ``unrar`` per member, which decoded each stream once for every
+    member in it."""
+    import subprocess
+
+    src = (_RAR / "solid_groups__.rar").read_bytes()
+    with open_archive(_RAR / "solid_groups__.rar") as reader:
+        original = {m.name: reader.read(m) for m in reader.members() if m.is_file}
+    data = src[:24] + bytes(46) + src[24:264] * 10 + _RAR5_END
+    path = _write(tmp_path, data)
+    with open_archive(path, salvage=True) as reader:
+        members = reader.members_report().members
+        assert len(members) == 40
+        spawns = []
+        real = subprocess.Popen
+
+        def counting(*args: object, **kwargs: object) -> object:
+            spawns.append(args)
+            return real(*args, **kwargs)  # type: ignore[call-overload]
+
+        monkeypatch.setattr(subprocess, "Popen", counting)
+        got = _pass_outcomes(reader, access, tmp_path / "out")
+    if access == "stream_members":
+        assert got == [original[m.name] for m in members]
+    else:
+        assert sorted(got) == sorted(original.items())
+    assert len(spawns) <= 2, len(spawns)

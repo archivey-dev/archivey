@@ -531,6 +531,17 @@ past a missing volume does the same today.
   RAR 1.5-4 candidates.
 - **Windows.** RAR5's longest header is 2 MiB + 7 bytes, RAR 1.5-4's 64 KiB. That is
   the overlap the finder declares.
+- **Found members in a pass.** A found member's own read decodes its solid stream
+  through a synthetic archive of it, so a pass (`stream_members`, `extract_all`) that
+  read each found member that way decoded each stream once per member in it: 1,200
+  found members of one stream took 1,202 `unrar` runs and 35.5 s on 1.8 MB. A solid
+  pass under `unrar` now reads the found members from a second pipe after the
+  original archive's: runs of whole found solid streams over synthetic archives, as
+  for a stream source (`_solid_pass_runs`), each stream decoded once. A stream goes
+  there when it starts at a found member that restarts the decoder and its own read
+  would decode every member in it (known size, data in reach, a known compression
+  version, no lost bytes in its chain); any other found member is read on its own.
+  The same 1,200 members: 3 runs, 0.3 s.
 
 ## 15. What this step needs from the step-3 driver
 

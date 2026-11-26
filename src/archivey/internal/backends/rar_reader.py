@@ -693,6 +693,19 @@ class _PassRun:
     packed: int
 
 
+@dataclass(slots=True)
+class _FoundPass:
+    """How a solid pass reads the members salvage found past damage: runs over
+    synthetic archives of whole found solid streams (:class:`_PassRun`), read back
+    to back after the original archive's pipe, each found member's offset in that
+    output by ``id`` of its parsed member, and the dictionary cost of reading up
+    to it, by ``id`` of its listed member."""
+
+    runs: list[_PassRun]
+    offsets: dict[int, int]
+    costs: dict[int, _DictionaryCost]
+
+
 def _rolling_volume_bytes(limits: SpoolLimits) -> int:
     """The size of one rolling volume: :data:`_ROLLING_VOLUME_BYTES`, or half the
     spool limit when that is smaller, which leaves room for the copies a pass keeps
@@ -4418,14 +4431,49 @@ class RarReader(BaseArchiveReader):
         pipe_offset: int | None = 0
         # Members of unknown size whose bytes sit in the pipe ahead of the cursor.
         unplaced: list[ArchiveMember] = []
+        # The members salvage found: a second pipe, started on the first read of
+        # one of them (``_found_pass_plan``).
+        found_pass = self._found_pass_plan()
+        found_block: SolidBlockReader | None = None
+
+        def _found_pipe() -> SolidBlockReader:
+            nonlocal found_block
+            if found_block is None:
+                assert found_pass is not None
+                owned = _SolidPassPipe(
+                    self._solid_pass_runs(
+                        found_pass.runs, self._archive_data_password()
+                    )
+                )
+                with _close_on_error(owned):
+                    tracked = self._track_decompressed(owned)
+                with _close_on_error(tracked):
+                    found_block = SolidBlockReader(tracked)
+            return found_block
+
+        def _plan_found(
+            member: ArchiveMember, raw: RarMemberInfo, size: int | None
+        ) -> Callable[[], BinaryIO] | None:
+            offset = None if found_pass is None else found_pass.offsets.get(id(raw))
+            if found_pass is None or offset is None or size is None:
+                # Served as ``open()`` serves it.
+                return None
+            cost = found_pass.costs[id(member)]
+
+            def _from_found() -> BinaryIO:
+                self._check_dictionary_memory(member, cost)
+                stream = _found_pipe().open_member(offset, size, lazy=True)
+                return self._watch_unverified(stream, member)
+
+            return _from_found
 
         def _plan(
             member: ArchiveMember, raw: RarMemberInfo, size: int | None, _: bool
         ) -> int | Callable[[], BinaryIO] | None:
             if raw.found is not None:
                 # Salvage found it past damage: the pipe over the original archive
-                # holds no bytes for it. Served as ``open()`` serves it.
-                return None
+                # holds no bytes for it, and the found pipe may.
+                return _plan_found(member, raw, size)
             unknown_version = raw.unknown_compression_version()
             if unknown_version is not None:
                 # ``unrar p`` writes nothing for it ("Unknown method") and raises
@@ -4464,12 +4512,16 @@ class RarReader(BaseArchiveReader):
             pipe_offset += size
             return member_offset
 
-        yield from self._drive_solid_pass(
-            copies,
-            _spawn,
-            _plan,
-            costs=None if runs is None else self._stream_pass_costs(runs),
-        )
+        try:
+            yield from self._drive_solid_pass(
+                copies,
+                _spawn,
+                _plan,
+                costs=None if runs is None else self._stream_pass_costs(runs),
+            )
+        finally:
+            if found_block is not None:
+                found_block.close()
 
     def _stream_pass_costs(self, runs: list[_PassRun]) -> dict[int, _DictionaryCost]:
         """:meth:`_pass_dictionary_costs` when each run of solid streams gets its
@@ -4787,6 +4839,90 @@ class RarReader(BaseArchiveReader):
                 # Ruled out by _solid_pass_groups: only a join past 4 GiB fails.
                 raise AssertionError("a synthetic header the pass cannot write")
             yield entry
+
+    def _found_pass_plan(self) -> _FoundPass | None:
+        """The second pipe of a solid pass, for members salvage found past damage,
+        or ``None`` when no found member can come from one.
+
+        A found member's own read decodes its solid stream, through a synthetic
+        archive of it, back to the member that restarts the decoder; in a pass,
+        one ``unrar`` per member decoded each stream once for each member in it.
+        Here each found stream is decoded once: runs of whole streams, as for a
+        stream source (:meth:`_solid_pass_runs`). A stream qualifies when it starts
+        at a found member that restarts the decoder, and every member in it is one
+        the run can carry and its own read would decode: known size, data in reach,
+        a known compression version, no lost bytes in its chain. A stream that does
+        not qualify is read member by member, as ``open()`` reads it.
+        """
+        if self._unar_policy is not None:
+            return None
+        members = self._archive.members
+        listed = self._members
+        streams: list[list[int]] = []
+        current: list[int] | None = None
+        for index, info in enumerate(members):
+            if info.found is None:
+                current = None
+                continue
+            if not info.file_solid:
+                current = []
+                streams.append(current)
+            elif current is None:
+                # Continues a stream that did not start at a found member.
+                continue
+            current.append(index)
+        cap = _pass_run_bytes(self._config.spool_limits)
+        runs: list[_PassRun] = []
+        offsets: dict[int, int] = {}
+        costs: dict[int, _DictionaryCost] = {}
+        cursor = 0
+        peak = _NO_DICTIONARY
+        for stream in streams:
+            if not all(self._found_pass_carries(index) for index in stream):
+                continue
+            packed = [i for i in stream if has_packed_data(members[i])]
+            if not packed:
+                continue
+            size = sum(members[i].compress_size for i in packed)
+            if runs and runs[-1].packed + size <= cap:
+                runs[-1].indices.extend(packed)
+                runs[-1].packed += size
+            else:
+                runs.append(_PassRun(stream[0], packed, size))
+            for index in stream:
+                info, member = members[index], listed[index]
+                peak = _larger_cost(peak, self._dictionary_costs[id(member)])
+                if info.is_payload_file() and member.is_file:
+                    assert member.size is not None
+                    offsets[id(info)] = cursor
+                    costs[id(member)] = peak
+                    cursor += member.size
+        if not runs:
+            return None
+        return _FoundPass(runs, offsets, costs)
+
+    def _found_pass_carries(self, index: int) -> bool:
+        """Whether a run of the found pass can carry member ``index``, as
+        :meth:`_found_pass_plan` asks."""
+        info = self._archive.members[index]
+        member = self._members[index]
+        if info.is_file_copy() or info.encryption_unknown:
+            return False
+        if info.unknown_compression_version() is not None:
+            return False
+        if id(info) in self._solid_after_unknown:
+            return False
+        if not _data_is_reachable(info):
+            return False
+        if self._archive.version != 5 and info.compress_size >= 1 << 32:
+            return False
+        if info.is_payload_file() and member.is_file and member.size is None:
+            return False
+        return (
+            self._lost_chain_error(member, info) is None
+            and self._missing_data_error(member, info) is None
+            and self._cut_data_error(member, info) is None
+        )
 
     def _solid_pass_run_plan(self, groups: list[_PassRun]) -> list[_PassRun] | None:
         """The runs of solid streams a pass over a stream source reads one at a time
