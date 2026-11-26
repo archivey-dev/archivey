@@ -122,10 +122,14 @@ class HeaderSearch:
     ``find_header(window, start, stop)`` returns the index in ``window`` of the first
     candidate position at or after ``start`` and before ``stop`` where a header
     passes the format's own checks, or ``None``. It is pure on the bytes it is given.
-    ``window[0]`` is always at a candidate position, so the candidate positions are
-    ``start``, ``start + step``, ``start + 2 * step`` and so on, up to ``stop``; a
-    ``find_header`` that returns any other index is a bug, and the search raises
-    ``AssertionError``. It examines no candidate position at or after ``stop``: the
+    ``window[start]`` is always at a candidate position, so the candidate positions
+    are ``start``, ``start + step``, ``start + 2 * step`` and so on, up to ``stop``;
+    a ``find_header`` that returns any other index is a bug, and the search raises
+    ``AssertionError``. The bytes before ``start`` are ones an earlier search of the
+    layer read and examined: the window may hold them, so that successive searches
+    reuse one window (:class:`SearchLookahead`), and they are not examined again. A
+    ``find_header`` may keep what it learned about a window for its next call on the
+    same window object. It examines no candidate position at or after ``stop``: the
     search gives those to a later window, or the budget does not pay for them. The
     window holds ``max_header_size - 1`` bytes past ``stop`` where the layer has
     them, so each candidate before ``stop`` can be checked whole. A header that does
@@ -167,6 +171,26 @@ class SearchResult:
 
     found: int | None
     limit_reached: bool = False
+
+
+class SearchLookahead:
+    """The bytes one search of a layer read past the header it found, kept for the
+    layer's next search (:func:`search_forward`).
+
+    A walk that lists the header found and meets damage again a few bytes later
+    starts its next search inside these bytes, so that search reads only what lies
+    past them. Without it, each search reads a whole window again, and a layer with
+    damage every few bytes is read about ``window_size / spacing`` times over. One
+    object serves one layer of one source: ``data`` are the layer's bytes from
+    ``base``, and ``at_end`` says the layer ends after them.
+    """
+
+    __slots__ = ("at_end", "base", "data")
+
+    def __init__(self) -> None:
+        self.base = 0
+        self.data = b""
+        self.at_end = False
 
 
 class SalvageState:
@@ -427,6 +451,7 @@ def search_forward(
     window_size: int = WINDOW_SIZE,
     volume_index: int | None = None,
     accept: Callable[[int], bool] | None = None,
+    lookahead: SearchLookahead | None = None,
 ) -> SearchResult:
     """Search ``layer`` forward from ``start`` for the next header that passes.
 
@@ -458,6 +483,11 @@ def search_forward(
     the range, so one record covers the bytes on both sides of it, as for a copy of
     a header that is not a member (the search counts the position examined and goes
     on from the next one).
+
+    ``lookahead``, when given, keeps the bytes this search read past the header it
+    found, and a later search of the same layer that starts inside them reads only
+    what lies after them (:class:`SearchLookahead`). Each byte of a layer is then read
+    a bounded number of times, however close together its damage is.
     """
     if not state.enabled:
         raise AssertionError("search_forward called on a reader that does not salvage")
@@ -512,24 +542,46 @@ def search_forward(
     )
 
     span = window_size + search.max_header_size - 1
-    # The bytes read so far, from ``pos``; ``buf_end`` is the layer offset after them.
+    # The bytes read so far: ``buf`` holds the layer's bytes from ``buf_base``, and
+    # ``buf_end`` is the layer offset after them. A lookahead from the layer's last
+    # search that holds ``pos`` is reused, so its bytes are not read again.
     buf = b""
-    buf_end = pos
+    buf_base = pos
     at_end = False
+    if (
+        lookahead is not None
+        and lookahead.base <= pos <= lookahead.base + len(lookahead.data)
+        and (end is None or lookahead.base + len(lookahead.data) <= end)
+    ):
+        buf = lookahead.data
+        buf_base = lookahead.base
+        at_end = lookahead.at_end
+    buf_end = buf_base + len(buf)
+
+    def keep(result: SearchResult) -> SearchResult:
+        if lookahead is not None:
+            lookahead.base, lookahead.data, lookahead.at_end = buf_base, buf, at_end
+        return result
+
     while True:
-        want = span - len(buf)
-        if end is not None:
-            want = min(want, end - buf_end)
-        if read_limit is not None:
-            want = min(want, read_limit - buf_end)
-        if want > 0 and not at_end:
-            chunk = read_at(buf_end, want)
-            buf += chunk
-            buf_end += len(chunk)
-            if len(chunk) < want or (end is not None and buf_end >= end):
+        # Read only when no position is left to examine in the bytes held: a search
+        # that starts in a lookahead examines those first.
+        if not at_end and buf_end - pos < search.max_header_size:
+            want = span - (buf_end - pos)
+            if end is not None:
+                want = min(want, end - buf_end)
+            if read_limit is not None:
+                want = min(want, read_limit - buf_end)
+            if want > 0:
+                chunk = read_at(buf_end, want)
+                # The bytes before ``pos`` were examined: drop them.
+                buf = buf[pos - buf_base :] + chunk
+                buf_base = pos
+                buf_end += len(chunk)
+                if len(chunk) < want or (end is not None and buf_end >= end):
+                    at_end = True
+            elif end is not None and buf_end >= end:
                 at_end = True
-        elif end is not None and buf_end >= end:
-            at_end = True
 
         remaining = state.remaining_bytes()
         last, budget_bound = _last_position(
@@ -555,19 +607,22 @@ def search_forward(
             )
 
         if last >= pos:
-            # The candidate positions this window may examine are those before
-            # ``stop``; the window keeps the bytes a header at the last one needs.
-            stop = last - pos + 1
-            window = buf[: stop - 1 + search.max_header_size]
-            found = search.find_header(window, 0, stop)
+            # The candidate positions this window may examine are those from
+            # ``first`` and before ``stop``; the window keeps the bytes a header at
+            # the last one needs, and no more.
+            first = pos - buf_base
+            stop = last - buf_base + 1
+            limit = stop - 1 + search.max_header_size
+            window = buf if limit >= len(buf) else buf[:limit]
+            found = search.find_header(window, first, stop)
             while found is not None:
-                if found < 0 or found % step or found >= stop:
+                if found < first or (found - first) % step or found >= stop:
                     raise AssertionError(
                         f"find_header returned {found}, which is not a candidate "
-                        f"position (a multiple of {step} at or after 0 and before "
+                        f"position ({first} plus a multiple of {step}, before "
                         f"{stop})"
                     )
-                header_at = pos + found
+                header_at = buf_base + found
                 if accept is not None and not accept(header_at):
                     # Passed over inside the same range: look on from the next
                     # position in the bytes already read.
@@ -584,14 +639,13 @@ def search_forward(
                         length=header_at - region_start,
                         volume_index=volume_index,
                     )
-                return SearchResult(found=header_at)
+                return keep(SearchResult(found=header_at))
             # The last candidate position examined, then the first one after it.
             examined_last = pos + (last - pos) // step * step
             next_pos = examined_last + step
             if at_end and not budget_bound:
                 next_pos = min(next_pos, buf_end)
             state._examined(layer, pos, next_pos, volume_index)
-            buf = buf[next_pos - pos :]
             pos = next_pos
 
         if at_end and pos >= buf_end and not budget_bound:
@@ -599,7 +653,7 @@ def search_forward(
             # even when this one examined no candidate position.
             state._examined(layer, buf_end, buf_end, volume_index)
             _record_no_header(state, layer, region_start, buf_end, volume_index)
-            return SearchResult(found=None)
+            return keep(SearchResult(found=None))
         if budget_bound:
             state.limit_reached = True
             state.record_search_limit(
@@ -609,7 +663,7 @@ def search_forward(
                 stopped_at=pos,
                 volume_index=volume_index,
             )
-            return SearchResult(found=None, limit_reached=True)
+            return keep(SearchResult(found=None, limit_reached=True))
 
 
 def _last_position(

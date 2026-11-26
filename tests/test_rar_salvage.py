@@ -15,6 +15,7 @@ import functools
 import io
 import random
 import shutil
+import struct
 import subprocess
 import threading
 import time
@@ -30,6 +31,7 @@ from archivey import (
     ArchiveyConfig,
     DiagnosticCode,
     DiagnosticPolicy,
+    ListingLimits,
     RarDecompressor,
     SalvageLimits,
     open_archive,
@@ -44,6 +46,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     FormatDetectionError,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -52,7 +55,6 @@ from archivey.internal.backends.rar_search import (
     Rar3Finder,
     Rar5Finder,
     _WindowCrc,
-    classify_header,
     crc32_from_prefixes,
     is_rar5_qo_copy,
 )
@@ -285,7 +287,9 @@ def test_the_finders_find_every_header_the_walk_reads() -> None:
         key = 5 if version == 5 else 4
         for offset in offsets:
             assert finder.find(data, offset, offset + 1) == offset, (path.name, offset)
-            assert classify_header(_reader(data), offset) == key, (path.name, offset)
+            lost = LostStartFinder()
+            assert lost(data, offset, offset + 1) == offset, (path.name, offset)
+            assert lost.last_kind == key, (path.name, offset)
             counts[key] += 1
     assert counts[5] > 1000
     assert counts[4] > 50
@@ -999,3 +1003,190 @@ def test_after_a_damaged_main_a_found_comment_is_not_the_archives(
         assert report.members
         assert isinstance(report.error, CorruptionError)
         assert reader._archive.comment is None  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Work on crafted input: each byte is read and scanned a bounded number of times
+# ---------------------------------------------------------------------------
+
+
+def _rar5_block_bytes(body: bytes) -> bytes:
+    size = bytes([len(body)])
+    return zlib.crc32(size + body).to_bytes(4, "little") + size + body
+
+
+# A RAR5 FILE header with no data: type 2, header flags 0, file flags 0, unpacked
+# size 0, attributes 0, compression information 0, host OS 0, a 1-byte name.
+_RAR5_EMPTY_FILE = _rar5_block_bytes(bytes([2, 0, 0, 0, 0, 0, 0, 1]) + b"a")
+_RAR5_MAIN = _rar5_block_bytes(b"\x01\x00\x00")
+
+
+def _rar3_file_header(name: bytes, data: bytes) -> bytes:
+    from tests.rar_util import _rar3_block
+
+    body = struct.pack(
+        "<LLBLLBBHL",
+        len(data),
+        len(data),
+        3,
+        zlib.crc32(data) & 0xFFFFFFFF,
+        0,
+        29,
+        0x30,
+        len(name),
+        0o100644,
+    )
+    return _rar3_block(0x74, 0x8000, body + name)
+
+
+class _Work:
+    """Bytes the salvage search reads, and positions each finder scans."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from archivey.internal.backends import rar_parser, rar_search
+
+        self.read = 0
+        self.scanned = 0
+        read_at = rar_parser._RarSalvage.read_at
+
+        def counting_read(salvage: object, offset: int, size: int) -> bytes:
+            data = read_at(salvage, offset, size)  # type: ignore[arg-type]
+            self.read += len(data)
+            return data
+
+        monkeypatch.setattr(rar_parser._RarSalvage, "read_at", counting_read)
+        for finder in (rar_search.Rar5Finder, rar_search.Rar3Finder):
+            self._count_scan(monkeypatch, finder)
+
+    def _count_scan(self, monkeypatch: pytest.MonkeyPatch, finder: type) -> None:
+        find = finder.find
+
+        def counting_find(
+            obj: object, window: bytes, start: int, stop: int | None
+        ) -> int | None:
+            found = find(obj, window, start, stop)
+            end = (
+                found if found is not None else (len(window) if stop is None else stop)
+            )
+            self.scanned += max(0, end - start)
+            return found
+
+        monkeypatch.setattr(finder, "find", counting_find)
+
+
+def _open_salvage(data: bytes, **kwargs: object) -> object:
+    with open_archive(io.BytesIO(data), salvage=True, **kwargs) as reader:  # type: ignore[arg-type]
+        return reader.members_report()
+
+
+def test_dense_rar5_damage_reads_each_byte_a_bounded_number_of_times(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A RAR5 FILE header, then one junk byte, repeated: every header is followed by
+    damage, so every one starts a search. Each search goes on in the bytes the one
+    before it read, so the bytes read stay a small multiple of the file's size."""
+    count = 400
+    data = _RAR5_SIGNATURE + _RAR5_MAIN + (_RAR5_EMPTY_FILE + b"\xff") * count
+    work = _Work(monkeypatch)
+    report = _open_salvage(data)
+    assert len(report.members) == count  # type: ignore[attr-defined]
+    # Each found header is read again whole, with the 44 bytes before it, to tell a
+    # quick-open copy (``is_rar5_qo_copy``): 59 bytes here for a 16-byte unit.
+    assert work.read < 8 * len(data)
+    assert work.scanned < 4 * len(data)
+
+
+def test_dense_rar3_damage_reads_each_byte_a_bounded_number_of_times(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The RAR 1.5-4 shape: a FILE header with one data byte, then two junk bytes."""
+    count = 400
+    whole = write_rar29_stored([("a", b"x")])
+    head = whole[: 7 + 13]
+    unit = _rar3_file_header(b"a", b"x") + b"x" + b"\xff\xfe"
+    data = head + unit * count
+    work = _Work(monkeypatch)
+    report = _open_salvage(data)
+    assert len(report.members) == count  # type: ignore[attr-defined]
+    assert work.read < 4 * len(data)
+    assert work.scanned < 4 * len(data)
+
+
+def test_a_lost_start_of_unconfirmed_rar3_candidates_is_searched_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No signature, then RAR 1.5-4 FILE headers that no header after their data
+    confirms: the version probe scans each byte with each finder a bounded number
+    of times, not once per candidate (it was quadratic)."""
+    count = 400
+    unit = _rar3_file_header(b"a", b"x") + b"x" + b"\xff\xfe"
+    data = unit * count
+    work = _Work(monkeypatch)
+    report = _open_salvage(data, format=ArchiveFormat.RAR)
+    assert len(report.members) == count  # type: ignore[attr-defined]
+    assert isinstance(report.error, CorruptionError)  # type: ignore[attr-defined]
+    assert work.read < 4 * len(data)
+    assert work.scanned < 4 * len(data)
+
+
+def test_a_lost_start_and_a_lost_end_list_the_unconfirmed_candidates(
+    tmp_path: Path,
+) -> None:
+    """Signature and MAIN cut, and the end block damaged: nothing confirms
+    ``a.txt``'s header, which passes its CRC16. It is listed unconfirmed, as the same
+    header is after damage further in, and the default's error ends the listing."""
+    data = bytearray(write_rar29_stored([("a.txt", b"alpha" * 20)])[20:])
+    data[-7] ^= 0xFF  # the end block's CRC
+    path = _write(tmp_path, bytes(data))
+    salvage = _list(path, salvage=True)
+    assert salvage.names == ["a.txt"]
+    assert isinstance(salvage.error, CorruptionError)
+    assert not salvage.found()["a.txt"].confirmed
+
+
+def test_a_lost_start_buffers_no_more_candidates_than_the_listing_takes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unconfirmed RAR 1.5-4 candidates wait for the version to be known: at most
+    ``max_members + 1`` of them are kept (with the confirmed header after them), and
+    their listing fails as a longer one would."""
+    from archivey.internal.backends import rar_parser
+
+    kept: list[int] = []
+    lose_main = rar_parser._Rar3Walk.lose_main
+
+    def spy(walk: object, start: int, found: list[int], **kwargs: object) -> None:
+        kept.append(len(found))
+        lose_main(walk, start, found, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_parser._Rar3Walk, "lose_main", spy)
+    unit = _rar3_file_header(b"a", b"x") + b"x" + b"\xff\xfe"
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
+    # The run ends in a header that the end block after its data confirms.
+    confirmed = write_rar29_stored([("b.txt", b"beta")])[20:]
+    with pytest.raises(ResourceLimitError):
+        _open_salvage(unit * 200 + confirmed, format=ArchiveFormat.RAR, config=config)
+    assert kept == [12]
+
+
+def test_a_lost_start_inside_a_quick_open_record_lists_no_copy(tmp_path: Path) -> None:
+    """The start is cut inside a quick-open service header's data (the archive's
+    last): the FILE header copies after the cut pass their CRC, but none decides
+    the version or is listed."""
+    path = _RAR.parent / "corpus" / "rar" / "large.rar"
+    data = path.read_bytes()
+    read_at = _reader(data)
+    finder = Rar5Finder()
+    copies = []
+    position = finder.find(data, 0, None)
+    while position is not None:
+        if is_rar5_qo_copy(read_at, position):
+            copies.append(position)
+        position = finder.find(data, position + 1, None)
+    assert copies
+    cut = copies[0] - 10
+    salvage = _list(_write(tmp_path, data[cut:]), salvage=True)
+    # Only copies and the end block follow the cut: no member, and the default's
+    # error.
+    assert salvage.names == []
+    assert isinstance(salvage.error, CorruptionError)

@@ -52,8 +52,10 @@ the walk stopped SHALL NOT be listed.
 
 **Work.** The search's work SHALL be bounded by the size of the bytes searched and not
 by what they declare: the CRC of a candidate header larger than 4 KiB SHALL be computed
-so that no byte of a window is hashed more than once for such candidates. Found members
-SHALL count against `ListingLimits`.
+so that no byte of a window is hashed more than once for such candidates. However
+close together the damage points are, each byte of a volume SHALL be read and scanned
+by each finder a bounded number of times. Found members SHALL count against
+`ListingLimits`.
 
 The pass SHALL end in the error the default ends in, naming the same first damage. When
 the default raises at open, salvage SHALL list what it finds and raise that error after
@@ -81,9 +83,11 @@ When step 3's lost-start rule picks RAR, the walk SHALL search from offset 0 wit
 finders. The first confirmed header SHALL decide the version: a RAR5 header, or a RAR
 1.5-4 header whose next position confirms. Unconfirmed RAR 1.5-4 candidates before it
 SHALL be listed before it when the version is RAR 1.5-4, and SHALL NOT be listed when it
-is RAR5. A MAIN header found first SHALL be used as the main header. A RAR5 ENCRYPTION
-header found first, or a RAR 1.5-4 MAIN with the header-encryption flag, SHALL start the
-normal encrypted walk there.
+is RAR5. When no header confirms, the candidates SHALL be listed as RAR 1.5-4,
+unconfirmed, and the default's error SHALL end the listing. A RAR5 header that ends a
+quick-open cache record SHALL NOT decide the version. A MAIN header found first SHALL
+be used as the main header. A RAR5 ENCRYPTION header found first, or a RAR 1.5-4 MAIN
+with the header-encryption flag, SHALL start the normal encrypted walk there.
 
 Without a main header the archive SHALL be solid when a found member's own solid flag is
 set, and a volume of a set when its name numbers one or a found member has a split

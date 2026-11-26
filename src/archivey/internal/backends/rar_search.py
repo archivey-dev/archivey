@@ -524,23 +524,79 @@ def rar3_search() -> HeaderSearch:
     return HeaderSearch(Rar3Finder(), step=1, max_header_size=RAR3_MAX_HEADER_SPAN)
 
 
+class _ScanMemo:
+    """What one finder learned about one window: the first header at or after
+    ``start`` is at ``hit``, or, with ``hit`` ``None``, none is before ``stop``. The
+    window object is held, so a later call on the same object can trust it."""
+
+    __slots__ = ("hit", "start", "stop", "window")
+
+    def __init__(self) -> None:
+        self.window: bytes | None = None
+        self.start = 0
+        self.stop = 0
+        self.hit: int | None = None
+
+    def find(
+        self, finder: Rar5Finder | Rar3Finder, window: bytes, start: int, stop: int
+    ) -> int | None:
+        """``finder.find(window, start, stop)``, scanning no position this memo
+        already covers."""
+        scan_from = start
+        if self.window is window and self.start <= start:
+            if self.hit is not None:
+                if self.hit >= start:
+                    return self.hit if self.hit < stop else None
+            elif stop <= self.stop:
+                return None
+            elif start <= self.stop:
+                # None before ``self.stop``: only the positions after it are new.
+                scan_from = self.stop
+        if scan_from == start:
+            self.window, self.start = window, start
+        found = finder.find(window, scan_from, stop)
+        self.hit = found
+        self.stop = stop
+        return found
+
+
 class LostStartFinder:
     """``find_header`` for a lost start, when the version is not known: the first
     position where a RAR5 header or a RAR 1.5-4 ``FILE``, ``SUB`` or ``MAIN`` header
-    passes. The walk tells which one it is again from the bytes there."""
+    passes. :attr:`last_kind` says which version's header the last call found (5 or
+    4), RAR5 where both pass at one position.
+
+    The two finders scan apart: the RAR5 one looks ahead of a RAR 1.5-4 header found
+    before its own hit. What each learned about a window is kept (:class:`_ScanMemo`),
+    so successive calls on one window, one per candidate the caller passes over,
+    scan each position once per finder rather than once per call.
+    """
 
     def __init__(self) -> None:
         self._rar5 = Rar5Finder()
         self._rar3 = Rar3Finder(with_main=True)
+        self._memo5 = _ScanMemo()
+        self._memo3 = _ScanMemo()
+        self.last_kind: int | None = None
 
     def __call__(self, window: bytes, start: int, stop: int) -> int | None:
-        found = self._rar5.find(window, start, stop)
-        older = self._rar3.find(window, start, stop if found is None else found)
-        return older if older is not None else found
+        found = self._memo5.find(self._rar5, window, start, stop)
+        older = self._memo3.find(
+            self._rar3, window, start, stop if found is None else found
+        )
+        if older is not None:
+            self.last_kind = 4
+            return older
+        self.last_kind = None if found is None else 5
+        return found
 
 
-def lost_start_search() -> HeaderSearch:
-    return HeaderSearch(LostStartFinder(), step=1, max_header_size=RAR5_MAX_HEADER_SPAN)
+def lost_start_search(finder: LostStartFinder | None = None) -> HeaderSearch:
+    return HeaderSearch(
+        finder if finder is not None else LostStartFinder(),
+        step=1,
+        max_header_size=RAR5_MAX_HEADER_SPAN,
+    )
 
 
 def _rar5_header_length(head: bytes) -> int | None:
@@ -552,22 +608,4 @@ def _rar5_header_length(head: bytes) -> int | None:
         size |= (byte & 0x7F) << (7 * index)
         if byte < 0x80:
             return 4 + index + 1 + size
-    return None
-
-
-def classify_header(read_at: Callable[[int, int], bytes], offset: int) -> int | None:
-    """Which version's header passes at ``offset``: 5, 4, or ``None``. RAR5 is asked
-    first, as :class:`LostStartFinder` takes a RAR5 header where both pass at one
-    position."""
-    head = read_at(offset, 7)
-    if len(head) < 7:
-        return None
-    length = _rar5_header_length(head)
-    if length is not None:
-        data = read_at(offset, length)
-        if Rar5Finder().find(data, 0, 1) == 0:
-            return 5
-    rar3 = read_at(offset, max(7, _S_U16.unpack_from(head, 5)[0]))
-    if rar3_header_check(rar3, 0, with_main=True):
-        return 4
     return None

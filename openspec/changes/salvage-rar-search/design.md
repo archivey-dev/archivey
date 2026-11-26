@@ -341,7 +341,11 @@ Then:
   a RAR5 header, or a RAR 1.5-4 header with a passing header after its data.
   Unconfirmed RAR 1.5-4 candidates before that point are kept in order. When the
   version turns out to be RAR 1.5-4, they are listed before the confirmed one. When it
-  is RAR5, they are dropped. Members cap the buffer (`ListingLimits.max_members`).
+  is RAR5, they are dropped. When the search reaches the end with candidates and no
+  confirmed header, they are listed as RAR 1.5-4, unconfirmed (recall first, §5).
+  Members cap the buffer (`ListingLimits.max_members`): it keeps at most
+  `max_members + 1` candidates, so a listing of them fails as a longer one would. A
+  RAR5 header that a quick-open cache record holds (§6) does not decide the version.
 - **A MAIN header found first** is used as the archive's MAIN: only the signature or an
   SFX stub was lost. Its flags are read as usual, and so is the archive comment that
   follows it before the first member (§19).
@@ -491,6 +495,13 @@ past a missing volume does the same today.
   for direct hashing (about 12 hours per GiB). A RAR 1.5-4 confirmation probe reads
   one header of at most 64 KiB, checked the same way. DR-9a: the work is bounded by
   the input size and not by what the bytes say.
+- **Bytes read and scanned.** Each search starts where the walk meets damage, often
+  a few bytes after the last one found. The bytes a search read past the header it
+  found are kept for the next search of the same volume (`SearchLookahead`), which
+  reads only what lies past them; and the lost-start finder keeps, per window, where
+  each of its two finders found its next header, so a candidate passed over does not
+  make the other finder scan the window again. Each byte is then read and scanned a
+  bounded number of times, however close together the damage is.
 - **The budget** (`SalvageLimits.max_search_bytes`) counts the offsets the finder tries,
   once each, in every volume, as step 3 defines it. Bytes hashed for a candidate are
   not counted again.

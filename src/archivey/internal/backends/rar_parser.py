@@ -1495,20 +1495,28 @@ class _RarSalvage:
     volume's 0-based position in a set, or ``None`` for an archive in one file: each
     volume is its own layer for the shared driver
     (:func:`~archivey.internal.salvage.search_forward`), so no byte of a volume is
-    searched twice, and the diagnostics name the volume.
+    searched twice, and the diagnostics name the volume. The bytes one search read
+    past its header are kept for the next (``SearchLookahead``), so a volume with
+    damage every few bytes is not read again for each search.
     """
 
     def __init__(self, state: SalvageState, volume: int | None) -> None:
+        from archivey.internal.salvage import SearchLookahead
+
         self.state = state
         self.volume = volume
         self._source: BinaryIO | None = None
         self.end = 0
+        self._lookahead = SearchLookahead()
 
     def bind(self, source: BinaryIO) -> None:
         """Search ``source``, the volume the walk reads."""
         if self._source is source:
             return
+        from archivey.internal.salvage import SearchLookahead
+
         self._source = source
+        self._lookahead = SearchLookahead()
         here = source.tell()
         self.end = source.seek(0, 2)
         source.seek(here)
@@ -1556,6 +1564,7 @@ class _RarSalvage:
             # position on by more than the overlap it reads again.
             window_size=max(WINDOW_SIZE, 2 * search.max_header_size),
             accept=accept,
+            lookahead=self._lookahead,
         )
         return result.found
 
@@ -1627,11 +1636,20 @@ def _parse_lost_start(
 
     A later volume of a set has the version of the volumes before it, and its walk
     searches from its start. Otherwise both finders run: the first confirmed header
-    decides the version, a RAR5 header or a RAR 1.5-4 header whose next position
-    confirms. Unconfirmed RAR 1.5-4 candidates before it are listed first when the
-    version is RAR 1.5-4, and dropped when it is RAR5. ``error`` is what the default
+    decides the version, a RAR5 header that is not a quick-open copy or a RAR 1.5-4
+    header whose next position confirms. Unconfirmed RAR 1.5-4 candidates before it
+    are listed first when the version is RAR 1.5-4, and dropped when it is RAR5.
+    When the search ends with candidates and no confirmed header, they are listed
+    as RAR 1.5-4 (recall first). The buffer of candidates holds at most
+    ``max_members + 1`` of them: one more than the listing could take, so a listing
+    of them still fails as one of more members would. ``error`` is what the default
     raised; with no header found it is raised again here, and otherwise after the
     listing (:attr:`RarArchive.open_error`).
+
+    Each search starts where the one before found its candidate, in the bytes that
+    one read (``_RarSalvage``'s lookahead), and the finder keeps what it learned of
+    them (``LostStartFinder``): the probe reads and scans each byte a bounded number
+    of times.
     """
     from archivey.internal.backends import rar_search
 
@@ -1654,26 +1672,41 @@ def _parse_lost_start(
 
     version: int | None = None
     found_first: list[int] = []
+    last_confirmed = True
     if first_volume is not None:
         version = first_volume.version
     else:
         prober = rar3_walk()
-        search = rar_search.lost_start_search()
+        finder = rar_search.LostStartFinder()
+        search = rar_search.lost_start_search(finder)
+
+        def not_qo_copy(offset: int) -> bool:
+            # A RAR5 header a quick-open cache record holds is a copy, not a
+            # member: passed over inside the same skipped range.
+            return finder.last_kind != 5 or not rar_search.is_rar5_qo_copy(
+                salvage.read_at, offset
+            )
+
         pos = start
         while True:
-            found = salvage.search(search, pos)
+            found = salvage.search(search, pos, accept=not_qo_copy)
             if found is None:
-                raise error
-            kind = rar_search.classify_header(salvage.read_at, found)
-            if kind == 5:
+                if not found_first:
+                    raise error
+                # Only unconfirmed RAR 1.5-4 candidates: listed, recall first.
+                version = 4
+                last_confirmed = False
+                break
+            if finder.last_kind == 5:
                 version = 5
                 found_first = [found]
                 break
-            if kind == 4:
+            confirms = prober.found_confirms(found)
+            if confirms or max_members is None or len(found_first) <= max_members:
                 found_first.append(found)
-                if prober.found_confirms(found):
-                    version = 4
-                    break
+            if confirms:
+                version = 4
+                break
             pos = found + 1
     try:
         if version == 5:
@@ -1693,7 +1726,7 @@ def _parse_lost_start(
             archive = walk5.run()
         else:
             walk3 = rar3_walk()
-            walk3.lose_main(start, found_first)
+            walk3.lose_main(start, found_first, last_confirmed=last_confirmed)
             archive = walk3.run()
     except _PRIVATE_WALK_ERRORS as exc:
         raise _public_walk_error(exc) from None
@@ -3348,6 +3381,7 @@ class _Rar3Walk:
         self.pending_search: int | None = None
         # Headers a lost start's search found, in order, before the walk reads on.
         self.prefound: list[int] = []
+        self.prefound_confirmed = True
         self.main_lost = False
         # Set when a lost start's search found this volume's own MAIN first: its
         # comment, before any member, is this archive's (``_own_comment``). Only a
@@ -3378,12 +3412,16 @@ class _Rar3Walk:
     def _can_salvage(self) -> bool:
         return self.salvage is not None and not self.has_header_encryption
 
-    def lose_main(self, start: int, found: list[int]) -> None:
+    def lose_main(
+        self, start: int, found: list[int], *, last_confirmed: bool = True
+    ) -> None:
         """Walk a volume whose signature or main header is lost, in salvage mode.
 
         ``found`` are the headers a lost start's search found, the last one
         confirmed: the others are listed unconfirmed first, then the walk reads on
-        from the last. With none, the walk searches from ``start`` first.
+        from the last. Without ``last_confirmed`` none is confirmed, and the search
+        already ran to the volume's end: each one is listed unconfirmed, and the
+        walk ends there. With none, the walk searches from ``start`` first.
         """
         self.main_lost = True
         self.start_lost = True
@@ -3395,6 +3433,7 @@ class _Rar3Walk:
         if found[0] > start:
             self.pending_lost = f"the bytes before {self.salvage.where(found[0])}"
         self.prefound = found
+        self.prefound_confirmed = last_confirmed
 
     def _set_truncated(self, text: str | None) -> None:
         """Record a cut; the first one is kept, as the error the default ends in."""
@@ -3508,6 +3547,12 @@ class _Rar3Walk:
         """Walk the blocks after the signature; see :meth:`_Rar5Walk.walk`."""
         source = self.source
         if self.prefound:
+            if not self.prefound_confirmed:
+                for offset in self.prefound:
+                    self._list_unconfirmed(offset)
+                self.prefound = []
+                self.ended_in_damage = True
+                return
             *unconfirmed, first = self.prefound
             self.prefound = []
             for offset in unconfirmed:
