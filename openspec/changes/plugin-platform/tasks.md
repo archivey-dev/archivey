@@ -128,8 +128,9 @@
 - [ ] 4.7 Public listing-limit, timestamp and Unix-mode helpers (ISO, xar, CAB, DMG,
   LHA, ARJ)
 - [ ] 4.7a The probe context: bounded `read_at`, `charge_decode`, isolation and decoder
-  limits as an optional public argument of a probe, and a graded verdict as its
-  return; Brotli's probe moved onto it, `_brotli_probe_confidence` out of core
+  limits as an optional public argument of a probe, and a three-valued verdict as the
+  only return type of a probe (no bool); Brotli's probe moved onto it,
+  `_brotli_probe_confidence` out of core
 - [ ] 4.8 SFX stub scan declared on the entry (LHA, ARJ)
 - [ ] 4.9 Crypto facade (makeself, DMG, ARJ)
 - [ ] 4.10 Nested-archive helpers folded into `ReaderContext.open_nested`; the path
