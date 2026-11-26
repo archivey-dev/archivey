@@ -143,6 +143,12 @@
 
 ## 5. The other moves, one pack at a time
 
+- [ ] 5.0 For each reader, two pull requests. First the port, in place: the reader
+  still lives in core and imports only public names (the services of group 4 it
+  needs land with it), and the public-names test of 3.7a covers its module. Then the
+  move: the files, the manifest entry and the hint line, with no change to the
+  reader's code. The readers and what each still takes from `archivey.internal` are
+  listed in design.md §5
 - [ ] 5.1 The rest of `archivey-package-formats`: ar with deb, xar with pkg, makeself,
   CAB; a base and its refinements in one pull request
 - [ ] 5.2 `packages/archivey-legacy-formats`: LHA, ARJ, the legacy ZIP methods
