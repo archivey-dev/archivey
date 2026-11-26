@@ -383,6 +383,19 @@ to no data phase, and its rule is today's, kept:
 - It runs only for a provider the call's policy allows (§3 point 4), under the
   detection read budget and the caller's decoder limits. R9 applies to its result.
 - Core's own probes run first, then the others in distribution order.
+- The public probe is `(bytes) -> bool` today, which is enough for binary cpio. It is
+  not enough for Brotli, which leaves core (R11): with no signature at all, its probe
+  decodes a trial piece, and core's internal probe shape gives it a bounded
+  `read_at`, a `charge_decode` allowance, the caller's `process_isolation` and the
+  decoder limits. Step 4 makes that a public argument (a probe context), optional so
+  that a one-line probe stays one line. A trial decode by a native library runs in
+  the child, as any other decode of that codec does (R4).
+- A probe is the only evidence for its format, so on a nameless source with
+  `always_probe_content` every allowed provider's probe runs, and a loose probe in an
+  outside package can claim a file core would call "not an archive". It can never
+  take a file from a format with a signature, because probes run only when none
+  matched. The conformance recipe (task 3.9a) tests a probe against the non-archive
+  corpus, and `providers=` is the caller's control.
 - A hinted format whose package is missing has no probe to run, so it is known by
   its extension only (Open Question 3 asks whether that is enough).
 
