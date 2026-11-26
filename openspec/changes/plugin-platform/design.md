@@ -180,10 +180,18 @@ Rules:
   order. An extension is weaker evidence (`.img`, `.bin` and `.run` are shared by
   unrelated formats): when a second entry claims an extension that is taken, only that
   extension is dropped from the second entry, and its name and signatures register.
-- **Refusals have a place to be read.** A refused entry, a manifest that does not
-  parse and an incompatible plugin have no format name to pass to
-  `format_availability()`. A query in `archivey.formats` lists every provider found
-  with its state and reason, and `archivey --version -v` prints it.
+- **Refusals have a place to be read.** A query in `archivey.formats` lists every
+  provider found with its state and reason, and `archivey --version -v` prints it. A
+  refused entry and a manifest that does not parse have no format name to pass to
+  `format_availability()`, so this query is the only place they show.
+- **A name that cannot run is still known.** A manifest has an envelope that never
+  changes with the API version: `api`, and the `name` of each format and codec. Core
+  reads it from any manifest it can parse. The names of an incompatible provider are
+  kept for diagnostics and are not eligible to run. So a lookup by name has three
+  outcomes that do not blur: a name nobody declares is `ArchiveyUsageError`; a name
+  whose package is missing is `PackageNotInstalledError` with the hint; a name whose
+  provider is installed and incompatible is reported as incompatible, with both API
+  versions, by `format_availability()` and by the error on open (§5).
 - **A name is a value; a registry is asked when an operation resolves it.** Building
   `ContainerFormat("dmg")` or `ArchiveFormat("outside-format")` checks the spelling
   only (lowercase letters, digits, `.`, `_`, `-`), touches no registry and starts no
@@ -238,9 +246,9 @@ installed code.
    nothing.
 2. The first call that needs the registry lists the `archivey.plugins` entry points
    without loading them, once, in sorted order of distribution name, so the result does
-   not depend on install order. An entry's value names a top-level package. Core
-   locates that package with `importlib.util.find_spec`, which does not run the
-   package's `__init__`, and parses `archivey-manifest.toml` beside it with `tomllib`.
+   not depend on install order. An entry's value names a top-level package, and the
+   entry point belongs to one distribution. Core reads `archivey-manifest.toml` as a
+   file of **that distribution** and parses it with `tomllib`. Nothing is imported.
 3. Detection of a format's family runs on manifest data alone.
 4. Each call applies its effective `FormatPolicy` (provider, then format) **before**
    any dotted path of an installed package is imported: a refinement check, a probe, a
@@ -252,6 +260,24 @@ installed code.
 
 Guardrails:
 
+- **The provider that is authorized is the one that runs.** The import system resolves
+  a module name on the path and knows nothing of distributions, so a name alone does
+  not say whose code loads: two installed distributions can expose the same top-level
+  module. At every place where a manifest turns into code, core establishes the owner
+  first, from metadata, and refuses when it cannot:
+  - a top-level module named by a manifest must belong to exactly one installed
+    distribution, and that one must be the manifest's own. A name two distributions
+    expose is refused for both and reported;
+  - the module the import system would load (`find_spec`, which runs no package code)
+    must be a file of that distribution, where its file list says so;
+  - this holds for the manifest, a handler, a probe, a refinement check and a decoder,
+    in the caller's process and in the decoder child alike;
+  - a codec's `native` object usually lives in a dependency (the library it wraps), not
+    in the package. Its module must be one the entry lists in `requires`, the library
+    policy (`exclude_libraries`, `only_libraries`) governs it, and the one-owner check
+    applies to its top-level name too.
+  Test: two distributions that expose the same import name, one allowed by
+  `providers=` and one not, with the recorder of the next point in both. Neither runs.
 - **Policy before import** (point 4). The test: a wheel whose `__init__` records that it
   ran, installed beside core. Discovery, opening a core ZIP, and
   `format_availability()` are run under the default policy, `plugins=False` and
@@ -283,6 +309,12 @@ Detection has three phases, the same on every install:
 1. **Family, from data.** Extensions, signatures at a fixed offset and trailers, from
    core's table, the installed manifests and the hint table. This settles which family
    the file belongs to (ar, xar, a UDIF image) without code from any package.
+   Trailers keep today's access shape: when the trailer tier runs, it adds one seek
+   towards the end, **one** read and one seek back, however many entries declare a
+   trailer. All declarations are matched against one shared tail window with a fixed
+   cap (the largest today is DMG's 512 bytes). A manifest whose trailer does not fit
+   the cap is refused when it is loaded, and never costs a second range read on a
+   network source.
 2. **Refinement, bounded.** A family may have narrower readings: deb over ar, pkg over
    xar. This runs **after** a signature has matched, as `_near_magic_hit` does today,
    and under the same read budget (the near window on a forward-only source, up to the
@@ -326,6 +358,16 @@ contents" true across installs: an archive reads the same way or is refused with
 hint, and is never read as another format. A CI test keeps the table equal to our
 packages' manifests. An outside project adds its line by pull request, as projects do
 in fsspec.
+
+**A hint is also a reservation.** It reserves the name, the extensions, the signatures
+and the method slots it lists for the distribution it names, when the registry is
+built, whether or not that distribution is installed. Another package that claims
+`ar`, or ZIP method 1, is refused as it would be with the owner present. Otherwise
+installing an unrelated wheel would turn a named refusal into a different reader, and
+installing the expected package later would change the winner again. Only an entry
+from the named distribution fills a reserved place, unless the calling program chooses
+a replacement. Tests: the owner absent, both installed, and the owner installed but
+incompatible.
 
 Tests for this section, before any reader moves: a UDBZ and a ULMO image, a
 `.cpio.gz`, a real pkg and a plain xar, a real deb and a plain ar, each with a correct,
@@ -448,7 +490,9 @@ numbering, apart from archivey's version.
 - The check runs on the manifest, before any code of the package is imported.
 - A refused plugin is reported as **incompatible**, with both versions, in
   `format_availability()` and in the error on open. This is a different outcome from a
-  missing package, with a different message.
+  missing package, with a different message. It works for a format outside the hint
+  table too, because the names in a manifest's envelope are read whatever its API
+  version (§2).
 - Tests: an older and a newer plugin against the first two host releases, and an
   unsupported pair.
 
@@ -524,9 +568,9 @@ member that already decoded. Priority alone would allow that, so eligibility com
 first:
 
 - **A vacant slot may be filled.** The owner of a method namespace (ZIP's reader for
-  `"zip"`) says which numbers it decodes itself. Any other number is vacant, and one
-  package may fill it: legacy ZIP Shrink at `("zip", 1)`. A slot has one owner, like a
-  name.
+  `"zip"`) says which numbers it decodes itself. Any other number is vacant unless the
+  hint table reserves it (§4), and one package may fill it: legacy ZIP Shrink at
+  `("zip", 1)`. A slot has one owner, like a name.
 - **An occupied slot or an existing name is replaced only with consent.** A second
   implementation is eligible when the owner of the name lists it or when the calling
   program selects it in its policy. An unlisted package that claims a higher priority
@@ -689,10 +733,11 @@ Superseded: "built in, like ISO" (2026-10-28), by the 2026-11-24 direction to sp
   installed distribution: usually a few milliseconds, more in a large environment. It
   runs once, on first use. Measured in step 3. There is no lazy fallback: collecting
   only after core's signals fail is not equivalent (§4).
-- **Locating a manifest without importing.** `find_spec` on a top-level package runs
-  no package code for a normal or an editable install, but a package with a custom
-  import hook could differ. Step 3 tests wheels, editable installs and zipped installs,
-  and a package whose manifest cannot be located is reported, not imported.
+- **Establishing an owner without importing.** A wheel's metadata lists its files and
+  its top-level names. An editable install lists less, and a package with a custom
+  import hook could resolve elsewhere. Step 3 tests wheels, editable installs and
+  zipped installs. Where the owner of a module cannot be established, the provider is
+  reported and its code is not imported (§3).
 - **Open names lose static checks.** No exhaustive `match`, no `Literal` typo check.
   The check when a call resolves the name replaces them.
 - **A lean core surprises someone.** A user of bare `archivey` loses ISO on upgrade.
@@ -712,21 +757,24 @@ failure points at the API, at detection or at distribution, and not at all three
    detection, with the three phases of §4, gives the same answers from data, and that
    `import archivey` loads no reader.
 2. **Open names.** The breaking step. Proves that core has no plugin-only type left.
-3. **Pilot wheel.** Passive discovery and policy-before-import (§3), then ar, cpio and
-   rpm, the three readers that already use public names only, built as the first cut of
-   `archivey-package-formats` and installed as a wheel beside a core wheel in a fresh
+3. **Pilot wheel.** Passive discovery and policy-before-import (§3), then cpio and
+   rpm, two of the three readers that already use public names only, built as the
+   first cut of `archivey-package-formats`. ar is the third, and it waits: deb refines
+   ar, and a base and its refinements move in the same step, so that no release has
+   them in two distributions (review C4). ar moves with deb in step 5, as xar moves
+   with pkg. The wheel is installed beside a core wheel in a fresh
    environment. Checked through the public API: discovery, a plain and a compressed
    CPIO read, limits, cleanup, and the recorder test. The conformance recipe starts
    here. A session that did not work on the migration writes the guide's indexed
    example from the guide alone, and its unchanged wheel is tried against the next
-   minor of core. Lands after 0.6.0 is cut, since it moves three formats out.
+   minor of core. Lands after 0.6.0 is cut, since it moves two formats out.
 4. **Services, pulled by the reader that needs them.** Codecs by name with the
    eligibility rule, the block call, and the public helpers of §5, each landing with
    the first reader that needs it. The legacy ZIP methods are the first codec to cross
    a package boundary. A reader moves when it passes the public-imports test, not
    before, so there is no stage where all ten must pass at once.
-5. **The other moves, one pack at a time.** The rest of the package formats (deb, xar,
-   pkg, makeself, CAB), then legacy, then disk images, then DMG. Each pack repeats the
+5. **The other moves, one pack at a time.** The rest of the package formats (ar with
+   deb, xar with pkg, makeself, CAB), then legacy, then disk images, then DMG. Each pack repeats the
    pilot's checks and the corpus comparison.
 6. **Afterwards.** Aliases removed one release later; the plugin guide rewritten,
    shorter.

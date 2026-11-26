@@ -13,6 +13,9 @@
 - [ ] 1.7 Detection parity: pkg and plain xar, deb and plain ar, with correct, missing
   and misleading suffixes; `detect_format()` and `open_archive()` agree; read budgets
   measured on seekable and forward-only sources
+- [ ] 1.7a One tail window for every trailer declaration: several declarations on a
+  source that counts range reads, and on a member stream; a trailer over the cap
+  refused at load
 - [ ] 1.8 Spec deltas: `format-manifest` (new), `backend-registry`, `format-detection`
 
 ## 2. Open names (breaking)
@@ -45,8 +48,12 @@
 ## 3. Pilot wheel (after 0.6.0 is cut)
 
 - [ ] 3.1 Passive discovery: list the `archivey.plugins` entry points without loading,
-  locate each package with `find_spec`, parse `archivey-manifest.toml`; sorted, once, on
-  first use; cost measured in a small and a large environment
+  read `archivey-manifest.toml` as a file of the entry point's distribution; sorted,
+  once, on first use; cost measured in a small and a large environment
+- [ ] 3.1a Owner before code: a manifest's module names belong to one distribution, the
+  manifest's own, and the resolved file is that distribution's; checked for handlers,
+  probes, refinement checks, decoders and the child's `native` target; two
+  distributions with one import name are both refused and reported
 - [ ] 3.2 Policy before import: no dotted path of an installed package is imported
   before the call's policy allows its provider and format
 - [ ] 3.3 The recorder test: a wheel whose `__init__` records that it ran; discovery,
@@ -59,7 +66,7 @@
   and incompatible providers, each with its reason
 - [ ] 3.5 The off switch (environment variable and function)
 - [ ] 3.6 The hint table, and the test that keeps it equal to the packages' manifests
-- [ ] 3.7 `packages/archivey-package-formats` with ar, cpio and rpm, added to
+- [ ] 3.7 `packages/archivey-package-formats` with cpio and rpm, added to
   `[recommended]`, `[all]` and `[free-threaded]`; type checkers, fuzz targets and
   `test.sh --all-configs` extended to `packages/`
 - [ ] 3.7a The public-names test: no `archivey.internal` import and no private
@@ -68,8 +75,10 @@
   run the public-imports test and the pilot checks (discovery, plain and compressed
   CPIO, limits, cleanup); wheel, editable and zipped installs
 - [ ] 3.9 `archivey.formats.API_VERSION` with the acceptance rule of design.md §5,
-  checked on the manifest before import; an incompatible plugin reported apart from a
-  missing package; an older and a newer plugin tried against two host versions
+  checked on the manifest before import; the manifest envelope (`api` and names) read
+  whatever the version; `format_availability()` and an open by name pinned for an
+  incompatible outside format, a missing known package and an unknown name; an older
+  and a newer plugin tried against two host versions
 - [ ] 3.9a The conformance recipe
 - [ ] 3.9b Timing: cold import and first successful operation, on a core-only, a
   recommended and a crowded environment
@@ -116,7 +125,8 @@
 
 ## 5. The other moves, one pack at a time
 
-- [ ] 5.1 The rest of `archivey-package-formats`: deb, xar, pkg, makeself, CAB
+- [ ] 5.1 The rest of `archivey-package-formats`: ar with deb, xar with pkg, makeself,
+  CAB; a base and its refinements in one pull request
 - [ ] 5.2 `packages/archivey-legacy-formats`: LHA, ARJ, the legacy ZIP methods
 - [ ] 5.3 `packages/archivey-disk-images`: ISO, UDF, CD images, SquashFS
 - [ ] 5.3a `packages/archivey-dmg`: DMG with HFS+, APFS and encryption
