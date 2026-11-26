@@ -3,7 +3,7 @@ from typing import Final
 
 from _typeshed import ReadableBuffer as Buffer
 
-from archivey_codecs import (
+from archivey_speedups import (
     bcj2 as bcj2,
     filters as filters,
     lzfse as lzfse,

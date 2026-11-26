@@ -266,7 +266,7 @@ def test_compress_utils_is_recorded_when_chosen(
     def package(data: bytes, size: int) -> bytes:
         return b""
 
-    monkeypatch.setattr(lzo_decoder, "_archivey_codecs", lambda *_a: None)
+    monkeypatch.setattr(lzo_decoder, "_archivey_speedups", lambda *_a: None)
     monkeypatch.setattr(lzo_decoder, "_compress_utils", lambda *_a: package)
     usage = ResourceUsageRecorder()
     assert lzo_decoder.lzo1x_decompressor(usage=usage) is package

@@ -1,4 +1,4 @@
-"""LZVN in Python, as ``archivey_codecs.lzvn``: the decoder is
+"""LZVN in Python, as ``archivey_speedups.lzvn``: the decoder is
 :func:`archivey.internal.streams.codecs.lzfse_decoder.lzvn_decompress`."""
 
 from __future__ import annotations

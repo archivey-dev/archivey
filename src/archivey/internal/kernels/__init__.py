@@ -1,7 +1,7 @@
 """archivey's decoding kernels, each with one API whichever decoder runs.
 
-archivey-codecs (the optional Rust package) has fast versions of some of archivey's
-Python decoders. Each kernel here is one ``archivey_codecs`` module: a call site asks
+archivey-speedups (the optional Rust package) has fast versions of some of archivey's
+Python decoders. Each kernel here is one ``archivey_speedups`` module: a call site asks
 for it with the call's excluded libraries and isolation, and gets a namespace with that
 module's classes and functions. They are the package's when it is installed, current
 and allowed (:mod:`~archivey.internal.kernels._select`), wrapped to raise archivey's
@@ -9,7 +9,7 @@ errors (:mod:`~archivey.internal.kernels.rust`), and otherwise the Python twins
 (:mod:`~archivey.internal.kernels.python`), which have the same API. The two give the
 same bytes and raise the same errors (the package's parity tests compare them), so a
 call site does not know which runs: the choice changes speed only. ``library`` is
-archivey-codecs when the package decodes, else ``None``, for a call site that records
+archivey-speedups when the package decodes, else ``None``, for a call site that records
 its backend (LZO does).
 
 Under ``ProcessIsolation.NATIVE_DECODERS`` (``isolated``) a decoding kernel runs in a
@@ -73,7 +73,7 @@ __all__ = [
 
 Buffer = bytes | bytearray | memoryview
 
-_CODECS = OptionalLibrary.ARCHIVEY_CODECS
+_CODECS = OptionalLibrary.ARCHIVEY_SPEEDUPS
 
 
 # ── The API ───────────────────────────────────────────────────────────────────────────
@@ -262,7 +262,7 @@ class Bcj2Factory(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ZipCrypto:
-    """``archivey_codecs.zipcrypto``."""
+    """``archivey_speedups.zipcrypto``."""
 
     Decryptor: ZipCryptoFactory
     library: OptionalLibrary | None
@@ -270,7 +270,7 @@ class ZipCrypto:
 
 @dataclass(frozen=True, slots=True)
 class Filters:
-    """``archivey_codecs.filters``."""
+    """``archivey_speedups.filters``."""
 
     Arm64Decoder: BranchFactory
     RiscvDecoder: BranchFactory
@@ -281,7 +281,7 @@ class Filters:
 
 @dataclass(frozen=True, slots=True)
 class Lzo1x:
-    """``archivey_codecs.lzo1x``."""
+    """``archivey_speedups.lzo1x``."""
 
     decompress: Lzo1xDecompress
     library: OptionalLibrary | None
@@ -289,7 +289,7 @@ class Lzo1x:
 
 @dataclass(frozen=True, slots=True)
 class AppleLz:
-    """``archivey_codecs.lzfse`` or ``archivey_codecs.lzvn``: a one-shot
+    """``archivey_speedups.lzfse`` or ``archivey_speedups.lzvn``: a one-shot
     ``decompress`` with ``lzo1x.decompress``'s shape."""
 
     decompress: Lzo1xDecompress
@@ -298,7 +298,7 @@ class AppleLz:
 
 @dataclass(frozen=True, slots=True)
 class Lzw:
-    """``archivey_codecs.lzw``."""
+    """``archivey_speedups.lzw``."""
 
     Decompressor: LzwFactory
     library: OptionalLibrary | None
@@ -306,7 +306,7 @@ class Lzw:
 
 @dataclass(frozen=True, slots=True)
 class Lzx:
-    """``archivey_codecs.lzx``."""
+    """``archivey_speedups.lzx``."""
 
     Decompressor: LzxFactory
     library: OptionalLibrary | None
@@ -314,7 +314,7 @@ class Lzx:
 
 @dataclass(frozen=True, slots=True)
 class Bcj2:
-    """``archivey_codecs.bcj2``."""
+    """``archivey_speedups.bcj2``."""
 
     Decompressor: Bcj2Factory
     library: OptionalLibrary | None

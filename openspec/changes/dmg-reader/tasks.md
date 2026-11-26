@@ -97,15 +97,15 @@ decmpfs type 10 was fixed); APFS joins M.2 with Part E.
 ## H. LZFSE accelerator
 
 Ruled 2026-11-21 (A0.2): the fast path is archivey's own LZFSE and LZVN kernel in the
-`archivey-codecs` Rust package, with the same checks as the Python decoder, not the
+`archivey-speedups` Rust package, with the same checks as the Python decoder, not the
 `lzfse` PyPI package.
 
-- [x] H.1 LZFSE and LZVN kernel in `archivey-codecs` with a bounded output and the
+- [x] H.1 LZFSE and LZVN kernel in `archivey-speedups` with a bounded output and the
   Python decoder's checks; archivey uses it when the package is installed (in this
   process; under `NATIVE_DECODERS` in the decoder child)
 - [x] H.2 Tests that both decoders agree on every fixture and on the A0 fuzz corpus;
   `--all-configs` (kernel against the Python decoder:
-  `packages/archivey-codecs/tests/test_parity.py`; reads through archivey:
+  `packages/archivey-speedups/tests/test_parity.py`; reads through archivey:
   `tests/test_native_kernels.py`)
 
 ## On archive

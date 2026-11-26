@@ -116,8 +116,8 @@ its list, live in that script.
 - **Standard** — the review this skill and its reference docs describe, unchanged. A
   standard PR can still get the security pass (below, under Deep).
 - **Deep** — a change whose bugs a second model should look for: it moves the public API
-  (archivey's surface, or archivey-codecs' type stubs), adds a reader, parser, codec or
-  native kernel file, changes the code (not only docstrings or comments) of a layer
+  (archivey's surface, or archivey-speedups' type stubs), adds a reader, parser, codec
+  or native kernel file, changes the code (not only docstrings or comments) of a layer
   every format goes through (`DEEP_SECURITY`, `DEEP_CORE`), or carries a
   `Review-Tier: deep` trailer in one of its commits. The trailer is for what paths
   cannot show: a change to the architecture, a non-straightforward change, or tricky

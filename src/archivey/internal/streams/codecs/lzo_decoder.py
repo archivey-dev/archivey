@@ -2,7 +2,7 @@
 
 LZO1X has no stream framing of its own: a block is decoded whole, to a size the
 container stores (a SquashFS block, an lzop block). Three decoders can decode a block,
-tried in this order: ``archivey-codecs`` (a Rust port of archivey's Python decoder)
+tried in this order: ``archivey-speedups`` (a Rust port of archivey's Python decoder)
 when it is installed and allowed; ``compress-utils`` (its LZO1X decoder is derived
 from lzokay) when it is installed and built with LZO1X, which is a build option
 (``is_available``); and archivey's decoder in Python (:func:`lzo1x_decompress_python`).
@@ -16,7 +16,7 @@ input, write past the limit or copy from before the start of the output raises
 length other than 3, which no writer produces. liblzo2, and so ``lzop``, accepts any
 length there; the Linux kernel and all three decoders archivey uses refuse it.
 compress-utils and the Python decoder agree on every block measured
-(``dev-docs/investigations/lzo-compress-utils-vs-python-lzo.md``); archivey-codecs
+(``dev-docs/investigations/lzo-compress-utils-vs-python-lzo.md``); archivey-speedups
 gives the Python decoder's bytes and messages (``tests/test_kernels.py``).
 
 The lzop format (``lzop`` 1.04, ``header.c`` and ``lzop.c``): a 9-byte magic, a header
@@ -144,12 +144,12 @@ def _compress_utils(
     return decompress
 
 
-def _archivey_codecs(
+def _archivey_speedups(
     excluded: frozenset[OptionalLibrary],
     natives: Natives,
     usage: ResourceUsageRecorder | None,
 ) -> Callable[[bytes, int], bytes] | None:
-    """archivey-codecs' LZO1X kernel when :func:`archivey.internal.kernels.lzo1x`
+    """archivey-speedups' LZO1X kernel when :func:`archivey.internal.kernels.lzo1x`
     picks it, with :func:`lzo1x_decompress_python`'s contract: at most ``limit``
     bytes, and :class:`LzoError` with the same message on damage. Under
     ``NATIVE_DECODERS`` each block decodes in a decoder child."""
@@ -178,11 +178,11 @@ def lzo1x_decompressor(
     usage: ResourceUsageRecorder | None = None,
 ) -> Callable[[bytes, int], bytes]:
     """The LZO1X block decoder to use, in this order (design question 11):
-    archivey-codecs when installed and allowed; compress-utils when present, allowed
+    archivey-speedups when installed and allowed; compress-utils when present, allowed
     and built with LZO1X; else :func:`lzo1x_decompress_python`, which is Python and so
     runs in this process whatever ``natives`` says. ``usage`` records the package that
     decodes."""
-    kernel = _archivey_codecs(excluded, natives, usage)
+    kernel = _archivey_speedups(excluded, natives, usage)
     if kernel is not None:
         return kernel
     package = _compress_utils(excluded, natives, usage)

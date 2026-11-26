@@ -1,4 +1,4 @@
-"""archivey-codecs' kernel objects with archivey's errors.
+"""archivey-speedups' kernel objects with archivey's errors.
 
 Each class here wraps one object of the package (or its stand-in in a decoder child,
 :mod:`archivey.internal.kernels.child`) and keeps its API. A method raises the

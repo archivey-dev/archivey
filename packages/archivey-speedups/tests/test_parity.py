@@ -5,7 +5,7 @@ API, so each test drives ``PYTHON`` and ``RUST`` with the same code: same input,
 output bytes; on damage, the same error kind and the same message. The state methods
 (``getstate``, ``from_state``, ``copy``), ``unused_data`` and LZX's ``total_in`` are
 the package's only, and are exercised on its side alone. Run from the archivey
-checkout with archivey-codecs installed: ``uv run pytest packages/archivey-codecs/tests``.
+checkout with archivey-speedups installed: ``uv run pytest packages/archivey-speedups/tests``.
 """
 
 from __future__ import annotations
@@ -25,10 +25,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tests"))
 
-if os.environ.get("CODECS_REQUIRED") == "1":
-    import archivey_codecs  # CI: a missing build must fail, not skip
+if os.environ.get("SPEEDUPS_REQUIRED") == "1":
+    import archivey_speedups  # CI: a missing build must fail, not skip
 else:
-    archivey_codecs = pytest.importorskip("archivey_codecs")
+    archivey_speedups = pytest.importorskip("archivey_speedups")
 
 from archivey.exceptions import (
     CorruptionError,
@@ -49,11 +49,11 @@ from archivey.internal.kernels.python import (
 )
 from archivey.internal.streams.codecs.lzx_decoder import LzxDecoder
 
-SEEDS = int(os.environ.get("CODECS_PARITY_CASES", "300"))
+SEEDS = int(os.environ.get("SPEEDUPS_PARITY_CASES", "300"))
 # The DMG plan's A0 fuzz run had 200,000 cases; the default replays its first ones.
-LZFSE_FUZZ_CASES = int(os.environ.get("CODECS_LZFSE_FUZZ_CASES", str(SEEDS * 20)))
+LZFSE_FUZZ_CASES = int(os.environ.get("SPEEDUPS_LZFSE_FUZZ_CASES", str(SEEDS * 20)))
 
-# The two sides, each with the ``archivey_codecs`` API.
+# The two sides, each with the ``archivey_speedups`` API.
 PYTHON = types.SimpleNamespace(
     crc16_arc=twins.crc16_arc,
     zipcrypto=zipcrypto_twin,
@@ -65,7 +65,7 @@ PYTHON = types.SimpleNamespace(
     lzfse=lzfse_twin,
     lzvn=lzvn_twin,
 )
-RUST = archivey_codecs
+RUST = archivey_speedups
 BOTH = pytest.mark.parametrize("codecs", [PYTHON, RUST], ids=["python", "rust"])
 
 
@@ -80,11 +80,11 @@ def outcome(fn: Callable[[], object]) -> tuple[str, object]:
         return ("ok", fn())
     # raw_message_of: the text as the decoder wrote it, before archivey's exceptions
     # escape it (a backslash in an LZFSE block magic's repr, for one).
-    except (TruncatedError, archivey_codecs.TruncatedDataError) as exc:
+    except (TruncatedError, archivey_speedups.TruncatedDataError) as exc:
         return ("truncated", raw_message_of(exc))
-    except (CorruptionError, archivey_codecs.CorruptDataError) as exc:
+    except (CorruptionError, archivey_speedups.CorruptDataError) as exc:
         return ("corrupt", raw_message_of(exc))
-    except (UnsupportedFeatureError, archivey_codecs.UnsupportedDataError) as exc:
+    except (UnsupportedFeatureError, archivey_speedups.UnsupportedDataError) as exc:
         return ("unsupported", raw_message_of(exc))
     except (IndexError, ValueError, EOFError) as exc:
         return (type(exc).__name__, str(exc))
@@ -501,7 +501,7 @@ def test_lzx_eof_counts_stop_where_the_stream_does() -> None:
             data = sample_data(rng, size)
             stream = b"".join(LzxEncoder(window_bits=15, blocks=blocks).encode(data))
             for cap in (-1, 1):
-                d = archivey_codecs.lzx.Decompressor(15, output_size=size)
+                d = archivey_speedups.lzx.Decompressor(15, output_size=size)
                 out = bytearray(d.decompress(stream + b"appendix", cap))
                 while not d.eof:
                     out += d.flush(cap)
@@ -509,7 +509,7 @@ def test_lzx_eof_counts_stop_where_the_stream_does() -> None:
                 assert d.unused_data == b"appendix", (blocks, size, d.unused_data)
                 assert d.total_in == len(stream), (blocks, size)
                 # Restored at eof, it ends where this one does, with nothing after.
-                r = archivey_codecs.lzx.Decompressor.from_state(d.getstate())
+                r = archivey_speedups.lzx.Decompressor.from_state(d.getstate())
                 assert r.eof
                 assert r.total_in == len(stream)
                 assert r.unused_data == b""
@@ -580,7 +580,7 @@ def test_lzx_output_size_is_given_only_between_frames(codecs: object) -> None:
     first = bytes.fromhex("0030a000") + r_regs + b"0123456789"
     bad = bytes.fromhex("00e000000000")  # block type 7, after the first block
     d = codecs.lzx.Decompressor(15)
-    with pytest.raises((archivey_codecs.CorruptDataError, CorruptionError)):
+    with pytest.raises((archivey_speedups.CorruptDataError, CorruptionError)):
         d.decompress(first + bad)
     with pytest.raises(
         ValueError, match="^set_output_size\\(\\) after a decode error$"
@@ -612,7 +612,7 @@ def test_lzx_state_whose_input_count_is_below_what_it_holds() -> None:
 
     data = sample_data(random.Random(6), 3000)
     stream = b"".join(LzxEncoder(window_bits=15).encode(data))
-    lzx = archivey_codecs.lzx
+    lzx = archivey_speedups.lzx
     d = lzx.Decompressor(15, output_size=len(data))
     # Bytes after the stream let the bit reader fetch ahead, as a CAB folder's do.
     assert d.decompress(stream + bytes(8)) == data
@@ -620,7 +620,7 @@ def test_lzx_state_whose_input_count_is_below_what_it_holds() -> None:
     state = d.getstate()
     assert lzx.Decompressor.from_state(state).total_in == d.total_in
     bad = state[:-9] + b"\0" + (0).to_bytes(8, "little")
-    with pytest.raises(archivey_codecs.CorruptDataError, match="do not agree"):
+    with pytest.raises(archivey_speedups.CorruptDataError, match="do not agree"):
         lzx.Decompressor.from_state(bad)
 
 
@@ -630,7 +630,7 @@ def test_lzx_owed_pad_byte_in_a_later_call() -> None:
     stream, so the split matches the one-call decode; with no more input, ``flush()``
     ends the stream without it."""
     stream = _odd_stored_lzx()
-    lzx = archivey_codecs.lzx
+    lzx = archivey_speedups.lzx
     whole = lzx.Decompressor(15, output_size=5)
     assert whole.decompress(stream + b"trailer") == b"hello"
     assert (whole.total_in, whole.unused_data) == (len(stream), b"trailer")
@@ -715,7 +715,7 @@ def test_lzx_push_takes_input_when_the_python_decoder_pulls_it(codecs: object) -
                         break
                     given.append(out)
                     out += len(d.decompress(chunk))
-            except (archivey_codecs.CodecError, CorruptionError, TruncatedError):
+            except (archivey_speedups.CodecError, CorruptionError, TruncatedError):
                 pass
             # The push decoder is given a chunk only when it needs one; the Python
             # decoder asks once more at the end of the input.
@@ -946,7 +946,7 @@ def lzw_run(codecs: object, data: bytes, rng: random.Random, kwargs: dict):
                 except ValueError:
                     continue  # an error waits for the next call
                 totals = (d.total_in, d.total_out)
-                d = archivey_codecs.lzw.Decompressor.from_state(state)
+                d = archivey_speedups.lzw.Decompressor.from_state(state)
                 assert (d.total_in, d.total_out) == totals
                 pos = d.total_in
         while not d.needs_input:
@@ -1018,7 +1018,7 @@ def test_callback_cycles_are_collected() -> None:
 
     class Bcj2Holder:
         def __init__(self) -> None:
-            self.d = archivey_codecs.bcj2.Decompressor(
+            self.d = archivey_speedups.bcj2.Decompressor(
                 self, self, self, self, out_size=1
             )
 
@@ -1078,14 +1078,14 @@ def lzfse_both(
     """The Python twin and the kernel (``max_size``, the Python contract) on one input."""
     return (
         outcome(lambda: PYTHON.lzfse.decompress(data, max_size=limit)),
-        outcome(lambda: archivey_codecs.lzfse.decompress(data, max_size=limit)),
+        outcome(lambda: archivey_speedups.lzfse.decompress(data, max_size=limit)),
     )
 
 
 def lzvn_both(data: bytes, limit: int) -> tuple[tuple[str, object], tuple[str, object]]:
     return (
         outcome(lambda: PYTHON.lzvn.decompress(data, max_size=limit)),
-        outcome(lambda: archivey_codecs.lzvn.decompress(data, max_size=limit)),
+        outcome(lambda: archivey_speedups.lzvn.decompress(data, max_size=limit)),
     )
 
 
@@ -1193,7 +1193,7 @@ def _fuzz_parity(seeds: list[tuple[bytes, bytes]], seed: str, *, v1: bool) -> No
 
 def test_lzfse_a0_fuzz_parity() -> None:
     """The A0 fuzz cases themselves: ``fuzz.py``'s seeds, generator and run seed
-    ``a0``, so case ``k`` is the A0 run's case ``k``. ``CODECS_LZFSE_FUZZ_CASES=200000``
+    ``a0``, so case ``k`` is the A0 run's case ``k``. ``SPEEDUPS_LZFSE_FUZZ_CASES=200000``
     replays the whole A0 run."""
     helpers = _dmg_helpers()
     if not helpers._have_lzfse():
@@ -1309,7 +1309,7 @@ def test_lzx_input_fed_byte_by_byte_resumes_where_it_stopped() -> None:
         s = b"".join(
             LzxEncoder(window_bits=17, blocks=layout, block_size=1000).encode(data)
         )
-        d = archivey_codecs.lzx.Decompressor(17, output_size=len(data))
+        d = archivey_speedups.lzx.Decompressor(17, output_size=len(data))
         out = bytearray()
         for i in range(len(s)):
             out += d.decompress(s[i : i + 1])
@@ -1323,7 +1323,7 @@ def test_lzw_state_restores_with_clear_padding_still_to_come() -> None:
     offset is past ``total_in``, and it restores."""
     rng = random.Random(21)
     data = pack_lzw(rng, 16, True, False, 4000)
-    lzw = archivey_codecs.lzw
+    lzw = archivey_speedups.lzw
     restored = 0
     for cut in range(3, len(data)):
         d = lzw.Decompressor()
