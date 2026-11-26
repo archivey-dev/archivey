@@ -423,7 +423,13 @@ def rar3_header_check(
     window: bytes, pos: int, *, with_main: bool, crc: _WindowCrc | None = None
 ) -> bool:
     """Whether a RAR 1.5-4 ``FILE`` or ``SUB`` header (or, ``with_main``, a ``MAIN``
-    header) at ``pos`` passes the checks of design §4 and its CRC16."""
+    header) at ``pos`` passes the finder's checks and its CRC16.
+
+    A ``FILE`` or ``SUB`` header passes when ``HEAD_SIZE`` holds the 32 fixed bytes,
+    a ``NAME_SIZE`` of 1 or more and 8 bytes for each of the large-file and salt
+    flags, fits in ``window``, its CRC16 matches, and its fields parse as the walk
+    parses them. A ``MAIN`` passes on its size and CRC16. No condition is put on the
+    header flags or on a listed field value (method, dictionary, host OS)."""
     n = len(window)
     if pos + 7 > n:
         return False

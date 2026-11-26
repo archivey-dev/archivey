@@ -762,9 +762,10 @@ def open_archive(
 
 
 def _start_may_be_lost(detected: FormatInfo | None) -> bool:
-    """Whether the archive's start may be lost, for salvage mode's lost start (design
-    decision 9): the format came from ``format=`` (``detected`` is ``None``) or from
-    the source name's extension, not from the archive's own bytes.
+    """Whether the archive's start may be lost, for salvage mode's lost start
+    (decision 9 of ``openspec/changes/salvage-mode/design.md``): the format came
+    from ``format=`` (``detected`` is ``None``) or from the source name's extension,
+    not from the archive's own bytes.
 
     Detection already falls back to the extension when no signature matches, and
     ``format=`` skips it, so either one picks the reader. A reader with a salvage

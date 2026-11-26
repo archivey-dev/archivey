@@ -60,7 +60,8 @@ class SalvageRequest:
     (``ReadBackend.SUPPORTS_SALVAGE``), whether the archive's start may be lost, and
     whether the reader reads again what an earlier reader of the same archive
     reported. ``lost_start`` is set when the format came from ``format=`` or the
-    source name's extension, not from the archive's own bytes (design decision 9).
+    source name's extension, not from the archive's own bytes (decision 9 of
+    ``openspec/changes/salvage-mode/design.md``).
     ``repeat`` marks an inner archive built again by a walk started over to reach
     member data: a repeat reader salvages as the first one did, and records none of
     the salvage codes, since the first one recorded them."""
@@ -202,7 +203,8 @@ class SalvageState:
     A reader asks ``enabled`` before it searches, and reads ``limits`` for the caps.
     ``lost_start`` says the format came from ``format=`` or the name's extension, so
     the archive's first header may be lost: a salvage reader whose first header
-    does not parse searches for one from the start (design decision 9).
+    does not parse searches for one from the start (decision 9 of
+    ``openspec/changes/salvage-mode/design.md``).
 
     A format calls :func:`search_forward` with this state, and :meth:`finish` when its
     walk ends, which records the ``report_limit`` record if any range went
