@@ -216,7 +216,9 @@ one.
 With header encryption (`-hp`), the walk SHALL be the default one, and the reader SHALL
 record `SALVAGE_UNAVAILABLE` once, when the walk reads the header that says the headers
 are encrypted. An archive with plain headers and encrypted data SHALL be searched as
-any other.
+any other. In a set where salvage already searched or found members in a volume with
+plain headers, that record SHALL say that only the volumes with encrypted headers are
+read without salvage, not that salvage had no effect.
 
 #### Scenario: encrypted headers
 
@@ -224,3 +226,4 @@ any other.
 | --- | --- |
 | `-hp` RAR5 or RAR 1.5-4, a header damaged, `salvage=True` | As `salvage=False`; one `SALVAGE_UNAVAILABLE` |
 | `-p` (data only), a header damaged | Searched; found members read with the password |
+| Volume 1 plain and damaged, volume 2 `-hp` | Volume 1 searched; `SALVAGE_UNAVAILABLE` names the encrypted volumes only |

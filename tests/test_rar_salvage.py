@@ -836,6 +836,46 @@ def test_encrypted_headers_record_salvage_unavailable(name: str) -> None:
     assert "encrypted" in record.message
 
 
+@requires_binary("rar")
+def test_a_set_salvaged_in_its_plain_volume_says_so_for_its_encrypted_one(
+    tmp_path: Path,
+) -> None:
+    """Volume 1 with plain headers and damage salvage searches past, volume 2 of a
+    set with encrypted headers: ``SALVAGE_UNAVAILABLE`` does not say salvage had no
+    effect on an archive whose listing has members salvage found."""
+    rng = random.Random(7)
+    for name, size in (("a.bin", 300), ("b.bin", 300), ("c.bin", 3000)):
+        (tmp_path / name).write_bytes(rng.randbytes(size))
+    for out, flags in (("plain.rar", []), ("enc.rar", ["-hpsecret"])):
+        subprocess.run(
+            ["rar", "a", "-idq", "-m0", "-v2k", *flags, out, "a.bin", "b.bin", "c.bin"],
+            cwd=tmp_path,
+            check=True,
+        )
+    first = (tmp_path / "plain.part1.rar").read_bytes()
+    with open_archive(tmp_path / "plain.part1.rar") as reader:
+        [offset] = [
+            m._raw.header_offset  # type: ignore[union-attr]
+            for m in reader.members()
+            if m.name == "b.bin"
+        ]
+    mixed = tmp_path / "mixed"
+    mixed.mkdir()
+    (mixed / "x.part1.rar").write_bytes(first[:offset] + b"\xff" * 7 + first[offset:])
+    shutil.copy(tmp_path / "enc.part2.rar", mixed / "x.part2.rar")
+    with open_archive(mixed / "x.part1.rar", salvage=True, password="secret") as reader:
+        reader.members_report()
+        codes = reader.diagnostics.counts
+        [record] = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SALVAGE_UNAVAILABLE
+        ]
+    assert codes.get(DiagnosticCode.MEMBER_FOUND_BY_SCAN)
+    assert "no effect" not in record.message
+    assert "encrypted headers" in record.message
+
+
 def test_the_unar_policy_refuses_found_members(tmp_path: Path) -> None:
     """Without a usable ``unar`` too: the policy refuses a found member by name."""
     from archivey.internal.backends.rar_unar import (

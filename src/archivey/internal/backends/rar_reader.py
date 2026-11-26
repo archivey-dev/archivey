@@ -2080,11 +2080,24 @@ class RarReader(BaseArchiveReader):
         self._cost_notes = self._source_copy_notes(source)
         self._archive, self._unrar_password = self._parse_archive()
         if self._salvage_mode.enabled and self._archive.has_header_encryption:
-            self._emit_salvage_unavailable(
-                "its headers are encrypted, and archivey has no header search for "
-                "encrypted RAR headers, so the archive is read as it is without "
-                "salvage"
-            )
+            if self._salvage_mode.searched_bytes or any(
+                info.found is not None for info in self._archive.members
+            ):
+                # A set whose plain volumes salvage already searched: only the
+                # volumes with encrypted headers are read without it.
+                self._emit_salvage_unavailable(
+                    "some of its volumes have encrypted headers, and archivey has no "
+                    "header search for encrypted RAR headers, so those volumes are "
+                    "read as they are without salvage; the volumes with plain "
+                    "headers are salvaged",
+                    whole=False,
+                )
+            else:
+                self._emit_salvage_unavailable(
+                    "its headers are encrypted, and archivey has no header search "
+                    "for encrypted RAR headers, so the archive is read as it is "
+                    "without salvage"
+                )
         # A lone archive stored as a resource of the PE program it sits in: bytes
         # after that resource are the rest of the program, not data after the
         # archive (``_emit_trailing_data``). Decided here, while nothing else reads
@@ -4074,14 +4087,16 @@ class RarReader(BaseArchiveReader):
                 logger=integrity_logger,
             )
 
-    def _emit_salvage_unavailable(self, why: str) -> None:
-        """Record ``SALVAGE_UNAVAILABLE`` for an archive salvage cannot search."""
+    def _emit_salvage_unavailable(self, why: str, *, whole: bool = True) -> None:
+        """Record ``SALVAGE_UNAVAILABLE`` for an archive salvage cannot search, or
+        (``whole=False``) for the part of a set it cannot search."""
         if self._salvage_mode.repeat:
             # A repeat reader: the first reader of this archive recorded it.
             return
+        effect = "has no effect" if whole else "has only part of its effect"
         self._diagnostics_collector.emit(
             code=DiagnosticCode.SALVAGE_UNAVAILABLE,
-            message=f"salvage=True has no effect on this RAR archive: {why}.",
+            message=f"salvage=True {effect} on this RAR archive: {why}.",
             context=SalvageUnavailableContext(
                 archive_name=self._archive_name,
                 format=ArchiveFormat.RAR.display_name,
