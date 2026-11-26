@@ -4146,9 +4146,9 @@ class RarReader(BaseArchiveReader):
         From the member back, the first member that restarts the decoder ends the
         stream: one with its own solid flag clear that is not a directory (which has
         no data, so restarts nothing). Lost bytes before any member up to that one,
-        that one excluded, break the stream. An unconfirmed member that restarts it
-        is decoded with the stream; a member after it with no digest of its own is
-        refused when read (``after_damaged_header == "unconfirmed"``).
+        that one excluded, break the stream. An unconfirmed member claims nothing,
+        so the member found after it is past lost bytes too (``after_lost``): a
+        stream through it is refused here, before any program runs.
         """
         if info.found is None:
             return None

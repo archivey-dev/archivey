@@ -328,12 +328,15 @@ members left. RAR's codecs have no restart point inside a stream. So:
 - **A stored plaintext member** reads whatever its chain holds: archivey slices it
   itself, with no program, and checks its CRC. Measured: every stored member of the
   solid fixture after the damage reads.
-- **An unconfirmed member in a chain** (RAR 1.5-4) is decoded as part of the chain, and
-  the target's digest decides. A chain member with no stored digest after an
-  unconfirmed member raises `CorruptionError`: its split may rest on a false header. A
-  chain member with no stored digest after a confirmed found member reads with
-  `DIGEST_UNVERIFIABLE` (`reason="after_damaged_header"`), as after step 1's listed
-  damaged member.
+- **An unconfirmed member in a chain** (RAR 1.5-4) claims nothing, so the search goes
+  on inside what it declares, and the next header found is past bytes no confirmed
+  header claims: a confirmed header right after its data would have confirmed it. So
+  the member found after it carries `after_lost`, and a solid stream through an
+  unconfirmed member is refused before any program runs (#1769, G1). An unconfirmed
+  member that restarts the decoder reads on its own, its digest deciding; a chain
+  member with no stored digest after it raises `CorruptionError`. A chain member with
+  no stored digest after a confirmed found member reads with `DIGEST_UNVERIFIABLE`
+  (`reason="after_damaged_header"`), as after step 1's listed damaged member.
 
 ## 8. Lost start
 

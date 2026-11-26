@@ -1716,14 +1716,19 @@ def _mark_next_volume(part: RarArchive, number: int, *, after_damage: bool) -> N
 def _flags_without_main(archive: RarArchive, first_volume: RarArchive | None) -> None:
     """The archive flags of a volume whose main header was lost (salvage mode).
 
-    A later volume of a set takes them from the volumes before it. Without one, the
+    A later volume of a set takes them from the volumes before it, the solid flag
+    from its own members too when the first volume lost its MAIN. Without one, the
     members' own flags say what they can: solid when a member's own solid flag is
     set, a volume of a set when a member's data continues from or into another.
     Nothing says the archive has a comment or a quick-open table.
     """
     members = archive.members
     if first_volume is not None:
-        archive.is_solid = first_volume.is_solid
+        # The set's own MAIN decides; when the first volume lost its MAIN too, the
+        # members of each volume say what they can.
+        archive.is_solid = first_volume.is_solid or (
+            first_volume.main_lost and any(member.file_solid for member in members)
+        )
         archive.is_volume = True
         archive.old_volume_naming = first_volume.old_volume_naming
     else:
@@ -3695,7 +3700,15 @@ class _Rar3Walk:
         if member is None:
             return
         member.found = RarFound("header_search", offset, confirmed=False, searched=True)
-        member.after_lost, self.pending_lost = self.pending_lost, None
+        member.after_lost = self.pending_lost
+        # It claims nothing, so the search goes on inside what it declares: the
+        # next header found is past bytes no confirmed header claims, and a solid
+        # stream through them is lost there too.
+        assert self.salvage is not None
+        self.pending_lost = (
+            f"the bytes after the header at {self.salvage.where(offset)}, "
+            "which nothing confirms"
+        )
         if self.is_solid or self.main_lost:
             # A member after it in a solid stream decodes on top of a header only a
             # CRC16 checked: without a digest of its own it is refused.

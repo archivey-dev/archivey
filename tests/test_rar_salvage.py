@@ -1025,7 +1025,9 @@ _RAR5_EMPTY_FILE = _rar5_block_bytes(bytes([2, 0, 0, 0, 0, 0, 0, 1]) + b"a")
 _RAR5_MAIN = _rar5_block_bytes(b"\x01\x00\x00")
 
 
-def _rar3_file_header(name: bytes, data: bytes, flags: int = 0x8000) -> bytes:
+def _rar3_file_header(
+    name: bytes, data: bytes, flags: int = 0x8000, method: int = 0x30
+) -> bytes:
     from tests.rar_util import _rar3_block
 
     body = struct.pack(
@@ -1036,7 +1038,7 @@ def _rar3_file_header(name: bytes, data: bytes, flags: int = 0x8000) -> bytes:
         zlib.crc32(data) & 0xFFFFFFFF,
         0,
         29,
-        0x30,
+        method,
         len(name),
         0o100644,
     )
@@ -1940,3 +1942,49 @@ def test_after_a_damaged_main_an_inner_main_is_a_nested_archives(
         archive = reader._archive  # type: ignore[attr-defined]
         assert not archive.is_solid
         assert not archive.is_volume
+
+
+def test_a_solid_stream_through_an_unconfirmed_member_is_refused(
+    tmp_path: Path,
+) -> None:
+    """An unconfirmed RAR 1.5-4 candidate (u) claims nothing: the search goes on
+    inside what it declares and finds c, which continues a solid stream. A
+    confirmed header right after u's data would have confirmed u, so the bytes
+    between are claimed by nothing: c's stream runs through lost bytes and its
+    read is refused before any program runs."""
+    from tests.rar_util import _rar3_block
+
+    data = (
+        _RAR3_SIGNATURE
+        + _rar3_block(0x73, 0x0008, bytes(6))  # MAIN: solid
+        + _rar3_file_header(b"a", b"alpha")
+        + b"alpha"
+        + bytes(32)
+        # u declares 10 bytes of data that are not there: c's header follows.
+        + _rar3_file_header(b"u", b"0123456789", method=0x33)
+        + _rar3_file_header(b"c", b"gamma", flags=0x8010, method=0x33)
+        + b"gamma"
+        + _rar3_block(0x7B, 0x4000, b"")
+    )
+    path = _write(tmp_path, data)
+    with open_archive(path, salvage=True) as reader:
+        members = {m.name: m for m in reader.members_report().members}
+        assert set(members) == {"a", "u", "c"}
+        with pytest.raises(CorruptionError, match="solid stream runs through"):
+            reader.read(members["c"])
+
+
+def test_a_set_whose_first_volume_lost_its_main_is_solid_by_any_volume(
+    tmp_path: Path,
+) -> None:
+    """Both volumes lost their signature and MAIN: volume 1 holds only a member
+    that starts a stream, volume 2 one that continues it. With no MAIN anywhere,
+    the members of every volume say whether the set is solid."""
+    a = _rar5_block(bytes([2, 0, 0, 0, 0, 0, 0, 1]) + b"a")
+    b = _rar5_block(bytes([2, 0, 0, 0, 0, 0x40, 0, 1]) + b"b")  # its own solid flag
+    (tmp_path / "v.part1.rar").write_bytes(bytes(8) + a + _rar5_block(b"\x05\x00\x01"))
+    (tmp_path / "v.part2.rar").write_bytes(bytes(8) + b + _RAR5_END)
+    with open_archive(tmp_path / "v.part1.rar", salvage=True) as reader:
+        names = [m.name for m in reader.members_report().members]
+        assert names == ["a", "b"]
+        assert reader._archive.is_solid  # type: ignore[attr-defined]
