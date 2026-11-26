@@ -189,9 +189,10 @@ Rules:
   reads it from any manifest it can parse. The names of an incompatible provider are
   kept for diagnostics and are not eligible to run. So a lookup by name has three
   outcomes that do not blur (and a fourth when autoload is off, §3): a name nobody
-  declares is `ArchiveyUsageError`; a name whose package is missing is `PackageNotInstalledError` with the hint; a name whose
-  provider is installed and incompatible is reported as incompatible, with both API
-  versions, by `format_availability()` and by the error on open (§5).
+  declares is `ArchiveyUsageError`; a name whose package is missing is
+  `PackageNotInstalledError` with the hint; a name whose provider is installed and
+  incompatible is reported as incompatible, with both API versions, by
+  `format_availability()` and by the error on open (§5).
 - **A name is a value; a registry is asked when an operation resolves it.** Building
   `ContainerFormat("dmg")` or `ArchiveFormat("outside-format")` checks the spelling
   only (ASCII letters, digits, `.`, `_`, `-`), touches no registry and starts no
