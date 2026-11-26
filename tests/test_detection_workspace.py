@@ -34,7 +34,7 @@ from typing import Any, BinaryIO
 
 import pytest
 
-from archivey import DetectionConfidence, detect_format, open_archive
+from archivey import detect_format, open_archive
 from archivey.config import ArchiveyConfig
 from archivey.detection import FormatInfo
 from archivey.detection_cost import (
@@ -1166,9 +1166,12 @@ def test_inner_tar_probe_over_small_reads_passes_each_byte_through_the_view_once
             passed += len(data)
             return data
 
-        assert _probe_inner_container(
-            StreamFormat.BZIP2, counting_view, ws, view_arrived=True
-        ) == (ArchiveFormat.TAR, DetectionConfidence.PROBABLE)
+        assert (
+            _probe_inner_container(
+                StreamFormat.BZIP2, counting_view, ws, view_arrived=True
+            )
+            == ArchiveFormat.TAR
+        )
     assert 0 < passed <= len(payload)
 
 
@@ -1202,7 +1205,8 @@ def test_inner_tar_probe_over_small_reads_takes_each_byte_from_the_source_once(
     with PrefixWorkspace(source, BALANCED_BUDGET) as ws:
         assert ws.forward_only
         view = ws.candidate_view(0, arrived=True)
-        assert _probe_inner_container(
-            StreamFormat.BZIP2, view, ws, view_arrived=True
-        ) == (ArchiveFormat.TAR, DetectionConfidence.PROBABLE)
+        assert (
+            _probe_inner_container(StreamFormat.BZIP2, view, ws, view_arrived=True)
+            == ArchiveFormat.TAR
+        )
     assert 0 < taken <= len(payload)

@@ -1312,9 +1312,10 @@ class FormatHandler(ABC):
     <archivey.DetectionConfidence.PROBABLE>` for a match. A probe that only tells
     yes from no answers ``PROBABLE`` or ``REJECTED``. archivey reports the verdict as
     the detection's confidence, and reports a ``GUESS`` as ``PROBABLE`` when the
-    source's extension names the format. Any other answer, ``None``, a bool or
-    ``CERTAIN`` among them, is a plugin bug: archivey logs it and takes it as no
-    match, as it does a probe that raises."""
+    source's extension names the format. Inside a compressor, a ``GUESS`` the extension
+    does not raise is no match: the source stays the compressed file. Any other answer,
+    ``None``, a bool or ``CERTAIN`` among them, is a plugin bug: archivey logs it and
+    takes it as no match, as it does a probe that raises."""
 
     uses_encoding: ClassVar[bool] = False
     """Whether the reader applies ``encoding=`` (through

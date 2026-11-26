@@ -1015,11 +1015,11 @@ def test_a_probe_only_format_is_found_inside_a_compression_stream(
         assert detect_format(io.BytesIO(data), config=probing).format == pair
 
 
-def test_a_weak_probe_match_inside_a_compression_stream_is_a_guess(
+def test_a_weak_probe_match_inside_a_compression_stream_is_raised_by_the_name(
     tmp_path: Path,
 ) -> None:
-    """The probe's grade holds inside a compressor too: a weak match on an unnamed
-    source is a ``GUESS``, and the extension naming the format raises it."""
+    """Inside a compressor, the extension naming the format raises a weak match to
+    ``PROBABLE``, as on an uncompressed source."""
     fmt = ArchiveFormat(ToysContainer.PROBED, StreamFormat.UNCOMPRESSED)
 
     class Probed(SequentialFormatHandler):
@@ -1040,12 +1040,6 @@ def test_a_weak_probe_match_inside_a_compression_stream_is_a_guess(
     data = _gz(build_toys(_ENTRIES))
     with registration_scope():
         register_format(Probed)
-        probing = archivey.ArchiveyConfig(always_probe_content=True)
-        info = detect_format(io.BytesIO(data), config=probing)
-        assert (info.format, info.confidence) == (pair, DetectionConfidence.GUESS)
-        # A weak inner match is no second signal: a later decode failure on it is
-        # still stamped ``format_unconfirmed``.
-        assert not info.corroborated
         named = detect_format(_write(tmp_path, data, "t.ptoys.gz"))
         assert (named.format, named.confidence) == (
             pair,
@@ -1067,12 +1061,11 @@ def _uu(data: bytes) -> bytes:
     [_gz, lambda d: _SCRIPT + _gz(d), _uu],
     ids=["gzip", "script-then-gzip", "uuencode"],
 )
-def test_a_weak_inner_match_is_a_guess_behind_any_wrapper(
+def test_a_weak_inner_match_keeps_the_wrapper_format(
     wrap: Callable[[bytes], bytes],
 ) -> None:
-    """The same weak verdict on the same decoded bytes gives the same answer, whatever
-    recognised the wrapper: ``GUESS``, and no corroboration a decode failure would
-    hide behind."""
+    """Behind any wrapper, a weak inner match does not switch formats: the source is
+    reported as it is without the plugin, so it opens as the wrapper it surely is."""
     fmt = ArchiveFormat(ToysContainer.PROBED, StreamFormat.UNCOMPRESSED)
 
     class Probed(SequentialFormatHandler):
@@ -1089,13 +1082,18 @@ def test_a_weak_inner_match_is_a_guess_behind_any_wrapper(
         def open_sequential(self, context: ReaderContext) -> ToysReader:
             return ToysReader(context)
 
+    data = wrap(build_toys(_ENTRIES))
+    probing = archivey.ArchiveyConfig(always_probe_content=True)
+    without = detect_format(io.BytesIO(data), config=probing)
     with registration_scope():
         register_format(Probed)
-        probing = archivey.ArchiveyConfig(always_probe_content=True)
-        info = detect_format(io.BytesIO(wrap(build_toys(_ENTRIES))), config=probing)
-        assert info.format.container is ToysContainer.PROBED
-        assert info.confidence is DetectionConfidence.GUESS
-        assert not info.corroborated
+        info = detect_format(io.BytesIO(data), config=probing)
+    assert info.format.container is not ToysContainer.PROBED
+    assert (info.format, info.confidence, info.corroborated) == (
+        without.format,
+        without.confidence,
+        without.corroborated,
+    )
 
 
 def test_compressed_bytes_that_are_not_the_format_stay_a_compressed_file(

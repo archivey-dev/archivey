@@ -316,7 +316,7 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 | gzip of a binary CPIO archive, named `.cpio.gz` or with `always_probe_content`; the same with no name | `(CPIO, GZIP)`, `PROBABLE`, `content_probe`: a container's content probe runs on the first 512 decoded bytes under the rule it follows on an uncompressed source; with no name, `GZ` |
 | A plugin format's probe answers `GUESS`, no name, `always_probe_content` | The plugin format, `GUESS`, `content_probe` |
 | The same, named with the plugin's extension | The plugin format, `PROBABLE`, `content_probe` |
-| gzip of a plugin sequential format whose probe answers `GUESS`, no name, `always_probe_content`; the same named `.<ext>.gz` | `(<plugin>, GZIP)`, `GUESS`, not corroborated; named, `PROBABLE`, corroborated |
+| gzip of a plugin sequential format whose probe answers `GUESS`, no name, `always_probe_content`; the same named `.<ext>.gz` | `GZ`: a weak inner match does not switch formats; named, `(<plugin>, GZIP)`, `PROBABLE`, corroborated |
 | A plugin probe answers `None`, `True`, `CERTAIN` or another non-verdict | No match; one WARNING on `archivey.detection` |
 | Raw CD sector sync at 0 | ISO, `CERTAIN`, `magic`; a Mode 1 or Mode 2 Form 1 image opens, other layouts raise `UnsupportedFeatureError` |
 | `koly` block at offset 0 | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
@@ -1228,7 +1228,10 @@ When a content-probe hit is upgraded to a `TAR_*` format because a TAR header wa
 the decompressed prefix (`_resolve_single_file_or_tar`), that upgrade SHALL count as
 corroborating evidence for the underlying codec identification, equivalent to a matching
 file extension. So SHALL an upgrade by a self-checking header or a container probe's
-`PROBABLE` verdict; a container probe's `GUESS` SHALL NOT.
+`PROBABLE` verdict. A container probe's `GUESS` that the name does not raise SHALL NOT
+upgrade the stream at all: the source stays the stream archivey is sure of. No inner
+container's probe answers `GUESS` today, so this rule is to be revisited when a real one
+does, built-in or third-party.
 
 The upgrade is not a second guess about the same bytes: reaching it required the probe's
 decompression to actually produce output, and that output to contain a `ustar` signature
@@ -1247,7 +1250,7 @@ evidenced than four bytes that happened to parse as a block header.
 | Extensionless stream, Brotli probe hits, decompressed prefix contains a TAR header | `TAR_BROTLI`, `PROBABLE`, `content_probe` — corroborated |
 | Same, and a later read fails | Ordinary error; `format_unconfirmed is False` |
 | Extensionless stream, Brotli probe hits, no TAR header in the decompressed prefix | Unchanged — the probe-only rules decide |
-| Extensionless stream, decompressed prefix weakly matched by a container probe (`GUESS`) | `(<container>, <stream>)`, `GUESS`, **not** corroborated: a weak match is no second signal, so a later read failure is `format_unconfirmed`. The same behind a `#!` script and inside a uuencoded or base64 file |
+| Extensionless stream, decompressed prefix weakly matched by a container probe (`GUESS`) | The bare stream, as with no such container registered: a weak match does not switch formats. The same behind a `#!` script and inside a uuencoded or base64 file |
 | gzip of an indexed plugin format whose probe matches the decoded bytes, `always_probe_content` | `GZ`: only a container read inside a stream (TAR, CPIO, a sequential plugin) is probed there |
 | `x.tar.br` (extension already corroborates) | Unchanged |
 
@@ -1403,9 +1406,8 @@ the answer, as the scan already chooses. A stream hit SHALL then be probed for a
 container from its offset, with the decode charged to the budget's `max_decode_input` as
 for a stream at byte 0, and reported as that container in the stream (`TAR_GZ`), or as
 the bare stream when nothing is recognised inside or the budget allows no decode. The
-answer SHALL keep `detected_by="sfx_scan"`, `confidence=PROBABLE` (`GUESS` when the
-container inside is a probe's weak match), `prefixed=True` and `payload_offset` at the
-stream's first byte, and `open_archive` SHALL read the TAR or
+answer SHALL keep `detected_by="sfx_scan"`, `confidence=PROBABLE`, `prefixed=True` and
+`payload_offset` at the stream's first byte, and `open_archive` SHALL read the TAR or
 the stream from there, from a path, a seekable stream or a pipe.
 
 A forced `format=TAR_GZ` (or another compressed TAR) on such a script SHALL still fail

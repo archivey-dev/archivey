@@ -507,8 +507,9 @@ bytes, from a file or a pipe.
   looks for your `magic` in them. So a sequential format's magic must end within the
   first 512 bytes, and registration refuses one that does not. A format found only by its
   `probe` is found inside a compressor where the name says so (`.cpio.gz`) or with
-  `always_probe_content=True`: the probe runs on those 512 decoded bytes, and its verdict
-  counts as on an uncompressed file.
+  `always_probe_content=True`: the probe runs on those 512 decoded bytes. Only a match
+  counts there: a `GUESS` the name does not back leaves the file a plain compressed file,
+  which opens for sure.
 - **Cost.** One compression stream holds every member, so the archive is solid:
   `archive.info.is_solid` is `True`, the listing needs decompression, and with random
   access, reading a member before the last one read decodes again from the nearest

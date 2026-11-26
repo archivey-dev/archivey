@@ -468,9 +468,9 @@ def _probe_inner_container(
     named: ArchiveFormat | None = None,
     always_probe: bool = False,
     formats: FormatPolicy | None = None,
-) -> tuple[ArchiveFormat, DetectionConfidence] | None:
-    """The container decompressing the source yields, as its uncompressed format, and
-    how sure detection is of it, or ``None``.
+) -> ArchiveFormat | None:
+    """The container decompressing the source yields, as its uncompressed format, or
+    ``None``.
 
     The codec layer decodes the compressed source and the first 512 decoded bytes are
     matched against the registry's inner-container magic (``ReadBackend.INNER_MAGIC``):
@@ -642,25 +642,29 @@ class _InnerCandidates:
 
     def match(
         self, head: bytes, *, named: ArchiveFormat | None, always_probe: bool
-    ) -> tuple[ArchiveFormat, DetectionConfidence] | None:
-        """The container the decoded ``head`` shows, and how sure: magic first, then a
-        header that checks itself, then a probe, which grades its own match."""
+    ) -> ArchiveFormat | None:
+        """The container the decoded ``head`` shows: magic first, then a header that
+        checks itself, then a probe. A probe's ``GUESS`` is not enough to switch from
+        the wrapper archivey is sure of, unless the name raises it to ``PROBABLE``.
+
+        No inner container's probe answers ``GUESS`` today (binary CPIO answers
+        ``PROBABLE``), so this rule is untested on real plugins. Revisit it when one
+        does, ours or a third party's."""
         for sig in self.magic:
             if head[sig.offset : sig.offset + len(sig.magic)] == sig.magic:
-                return sig.format, DetectionConfidence.PROBABLE
+                return sig.format
         # A first header that checks itself: a v7 tar has no magic.
         for fmt, check in self.header_checks:
             if fmt.container is ContainerFormat.TAR and check(head):
-                return fmt, DetectionConfidence.PROBABLE
+                return fmt
         # A container with no reliable magic, found by its own probe where the name
         # says it is that container (the rule and its scope are on _probe_named).
         # Prefix only: the decoded head is all there is.
         for fmt, probe in self.probes:
             if not (always_probe or fmt == named) or not head:
                 continue
-            verdict = probe(head)
-            if is_match(verdict):
-                return fmt, graded(verdict, named=fmt == named)
+            if graded(probe(head), named=fmt == named) is DetectionConfidence.PROBABLE:
+                return fmt
         return None
 
 
@@ -1082,16 +1086,12 @@ def _resolve_single_file_or_tar(
 
     A ``RAW_STREAM`` compressor (``.gz``/``.bz2``/``.xz``/…) is probed for an inner
     container (:func:`_probe_inner_container`); on a hit it becomes ``(TAR, <stream>)``
-    (e.g. ``TAR_GZ``), or ``(<plugin container>, <stream>)``, reported as
-    ``content_probe`` (the inner test is structural, weaker than an exact magic). The
-    TAR magic and a self-checking header report ``PROBABLE``; a container probe's match
-    reports its own grade, a ``GUESS`` raised to ``PROBABLE`` when the name names the
-    container (:func:`~archivey.internal.probe_verdict.graded`).
-    A ``PROBABLE`` inner-container upgrade is corroboration for a probe hit — two
-    independent signals had to hold — so ``corroborated`` is set. A ``GUESS`` is not:
-    a weak inner match is no second signal, so a decode failure on it is still marked
-    ``format_unconfirmed``. Otherwise a matching extension (same stream format) is the
-    corroborating signal. ``peek_more`` gives the probe a bounded,
+    (e.g. ``TAR_GZ``), or ``(<plugin container>, <stream>)``, reported as ``PROBABLE`` /
+    ``content_probe`` (the inner test is structural, weaker than an exact magic). A
+    container probe's ``GUESS`` is no hit: it stays the compressor it surely is.
+    An inner-container upgrade is corroboration for a probe hit — two independent signals
+    had to hold — so ``corroborated`` is set. Otherwise a matching extension (same stream
+    format) is the corroborating signal. ``peek_more`` gives the probe a bounded,
     non-consuming view of the source to decode from; ``view_arrived`` says it is a
     view that returns what has arrived (:class:`_BoundedPeekReader`).
     """
@@ -1113,13 +1113,11 @@ def _resolve_single_file_or_tar(
         else None
     )
     if inner is not None:
-        inner_fmt, inner_confidence = inner
         return FormatInfo(
-            ArchiveFormat(inner_fmt.container, fmt.stream),
-            inner_confidence,
+            ArchiveFormat(inner.container, fmt.stream),
+            DetectionConfidence.PROBABLE,
             "content_probe",
-            # A weak inner match is a guess, not a second signal.
-            corroborated=inner_confidence is not DetectionConfidence.GUESS,
+            corroborated=True,
         )
     corroborated = base_detected_by == "content_probe" and _extension_corroborates(
         ext_match, fmt
@@ -2325,10 +2323,6 @@ def _script_stream_payload(detection: _DetectionPass, found: FormatInfo) -> Form
         always_probe=detection.always_probe,
         formats=detection.formats,
     )
-    # The scan found the stream; a weak inner match is the evidence for the container
-    # inside it, so its grade holds here as on a stream at byte 0.
-    if resolved.confidence is DetectionConfidence.GUESS:
-        return replace(found, format=resolved.format, confidence=resolved.confidence)
     return replace(found, format=resolved.format)
 
 
@@ -2416,12 +2410,8 @@ def _self_checking_header(detection: _DetectionPass) -> FormatInfo | None:
                     always_probe=detection.always_probe,
                     formats=detection.formats,
                 ),
-                # The header checks itself; a weak inner match on its payload does
-                # not, and no corroboration hides a decode failure on it.
                 corroborated=True,
             )
-            if info.confidence is DetectionConfidence.GUESS:
-                info = replace(info, corroborated=False)
         return detection.conclude(info, _ConflictEvidence.CONTENT_PROBE)
     return None
 
