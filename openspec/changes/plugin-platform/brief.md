@@ -2,9 +2,9 @@
 
 **Status:** Plan only, written to circulate and be refined. The maintainer agreed the
 direction and ten decisions on 2026-11-24 and revised three of them on 2026-11-26
-(design.md §Decisions, R1 to R8). No spec deltas
-yet: each implementation PR brings the deltas for its step. No code until the
-maintainer has read this plan. It replaces `openspec/changes/plugin-api`, whose
+(design.md §Decisions, R1 to R10). R9 retires the 2026-10-28 rule that left a turned-off
+plugin format out of detection. No spec deltas yet: each implementation PR brings the
+deltas for its step. No code until the maintainer has read this plan. It replaces `openspec/changes/plugin-api`, whose
 interface it keeps and whose registration, naming and packaging it rewrites.
 Target: steps 1 and 2 with the other breaking trims of 0.6.0, the package split in
 0.7.0.
@@ -35,7 +35,7 @@ anyone else's.
   helper.
 - `archivey.formats` grows until our own packages import no private name, gets a
   version number, and takes the shorter thread rules of the concurrency cut, a separate
-  change that lands first.
+  change that has landed (archived 2026-11-25).
 - Four packages under `packages/`, released with core: `archivey-disk-images`,
   `archivey-dmg`, `archivey-package-formats`, `archivey-legacy-formats`.
 

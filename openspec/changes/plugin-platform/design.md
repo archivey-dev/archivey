@@ -188,8 +188,8 @@ Rules:
   changes with the API version: `api`, and the `name` of each format and codec. Core
   reads it from any manifest it can parse. The names of an incompatible provider are
   kept for diagnostics and are not eligible to run. So a lookup by name has three
-  outcomes that do not blur: a name nobody declares is `ArchiveyUsageError`; a name
-  whose package is missing is `PackageNotInstalledError` with the hint; a name whose
+  outcomes that do not blur (and a fourth when autoload is off, §3): a name nobody
+  declares is `ArchiveyUsageError`; a name whose package is missing is `PackageNotInstalledError` with the hint; a name whose
   provider is installed and incompatible is reported as incompatible, with both API
   versions, by `format_availability()` and by the error on open (§5).
 - **A name is a value; a registry is asked when an operation resolves it.** Building
@@ -310,7 +310,15 @@ Guardrails:
   should also limit providers is Open Question 11.
 - **One off switch for a deployment.** `ARCHIVEY_PLUGIN_AUTOLOAD=0`, or
   `archivey.formats.disable_autoload()` before first use, skips the listing in point 2.
-  It is a default for the process. A caller's policy works without it.
+  It is a default for the process. A caller's policy works without it. Our own four
+  packages are plugins like any other, so the switch turns them off too: with it on,
+  an `archivey[recommended]` install reads core's formats only. A deployment that
+  wants some packages names them: `archivey.formats.load_provider("archivey-dmg")`
+  reads the manifest of that one installed distribution, under the same owner and API
+  checks as the listing (pytest pairs its switch with `-p name` the same way). A
+  format whose package is installed and not loaded is its own lookup outcome: the
+  error says the package is installed and autoload is off, and names the call, where
+  a missing package gets the install hint.
 - **Visible.** `archivey --version`, `format_availability()` and `BackendUse` name the
   provider of each format and decoder. The provider query of §2 lists what was refused
   or skipped.
@@ -525,8 +533,8 @@ gets `object` until it uses the constant. It lands with the open names in step 2
 Each new public helper lands in the pull request of the reader that needs it. Nothing
 is added on speculation.
 
-**Threads.** The concurrency cut is a separate change that lands before this one
-(decision 9), and it owns the thread contract a reader author sees
+**Threads.** The concurrency cut was a separate change that landed before this one
+(decision 9, archived 2026-11-25), and it owns the thread contract a reader author sees
 (`openspec/changes/archive/2026-11-25-concurrency-cut`). This change takes that
 contract as it stands and does not restate it, so the two cannot drift apart. What the
 plugin work needs from it:
@@ -852,9 +860,9 @@ failure points at the API, at detection or at distribution, and not at all three
 6. **Afterwards.** Aliases removed one release later; the plugin guide rewritten,
    shorter.
 
-**The concurrency cut is not in this sequence.** It is a separate change that lands
-first (decision 9), so that the reader contract is already the short one when step 1
-starts and the migration guide of step 3 is written against it.
+**The concurrency cut is not in this sequence.** It was a separate change and has
+landed (decision 9, archived 2026-11-25), so the reader contract is already the short
+one when step 1 starts and the migration guide of step 3 is written against it.
 
 Rollback: steps 1 and 4 are internal and revert cleanly. Steps 2, 3 and 5 are released
 behaviour; their rollback is a new release.

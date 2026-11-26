@@ -13,14 +13,14 @@
 - [ ] 1.7 Detection parity: pkg and plain xar, deb and plain ar, with correct, missing
   and misleading suffixes; `detect_format()` and `open_archive()` agree; read budgets
   measured on seekable and forward-only sources
-- [ ] 1.7c Probe parity: a binary `.cpio` and a binary `initrd.cpio.gz`, on a
-  core-only and a pilot install, named and unnamed
 - [ ] 1.7a One tail window for every trailer declaration: several declarations on a
   source that counts range reads, and on a member stream; a trailer over the cap
   refused at load
 - [ ] 1.7b Detect first, judge after (R9): a policy that allows a base and bars its
   refinement refuses the refined file and names the refinement; a barred provider's
   check never runs; the 2026-10-28 "left out of detection" tests are rewritten
+- [ ] 1.7c Probe parity: a binary `.cpio` and a binary `initrd.cpio.gz`, on a
+  core-only and a pilot install, named and unnamed
 - [ ] 1.8 Spec deltas: `format-manifest` (new), `backend-registry`, `format-detection`
 
 ## 2. Open names (breaking)
@@ -38,12 +38,12 @@
 - [ ] 2.1b `FormatPolicy` stores containers, streams and methods by role;
   `only_libraries` by membership; a test that `exclude={StreamFormat("xz")}` still
   reads an xz member of a ZIP
+- [ ] 2.1c Each package exports a constant for every library it uses (R8)
 - [ ] 2.1d One namespace for container and stream names (R10): the registry refuses a
   name the other role owns, the hint table reserves across roles, and a test pins
   that core's two lists do not overlap
 - [ ] 2.1e Every core constant of the four types passes the spelling rule; names are
   case-sensitive and two names differing only in case are refused
-- [ ] 2.1c Each package exports a constant for every library it uses (R8)
 - [ ] 2.2 Remove `PluginContainer`, `PluginStream` and the `Literal` spelling lists
 - [ ] 2.2a `ExtraKey` and the generic overloads on `MemberExtra` and
   `ArchiveInfoExtra`; key constants for every format; the 62 per-key overloads
@@ -76,7 +76,9 @@
   missing or barred; a bad manifest skipped
 - [ ] 3.4a The provider query and `archivey --version -v`: found, refused, unparsable
   and incompatible providers, each with its reason
-- [ ] 3.5 The off switch (environment variable and function)
+- [ ] 3.5 The off switch (environment variable and function); it turns our own packages
+  off too; `load_provider()` for one named distribution under the same checks; the
+  error for an installed package that was not loaded differs from the install hint
 - [ ] 3.6 The hint table, and the test that keeps it equal to the packages' manifests
 - [ ] 3.7 `packages/archivey-package-formats` with cpio and rpm, added to
   `[recommended]`, `[all]` and `[free-threaded]`; type checkers, fuzz targets and

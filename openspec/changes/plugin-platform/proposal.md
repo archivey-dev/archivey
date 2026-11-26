@@ -44,7 +44,7 @@ that other formats use, and solve the import cost with the same mechanism.
   its kernels through one public helper.
 - **Reader API.** Public helpers replace each `archivey.internal` import of the moved
   readers. `API_VERSION` replaces the exact version pin. The thread rules are the short ones
-  that the concurrency cut, a separate change that lands first, leaves.
+  that the concurrency cut, a separate change archived 2026-11-25, leaves.
 - **Packages.** `archivey-disk-images`, `archivey-dmg`, `archivey-package-formats` and
   `archivey-legacy-formats` under `packages/`. `[recommended]`, `[all]`,
   `[free-threaded]` and `archivey-cli` include all four. No extra is named after a
