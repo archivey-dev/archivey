@@ -16,7 +16,7 @@
 - [ ] 1.7a One tail window for every trailer declaration: several declarations on a
   source that counts range reads, and on a member stream; a trailer over the cap
   refused at load
-- [ ] 1.7c Core's binary CPIO check (R13): a binary `.cpio` is CPIO with no stream
+- [ ] 1.7b Core's binary CPIO check (R13): a binary `.cpio` is CPIO with no stream
   format, and a binary `initrd.cpio.gz` is `(CPIO, GZIP)`, named and unnamed
 - [ ] 1.8 Spec deltas: `format-manifest` (new), `backend-registry`, `format-detection`
 
@@ -167,14 +167,14 @@
 - [ ] 5.2 `packages/archivey-legacy-formats`: LHA, ARJ, the legacy ZIP methods
 - [ ] 5.3 `packages/archivey-disk-images`: ISO, UDF, CD images, SquashFS
 - [ ] 5.3a `packages/archivey-dmg`: DMG with HFS+, APFS and encryption
-- [ ] 5.3c `packages/archivey-compressors` (R11): lz4, mozlz4, Brotli, lzop,
+- [ ] 5.3b `packages/archivey-compressors` (R11): lz4, mozlz4, Brotli, lzop,
   bzip3, Snappy as codec entries with stream facets; the 7z LZ4 and Brotli bindings;
   their libraries stay in core's extras as today (`brotli` out of `[free-threaded]`,
   `bzip3` in `[bzip3]` only); the wheel resolves on macOS and 3.13t, and LZ4 is read in
   the free-threaded job; `.Z` joins the legacy package;
   SquashFS with LZ4 or LZO, and a 7z with those methods, refused with the hint when
   the package is missing
-- [ ] 5.3b `VISION.md`: ISO comes with `[recommended]`, not with the bare install
+- [ ] 5.3c `VISION.md`: ISO comes with `[recommended]`, not with the bare install
 - [ ] 5.4 For each pack: the pilot checks, the public-imports test, and a corpus run on
   a core-only install (refused with the hint) and a full install (same results as
   before the move)
