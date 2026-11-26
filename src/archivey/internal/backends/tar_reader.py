@@ -1405,7 +1405,13 @@ class TarReader(BaseArchiveReader):
                 member=member,
                 logger=backends_logger,
             )
-        return None if confirmed or trusted or not searched else found + BLOCKSIZE
+        # The next search starts after the member's own header: its data is
+        # searched, and the chain before it is not found again.
+        return (
+            None
+            if confirmed or trusted or not searched
+            else entry.header.offset + BLOCKSIZE
+        )
 
     def _raise_members_the_codec_checked(self) -> None:
         """Raise every listed file to ``CHECKSUM`` when the codec's checksum covered it.

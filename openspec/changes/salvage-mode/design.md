@@ -143,8 +143,8 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
      `unchecked`.
    - **Confirmed:** the block after the found member's data (its chain's last header
      included) is a header that passes checksum and magic, or the clean end. Otherwise
-     unconfirmed; the search resumes at the next block after the found header (its data
-     is searched).
+     unconfirmed; the search resumes at the next block after the found member header
+     (its data is searched; its chain is not).
    - **Compressed TAR** (`.tar.gz` etc.): the search runs on the decoded stream, which
      the reader reads forward; a random-access TAR reader over a decoded stream already
      seeks forward by decoding. Damage in the codec itself stops the decode as today
@@ -247,7 +247,19 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
   one header was listed and every one listed was v7, so a lost start never accepts a v7
   block on its checksum alone. In v7 mode a v7 header confirms a found member.
 - **A found header that makes no member** (its chain does not parse, or it raises
-  `CorruptionError`) is passed over: the search goes on at the block after it. Past the
+  `CorruptionError`) is passed over: the search goes on at the block after it. An
+  extended header in a found chain whose data does not fit what is left of
+  `max_metadata_bytes` is passed over the same way when the walk knows the archive
+  does not hold that data (a file shorter than the size says). When the archive holds
+  it, or the walk cannot tell without reading it (a codec stream, a forward-only walk),
+  it stays a `ResourceLimitError`, as in the default walk.
+- **A found `g` header whose chain makes no member changes nothing.** The global records
+  stay as they were before it. This departs from GNU tar on purpose: GNU tar
+  `--ignore-zeros` applies such a header to later members, but a chain that makes no
+  member is noise. A `g` header the walk itself reaches, or one in a found chain that
+  makes a member, applies to later members as in GNU tar.
+- **An unconfirmed found member's next search starts after its member header**, not
+  inside its chain, so that a member with extended headers before it is listed once. Past the
   default's end, `CorruptionError` inside a walked chain ends that chain as a rejected
   header does, and the search starts at the chain. Damage in the codec stream during a
   search ends the walk; the pass ends in the default's error.
