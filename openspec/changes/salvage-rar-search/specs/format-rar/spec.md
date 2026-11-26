@@ -44,14 +44,13 @@ SHALL go on after its data. An unconfirmed member SHALL be listed with
 first byte. No byte of a volume SHALL be searched twice.
 
 **Headers that are not members.** A MAIN header found after the first SHALL be skipped
-without reading its flags. A RAR5 ENCRYPTION header found after MAIN SHALL be skipped.
-An end block found after a search in the same volume SHALL end the volume when only
-zeros or the end of the volume follow it; otherwise the search SHALL go on after it, and
-when it finds no header to the volume's end, the end block SHALL end the volume as
-without a search before it. A
-found RAR5 FILE or SERVICE header that ends a quick-open cache record whose own CRC-32
-passes SHALL NOT be listed; it SHALL claim only its own bytes. The damaged header where
-the walk stopped SHALL NOT be listed.
+without reading its flags. A RAR5 ENCRYPTION header found after MAIN, or after a damaged
+MAIN, SHALL be skipped. An end block found after a search in the same volume SHALL end
+the volume when only zeros or the end of the volume follow it; otherwise the search SHALL
+go on after it, and when it finds no header to the volume's end, the end block SHALL end
+the volume as without a search before it. A found RAR5 FILE or SERVICE header that ends a
+quick-open cache record whose own CRC-32 passes SHALL NOT be listed; it SHALL claim only
+its own bytes. The damaged header where the walk stopped SHALL NOT be listed.
 
 **Work.** The search's work SHALL be bounded by the size of the bytes searched and not
 by what they declare: the CRC of a candidate header larger than 4 KiB SHALL be computed

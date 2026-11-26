@@ -5508,7 +5508,10 @@ class _Rar5Walk:
                 self._on_main(block)
                 continue
             if block.block_type == _RAR5_ENCRYPTION:
-                if nested:
+                # After a damaged MAIN with the signature intact, the archive's own
+                # headers are plain: its ENCRYPTION header would precede MAIN. So
+                # only a lost start can find the archive's own.
+                if nested or (self.past_damage and not self.start_lost):
                     # The headers after it are ciphertext: search on past them.
                     if self._salvage_resume(
                         _packed_span_end(block.data_offset, block.add_size)

@@ -1496,3 +1496,18 @@ def test_an_intact_end_block_after_a_search_ends_the_volume(
         archive = reader._archive  # type: ignore[attr-defined]
         assert not archive.salvage_ended_in_damage
         assert archive.trailing_data_volumes
+
+
+def test_after_a_damaged_main_an_encryption_header_is_a_nested_archives(
+    tmp_path: Path,
+) -> None:
+    """The signature is intact and MAIN damaged: the archive's own headers are
+    plain (an encrypted one has its ENCRYPTION header before MAIN). So the
+    ENCRYPTION header of a ``-hp`` archive stored after the damage is that inner
+    archive's: the search goes on past it to the outer members after it."""
+    inner = (_RAR / "encrypted_header__.rar").read_bytes()
+    end = _rar5_block_bytes(b"\x05\x00\x00")
+    data = _RAR5_SIGNATURE + bytes(32) + inner + _RAR5_EMPTY_FILE + end
+    salvage = _list(_write(tmp_path, data), salvage=True)
+    assert "a" in salvage.names
+    assert type(salvage.error) is CorruptionError
