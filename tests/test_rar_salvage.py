@@ -1986,6 +1986,55 @@ def test_a_found_rar5_header_that_fails_after_its_crc_is_damage(
     assert "CRC mismatch at offset 30" in str(listing.error)
 
 
+def test_a_damaged_header_past_lost_bytes_continues_nothing(tmp_path: Path) -> None:
+    """Damage, a found service header (which leaves the lost bytes for the next
+    member), then a FILE header that fails its CRC with ``SPLIT_BEFORE`` set and
+    whose sizes step 1 follows. A damaged header's split flag is not trusted and it
+    is not merged across the lost bytes, so it is a member of its own that reads:
+    not a continuation of a missing volume."""
+    from tests.rar_util import _rar3_block
+
+    def header(block_type: int, name: bytes, data: bytes, flags: int = 0x8000) -> bytes:
+        body = struct.pack(
+            "<LLBLLBBHL",
+            len(data),
+            len(data),
+            3,
+            zlib.crc32(data) & 0xFFFFFFFF,
+            0,
+            29,
+            0x30,
+            len(name),
+            0o100644,
+        )
+        return _rar3_block(block_type, flags, body + name)
+
+    whole = write_rar29_stored([("z", b"x")])
+    damaged = bytearray(header(0x74, b"d.txt", b"ddd", flags=0x8000 | 0x0001))
+    damaged[0] ^= 0xFF  # its CRC16
+    data = (
+        whole[:20]
+        + header(0x74, b"a.txt", b"aaa")
+        + b"aaa"
+        + b"\xff" * 9
+        + header(0x7A, b"CMT", b"hello")
+        + b"hello"
+        + bytes(damaged)
+        + b"ddd"
+        + header(0x74, b"e.txt", b"eee")
+        + b"eee"
+        + whole[-7:]
+    )
+    path = _write(tmp_path, data)
+    with open_archive(path, salvage=True) as reader:
+        members = reader.members_report().members
+        assert [m.name for m in members] == ["a.txt", "d.txt", "e.txt"]
+        d = members[1]
+        assert d._raw.damaged_header is not None  # type: ignore[union-attr]
+        assert d._raw.after_lost is not None  # type: ignore[union-attr]
+        assert reader.read(d) == b"ddd"
+
+
 def test_a_found_rar3_split_of_another_name_is_damage(tmp_path: Path) -> None:
     from tests.rar_util import _rar3_block
 

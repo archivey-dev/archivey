@@ -5120,8 +5120,10 @@ def _emit_walked_member(
     member of a later volume. One that comes after bytes salvage lost
     (``after_lost``) is never merged into the member before them: their data does
     not join. Nor is a member salvage listed unconfirmed merged, or merged into:
-    its split flags rest on a header only a CRC16 checked. Returns
-    ``split_after``."""
+    its split flags rest on a header only a CRC16 checked. A damaged header's
+    ``split_before`` is then wrong, as in :func:`_emit_file_member`: it continues
+    nothing.
+    Returns ``split_after``."""
     previous = members[-1] if members else None
     tentative = _unconfirmed(member) or (
         previous is not None and _unconfirmed(previous)
@@ -5133,6 +5135,8 @@ def _emit_walked_member(
             max_members=max_members,
             max_metadata_bytes=max_metadata_bytes,
         )
+    if member.damaged_header is not None:
+        member.split_before = False
     _append_member(
         members,
         member,
