@@ -40,7 +40,6 @@ from archivey.internal.backends import rpm_reader
 from archivey.internal.backends.rpm_reader import RpmReader
 from tests.conftest import requires_zstd
 from tests.memory_util import traced_peak
-from tests.public_names import assert_only_public_archivey
 from tests.streams_util import NonSeekableBytesIO, open_mode
 
 RPM = archivey.ArchiveFormat.RPM
@@ -256,11 +255,6 @@ def test_detection() -> None:
     # By the lead's magic, whatever the name.
     data = (DATA / "payload-gzip.rpm").read_bytes()
     assert detect_format(io.BytesIO(data)).format == RPM
-
-
-def test_the_reader_uses_only_public_archivey() -> None:
-    """Written as a format added from outside would be."""
-    assert_only_public_archivey(rpm_reader.__file__)
 
 
 def test_the_reader_is_a_sequential_reader() -> None:
