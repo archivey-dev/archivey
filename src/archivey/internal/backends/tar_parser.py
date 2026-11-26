@@ -2332,6 +2332,42 @@ class TarWalker:
             self.end = TarEnd(TarEndKind.REJECTED, offset, reason=parsed.reason)
         return self.end
 
+    def _charge_found(self, charge: _Charger, size: int, offset: int) -> None:
+        """Charge the data of an extended header in a chain a salvage search found.
+
+        The search found the header on its checksum and magic alone, so its size may
+        be noise. When the charge fails and the archive does not hold the data, or the
+        data alone weighs more than all of ``max_metadata_bytes``, the header names no
+        member: :class:`TruncatedError` passes it over, as for any found chain that
+        does not parse. A header the archive holds and that fits the cap but not what
+        is left of it stays a limit hit. A forward-only walk cannot tell whether it
+        holds the data without reading it, so the cap alone decides there.
+        """
+        try:
+            charge(size, "an extended header")
+        except ResourceLimitError:
+            end = offset + BLOCKSIZE + size
+            if size <= charge.cap and not self._ends_before(end):
+                raise
+            raise TruncatedError(
+                f"TAR archive: the extended header at offset {offset}, found by "
+                f"salvage's header search, names {size} bytes of data, more than "
+                "the archive holds or the listing limits allow"
+            ) from None
+
+    def _ends_before(self, end: int) -> bool:
+        """Whether the stream is known to end before ``end``: its length is a fact,
+        or a seekable stream read without a window has no byte at ``end - 1``.
+        A forward-only walk answers ``False``: it would have to read up to there."""
+        if self._end is not None:
+            return self._end < end
+        if self._eof_at is not None:
+            return self._eof_at < end
+        if not self._seekable or self._win is not None:
+            return False
+        self._seek(end - 1)
+        return not self._read(1)
+
     def _read_extended_header(
         self,
         parsed: HeaderBlock,
@@ -2362,7 +2398,10 @@ class TarWalker:
         # elsewhere.
         if _size_has_tail(block):
             chain.ambiguities.append((Ambiguity.FIELD_TAIL, typeflag + b" size"))
-        charge(parsed.size, "an extended header")
+        if chain.start == self._found_at:
+            self._charge_found(charge, parsed.size, offset)
+        else:
+            charge(parsed.size, "an extended header")
         data = self._read_header_bytes(parsed.size)
         if len(data) < parsed.size:
             raise TruncatedError(

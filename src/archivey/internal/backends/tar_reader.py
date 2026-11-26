@@ -1414,8 +1414,8 @@ class TarReader(BaseArchiveReader):
 
         A found header whose chain does not make a member (it does not parse, or
         names data past the end) is passed over: the search goes on at the block
-        after it. Damage to a codec stream around the tar ends the search, as it
-        ends the default walk.
+        after it, and the PAX global records stay as they were before it. Damage to
+        a codec stream around the tar ends the search, as it ends the default walk.
         """
         salvage.v7 = salvage.v7_allowed
         while True:
@@ -1438,6 +1438,9 @@ class TarReader(BaseArchiveReader):
                 salvage.limit_reached = result.limit_reached
                 return None
             found = result.found
+            # A g header in a found chain that makes no member is noise like the
+            # rest of the chain: its records must not apply to later members.
+            records = walker.global_records()
             try:
                 with self._translated_errors():
                     entry = self._step(walker)
@@ -1448,6 +1451,7 @@ class TarReader(BaseArchiveReader):
             if isinstance(entry, TarEntry):
                 salvage.found_at = found
                 return entry
+            walker.restore_global_records(records)
             start = found + BLOCKSIZE
 
     def _check_found(

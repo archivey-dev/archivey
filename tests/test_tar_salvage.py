@@ -1921,3 +1921,80 @@ def test_members_held_for_the_second_pass_count_against_the_listing_limits(
         pytest.raises(ResourceLimitError, match="held for the second salvage pass"),
     ):
         reader.members()
+
+
+def _member(name: str, content: bytes) -> bytes:
+    info = tarfile.TarInfo(name)
+    info.size = len(content)
+    pad = -len(content) % BLOCKSIZE
+    return info.tobuf(tarfile.USTAR_FORMAT) + content + b"\0" * pad
+
+
+def _extended_header(typeflag: bytes, size: int) -> bytes:
+    info = tarfile.TarInfo("././@PaxHeader")
+    info.type = typeflag
+    info.size = size
+    return info.tobuf(tarfile.USTAR_FORMAT)
+
+
+@pytest.mark.parametrize("compress", [False, True], ids=["plain", "gzip"])
+@pytest.mark.parametrize(
+    "typeflag", [tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.GNUTYPE_LONGNAME]
+)
+def test_a_found_extended_header_too_big_for_the_archive_is_passed_over(
+    typeflag: bytes, compress: bool
+) -> None:
+    # The search finds an extended header whose size names more bytes than the
+    # archive holds, and more than max_metadata_bytes. It is not a member: the
+    # search goes on past it, as past any header whose chain does not parse.
+    data = (
+        _member("before.txt", b"before")
+        + b"X" * BLOCKSIZE
+        + _extended_header(typeflag, 70_000_000)
+        + _member("after.txt", b"after")
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    if compress:
+        data = gzip.compress(data)
+    salvage = _list(data, salvage=True)
+    assert salvage.names == ["before.txt", "after.txt"]
+    assert isinstance(salvage.error, CorruptionError)
+
+
+def test_a_found_extended_header_the_archive_holds_still_hits_the_limit() -> None:
+    # The archive holds the found x header's data, which fits max_metadata_bytes
+    # but not what the members before it left: a limit hit, as in the default walk.
+    record = b"509 comment=" + b"c" * 496 + b"\n"
+    assert len(record) == 509
+    pax = record + b"\0" * (-len(record) % BLOCKSIZE)
+    data = (
+        _member("before.txt", b"before")
+        + b"X" * BLOCKSIZE
+        + _extended_header(tarfile.XHDTYPE, len(record))
+        + pax
+        + _member("after.txt", b"after")
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    limits = ListingLimits(max_metadata_bytes=len(record) + 1)
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        _list(data, salvage=True, config=ArchiveyConfig(listing_limits=limits))
+
+
+def test_a_found_global_header_whose_chain_makes_no_member_changes_nothing() -> None:
+    # The search finds a g header, but the block after its records is not a
+    # header: the chain makes no member, and its records must not apply to the
+    # member the search finds next.
+    record = b"21 path=hijacked.txt\n"
+    pax = record + b"\0" * (-len(record) % BLOCKSIZE)
+    data = (
+        _member("before.txt", b"before")
+        + b"X" * BLOCKSIZE
+        + _extended_header(tarfile.XGLTYPE, len(record))
+        + pax
+        + b"Y" * BLOCKSIZE
+        + _member("real.txt", b"real")
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    salvage = _list(data, salvage=True)
+    assert salvage.names == ["before.txt", "real.txt"]
+    assert salvage.members[1][2] == b"real"
