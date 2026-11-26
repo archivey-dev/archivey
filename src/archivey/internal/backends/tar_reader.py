@@ -746,6 +746,17 @@ class _Gap:
     records: GlobalRecords
 
 
+@dataclass(frozen=True)
+class _Provisional:
+    """What a found chain may change for the rest of the walk, as it stood before
+    the search found it (:meth:`_SalvageWalk.search_starts`): the PAX global records
+    and the v7 rule's record of what was listed."""
+
+    records: GlobalRecords
+    listed: bool
+    listed_non_v7: bool
+
+
 @dataclass
 class _SalvageWalk:
     """One walk's salvage mode (``open_archive(salvage=True)``): where the default
@@ -756,8 +767,16 @@ class _SalvageWalk:
     searches are done (Q3). ``found_at`` is where the chain of the entry about to be
     listed starts, when a search found it. ``v7`` is the v7 rule the last search
     used, for the confirmation of what it found. ``trusted`` is, for the member
-    just listed, where its chain starts and where its data ends, when a
-    forward-only walk trusted its size (``TarWalker.salvage_confirms``).
+    just listed, its member header's offset, when a forward-only walk trusted its
+    size (``TarWalker.salvage_confirms``).
+
+    A found chain is provisional until its member is confirmed: what it changes for
+    the rest of the walk (``_Provisional``) is kept as it stood before the search
+    found it, put back when the next search starts (:meth:`search_starts`), and
+    dropped when the member is confirmed (:meth:`confirm`). Every way a found member
+    ends up unconfirmed (its chain makes no member, the block after its data does
+    not confirm it, or nothing confirms the size a forward-only walk trusted) leads
+    to a next search, so that one point puts the state back on every path.
 
     The two-pass rule (design.md, "Notes from the TAR PR"): on a codec walk the
     first pass reads the layer forward once, and ``gaps`` holds, in order, the
@@ -772,7 +791,8 @@ class _SalvageWalk:
     default_last: ArchiveMember | None = None
     default_count: int = 0
     found_at: int | None = None
-    trusted: tuple[int, int] | None = None
+    provisional: _Provisional | None = None
+    trusted: int | None = None
     v7: bool = False
     limit_reached: bool = False
     # Whether any member was listed, and whether one had a header other than v7.
@@ -782,6 +802,28 @@ class _SalvageWalk:
     known: set[int] = field(default_factory=set)
     clean_end: int | None = None
     gap: tuple[int, int] | None = None
+
+    def search_starts(self, walker: TarWalker) -> None:
+        """Before a search: the found chain before it, if not confirmed, changed
+        nothing that outlives it. Its member was not confirmed, so the PAX global
+        records and the v7 rule go back to where they stood before it."""
+        before, self.provisional = self.provisional, None
+        if before is not None:
+            walker.restore_global_records(before.records)
+            self.listed = before.listed
+            self.listed_non_v7 = before.listed_non_v7
+        self.trusted = None
+
+    def chain_found(self, walker: TarWalker) -> None:
+        """A search found a chain: what it changes is provisional from here."""
+        self.provisional = _Provisional(
+            walker.global_records(), self.listed, self.listed_non_v7
+        )
+
+    def confirm(self) -> None:
+        """The found member is confirmed: what its chain changed stands."""
+        self.provisional = None
+        self.trusted = None
 
     def begin(self, end: TarEnd, last: ArchiveMember | None, count: int) -> None:
         """Keep the default walk's end, the first time the walk ends on damage."""
@@ -1316,8 +1358,11 @@ class TarReader(BaseArchiveReader):
             entry = None
         while entry is not None:
             if isinstance(entry, TarEntry):
-                # The block after a trusted member's data made this entry.
-                salvage.trusted = None
+                if salvage.trusted is not None:
+                    # The block after a trusted member's data made this entry, and
+                    # passed the checks a confirmation makes
+                    # (TarWalker.salvage_confirms): the member is confirmed.
+                    salvage.confirm()
                 search_from = None
                 if salvage.default_end is not None:
                     # Past the default walk's end every member is an added one.
@@ -1349,7 +1394,7 @@ class TarReader(BaseArchiveReader):
                 self._refresh_member_levels()
                 continue
             start = self._salvage_start(walker, entry, salvage)
-            trusted, salvage.trusted = salvage.trusted, None
+            trusted = salvage.trusted
             if (
                 trusted is not None
                 and not salvage.limit_reached
@@ -1359,7 +1404,7 @@ class TarReader(BaseArchiveReader):
                 # its claimed end, or the stream's end before that): search back
                 # inside the member's data, as far as the walk's window still
                 # keeps it (design.md, "Notes from the TAR PR").
-                start = walker.search_floor(trusted[0] + BLOCKSIZE)
+                start = walker.search_floor(trusted + BLOCKSIZE)
             if start is None:
                 break
             salvage.begin(entry, last_member, index)
@@ -1463,11 +1508,13 @@ class TarReader(BaseArchiveReader):
 
         A found header whose chain does not make a member (it does not parse, or
         names data past the end) is passed over: the search goes on at the block
-        after it, and the PAX global records stay as they were before it. Damage to
-        a codec stream around the tar ends the search, as it ends the default walk.
+        after it. Each search first puts back what the found chain before it
+        changed (:meth:`_SalvageWalk.search_starts`). Damage to a codec stream
+        around the tar ends the search, as it ends the default walk.
         """
-        salvage.v7 = salvage.v7_allowed
         while True:
+            salvage.search_starts(walker)
+            salvage.v7 = salvage.v7_allowed
             if end is not None and start >= end:
                 return None
             try:
@@ -1487,9 +1534,7 @@ class TarReader(BaseArchiveReader):
                 salvage.limit_reached = result.limit_reached
                 return None
             found = result.found
-            # A g header in a found chain that makes no member is noise like the
-            # rest of the chain: its records must not apply to later members.
-            records = walker.global_records()
+            salvage.chain_found(walker)
             try:
                 with self._translated_errors():
                     entry = self._step(walker)
@@ -1500,7 +1545,6 @@ class TarReader(BaseArchiveReader):
             if isinstance(entry, TarEntry):
                 salvage.found_at = found
                 return entry
-            walker.restore_global_records(records)
             start = found + BLOCKSIZE
 
     def _check_found(
@@ -1558,10 +1602,22 @@ class TarReader(BaseArchiveReader):
         # still holds. This fallback stays for forward-only walks.
         trusted = looked is None
         confirmed = bool(looked)
+        provisional = salvage.provisional
+        # Whether a g header in the found chain changed the global records.
+        global_in_chain = (
+            searched
+            and provisional is not None
+            and walker.global_records().records is not provisional.records.records
+        )
+        if confirmed and searched:
+            salvage.confirm()
+        # Otherwise the chain stays provisional: an unconfirmed member's next search
+        # puts back what it changed, and a trusted member's waits for the block
+        # after its data.
         if trusted:
             # The member header, not the chain's start: a search back starts after
             # it, so the chain before it is not found again.
-            salvage.trusted = (entry.header.offset, walker.position)
+            salvage.trusted = entry.header.offset
             if self._streaming:
                 self._trusted_spans.add(entry.data_offset)
         if searched and looked is False and self._streaming:
@@ -1639,6 +1695,14 @@ class TarReader(BaseArchiveReader):
             how = (
                 "nothing after its data confirms its size, so the search goes on "
                 "inside its data"
+            )
+        if searched and not confirmed and global_in_chain:
+            how += (
+                "; a global PAX header in its chain applies to later members only "
+                "if the header after its data passes the same checks"
+                if trusted
+                else "; a global PAX header in its chain applies to it alone, "
+                "because nothing confirms it"
             )
         return _Found(found, confirmed, unchecked, how, search_from, searched)
 

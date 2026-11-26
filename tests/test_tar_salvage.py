@@ -2094,10 +2094,11 @@ def test_an_unconfirmed_found_member_after_extended_headers_is_listed_once(
         + b"\0" * (2 * BLOCKSIZE)
     )
     salvage = _list(data, salvage=True)
-    # A g header that makes a member applies to it and to every later member.
+    # A found g header applies to its own member; nothing confirms m.txt, so it
+    # does not reach the members after it.
     expected = {
         tarfile.XHDTYPE: ["before.txt", "hijacked.txt", "real.txt"],
-        tarfile.XGLTYPE: ["before.txt", "hijacked.txt", "hijacked.txt"],
+        tarfile.XGLTYPE: ["before.txt", "hijacked.txt", "real.txt"],
         tarfile.GNUTYPE_LONGNAME: ["before.txt", "longname.txt", "real.txt"],
     }[typeflag]
     assert salvage.names == expected
@@ -2161,15 +2162,21 @@ def test_held_text_weighs_what_its_member_keeps(raw: bytes) -> None:
         assert weight == 4 * len(raw)
 
 
-@pytest.mark.parametrize("typeflag", [tarfile.XHDTYPE, tarfile.GNUTYPE_LONGNAME])
+@pytest.mark.parametrize(
+    "typeflag", [tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.GNUTYPE_LONGNAME]
+)
 def test_a_trusted_found_member_after_extended_headers_is_listed_once_in_a_deb(
     typeflag: bytes,
 ) -> None:
     # A forward-only walk (a deb's data.tar) trusts m.txt's lying size; when
     # nothing confirms it, the search goes back from after m.txt's own header,
     # not from inside its chain, as the plain .tar's search does.
+    # A g header counts for later members only once its member is confirmed: a
+    # trusted member nothing confirms leaves real.txt and real2.txt their names.
     record = (
-        b"21 path=hijacked.txt\n" if typeflag == tarfile.XHDTYPE else b"longname.txt\0"
+        b"longname.txt\0"
+        if typeflag == tarfile.GNUTYPE_LONGNAME
+        else b"21 path=hijacked.txt\n"
     )
     payload = record + b"\0" * (-len(record) % BLOCKSIZE)
     info = tarfile.TarInfo("m.txt")
@@ -2183,6 +2190,7 @@ def test_a_trusted_found_member_after_extended_headers_is_listed_once_in_a_deb(
         + b"m" * BLOCKSIZE
         + b"Y" * BLOCKSIZE
         + _member("real.txt", b"real")
+        + _member("real2.txt", b"r2")
         + b"\0" * (2 * BLOCKSIZE)
     )
     plain = _list(data, salvage=True).names
@@ -2196,3 +2204,217 @@ def test_a_trusted_found_member_after_extended_headers_is_listed_once_in_a_deb(
         plain.count("m.txt") + plain.count("hijacked.txt") + plain.count("longname.txt")
         == 1
     )
+
+
+def test_a_found_global_header_before_an_unconfirmed_member_renames_nothing_after() -> (
+    None
+):
+    # A found g header, then a bare member header nothing confirms: the g header
+    # applies to that member alone, and the confirmed members after it keep
+    # their own names.
+    record = b"21 path=hijacked.txt\n"
+    pax = record + b"\0" * (-len(record) % BLOCKSIZE)
+    data = (
+        _member("before.txt", b"before")
+        + b"X" * BLOCKSIZE
+        + _extended_header(tarfile.XGLTYPE, len(record))
+        + pax
+        + _member("bogus", b"")
+        + b"Y" * BLOCKSIZE
+        + _member("real.txt", b"real")
+        + _member("real2.txt", b"r2")
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    salvage = _list(data, salvage=True)
+    assert salvage.names == ["before.txt", "hijacked.txt", "real.txt", "real2.txt"]
+    # The diagnostic says what the listing shows: the g header renamed only its
+    # own member.
+    (found,) = [
+        d
+        for d in salvage.of(DiagnosticCode.MEMBER_FOUND_BY_SCAN)
+        if d.context.member_name == "hijacked.txt"  # type: ignore[union-attr]
+    ]
+    assert "global PAX header in its chain applies to it alone" in found.message
+
+
+# ---------------------------------------------------------------------------
+# A found member nothing confirms changes nothing that outlives it
+# ---------------------------------------------------------------------------
+
+# The paths a salvage walk runs on: a seekable walk over a file, a walk over a codec
+# stream (through a window), the forward-only walk of a deb's data.tar, and a
+# stream_members() pass.
+_PATHS = ["plain", "gzip", "deb", "stream_members"]
+
+
+def _names_on(path: str, data: bytes) -> list[str]:
+    """The names salvage lists for the tar ``data`` on ``path`` (see :data:`_PATHS`),
+    without the deb's control member."""
+    if path == "stream_members":
+        # Names only: a member whose size lies past the end fails its read.
+        names: list[str] = []
+        with open_archive(io.BytesIO(data), salvage=True) as reader:
+            try:
+                for member, _ in reader.stream_members():
+                    names.append(member.name)
+            except CorruptionError:
+                pass
+        return names
+    source = {"plain": data, "gzip": gzip.compress(data, 1), "deb": _as_deb(data)}[path]
+    listed = _list(source, salvage=True).names
+    return [name for name in listed if not name.startswith("DEBIAN")]
+
+
+def _v7_member(name: str, content: bytes) -> bytes:
+    """A member whose header has no magic (a v7 header), its checksum fixed."""
+    out = bytearray(_member(name, content))
+    out[257:265] = bytes(8)
+    out[148:156] = b" " * 8
+    out[148:156] = b"%06o\x00 " % sum(out[:BLOCKSIZE])
+    return bytes(out)
+
+
+@pytest.mark.parametrize("path", _PATHS)
+@pytest.mark.parametrize("claim", ["unconfirmed", "trusted"])
+def test_a_found_member_nothing_confirms_leaves_the_v7_rule_as_it_was(
+    claim: str, path: str
+) -> None:
+    # A v7 archive, damage, then a ustar header nothing confirms (junk after its
+    # data, or a size that lies past the hold, which a forward-only walk trusts
+    # and then finds unconfirmed). Only a confirmed member may end the v7 rule:
+    # the v7 members after the noise are still found.
+    info = tarfile.TarInfo("noise")
+    info.size = 0 if claim == "unconfirmed" else 8 << 20
+    data = (
+        _v7_member("a.txt", b"a")
+        + b"X" * BLOCKSIZE
+        + info.tobuf(tarfile.USTAR_FORMAT)
+        + b"Y" * BLOCKSIZE
+        + _v7_member("real.txt", b"real")
+        + _v7_member("real2.txt", b"r2")
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    assert _names_on(path, data) == ["a.txt", "noise", "real.txt", "real2.txt"]
+
+
+@pytest.mark.parametrize("path", _PATHS)
+@pytest.mark.parametrize("claim", ["no-member", "unconfirmed", "trusted"])
+def test_a_found_global_header_nothing_confirms_renames_nothing_after(
+    claim: str, path: str
+) -> None:
+    # A found g header, then a chain that makes no member, a member nothing
+    # confirms, or a member whose size lies past the hold (trusted on a
+    # forward-only walk, then not confirmed). On every walk the members after it
+    # keep their own names.
+    record = b"21 path=hijacked.txt\n"
+    info = tarfile.TarInfo("m.txt")
+    info.size = 8 << 20 if claim == "trusted" else 0
+    member = b"" if claim == "no-member" else info.tobuf(tarfile.USTAR_FORMAT)
+    data = (
+        _member("before.txt", b"before")
+        + b"X" * BLOCKSIZE
+        + _extended_header(tarfile.XGLTYPE, len(record))
+        + record.ljust(BLOCKSIZE, b"\0")
+        + member
+        + b"Y" * BLOCKSIZE
+        + _member("real.txt", b"real")
+        + _member("real2.txt", b"r2")
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    names = _names_on(path, data)
+    assert names[-2:] == ["real.txt", "real2.txt"]
+
+
+@pytest.mark.parametrize("path", _PATHS)
+def test_a_trusted_member_is_confirmed_only_by_a_header_that_passes_the_checks(
+    path: str,
+) -> None:
+    # big.bin is larger than the hold, so a forward-only walk trusts its size. The
+    # block after its data is a v7 header, which does not pass the search's checks
+    # in a ustar archive: it confirms nothing on any walk, so the search goes back
+    # inside big.bin's data and finds after.txt, as a seekable walk does.
+    big = random.Random(3).randbytes(5 << 20)
+    data = (
+        _member("before.txt", b"before")
+        + b"X" * BLOCKSIZE
+        + _member("big.bin", big)
+        + _v7_member("v7.txt", b"v")
+        + _member("after.txt", b"after")
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    assert _names_on(path, data) == ["before.txt", "big.bin", "after.txt"]
+
+
+def _pax_record(key: str, value: str) -> bytes:
+    body = f" {key}={value}\n"
+    length = len(body) + 1
+    while len(str(length)) + len(body) != length:
+        length += 1
+    return f"{length}{body}".encode()
+
+
+@pytest.mark.parametrize("path", _PATHS)
+def test_a_found_sparse_map_too_big_for_its_data_is_passed_over(path: str) -> None:
+    # A found PAX 1.0 sparse member whose map count claims more entries than its
+    # 512-byte data area can hold: the charge is for bytes no walk can find there,
+    # so the chain makes no member, as a found extended header too big for the
+    # archive makes none. The search goes on and the pass ends in the damage.
+    records = b"".join(
+        _pax_record(key, value)
+        for key, value in [
+            ("GNU.sparse.major", "1"),
+            ("GNU.sparse.minor", "0"),
+            ("GNU.sparse.name", "s.bin"),
+            ("GNU.sparse.realsize", "1000"),
+        ]
+    )
+    member = tarfile.TarInfo("GNUSparseFile.0/s.bin")
+    member.size = BLOCKSIZE
+    data = (
+        _member("before.txt", b"before")
+        + b"X" * BLOCKSIZE
+        + _extended_header(tarfile.XHDTYPE, len(records))
+        + records.ljust(BLOCKSIZE, b"\0")
+        + member.tobuf(tarfile.USTAR_FORMAT)
+        + b"100000000\n".ljust(BLOCKSIZE, b"\0")
+        + _member("after.txt", b"after")
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    names = _names_on(path, data)
+    assert names[0] == "before.txt"
+    assert names[-1] == "after.txt"
+    assert "s.bin" not in names
+
+
+def test_a_found_sparse_map_the_file_lacks_is_passed_over() -> None:
+    # The map count fits the member's claimed data area, but the file ends long
+    # before the bytes the count needs: on a file the walk knows that, as for a
+    # found extended header.
+    records = b"".join(
+        _pax_record(key, value)
+        for key, value in [
+            ("GNU.sparse.major", "1"),
+            ("GNU.sparse.minor", "0"),
+            ("GNU.sparse.name", "s.bin"),
+            ("GNU.sparse.realsize", "1000"),
+        ]
+    )
+    member = tarfile.TarInfo("GNUSparseFile.0/s.bin")
+    member.size = 8 << 30
+    data = (
+        _member("before.txt", b"before")
+        + b"X" * BLOCKSIZE
+        + _extended_header(tarfile.XHDTYPE, len(records))
+        + records.ljust(BLOCKSIZE, b"\0")
+        + member.tobuf(tarfile.GNU_FORMAT)
+        + b"100000000\n".ljust(BLOCKSIZE, b"\0")
+        + _member("after.txt", b"after")
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    listing = _list(data, salvage=True)
+    assert listing.names[0] == "before.txt"
+    assert listing.names[-1] == "after.txt"
+    assert "s.bin" not in listing.names
+    # The default walk over the same member, intact, still hits the limit.
+    with pytest.raises(ResourceLimitError, match="sparse map"):
+        _list(data[3 * BLOCKSIZE :])
