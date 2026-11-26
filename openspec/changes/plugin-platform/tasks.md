@@ -16,6 +16,9 @@
 - [ ] 1.7a One tail window for every trailer declaration: several declarations on a
   source that counts range reads, and on a member stream; a trailer over the cap
   refused at load
+- [ ] 1.7b Detect first, judge after (R9): a policy that allows a base and bars its
+  refinement refuses the refined file and names the refinement; a barred provider's
+  check never runs; the 2026-10-28 "left out of detection" tests are rewritten
 - [ ] 1.8 Spec deltas: `format-manifest` (new), `backend-registry`, `format-detection`
 
 ## 2. Open names (breaking)

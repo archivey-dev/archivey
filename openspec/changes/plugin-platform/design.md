@@ -250,12 +250,14 @@ installed code.
    entry point belongs to one distribution. Core reads `archivey-manifest.toml` as a
    file of **that distribution** and parses it with `tomllib`. Nothing is imported.
 3. Detection of a format's family runs on manifest data alone.
-4. Each call applies its effective `FormatPolicy` (provider, then format) **before**
-   any dotted path of an installed package is imported: a refinement check, a probe, a
-   handler or a decoder. Under `plugins=False`, or under an allow-list that does not
-   name the format, no module of the package is imported in that call. The policy of
-   one call does not depend on what an earlier call did, apart from modules being
-   already in `sys.modules`.
+4. Each call applies its effective **provider** policy **before** any dotted path of
+   an installed package is imported: a refinement check, a probe, a handler or a
+   decoder. Under `plugins=False`, or under `providers=` that leaves the package out,
+   no module of the package is imported in that call. The **format** policy is applied
+   after detection (ruling R9, §4): it decides whether the identified format is read,
+   and so it gates the handler and the decoders, not the code that identifies. The
+   policy of one call does not depend on what an earlier call did, apart from modules
+   being already in `sys.modules`.
 5. A handler module is imported when an archive of its format is opened.
 
 Guardrails:
@@ -282,7 +284,9 @@ Guardrails:
   ran, installed beside core. Discovery, opening a core ZIP, and
   `format_availability()` are run under the default policy, `plugins=False` and
   `FormatPolicy.COMMON`, in both orders, and the recorder must stay empty except where
-  a call opens one of that wheel's formats under a policy that allows it.
+  a call opens one of that wheel's formats under a policy that allows it, or where an
+  allowed provider's check is needed to identify the file (R9). Under a policy that
+  bars the provider it stays empty for every input.
 - **A plugin adds and never takes over** (the one-owner rule of §2, and §6 for codecs).
   Replacing a reader stays an explicit choice of the calling program,
   `FormatPolicy(replace=...)`.
@@ -326,7 +330,8 @@ Detection has three phases, the same on every install:
      `MAGIC_REFINEMENTS` has today: `(peek, name) -> bool`, under the detection budget.
      pkg's check looks at the suffix and, for an unnamed file, reads up to 256 KiB of
      the xar table of contents, which no fixed signature or 4 KiB prefix can express.
-     The check runs only when the package is installed and the call's policy allows it.
+     The check runs when the package is installed and the call's policy allows its
+     **provider**, whatever the policy says about the format.
    - A refinement and its base ship in one distribution. So when the package is
      missing, the refusal names the right package even where core cannot tell pkg from
      xar. This is the one place the guarantee is weaker, and it is stated: on a
@@ -334,6 +339,25 @@ Detection has three phases, the same on every install:
      missing, not the refinement.
 3. **Availability.** The format's provider is installed and allowed, or the call is
    refused with the hint.
+
+**Detect first, judge after (ruling R9).** Every format of an allowed provider takes
+part in detection, whatever the format policy says, and the format policy judges the
+format that detection found. A policy that allows `xar` and bars `pkg` identifies an
+installer package as `pkg` and refuses it; it does not read it as a plain XAR. This is
+the rule core formats follow today ("detected under every policy and refused after
+detection"), now the rule for every format, and it keeps "same archive, same contents"
+true under every policy. It replaces the 2026-10-28 rule that left a plugin format the
+policy turns off out of detection; what that rule protected against, one format taking
+another's files, is now covered by the consent rule below. Three things follow:
+
+- Barring a **format** is not a way to keep its code from running. The code that
+  identifies a barred format still runs on the file. Only the provider policy
+  (`providers=`), or not installing the package, keeps a package's code out, and the
+  user docs say so.
+- Detection code is cheap by contract. A refinement check and a probe run under the
+  detection read budget and under the caller's decoder limits, so a format that is slow
+  or costly to read is not slow or costly to identify.
+- A caller who wants the base reading asks for it by name (`format="xar"`).
 
 `refines` and `preempts` take something from another entry: a refinement takes files
 its base would read, and a preempting trailer outranks a signature (a UDIF image whose
@@ -668,7 +692,7 @@ What it cannot undo is a published package name, which is why DMG is split now.
 ## Decisions
 
 All ten were put to the maintainer and agreed on 2026-11-24. Decisions 5, 6 and 7 were
-revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R8 below).
+revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R9 below).
 
 1. **Installed plugins load by themselves, behind the guardrails of §3.** This replaces
    the 2026-10-25 rule (explicit `register_format()` only), which the maintainer
@@ -715,6 +739,13 @@ and the evidence in front of him (review round A):
 - **R8. `OptionalLibrary` stays a type that extends `str`**, like `ExtraKey` (§2). Each
   package defines constants for the libraries it uses, so a caller writes a policy
   from names and not from spellings. Rejected: plain strings with no type.
+
+- **R9. Detect first, judge after** (§3, §4). Every format of an allowed provider takes
+  part in detection; the format policy refuses after detection; only the provider
+  policy keeps a package's code from running. Retires the 2026-10-28 rule that left
+  turned-off plugin formats out of detection. Rejected: leaving a barred format out of
+  detection (the same file would read as two things under two policies), and refusing
+  every file of the base format.
 
 Changed without a ruling to revise, because the plan contradicted a spec or the code:
 `CompressionAlgorithm` stays a non-string type, no extra is named after a package, and
@@ -812,3 +843,7 @@ For the next rounds of this plan. None blocks step 1.
     and could skip the lock, so SquashFS, xar, CAB, LHA, ARJ and DMG would decode
     members in parallel as ZIP does. A speed-up, not a contract change: it comes after
     the concurrency cut and after the moves.
+11. Whether `FormatPolicy.COMMON` also limits providers to core. Every format it names
+    is core's, yet under R9 an installed package's check still runs when the preset is
+    used on a file of a family that package refines. Adding `providers={"archivey"}` to
+    the preset would keep outside code off untrusted uploads.
