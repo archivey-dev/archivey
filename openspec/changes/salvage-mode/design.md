@@ -253,11 +253,13 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
   does not hold that data (a file shorter than the size says). When the archive holds
   it, or the walk cannot tell without reading it (a codec stream, a forward-only walk),
   it stays a `ResourceLimitError`, as in the default walk.
-- **A found `g` header whose chain makes no member changes nothing.** The global records
-  stay as they were before it. This departs from GNU tar on purpose: GNU tar
-  `--ignore-zeros` applies such a header to later members, but a chain that makes no
-  member is noise. A `g` header the walk itself reaches, or one in a found chain that
-  makes a member, applies to later members as in GNU tar.
+- **A found `g` header counts for later members only once its member is confirmed**
+  (davi, 2026-11-26), or trusted on a forward-only walk. When its chain makes no member,
+  or a member nothing confirms, the global records stay as they were before it; it
+  still applies to its own unconfirmed member. This departs from GNU tar on purpose:
+  GNU tar `--ignore-zeros` applies such a header to later members, but a chain with no
+  confirmed member is noise. A `g` header the walk itself reaches applies to later
+  members as in GNU tar.
 - **An unconfirmed found member's next search starts after its member header**, not
   inside its chain, so that a member with extended headers before it is listed once. Past the
   default's end, `CorruptionError` inside a walked chain ends that chain as a rejected

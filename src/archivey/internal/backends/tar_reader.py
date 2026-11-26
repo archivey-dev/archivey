@@ -99,6 +99,7 @@ from archivey.internal.backends.tar_parser import (
     SPARSE_ENTRY_BYTES,
     Ambiguity,
     Budget,
+    GlobalRecords,
     HeaderFormat,
     LinkData,
     NameSource,
@@ -681,6 +682,9 @@ class _SalvageWalk:
     default_last: ArchiveMember | None = None
     default_count: int = 0
     found_at: int | None = None
+    # The PAX global records in force before the chain the last search found: a g
+    # header in it counts for later members only once its member is confirmed.
+    found_records: GlobalRecords | None = None
     trusted: tuple[int, int] | None = None
     v7: bool = False
     limit_reached: bool = False
@@ -1305,6 +1309,7 @@ class TarReader(BaseArchiveReader):
                 entry = None
             if isinstance(entry, TarEntry):
                 salvage.found_at = found
+                salvage.found_records = records
                 return entry
             walker.restore_global_records(records)
             start = found + BLOCKSIZE
@@ -1345,6 +1350,11 @@ class TarReader(BaseArchiveReader):
         # still holds. This fallback stays for forward-only walks.
         trusted = searched and looked is None
         confirmed = bool(looked)
+        records, salvage.found_records = salvage.found_records, None
+        if searched and not confirmed and not trusted and records is not None:
+            # A g header in a found chain applies to its own member; nothing
+            # confirms that member, so the header is noise for every later one.
+            walker.restore_global_records(records)
         if trusted:
             # The member header, not the chain's start: a search back starts after
             # it, so the chain before it is not found again.

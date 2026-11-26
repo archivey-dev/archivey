@@ -1420,10 +1420,11 @@ def test_an_unconfirmed_found_member_after_extended_headers_is_listed_once(
         + b"\0" * (2 * BLOCKSIZE)
     )
     salvage = _list(data, salvage=True)
-    # A g header that makes a member applies to it and to every later member.
+    # A found g header applies to its own member; nothing confirms m.txt, so it
+    # does not reach the members after it.
     expected = {
         tarfile.XHDTYPE: ["before.txt", "hijacked.txt", "real.txt"],
-        tarfile.XGLTYPE: ["before.txt", "hijacked.txt", "hijacked.txt"],
+        tarfile.XGLTYPE: ["before.txt", "hijacked.txt", "real.txt"],
         tarfile.GNUTYPE_LONGNAME: ["before.txt", "longname.txt", "real.txt"],
     }[typeflag]
     assert salvage.names == expected
@@ -1504,3 +1505,26 @@ def test_a_trusted_found_member_after_extended_headers_is_listed_once_in_a_deb(
         plain.count("m.txt") + plain.count("hijacked.txt") + plain.count("longname.txt")
         == 1
     )
+
+
+def test_a_found_global_header_before_an_unconfirmed_member_renames_nothing_after() -> (
+    None
+):
+    # A found g header, then a bare member header nothing confirms: the g header
+    # applies to that member alone, and the confirmed members after it keep
+    # their own names.
+    record = b"21 path=hijacked.txt\n"
+    pax = record + b"\0" * (-len(record) % BLOCKSIZE)
+    data = (
+        _member("before.txt", b"before")
+        + b"X" * BLOCKSIZE
+        + _extended_header(tarfile.XGLTYPE, len(record))
+        + pax
+        + _member("bogus", b"")
+        + b"Y" * BLOCKSIZE
+        + _member("real.txt", b"real")
+        + _member("real2.txt", b"r2")
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    salvage = _list(data, salvage=True)
+    assert salvage.names == ["before.txt", "hijacked.txt", "real.txt", "real2.txt"]
