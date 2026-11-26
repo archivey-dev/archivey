@@ -57,7 +57,8 @@ intact end block with only zeros after it, or a damaged header that step 1 follo
 one of these. A confirmed member SHALL claim its header and data, and the normal walk
 SHALL go on after its data. An unconfirmed member SHALL be listed with
 `confirmed=False`, claim nothing, and the search SHALL go on at the byte after its
-first byte. No byte of a volume SHALL be searched twice.
+first byte. A RAR 1.5-2.x COMMENT subblock after an unconfirmed header's CRC16 SHALL
+NOT be read: the member is listed with no comment. No byte of a volume SHALL be searched twice.
 
 **Headers that are not members.** A MAIN header found after the first, or after a
 MAIN that failed its CRC behind an intact signature, SHALL be skipped without reading

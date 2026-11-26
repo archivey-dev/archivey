@@ -1135,6 +1135,53 @@ def test_a_lost_start_of_unconfirmed_rar3_candidates_is_searched_once(
     assert work.scanned < 4 * len(data)
 
 
+def _rar3_file_header_with_comment(name: bytes) -> bytes:
+    """A RAR 1.5-2.x FILE header with no data and a compressed COMMENT subblock
+    after its CRC16's end, the way RAR 2.x appends one."""
+    body = struct.pack("<LLBLLBBHL", 0, 0, 3, 0, 0, 20, 0x33, len(name), 0o100644)
+    packed = b"\x00" * 8
+    comment = struct.pack("<HBBH", 1, 15, 0x33, 0) + packed
+    sub = struct.pack("<HBHH", 0, 0x75, 0, 7 + len(comment)) + comment
+    flags = 0x8000 | 0x0008  # LONG_BLOCK, FILE_COMMENT
+    head = bytes([0x74]) + struct.pack("<HH", flags, 7 + len(body) + len(name))
+    head += body + name
+    size = 7 + len(body) + len(name) + len(sub)
+    head = head[:3] + struct.pack("<H", size) + head[5:]
+    crc = zlib.crc32(head) & 0xFFFF
+    return struct.pack("<H", crc) + head + sub
+
+
+def test_an_unconfirmed_rar3_header_keeps_no_comment_past_its_crc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A COMMENT subblock after a FILE header sits past the header's CRC16, so an
+    unconfirmed header vouches for none of it: the candidate is listed without a
+    comment, and no program runs at open to decode one per candidate."""
+    from archivey.internal.backends import rar_reader
+
+    calls: list[object] = []
+
+    def counting_blob(**kwargs: object) -> bytes:
+        calls.append(kwargs)
+        raise OSError("not run in this test")
+
+    monkeypatch.setattr(rar_reader, "decompress_rar3_blob", counting_blob)
+    count = 5
+    data = b"".join(
+        _rar3_file_header_with_comment(b"a%d" % i) + b"\xff\xfe" for i in range(count)
+    )
+    with open_archive(
+        io.BytesIO(data), salvage=True, format=ArchiveFormat.RAR
+    ) as reader:
+        report = reader.members_report()
+        raw = list(reader._archive.members)  # type: ignore[attr-defined]
+    assert [m.filename for m in raw] == [f"a{i}" for i in range(count)]
+    assert len(report.members) == count
+    assert all(m.found is not None and not m.found.confirmed for m in raw)
+    assert [m.comment for m in raw] == [None] * count
+    assert calls == []
+
+
 def test_a_lost_start_and_a_lost_end_list_the_unconfirmed_candidates(
     tmp_path: Path,
 ) -> None:

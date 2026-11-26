@@ -3702,7 +3702,7 @@ class _Rar3Walk:
             block = _read_rar3_block(self.source, offset, False)
             if block is None or block.block_type != _RAR3_FILE:
                 return
-            member, crc_pos = self._file_header_fields(block)
+            member, _ = self._file_header_fields(block)
         except CorruptionError:
             return
         if member is None:
@@ -3721,10 +3721,9 @@ class _Rar3Walk:
             # A member after it in a solid stream decodes on top of a header only a
             # CRC16 checked: without a digest of its own it is refused.
             self.solid_damage = _solid_damage_after_unconfirmed(self.solid_damage)
-        if block.flags & _RAR3_FILE_COMMENT:
-            member.comment = _parse_rar3_old_comment_subblocks(
-                block.hdata, crc_pos, encoding=self.name_encoding
-            )
+        # A COMMENT subblock (``_RAR3_FILE_COMMENT``) sits past ``crc_pos``, outside
+        # the CRC16 that is the header's only check, so it is not read: nothing
+        # vouches for it, and decoding one would run a program per candidate.
         # Its split flags are not trusted: nothing confirms its sizes.
         _emit_walked_member(
             self.members,
