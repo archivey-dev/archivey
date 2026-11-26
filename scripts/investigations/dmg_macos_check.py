@@ -37,6 +37,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -47,6 +48,10 @@ _REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO))
 
 TIMEOUT = 300
+# hdiutil create can fail with "Resource busy" while diskimages-helper still holds
+# the previous image; it succeeds when tried again a few seconds later.
+CREATE_ATTEMPTS = 4
+CREATE_RETRY_SECONDS = 5
 FORMATS = ("UDZO", "UDBZ", "ULFO", "ULMO", "UDRO", "UDCO")
 # Formats that a newer hdiutil may no longer create; a refusal skips the row.
 OPTIONAL_FORMATS = frozenset({"UDCO"})
@@ -90,6 +95,22 @@ def _run(*args: str, password: str | None = None) -> subprocess.CompletedProcess
         check=False,
         input=password,
     )
+
+
+def _create_image(
+    *args: str, password: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """``hdiutil create`` with ``args``, tried again while it fails with "Resource busy".
+
+    Any other failure, and the last busy one, is returned as it is.
+    """
+    for attempt in range(1, CREATE_ATTEMPTS + 1):
+        made = _run("hdiutil", "create", *args, password=password)
+        if made.returncode == 0 or "Resource busy" not in made.stderr:
+            return made
+        if attempt < CREATE_ATTEMPTS:
+            time.sleep(CREATE_RETRY_SECONDS * attempt)
+    return made
 
 
 def _nfc(text: str) -> str:
@@ -395,9 +416,7 @@ def _check_fresh_image(
     image = work / f"{label.replace(' ', '-')}-{fs.replace('+', 'P')}.dmg"
     password = None if encryption is None else PASSWORD
     cipher = () if encryption is None else ("-encryption", encryption)
-    made = _run(
-        "hdiutil",
-        "create",
+    made = _create_image(
         *cipher,
         "-srcfolder",
         str(src),
