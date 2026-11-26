@@ -7,8 +7,8 @@
   services, the probe context), and its module joins the list of 0.1. What each
   still takes from `archivey.internal` is listed in design.md §5
 - [ ] 0.3 The same for the seven stream codecs that move (R11), onto `CodecHandler`
-  with the hooks of Open Question 12; the codecs that need the full decoder wait
-  for its answer
+  with the hooks of R15; `.Z` goes first among those that need the richer decoder,
+  and settles its public shape (Open Question 12)
 - [ ] 0.4 No behaviour change: the full suite and the corpus comparison pass
   unchanged after each port
 

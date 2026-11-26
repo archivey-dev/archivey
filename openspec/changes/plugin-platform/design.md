@@ -562,9 +562,15 @@ bzip3, Snappy and `.Z` each subclass the internal `StreamCodec`
   `stream_index` (restart points for seeking: lz4, lzop, bzip3, Snappy), `frame_check`
   and `stream_start` (lz4), `extract_metadata` (the stored name and time: lzop,
   mozlz4), `missing_speedups` (the slow-path notice: lzop, Snappy), and `open`, the
-  full decoder (Brotli, `.Z`, raw LZO1X). Whether these become public, and the
-  full-decoder hook with them, is Open Question 12: the 2026-10-30 ruling keeps that
-  hook private, and without it Brotli and `.Z` cannot move as they are.
+  full decoder (Brotli, `.Z`, raw LZO1X). Ruling R15: the four small hooks become
+  optional members of `CodecHandler`, and `open` stays private. Brotli and `.Z` do
+  not need `open` itself: both return core's own decompressor stream around a
+  richer decoder (`BaseDecoder`), which reports restart points while it decodes, can
+  be built again at one, holds an error back until the bytes before it are read, and
+  counts the bytes after the stream's end. That decoder becomes public as a second,
+  optional method of `CodecHandler`, with the types it needs (the decoder protocol,
+  the result of one step, the restart point). Core still builds the stream, so the
+  limits and the rules for the end of the data stay the same for every codec.
 - The child-process switch (`isolated.IN_PROCESS`, `Natives`, the decoder worker and
   child), used by lz4, mozlz4, Brotli, lzop and Snappy: `call.native(...)` (R4).
 - The kernel switch (`kernels`, `LzwDecompressor`), used by lzop and `.Z`: the public
@@ -771,8 +777,11 @@ Other rules:
   kernel helper for LZX's Rust side.
 - **What is part of parsing stays with the parser.** The 7z filters, ZipCrypto and AES
   stay in core.
-- The decoder interface plugins see stays the incremental `Decompressor`. The
-  full-decoder hook stays private (maintainer, 2026-10-30).
+- A codec gives core a decoder and never a stream. The simple one is the incremental
+  `Decompressor`. A codec that has restart points inside a stream gives the richer
+  decoder of R15 (§5). The hook that returns a whole stream stays private
+  (maintainer, 2026-10-30), so no plugin can step around the shared rules for limits
+  and the end of the data.
 
 ### 7. Packages
 
@@ -849,7 +858,7 @@ What it cannot undo is a published package name, which is why DMG is split now.
 ## Decisions
 
 All ten were put to the maintainer and agreed on 2026-11-24. Decisions 5, 6 and 7 were
-revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R14 below).
+revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R15 below).
 
 1. **Installed plugins load by themselves, behind the guardrails of §3.** This replaces
    the 2026-10-25 rule (explicit `register_format()` only), which the maintainer
@@ -933,6 +942,15 @@ and the evidence in front of him (review round A):
   its move (the earlier task 5.0), which would find a gap in the interface only
   after packages were already released against it.
 
+- **R15. The codec hooks become public, the richer decoder too, the stream hook does
+  not** (§5, §6). `CodecHandler` gains the optional hooks for restart points, the
+  per-frame check, stored metadata and the slow-path notice, and an optional method
+  that returns a decoder with restart points. Core builds the stream in every case.
+  Rejected: publishing the hook that returns a whole stream (a plugin could bypass
+  the shared rules, which the 2026-10-30 ruling guards), rewriting Brotli and `.Z`
+  onto the simple decoder (`.Z` would lose its restart points), and keeping the two
+  in core.
+
 - **R13. Core keeps the binary CPIO check** (§4). A hint may carry a small check that
   core runs when the format has no signature strong enough to be data and a wrapper
   would otherwise read the file differently. Rejected: a weak two-byte signature that
@@ -978,7 +996,7 @@ failure points at the API, at detection or at distribution, and not at all three
 
 0. **Interface first: every class that will move is ported in place** (R14). The
    public plugin interface grows what the moving readers and codecs need (the
-   services of step 4, the probe context of §4, the codec hooks of Open Question 12),
+   services of step 4, the probe context of §4, the codec hooks and the richer decoder of R15),
    and each of the 13 readers and seven codecs is ported while it still lives in
    core, one pull request each, until its module imports nothing from
    `archivey.internal`. The public-names test starts here and its list of modules
@@ -1050,9 +1068,6 @@ For the next rounds of this plan. None blocks step 1.
     and could skip the lock, so SquashFS, xar, CAB, LHA, ARJ and DMG would decode
     members in parallel as ZIP does. A speed-up, not a contract change: it comes after
     the concurrency cut and after the moves.
-12. The codec hooks the moving stream codecs need and `CodecHandler` lacks (§5):
-    restart points, stored metadata, the slow-path notice and the full-decoder hook,
-    which the maintainer kept private on 2026-10-30. Either they become public, or the
-    codecs are rewritten onto the incremental `Decompressor`, or the codecs that need
-    the full decoder (Brotli, `.Z`, raw LZO1X) stay in core. Step 0 cannot port those
-    codecs until this is answered.
+12. The public names and exact shape of the richer decoder of R15, and the wording
+    of its rule that every pass offers the same restart points. Settled by the first
+    port that uses it (`.Z`), in step 0.
