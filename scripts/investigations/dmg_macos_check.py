@@ -49,8 +49,8 @@ sys.path.insert(0, str(_REPO))
 
 TIMEOUT = 300
 # hdiutil create once failed with "Resource busy" right after the previous image was
-# detached (issue #1846), likely diskimages-helper still holding it. Every hdiutil
-# call (create, attach, detach, verify) runs right after a detach, so each one is
+# detached (issue #1846), likely diskimages-helper still holding it. The same helper
+# may be busy for any hdiutil call, so each one (create, attach, detach, verify) is
 # tried again, with a growing wait, while it gives that answer.
 HDIUTIL_ATTEMPTS = 4
 HDIUTIL_RETRY_SECONDS = 5
@@ -102,8 +102,8 @@ def _run_once(
 
 
 def _run(*args: str, password: str | None = None) -> subprocess.CompletedProcess[str]:
-    """``args`` run once; an ``hdiutil`` call is tried again while it fails with
-    "Resource busy". Any other failure, and the last busy one, is returned as it is."""
+    """``args`` run; an ``hdiutil`` call that fails with "Resource busy" is tried
+    again. Any other failure, and the last busy one, is returned as it is."""
     for attempt in range(1, HDIUTIL_ATTEMPTS + 1):
         done = _run_once(*args, password=password)
         if args[0] != "hdiutil" or done.returncode == 0:
