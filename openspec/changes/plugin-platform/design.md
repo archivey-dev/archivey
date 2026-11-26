@@ -133,8 +133,10 @@ decoder = "archivey_dmg.lzfse:LzfseCodec"
   install hint, whether it reads in one pass, whether it takes a password. It adds the
   handler's dotted path, and optionally `refines`, `preempts` and a dotted path to a
   refinement check or a probe (§4).
-- Dotted paths are text until a call's policy has allowed the provider and the format
-  (§3). Only then is a probe, a handler or a decoder imported.
+- Dotted paths are text until a call's policy has allowed the provider (§3). Only
+  then is a probe, a refinement check, a handler or a decoder imported. The format
+  policy does not gate a code load: it gates opening and decoding the format that
+  detection found (R9).
 - Core's own formats are entries in the same shape, in a table inside `archivey`. Their
   handler paths point into `archivey.internal`. The table does not care which base
   class a handler is built on.
@@ -297,10 +299,18 @@ Guardrails:
     running package code for a top-level name only: asked for `pkg.reader`, it imports
     `pkg` first and runs its initializer. So core never calls it on a dotted name;
   - a dotted target (`pkg.reader:Handler`) is checked against the distribution's file
-    list alone: the file for each part of the path must be listed there. Only then is
+    list first: the file for each part of the path must be listed there. Only then is
     anything imported. Where the file list cannot show it (some editable installs, a
     custom import hook), the provider is refused and reported before any lookup that
     could run an initializer;
+  - the file that was checked is the file that runs (review C1). A dotted import
+    finds each child through its parent's `__path__` and the active finders, so a
+    parent that changes its search path can lead to another file although the listed
+    one exists. Core therefore loads the path one part at a time: once a parent is
+    loaded, it asks for the child's spec, compares the spec's origin with the listed
+    file, and executes that same spec. It never looks the name up a second time. A
+    part whose spec has another origin, or a loader that cannot name one, is refused
+    before that part runs;
   - this holds for the manifest, a handler, a probe, a refinement check and a decoder,
     in the caller's process and in the decoder child alike;
   - a codec's `native` object usually lives in a dependency (the library it wraps), not
@@ -309,8 +319,10 @@ Guardrails:
     applies to its top-level name too.
   Tests: two distributions that expose the same import name, one allowed by
   `providers=` and one not, with the recorder of the next point in both, and neither
-  runs; and a dotted target whose file the distribution does not list, with a
-  recorder in the parent package's initializer that stays empty.
+  runs; a dotted target whose file the distribution does not list, with a
+  recorder in the parent package's initializer that stays empty; and a parent whose
+  `__path__` puts another file ahead of the listed child, where both exist and the
+  other one must not run. The last is run in the decoder child too.
 - **Policy before import** (point 4). The test: a wheel whose `__init__` records that it
   ran, installed beside core. Discovery, opening a core ZIP, and
   `format_availability()` are run under the default policy, `plugins=False` and
@@ -563,14 +575,20 @@ bzip3, Snappy and `.Z` each subclass the internal `StreamCodec`
   and `stream_start` (lz4), `extract_metadata` (the stored name and time: lzop,
   mozlz4), `missing_speedups` (the slow-path notice: lzop, Snappy), and `open`, the
   full decoder (Brotli, `.Z`, raw LZO1X). Ruling R15: the four small hooks become
-  optional members of `CodecHandler`, and `open` stays private. Brotli and `.Z` do
-  not need `open` itself: both return core's own decompressor stream around a
+  optional members of `CodecHandler`, and `open` stays private. None of the three
+  needs `open` itself: each returns core's own decompressor stream around a
   richer decoder (`BaseDecoder`), which reports restart points while it decodes, can
-  be built again at one, holds an error back until the bytes before it are read, and
-  counts the bytes after the stream's end. That decoder becomes public as a second,
+  be built again at one, holds an error back until the bytes before it are read,
+  counts the bytes after the stream's end, and may give its output only when the
+  input ends. That decoder becomes public as a second,
   optional method of `CodecHandler`, with the types it needs (the decoder protocol,
   the result of one step, the restart point). Core still builds the stream, so the
   limits and the rules for the end of the data stay the same for every codec.
+  Restart points are optional in it (review C15). Raw LZO1X, which SquashFS stores
+  one block at a time, reports none: its decoder holds a block of bounded size and
+  returns the output at the end of the input. The check of the declared size against
+  the decoder memory limit runs in core before the decoder is built, as it does
+  today, and a last block that decodes to less than the block size stays valid.
 - The child-process switch (`isolated.IN_PROCESS`, `Natives`, the decoder worker and
   child), used by lz4, mozlz4, Brotli, lzop and Snappy: `call.native(...)` (R4).
 - The kernel switch (`kernels`, `LzwDecompressor`), used by lzop and `.Z`: the public
@@ -778,7 +796,8 @@ Other rules:
 - **What is part of parsing stays with the parser.** The 7z filters, ZipCrypto and AES
   stay in core.
 - A codec gives core a decoder and never a stream. The simple one is the incremental
-  `Decompressor`. A codec that has restart points inside a stream gives the richer
+  `Decompressor`. A codec that it does not fit (restart points inside a stream, an
+  error held back, a block decoded whole at the end of its input) gives the richer
   decoder of R15 (§5). The hook that returns a whole stream stays private
   (maintainer, 2026-10-30), so no plugin can step around the shared rules for limits
   and the end of the data.
@@ -830,7 +849,10 @@ libraries the compressors use stay where they are selected today, in core's extr
 one capability at a time: `lz4`, `brotli`, `compress-utils` and the CRC-32C package in
 `[recommended]` with their markers, `brotli` left out of `[free-threaded]` because it
 can turn the GIL back on, and `bzip3` in its own `[bzip3]` extra and in none of the
-others. Putting them behind the wheel as its requirements would give every install
+others. The `[bzip3]` extra also requires `archivey-compressors` (review C14), so
+the documented `pip install archivey[bzip3]` still reads `.bz3` and `.tar.bz3` by
+itself, and the hint for a missing bzip3 reader or library names that extra, since
+it supplies both. Putting them behind the wheel as its requirements would give every install
 profile the same set and lose those choices. Because they remain direct requirements
 of archivey's extras, `tests/check_free_threaded_gil.py`, which reads that metadata,
 still imports each of them. The packages themselves are pure Python, so they keep the

@@ -8,7 +8,16 @@
   still takes from `archivey.internal` is listed in design.md §5
 - [ ] 0.3 The same for the seven stream codecs that move (R11), onto `CodecHandler`
   with the hooks of R15; `.Z` goes first among those that need the richer decoder,
-  and settles its public shape (Open Question 12)
+  and settles its public shape (Open Question 12); raw LZO1X uses it with no restart
+  points (a SquashFS LZO image and a direct block decode that ends at end of input;
+  the size check before any allocation; a short last block)
+- [ ] 0.3a The in-process registration a ported codec uses before the manifest
+  exists: the handler class declares its native target and takes the probe context
+  in Python, and core's present dispatch by method id and by block call reaches the
+  new handler, so every entry point the codec has today still works (file
+  detection, whole-file read, container method, block). Group 4 then reads the same
+  declarations from the manifest. Brotli's port passes its probe and read tests, the
+  7z member path and the isolation checks in this step
 - [ ] 0.4 No behaviour change: the full suite and the corpus comparison pass
   unchanged after each port
 
@@ -86,9 +95,13 @@
   probes, refinement checks, decoders and the child's `native` target; two
   distributions with one import name are both refused and reported; `find_spec`
   never called on a dotted name; a dotted target the file list does not show is
-  refused with the parent's initializer not run
+  refused with the parent's initializer not run; each part of a dotted path is
+  executed from the spec whose origin was compared with the listed file, and a
+  parent `__path__` that leads elsewhere is refused, in the host and in the child
 - [ ] 3.2 Policy before import: no dotted path of an installed package is imported
-  before the call's policy allows its provider and format
+  before the call's policy allows its provider. The provider policy gates every code
+  load; the format policy gates opening and decoding the detected format (R9), so a
+  probe or refinement of an allowed provider runs for a format the call refuses
 - [ ] 3.3 The recorder test: a wheel whose `__init__` records that it ran; discovery,
   opening a core ZIP and `format_availability()` under the default policy,
   `plugins=False` and `FormatPolicy.COMMON`, in both orders; and the files of 2.3b,
@@ -147,8 +160,9 @@
   and by the moved readers; `archivey-speedups` unchanged (R1)
 - [ ] 4.6 `ReaderContext.decompress` by name, with the single-stream option (xar); the
   block call (SquashFS, DMG)
-- [ ] 4.6a Process isolation for package codecs (R4): `native` on a codec entry,
-  `call.native(...)`, the child loading an allowed dotted path, the error mapping; a
+- [ ] 4.6a Process isolation for package codecs (R4): `native` on a codec entry (the
+  Python declaration and `call.native(...)` are from 0.3a), the child loading an
+  allowed dotted path, the error mapping; a
   test wheel with a native decoder that runs in the child under `NATIVE_DECODERS` and
   in process otherwise; `docs/security.md` and the threat model state the undeclared
   case
@@ -156,8 +170,9 @@
   LHA, ARJ)
 - [ ] 4.7a The probe context: bounded `read_at`, `charge_decode`, isolation and decoder
   limits as an optional public argument of a probe, and a three-valued verdict as the
-  only return type of a probe (no bool); Brotli's probe moved onto it,
-  `_brotli_probe_confidence` out of core
+  only return type of a probe (no bool), declared on the manifest entry; the Python
+  side and Brotli's probe on it are from 0.3a; `_brotli_probe_confidence` out of
+  core
 - [ ] 4.8 SFX stub scan declared on the entry (LHA, ARJ)
 - [ ] 4.9 Crypto facade (makeself, DMG, ARJ)
 - [ ] 4.10 Nested-archive helpers folded into `ReaderContext.open_nested`; the path
@@ -189,7 +204,9 @@
   a core-only install (refused with the hint) and a full install (same results as
   before the move)
 - [ ] 5.5 `[recommended]`, `[all]`, `[free-threaded]` and `archivey-cli` include the
-  five; no extra named after a package; publish matrix rows; type checkers, fuzz
+  five; `[bzip3]` requires `archivey-compressors` beside the library, and a clean
+  install of that extra alone opens `.bz3` and `.tar.bz3` on a supported platform;
+  no extra named after a package; publish matrix rows; type checkers, fuzz
   targets and `--all-configs` cover each moved package
 - [ ] 5.6 The moved constants as deprecated aliases (13 containers, eight
   streams, their `ArchiveFormat` constants, the moved methods), clean under both type
