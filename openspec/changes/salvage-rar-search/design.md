@@ -403,6 +403,15 @@ makes the whole set's open raise (§16, F2).
   Otherwise the next volume is read as after a gap (`after_gap=True`): its first member
   is listed on its own with `split_before`, and its read raises `TruncatedError`, as
   for a missing volume.
+- **What the default reaches stays.** A member found past lost bytes (in the next
+  volume too, after its own lost start or damaged MAIN) or listed unconfirmed is never
+  joined to the member before it. Where the default follows a volume into the next
+  (its last member's split flag) and salvage listed nothing past the default's stop
+  there, the set goes on as the default's does, whatever the search's budget or end. A
+  later volume only salvage reads that cannot be read (another archive's file under the
+  set's name) counts as one that ended in damage; the members before it stay. The
+  listing ends in the default's error (`RarArchive.default_stop`): a cut or a missing
+  volume only salvage reaches is named after the default's damage, not in its place.
 - **A missing volume** (a gap in the numbers, or a missing last volume) is unchanged.
   The default already lists every volume present (the 2026-10-06 ruling), which is more
   than `unrar` gives (measured: 196 members against 118 from `part1` and 78 from

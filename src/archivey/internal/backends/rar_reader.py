@@ -3592,6 +3592,20 @@ class RarReader(BaseArchiveReader):
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.RAR,
             )
+        if (
+            self._archive.default_stop == "damaged"
+            and self._archive.damaged is not None
+        ):
+            # Salvage mode: the default ends in this damage, and the cut only
+            # salvage reached (a later volume, the rest of the file) comes after it.
+            message = self._archive.damaged
+            if self._archive.truncated is not None:
+                message += f"; also {self._archive.truncated}"
+            raise CorruptionError(
+                message,
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.RAR,
+            )
         if self._archive.truncated is not None:
             # Terminal damage after the prefix, so the listing keeps what the file
             # holds and reports the rest as missing (``members_report().error``).

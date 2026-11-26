@@ -817,6 +817,14 @@ class RarArchive:
     #: Salvage mode only: the walk of the last volume read ended in a search that
     #: ran to its end, not at an end block or the end of the file after a header.
     salvage_ended_in_damage: bool = False
+    #: Salvage mode only, set where salvage read past the point the default stops:
+    #: the error the default ends in there, ``"truncated"`` or ``"damaged"``. Damage
+    #: or a cut only salvage reaches is reported after it, never in its place.
+    default_stop: Literal["truncated", "damaged"] | None = None
+    #: Salvage mode only, set where a volume's walk first searched: whether the
+    #: default, which stops there, goes on to the next volume
+    #: (:attr:`needs_next_volume` at that point).
+    default_needs_next: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -921,9 +929,13 @@ def parse_rar_volumes(
     ``salvage`` is as for :func:`parse_rar_archive`. Each volume is its own layer
     for the search. A volume whose walk ends in damage does not end the set: the
     walk goes on into every later volume given (``method="next_volume"``), the next
-    one read as after a gap, whatever the last member said. A later volume whose
+    one read as after a gap, whatever the last member said. The exception is a
+    volume the default follows into the next and where salvage listed nothing past
+    the default's stop: the set goes on as the default's does. A later volume whose
     start is lost is searched from its offset 0 with the earlier volumes' version
-    and flags.
+    and flags. A volume only salvage reads that cannot be read counts as one that
+    ended in damage, and the listing ends in the default's error
+    (:attr:`RarArchive.default_stop`).
     """
     if not volumes:
         raise ValueError("at least one RAR volume is required")
@@ -951,6 +963,14 @@ def parse_rar_volumes(
     # Set once salvage listed a member of a volume past damage: the default walk
     # reaches no later volume, so each member of one is flagged (``next_volume``).
     salvage_reached = False
+    # Whether the default would still be reading volumes: it stops after a volume
+    # whose walk ends with no member continuing into the next one. While it reads,
+    # what it ends in so far: a cut, or damage (a cut outranks damage, as the reader
+    # raises them).
+    default_reading = True
+    default_cut = default_damage = False
+    # Set once a volume's walk searched: salvage read past where the default stops.
+    searched = False
     # A lone volume is a set too when its number says it is a later one.
     in_set = len(volumes) > 1 or volume_numbers[0] != 1
     missing: list[int] = list(range(1, volume_numbers[0]))
@@ -967,6 +987,9 @@ def parse_rar_volumes(
             if len(volumes) > 1
             else ""
         )
+        # A volume only salvage reads: one the default never reaches. A failure to
+        # read it ends nothing the default lists.
+        salvage_only = merged is not None and (past_damaged_volume or salvage_reached)
         try:
             part = _parse_rar_volume(
                 volume,
@@ -986,12 +1009,31 @@ def parse_rar_volumes(
                 ),
                 first_volume=merged,
             )
+            if salvage_only and merged is not None and part.version != merged.version:
+                raise CorruptionError(
+                    f"RAR volume version mismatch: {merged.version} vs {part.version}"
+                )
         except EncryptionError as exc:
             if not where or not getattr(exc, _OFFSET_IN_VOLUME, False):
                 raise
             # Still the wrong-password error, so a password list moves on.
             located = wrong_password_error(exc.raw_message + where)
             raise located.with_traceback(exc.__traceback__) from exc.__cause__
+        except (CorruptionError, UnsupportedFeatureError) as exc:
+            if not salvage_only or merged is None:
+                raise
+            # Salvage mode: the members listed so far stay, and the volume counts
+            # as one that ended in damage. A limit or an I/O error still raises.
+            merged.damaged = _add_damage(
+                merged.damaged,
+                f"volume {number} of the set, which only salvage reads, could not be "
+                f"read: {exc.raw_message}",
+            )
+            pos = volume.tell()
+            base_offset += volume.seek(0, 2)
+            volume.seek(pos)
+            past_damaged_volume = True
+            continue
         password_proven = part.password_proven
 
         if past_damaged_volume or salvage_reached:
@@ -1026,13 +1068,38 @@ def parse_rar_volumes(
 
         merged.needs_next_volume = part.needs_next_volume
         if salvage is not None:
-            salvage_reached = salvage_reached or any(
+            listed_past_damage = any(
                 member.found is not None for member in part.members
             )
-            if salvage.limit_reached:
+            salvage_reached = salvage_reached or listed_past_damage
+            searched = searched or part.default_needs_next is not None
+            default_next = (
+                part.needs_next_volume
+                if part.default_needs_next is None
+                else part.default_needs_next
+            )
+            if default_reading:
+                stop = part.default_stop
+                if part.default_needs_next is None:
+                    # Not searched: the volume reads as the default reads it.
+                    stop = (
+                        "truncated"
+                        if part.truncated is not None
+                        else "damaged"
+                        if part.damaged is not None
+                        else None
+                    )
+                default_cut = default_cut or stop == "truncated" or gap
+                default_damage = default_damage or stop == "damaged"
+                default_reading = default_next
+            # The default goes on into the next volume here, and salvage listed
+            # nothing it does not: the set goes on as the default's does, whatever
+            # the search's budget or end.
+            follows_default = default_reading and not listed_past_damage
+            if salvage.limit_reached and not follows_default:
                 # The search budget ran out: nothing after it is listed.
                 break
-            if part.salvage_ended_in_damage:
+            if part.salvage_ended_in_damage and not follows_default:
                 # The walk reached no end of this volume that says what follows,
                 # so salvage walks every later volume given.
                 past_damaged_volume = True
@@ -1044,6 +1111,14 @@ def parse_rar_volumes(
 
     assert merged is not None
     mark_missing_next_volume(merged, volumes_read=previous, missing=missing)
+    if salvage is not None and (searched or salvage_reached):
+        # Salvage read past where the default stops: the listing ends in the
+        # default's error, whatever salvage met after it. A default that still
+        # reads after the last volume given ends missing the next one.
+        default_cut = default_cut or default_reading
+        merged.default_stop = (
+            "truncated" if default_cut else "damaged" if default_damage else None
+        )
     _settle_rar15_solid(merged)
     return merged
 
@@ -1101,18 +1176,22 @@ def _merge_volume(
     merged.trailing_data_volumes.update(part.trailing_data_volumes)
     merged.rar5_header_crypt.update(part.rar5_header_crypt)
     merged.open_error = merged.open_error or part.open_error
+    merged.default_stop = merged.default_stop or part.default_stop
     for position, member in enumerate(part.members):
-        if after_gap and position == 0:
-            # Its earlier parts are in the missing volume: listed on its
-            # own, never folded into the member before the gap.
-            _append_member(
+        if position == 0 and not after_gap:
+            # The one place a member continues the volume before: the same rule
+            # as a walk's, so lost bytes or an unconfirmed member end the split.
+            _emit_walked_member(
                 merged.members,
                 member,
                 max_members=max_members,
                 max_metadata_bytes=max_metadata_bytes,
             )
         else:
-            _emit_file_member(
+            # After a gap, the first member's earlier parts are in the missing
+            # volume: listed on its own. Every later member was already joined, or
+            # left on its own, by the volume's walk.
+            _append_member(
                 merged.members,
                 member,
                 max_members=max_members,
@@ -3424,6 +3503,8 @@ class _Rar3Walk:
         self.start_lost = False
         self.open_error: CorruptionError | None = None
         self.ended_in_damage = False
+        self.default_stop: Literal["truncated", "damaged"] | None = None
+        self.default_needs_next: bool | None = None
 
     def run(self) -> RarArchive:
         """Walk the blocks after the signature and return what they describe."""
@@ -3474,6 +3555,17 @@ class _Rar3Walk:
         """Record a cut; the first one is kept, as the error the default ends in."""
         if self.truncated is None:
             self.truncated = text
+
+    def _note_default_stop(self) -> None:
+        """At the first search of the volume, where the default stops: record the
+        error the default ends in there and whether it reads the next volume."""
+        if self.default_needs_next is not None:
+            return
+        self.default_needs_next = self.needs_next_volume
+        if self.truncated is not None:
+            self.default_stop = "truncated"
+        elif self.damaged is not None:
+            self.default_stop = "damaged"
 
     def _damage_text(self, exc: CorruptionError, start: int) -> str:
         if self._can_salvage():
@@ -3556,6 +3648,7 @@ class _Rar3Walk:
         salvage = self.salvage
         if salvage is None or self.has_header_encryption:
             return False
+        self._note_default_stop()
         self.past_damage = True
         if self.pending_lost is None:
             self.pending_lost = f"the damaged bytes after {salvage.where(start)}"
@@ -4239,6 +4332,8 @@ class _Rar3Walk:
             open_error=self.open_error,
             main_lost=self.main_lost,
             salvage_ended_in_damage=self.ended_in_damage,
+            default_stop=self.default_stop,
+            default_needs_next=self.default_needs_next,
         )
 
 
@@ -4903,10 +4998,17 @@ def _emit_walked_member(
     max_members: int | None,
     max_metadata_bytes: int | None,
 ) -> bool:
-    """:func:`_emit_file_member` for a member a header walk read. One that comes
-    after bytes salvage lost (``after_lost``) is never merged into the member
-    before them: their data does not join. Returns ``split_after``."""
-    if member.after_lost is None:
+    """:func:`_emit_file_member` for a member a header walk read, and for the first
+    member of a later volume. One that comes after bytes salvage lost
+    (``after_lost``) is never merged into the member before them: their data does
+    not join. Nor is a member salvage listed unconfirmed merged, or merged into:
+    its split flags rest on a header only a CRC16 checked. Returns
+    ``split_after``."""
+    previous = members[-1] if members else None
+    tentative = _unconfirmed(member) or (
+        previous is not None and _unconfirmed(previous)
+    )
+    if member.after_lost is None and not tentative:
         return _emit_file_member(
             members,
             member,
@@ -4920,6 +5022,11 @@ def _emit_walked_member(
         max_metadata_bytes=max_metadata_bytes,
     )
     return member.split_after
+
+
+def _unconfirmed(member: RarMemberInfo) -> bool:
+    """Whether salvage listed ``member`` from a header nothing confirms."""
+    return member.found is not None and not member.found.confirmed
 
 
 def _damaged_split_continues(old: RarMemberInfo, new: RarMemberInfo) -> bool:
@@ -5198,6 +5305,8 @@ class _Rar5Walk:
         self.start_lost = False
         self.open_error: CorruptionError | None = None
         self.ended_in_damage = False
+        self.default_stop: Literal["truncated", "damaged"] | None = None
+        self.default_needs_next: bool | None = None
         self.headers_read = 0
 
     def run(self) -> RarArchive:
@@ -5242,6 +5351,7 @@ class _Rar5Walk:
         salvage = self.salvage
         if salvage is None or self.hdr_enc is not None:
             return False
+        self._note_default_stop()
         if not self.past_damage:
             self.past_damage = True
             # Past the default walk's end every FILE header is read from the
@@ -5274,6 +5384,17 @@ class _Rar5Walk:
         """Record a cut; the first one is kept, as the error the default ends in."""
         if self.truncated is None:
             self.truncated = text
+
+    def _note_default_stop(self) -> None:
+        """At the first search of the volume, where the default stops: record the
+        error the default ends in there and whether it reads the next volume."""
+        if self.default_needs_next is not None:
+            return
+        self.default_needs_next = self.needs_next_volume
+        if self.truncated is not None:
+            self.default_stop = "truncated"
+        elif self.damaged is not None:
+            self.default_stop = "damaged"
 
     def _damage_text(self, exc: CorruptionError, start: int) -> str:
         if self._can_salvage():
@@ -5821,6 +5942,8 @@ class _Rar5Walk:
             open_error=self.open_error,
             main_lost=self.main_lost,
             salvage_ended_in_damage=self.ended_in_damage,
+            default_stop=self.default_stop,
+            default_needs_next=self.default_needs_next,
         )
 
 

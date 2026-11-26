@@ -122,7 +122,14 @@ next volume SHALL be joined to the last member of the damaged volume only when t
 member was reached by the normal walk or confirmed, has the split-after flag, and its
 data ends where the volume's walk ended at its end block or the end of the file;
 otherwise it SHALL be listed on its own with `split_before`, as after a missing volume.
-A missing volume SHALL be handled as today.
+A member found past lost bytes, or listed unconfirmed, SHALL NOT be joined to the
+member before it, in a volume or across volumes. Where the default goes on into the next
+volume and salvage listed nothing past the default's stop in this one, the set SHALL go
+on as the default's does, whatever the search's budget or end. A later volume that only
+salvage reads and that cannot be read (another archive's file under the set's name)
+SHALL count as a volume that ended in damage, and the members before it SHALL stay. A
+missing volume SHALL be handled as today. Damage, a cut or a missing volume that only
+salvage reaches SHALL be named after the default's error, never in its place.
 
 #### Scenario: volumes after damage
 

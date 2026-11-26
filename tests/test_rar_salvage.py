@@ -47,7 +47,6 @@ from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
     ResourceLimitError,
-    TruncatedError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.rar_search import (
@@ -788,7 +787,9 @@ def test_a_volume_that_ends_in_damage_goes_on_to_the_next(tmp_path: Path) -> Non
         contents["c.txt"]
         == dict(_list(_RAR / "tinyvol_cut.part1.rar").members)["c.txt"]
     )
-    assert isinstance(salvage.error, TruncatedError)
+    # The default's error: the damage in volume 1, not the missing volume 4 that
+    # only salvage reaches.
+    assert type(salvage.error) is CorruptionError
 
 
 def test_a_later_volume_with_a_damaged_main_header(tmp_path: Path) -> None:
@@ -1297,3 +1298,166 @@ def test_a_lost_start_of_a_non_solid_archive_marks_no_solid_damage(
         assert len(members) > 10
         assert not reader._archive.is_solid  # type: ignore[attr-defined]
         assert all(m._raw.after_damaged_header is None for m in members)  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# What the default reaches and raises, kept through later volumes
+# ---------------------------------------------------------------------------
+
+
+def test_salvage_into_later_volumes_ends_in_the_defaults_error(
+    tmp_path: Path,
+) -> None:
+    """The default stops at volume 1's damage with ``CorruptionError``; salvage goes
+    on into volumes 2 and 3, whose last member runs into the missing volume 4. The
+    listing still ends in the default's error, naming the same first damage, with
+    the missing volume after it."""
+    path = _volumes(tmp_path, 1, 1064, 1500)
+    default = _list(path)
+    salvage = _list(path, salvage=True)
+    assert type(default.error) is CorruptionError
+    assert type(salvage.error) is CorruptionError
+    # The same first damage; the rest of the text says salvage searched past it.
+    assert isinstance(salvage.error, ArchiveyError)
+    assert isinstance(default.error, ArchiveyError)
+    first = default.error.raw_message.split(";")[0]
+    assert salvage.error.raw_message.split(";")[0] == first
+    assert "volume 4" in str(salvage.error)
+
+
+def _tinyvol(tmp_path: Path, part1: bytes | None = None) -> Path:
+    """``tinyvol`` (``payload.bin`` split from part 1 into part 2), with part 1
+    replaced by ``part1`` when given."""
+    data1 = (_RAR / "tinyvol.part1.rar").read_bytes() if part1 is None else part1
+    (tmp_path / "t.part1.rar").write_bytes(data1)
+    shutil.copy(_RAR / "tinyvol.part2.rar", tmp_path / "t.part2.rar")
+    return tmp_path / "t.part1.rar"
+
+
+@pytest.mark.parametrize("budget", [None, 0])
+def test_a_split_the_default_follows_is_followed_with_salvage(
+    budget: int | None, tmp_path: Path
+) -> None:
+    """Part 1's end block is cut: the default still follows ``payload.bin``'s
+    split-after flag into part 2 and joins it. Salvage finds nothing after the cut,
+    whatever its budget, so it joins it the same way."""
+    data = (_RAR / "tinyvol.part1.rar").read_bytes()
+    path = _tinyvol(tmp_path, data[:-4])
+    default = _list(path)
+    config = ArchiveyConfig(
+        max_retained_diagnostic_references=1 << 20,
+        salvage_limits=SalvageLimits(max_search_bytes=budget),
+    )
+    salvage = _list(path, salvage=True, config=config)
+    assert default.names == ["payload.bin"]
+    assert default.members[0][1] is not None
+    assert salvage.members == default.members
+    assert type(salvage.error) is type(default.error)
+
+
+@pytest.mark.parametrize("key", ["rar5", "rar29"])
+def test_a_cut_after_the_damage_does_not_replace_the_defaults_error(
+    key: str, tmp_path: Path
+) -> None:
+    """Damage in the middle, and the file cut near its end: the default stops at
+    the damage with ``CorruptionError``. Salvage reads on to the cut, which it alone
+    reaches, and still ends in the default's error, the cut named after it."""
+    data = _archive(key).data
+    damaged = _zeroed(data, len(data) // 2)[: len(data) - 3000]
+    path = _write(tmp_path, damaged)
+    default = _list(path)
+    salvage = _list(path, salvage=True)
+    assert type(default.error) is CorruptionError
+    assert type(salvage.error) is CorruptionError
+    assert isinstance(salvage.error, ArchiveyError)
+    assert isinstance(default.error, ArchiveyError)
+    first = default.error.raw_message.split(";")[0]
+    assert salvage.error.raw_message.split(";")[0] == first
+
+
+def test_a_later_volume_only_salvage_reads_cannot_erase_the_listing(
+    tmp_path: Path,
+) -> None:
+    """Volume 2 is an unrelated RAR 1.5-4 archive under the set's name. The default
+    stops at volume 1's damage and never reads it; salvage reads it, fails on it,
+    and keeps what it listed before, ending in the default's error."""
+    path = _volumes(tmp_path, 1, 1064, 1500)
+    shutil.copy(_RAR / "basic_nonsolid__rar4.rar", tmp_path / "v.part2.rar")
+    default = _list(path)
+    salvage = _list(path, salvage=True)
+    assert default.names == ["a.txt"]
+    assert salvage.names[0] == "a.txt"
+    assert type(salvage.error) is CorruptionError
+    assert "volume 2 of the set" in str(salvage.error)
+
+
+def test_a_continuation_found_after_lost_bytes_is_not_joined_across_volumes(
+    tmp_path: Path,
+) -> None:
+    """Volume 2's MAIN is lost, so its first member, ``b.txt``'s continuation, is
+    found past lost bytes. Nothing says those bytes held no other part: it is
+    listed on its own, with its search record, and not folded into ``b.txt``'s
+    first part, as a walk keeps it on its own inside a volume."""
+    path = _volumes(tmp_path, 2, 8, 25)
+    salvage = _list(path, salvage=True)
+    assert salvage.names == ["a.txt", "b.txt", "b.txt", "c.txt", "d.txt"]
+    found = [
+        d.context
+        for d in salvage.of(DiagnosticCode.MEMBER_FOUND_BY_SCAN)
+        if isinstance(d.context, SalvageScanContext)
+        and d.context.member_name == "b.txt"
+    ]
+    assert [(c.method, c.volume_index) for c in found] == [("header_search", 1)]
+
+
+def test_a_volume_merge_keeps_what_the_walk_left_apart() -> None:
+    """A later volume whose walk listed a member on its own after lost bytes, with a
+    split-before flag and another name: the cross-volume merge keeps it apart, as
+    the walk did, and does not refuse the set as a mismatched split."""
+    from dataclasses import replace
+
+    from archivey.internal.backends import rar_parser
+
+    with open(_RAR / "tinyvol_cut.part1.rar", "rb") as f:
+        first = rar_parser.parse_rar_archive(f)
+    a, b = first.members
+    merged = replace(first, members=[a])
+    part = replace(
+        first,
+        members=[
+            replace(b, split_before=False, split_after=False),
+            replace(b, filename="x", split_before=True, after_lost="lost bytes"),
+        ],
+    )
+    rar_parser._merge_volume(
+        merged, part, after_gap=False, max_members=None, max_metadata_bytes=None
+    )
+    assert [m.filename for m in merged.members] == ["a.txt", "b.txt", "x"]
+    assert merged.members[2].after_lost == "lost bytes"
+
+
+@pytest.mark.parametrize("which", ["previous", "member"])
+def test_an_unconfirmed_member_is_never_joined(which: str) -> None:
+    """A split-before member after an unconfirmed one, or an unconfirmed split-before
+    member, is listed on its own: the split flags of a header only a CRC16 checked
+    join nothing."""
+    from dataclasses import replace
+
+    from archivey.internal.backends import rar_parser
+    from archivey.internal.backends.rar_parser import RarFound
+
+    with open(_RAR / "tinyvol_cut.part1.rar", "rb") as f:
+        a, b = rar_parser.parse_rar_archive(f).members
+    unconfirmed = RarFound("header_search", 0, confirmed=False, searched=True)
+    first = replace(a, split_after=True)
+    second = replace(b, filename=a.filename, split_before=True)
+    if which == "previous":
+        first.found = unconfirmed
+    else:
+        second.found = unconfirmed
+    members = rar_parser._MemberList()
+    members.append(first)
+    rar_parser._emit_walked_member(
+        members, second, max_members=None, max_metadata_bytes=None
+    )
+    assert len(members) == 2
