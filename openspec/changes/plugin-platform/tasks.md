@@ -144,15 +144,20 @@
 - [ ] 5.2 `packages/archivey-legacy-formats`: LHA, ARJ, the legacy ZIP methods
 - [ ] 5.3 `packages/archivey-disk-images`: ISO, UDF, CD images, SquashFS
 - [ ] 5.3a `packages/archivey-dmg`: DMG with HFS+, APFS and encryption
+- [ ] 5.3c `packages/archivey-compression-formats` (R11): lz4, mozlz4, Brotli, lzop,
+  bzip3, Snappy as codec entries with stream facets; the 7z LZ4 and Brotli bindings;
+  their dependencies leave core's `[recommended]` list; `.Z` joins the legacy package;
+  SquashFS with LZ4 or LZO, and a 7z with those methods, refused with the hint when
+  the package is missing
 - [ ] 5.3b `VISION.md`: ISO comes with `[recommended]`, not with the bare install
 - [ ] 5.4 For each pack: the pilot checks, the public-imports test, and a corpus run on
   a core-only install (refused with the hint) and a full install (same results as
   before the move)
 - [ ] 5.5 `[recommended]`, `[all]`, `[free-threaded]` and `archivey-cli` include the
-  four; no extra named after a package; publish matrix rows; type checkers, fuzz
+  five; no extra named after a package; publish matrix rows; type checkers, fuzz
   targets and `--all-configs` cover each moved package
-- [ ] 5.6 The moved constants as deprecated aliases (13 containers, their
-  `ArchiveFormat` constants, `StreamFormat.PBZX`, 11 methods), clean under both type
+- [ ] 5.6 The moved constants as deprecated aliases (13 containers, eight
+  streams, their `ArchiveFormat` constants, the moved methods), clean under both type
   checkers; importing archivey warns nothing
 - [ ] 5.7 Spec deltas: `packaging-and-extras`, the moved format specs
 - [ ] 5.8 Remove `openspec/changes/plugin-api`, which this change replaces

@@ -241,9 +241,10 @@ Rules:
   compares a method with a stream.
 - **Constants live with their owner.** Core has no `ContainerFormat.DMG`. The moved
   constants stay one release as aliases that warn and name the package: 13 on
-  `ContainerFormat`, `StreamFormat.PBZX`, the 14 matching class constants on
-  `ArchiveFormat`, and 11 on `CompressionAlgorithm` (the four legacy ZIP methods, LZX,
-  LZH, ARJ_FAST, QUANTUM, LZFSE, LZVN, ADC). The warning needs a class-level hook that
+  `ContainerFormat`, eight on `StreamFormat` (PBZX and the seven of R11), the matching
+  class constants on `ArchiveFormat`, and the methods only the packages decode on
+  `CompressionAlgorithm` (the four legacy ZIP methods, LZX, LZH, ARJ_FAST, QUANTUM,
+  LZFSE, LZVN, ADC, and those of R11). The warning needs a class-level hook that
   both type checkers accept, and core's own code (`FormatPolicy.COMMON`) names the
   moved methods by string so that importing archivey does not warn.
 
@@ -692,12 +693,15 @@ Other rules:
 ### 7. Packages
 
 All under `packages/` in this repository, each a flat top-level module
-(`archivey_disk_images`), released with core at the same version. Four format
-packages (rulings R6 and R7); sizes measured on 2026-11-26, readers with the helpers
-and decoders only they use.
+(`archivey_disk_images`), released with core at the same version. Five packages: four
+for formats (rulings R6 and R7) and one for compressions (R11); sizes measured on
+2026-11-26, readers with the helpers and decoders only they use.
 
-- `archivey` (core): ZIP, TAR and its compressors, 7z, RAR, single compressed files,
-  directories. About 43,000 lines of readers. No moved format stays: ISO, ar and cpio
+- `archivey` (core): ZIP, TAR, 7z, RAR, single compressed files, directories, and nine
+  stream formats (R11): gz, bz2, xz, zst; `.lzma`, `.zz` and `.lz`, which are other
+  wrappers around decoders core has anyway; and the uu and base64 encodings, which
+  need no package and are read through (`files.tar.uu` lists the tar). About 43,000
+  lines of readers. No moved format stays: ISO, ar and cpio
   leave too, and `VISION.md`, which names ISO in the baseline, is updated to say it
   comes with `[recommended]`.
 - `archivey-disk-images`: ISO 9660, UDF, CD images (6,100 lines), SquashFS (1,200).
@@ -710,11 +714,22 @@ and decoders only they use.
   with its LZX decoder (2,000 lines), which current Windows tooling still writes.
   About 7,400 lines.
 - `archivey-legacy-formats`: LHA and ARJ with their decoders; ZIP shrink, reduce,
-  implode and DCL implode as registered codecs. About 3,900 lines.
+  implode and DCL implode as registered codecs; and Unix compress (`.Z`), whose LZW
+  code Shrink shares. About 4,800 lines.
+- `archivey-compression-formats` (R11; the name is Open Question 2): lz4 and mozlz4,
+  Brotli, lzop, bzip3 and Snappy, about 3,900 lines, with the `lz4`, `brotli`,
+  `bzip3`, `compress-utils` and CRC-32C dependencies that leave core's
+  `[recommended]` list for this package's own. Each is a codec entry with a stream
+  facet (§6), so it also serves other readers by name: SquashFS blocks in LZ4 or LZO,
+  and the 7z methods `04 F7 11 02` (Brotli) and `04 F7 11 04` (LZ4), which only the
+  7-Zip-zstd fork writes and which this package binds in the `"7z"` namespace. Without
+  the package those members are refused with the hint. `04 F7 11 01` (Zstandard)
+  stays bound in core, where the decoder is.
 - `archivey-codecs`: unchanged. It is a library that archivey imports, not a plugin (§6).
 
-`[recommended]`, `[all]`, `[free-threaded]` and `archivey-cli` include all four. The
-packages are pure Python, so they keep the GIL off, and leaving them out of
+`[recommended]`, `[all]`, `[free-threaded]` and `archivey-cli` include all five (the
+compression package under the platform markers its dependencies carry today). The
+format packages are pure Python, so they keep the GIL off, and leaving them out of
 `[free-threaded]` would drop 13 formats from those installs and from the 3.13t and
 3.15t jobs. There is no extra named after a package: `packaging-and-extras` already
 rules out format-named extras, because a published extra can never be removed, and
@@ -738,7 +753,7 @@ What it cannot undo is a published package name, which is why DMG is split now.
 ## Decisions
 
 All ten were put to the maintainer and agreed on 2026-11-24. Decisions 5, 6 and 7 were
-revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R10 below).
+revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R11 below).
 
 1. **Installed plugins load by themselves, behind the guardrails of §3.** This replaces
    the 2026-10-25 rule (explicit `register_format()` only), which the maintainer
@@ -797,6 +812,15 @@ and the evidence in front of him (review round A):
   as it is. Rejected: separate policy arguments per role (every existing `only=` and
   `exclude=` call would change), and making the two types unequal non-strings (it
   reverses decision 2).
+
+- **R11. Seven stream formats leave core; `FormatPolicy.COMMON` stays** (§7). lz4,
+  mozlz4, Brotli, lzop, bzip3, Snappy and `.Z` move; the 7z bindings for LZ4 and Brotli
+  move with their decoders. Core keeps nine stream formats. `COMMON` stays as it is, an explicit
+  list that does not follow what core ships: it is narrower than core today (it leaves
+  out `.lzma`, `.zz`, `.lz`, uu and base64), and core may gain formats later that an
+  upload preset should not accept. Whether it also limits providers is Open Question 11.
+  Rejected: all 13 other streams leaving core, dropping `COMMON` for
+  `providers={"archivey"}` alone, and all streams staying.
 
 Changed without a ruling to revise, because the plan contradicted a spec or the code:
 `CompressionAlgorithm` stays a non-string type, no extra is named after a package, and
@@ -874,7 +898,8 @@ For the next rounds of this plan. None blocks step 1.
 
 1. Field names of the manifest file, and whether `FormatHandler` keeps its declaring
    class attributes or reads them from its entry.
-2. The package name `archivey-legacy-formats`.
+2. The package names `archivey-legacy-formats` and `archivey-compression-formats`, and
+   whether `.Z` goes with the legacy formats or with the compressions.
 3. Whether a known name with no installed package may be detected by signature, or by
    extension only, when the signature needs a probe (the last point of §4 Probes).
 4. The exact spelling of the off switch and of the provider query.
@@ -897,4 +922,5 @@ For the next rounds of this plan. None blocks step 1.
 11. Whether `FormatPolicy.COMMON` also limits providers to core. Every format it names
     is core's, yet under R9 an installed package's check still runs when the preset is
     used on a file of a family that package refines. Adding `providers={"archivey"}` to
-    the preset would keep outside code off untrusted uploads.
+    the preset would keep outside code off untrusted uploads. The maintainer kept the
+    preset as it was on 2026-11-26 (R11), so this is not decided.

@@ -45,9 +45,11 @@ that other formats use, and solve the import cost with the same mechanism.
 - **Reader API.** Public helpers replace each `archivey.internal` import of the moved
   readers. `API_VERSION` replaces the exact version pin. The thread rules are the short ones
   that the concurrency cut, a separate change archived 2026-11-25, leaves.
-- **Packages.** `archivey-disk-images`, `archivey-dmg`, `archivey-package-formats` and
-  `archivey-legacy-formats` under `packages/`. `[recommended]`, `[all]`,
-  `[free-threaded]` and `archivey-cli` include all four. No extra is named after a
+- **Packages.** `archivey-disk-images`, `archivey-dmg`, `archivey-package-formats`,
+  `archivey-legacy-formats` and `archivey-compression-formats` under `packages/`. The
+  last holds lz4, mozlz4, Brotli, lzop, bzip3 and Snappy; `.Z` goes with the legacy
+  formats. `[recommended]`, `[all]`, `[free-threaded]` and `archivey-cli` include all
+  five. No extra is named after a
   package.
 - **Typed `extra` keys. Breaking for type checking.** One `ExtraKey` mechanism for
   every format replaces the per-key overloads in core.
@@ -68,7 +70,7 @@ Deltas are written with each implementation step, not in this plan.
 - `backend-registry`: lazy loading, providers, refusals.
 - `format-detection`: detection from manifest data, `refines`.
 - `compressed-streams`: codecs by name, method bindings, second implementations.
-- `packaging-and-extras`: the four packages and the extras that include them.
+- `packaging-and-extras`: the five packages and the extras that include them.
 - `archive-data-model`: open name types.
 - The format specs of the formats that move: where they live, nothing else.
 
@@ -76,9 +78,9 @@ Deltas are written with each implementation step, not in this plan.
 
 - **Callers.** `ContainerFormat.ZIP` and string comparisons keep working.
   `list(ContainerFormat)`, exhaustive `match` on the enums and the `Literal` types stop
-  working. The moved constants (13 containers, their `ArchiveFormat` constants,
-  `StreamFormat.PBZX` and 11 methods) warn for one release, then go. A string-literal
-  `extra` key types as `object`; the typed way is the format's key constant.
+  working. The moved constants (13 containers, eight streams, their `ArchiveFormat`
+  constants and the methods only the packages decode) warn for one release, then go.
+  A string-literal `extra` key types as `object`; the typed way is the format's key constant.
 - **Installs.** Bare `archivey` stops reading the moved formats and says which package
   to install. `archivey[recommended]` and `archivey-cli` read everything as before.
 - **Same archive, same contents.** Extended to installs: an archive reads the same way
@@ -94,5 +96,5 @@ Deltas are written with each implementation step, not in this plan.
   native object runs in the child.
 - **Plugin authors.** The interface changes shape once more (it is experimental), then
   gets a version number.
-- **Releases.** Four more distributions published with each archivey release, in the
+- **Releases.** Five more distributions published with each archivey release, in the
   same workflow as `archivey-cli`.
