@@ -34,6 +34,7 @@ class DetectionConfidence(Enum):
     CERTAIN = "certain"
     PROBABLE = "probable"
     GUESS = "guess"
+    REJECTED = "rejected"
 
 @dataclass(frozen=True)
 class FormatInfo:
@@ -49,12 +50,13 @@ class FormatInfo:
 ```
 
 `config=None` → library default. `confidence` = magic / structural probe /
-extension-guess. `prefixed` SHALL be `True` when detection found and skipped leading
-bytes before the archive's own structures (an executable stub, a `#!` launcher, any other
-prefix), whether or not the archive's stored offsets count those bytes in. It reports what
-detection found, and `False` does not prove the archive starts at byte 0: detection
-searches for a prefix only behind an executable or `#!` cue, or when nothing else matched
-and the name has no known extension. An answer taken from the name
+extension-guess. `REJECTED` is a probe's answer only: a `FormatInfo`'s `confidence`
+SHALL never be `REJECTED`. `prefixed` SHALL be `True` when detection found and skipped
+leading bytes before the archive's own structures (an executable stub, a `#!` launcher,
+any other prefix), whether or not the archive's stored offsets count those bytes in. It
+reports what detection found, and `False` does not prove the archive starts at byte 0:
+detection searches for a prefix only behind an executable or `#!` cue, or when nothing
+else matched and the name has no known extension. An answer taken from the name
 (`detected_by="extension"`) SHALL be `False`; it did no search on a file without a cue, and
 on an executable it follows a search that was off or missed. `payload_offset` is where to
 start reading the archive: never after its first member, and exactly that member when the

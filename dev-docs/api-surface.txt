@@ -328,8 +328,8 @@ class archivey.DetectionConfidence(Enum)
 enum archivey.DetectionConfidence
 value archivey.DetectionConfidence.CERTAIN = 'certain'
 value archivey.DetectionConfidence.PROBABLE = 'probable'
-value archivey.DetectionConfidence.REJECTED = 'rejected'
 value archivey.DetectionConfidence.GUESS = 'guess'
+value archivey.DetectionConfidence.REJECTED = 'rejected'
 class archivey.Diagnostic()
 init archivey.Diagnostic(occurrence_id: str, code: DiagnosticCode, message: str, context: DiagnosticContext) -> None
 field archivey.Diagnostic.code: DiagnosticCode

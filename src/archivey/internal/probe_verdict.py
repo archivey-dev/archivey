@@ -35,8 +35,9 @@ def probe_verdict(match: bool) -> ProbeVerdict:
 
 
 def is_match(verdict: ProbeVerdict) -> bool:
-    """Whether ``verdict`` is a match, weak or not."""
-    return verdict is not PROBE_REJECTED
+    """Whether ``verdict`` is a match, weak or not. Decided on the match verdicts,
+    by identity, so any other answer (``None``, a bool, ``CERTAIN``) is no match."""
+    return any(verdict is match for match in PROBE_MATCHES)
 
 
 def graded(verdict: DetectionConfidence, *, named: bool) -> DetectionConfidence:
