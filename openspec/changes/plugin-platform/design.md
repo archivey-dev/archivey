@@ -308,8 +308,8 @@ Guardrails:
   `FormatPolicy(replace=...)`.
 - **Allow-lists do not move.** `FormatPolicy.COMMON` and any `only=` policy name what
   is **read**, whatever is installed. An allow-list does not keep an installed
-  package's detection code from running (R9); `providers=` does. Whether `COMMON`
-  should also limit providers is Open Question 11.
+  package's detection code from running (R9); `providers=` does, and `COMMON`
+  carries `providers={"archivey"}` for that reason (R11).
 - **One off switch for a deployment.** `ARCHIVEY_PLUGIN_AUTOLOAD=0`, or
   `archivey.formats.disable_autoload()` before first use, skips the listing in point 2.
   It is a default for the process. A caller's policy works without it. Our own four
@@ -815,10 +815,11 @@ and the evidence in front of him (review round A):
 
 - **R11. Seven stream formats leave core; `FormatPolicy.COMMON` stays** (§7). lz4,
   mozlz4, Brotli, lzop, bzip3, Snappy and `.Z` move; the 7z bindings for LZ4 and Brotli
-  move with their decoders. Core keeps nine stream formats. `COMMON` stays as it is, an explicit
-  list that does not follow what core ships: it is narrower than core today (it leaves
-  out `.lzma`, `.zz`, `.lz`, uu and base64), and core may gain formats later that an
-  upload preset should not accept. Whether it also limits providers is Open Question 11.
+  move with their decoders. Core keeps nine stream formats. `COMMON` is not deleted: it stays an
+  explicit list that does not follow what core ships, because it is narrower than core
+  today (it leaves out `.lzma`, `.zz`, `.lz`, uu and base64) and core may gain formats
+  later that an upload preset should not accept. Its definition may change, and it
+  gains `providers={"archivey"}`, so no package's detection code runs under it (R9).
   Rejected: all 13 other streams leaving core, dropping `COMMON` for
   `providers={"archivey"}` alone, and all streams staying.
 
@@ -919,8 +920,3 @@ For the next rounds of this plan. None blocks step 1.
     and could skip the lock, so SquashFS, xar, CAB, LHA, ARJ and DMG would decode
     members in parallel as ZIP does. A speed-up, not a contract change: it comes after
     the concurrency cut and after the moves.
-11. Whether `FormatPolicy.COMMON` also limits providers to core. Every format it names
-    is core's, yet under R9 an installed package's check still runs when the preset is
-    used on a file of a family that package refines. Adding `providers={"archivey"}` to
-    the preset would keep outside code off untrusted uploads. The maintainer kept the
-    preset as it was on 2026-11-26 (R11), so this is not decided.

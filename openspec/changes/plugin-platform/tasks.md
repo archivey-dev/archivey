@@ -149,6 +149,8 @@
   their dependencies leave core's `[recommended]` list; `.Z` joins the legacy package;
   SquashFS with LZ4 or LZO, and a 7z with those methods, refused with the hint when
   the package is missing
+- [ ] 5.3d `FormatPolicy.COMMON` gains `providers={"archivey"}` (R11), with a
+  **Breaking:** line
 - [ ] 5.3b `VISION.md`: ISO comes with `[recommended]`, not with the bare install
 - [ ] 5.4 For each pack: the pilot checks, the public-imports test, and a corpus run on
   a core-only install (refused with the hint) and a full install (same results as
