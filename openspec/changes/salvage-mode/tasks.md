@@ -20,7 +20,7 @@
 
 ## 2. TAR (PR 2)
 
-- [x] 2.1 `find_header` for TAR (magic + checksum; v7 rule).
+- [x] 2.1 `find_header` for TAR (magic + checksum; v7 headers on a plausibility check).
 - [x] 2.2 Walk: start search where the default ends on damage; confirmed / unconfirmed;
   resume normal walk.
 - [x] 2.3 Lost start via `format=` / extension (core, shared).

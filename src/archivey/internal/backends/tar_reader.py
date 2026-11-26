@@ -100,7 +100,6 @@ from archivey.internal.backends.tar_parser import (
     Ambiguity,
     Budget,
     GlobalRecords,
-    HeaderFormat,
     LinkData,
     NameSource,
     PaxValue,
@@ -667,12 +666,10 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
 @dataclass(frozen=True)
 class _Provisional:
     """What a found chain may change for the rest of the walk, as it stood before
-    the search found it (:meth:`_SalvageWalk.search_starts`): the PAX global records
-    and the v7 rule's record of what was listed."""
+    the search found it (:meth:`_SalvageWalk.search_starts`): the PAX global
+    records."""
 
     records: GlobalRecords
-    listed: bool
-    listed_non_v7: bool
 
 
 @dataclass
@@ -683,8 +680,7 @@ class _SalvageWalk:
     ``default_end`` is the end the walk would stop on without salvage, with the last
     member and the member count at that point: the pass ends in its error once the
     searches are done (Q3). ``found_at`` is where the chain of the entry about to be
-    listed starts, when a search found it. ``v7`` is the v7 rule the last search
-    used, for the confirmation of what it found. ``trusted`` is, for the member
+    listed starts, when a search found it. ``trusted`` is, for the member
     just listed, its member header's offset, when a forward-only walk trusted its
     size (``TarWalker.salvage_confirms``).
 
@@ -703,28 +699,20 @@ class _SalvageWalk:
     found_at: int | None = None
     provisional: _Provisional | None = None
     trusted: int | None = None
-    v7: bool = False
     limit_reached: bool = False
-    # Whether any member was listed, and whether one had a header other than v7.
-    listed: bool = False
-    listed_non_v7: bool = False
 
     def search_starts(self, walker: TarWalker) -> None:
         """Before a search: the found chain before it, if not confirmed, changed
         nothing that outlives it. Its member was not confirmed, so the PAX global
-        records and the v7 rule go back to where they stood before it."""
+        records go back to where they stood before it."""
         before, self.provisional = self.provisional, None
         if before is not None:
             walker.restore_global_records(before.records)
-            self.listed = before.listed
-            self.listed_non_v7 = before.listed_non_v7
         self.trusted = None
 
     def chain_found(self, walker: TarWalker) -> None:
         """A search found a chain: what it changes is provisional from here."""
-        self.provisional = _Provisional(
-            walker.global_records(), self.listed, self.listed_non_v7
-        )
+        self.provisional = _Provisional(walker.global_records())
 
     def confirm(self) -> None:
         """The found member is confirmed: what its chain changed stands."""
@@ -737,17 +725,6 @@ class _SalvageWalk:
             self.default_end = end
             self.default_last = last
             self.default_count = count
-
-    def note_listed(self, entry: TarEntry) -> None:
-        self.listed = True
-        if entry.header.format is not HeaderFormat.V7:
-            self.listed_non_v7 = True
-
-    @property
-    def v7_allowed(self) -> bool:
-        """The v7 rule: a block with no magic passes the search only when every
-        header listed before it was v7, and at least one was."""
-        return self.listed and not self.listed_non_v7
 
 
 class TarReader(BaseArchiveReader):
@@ -1212,7 +1189,6 @@ class TarReader(BaseArchiveReader):
                     search_from = self._report_found(
                         walker, last_member, entry, index, salvage
                     )
-                salvage.note_listed(entry)
                 yield last_member
                 index += 1
                 if search_from is not None:
@@ -1324,13 +1300,11 @@ class TarReader(BaseArchiveReader):
         """
         while True:
             salvage.search_starts(walker)
-            salvage.v7 = salvage.v7_allowed
             try:
                 with self._translated_errors(), self._walk_guard():
                     result = walker.salvage_search(
                         self._salvage_mode,
                         start,
-                        v7=salvage.v7,
                         layer=self._salvage_layer,
                     )
             except CorruptionError as exc:
@@ -1378,7 +1352,7 @@ class TarReader(BaseArchiveReader):
         salvage.found_at = None
         try:
             with self._translated_errors(), self._walk_guard():
-                looked = walker.salvage_confirms(v7=salvage.v7, searched=searched)
+                looked = walker.salvage_confirms(searched=searched)
         except CorruptionError as exc:
             if from_source_callback(exc):
                 raise

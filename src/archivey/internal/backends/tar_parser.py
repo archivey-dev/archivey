@@ -1535,9 +1535,9 @@ class TarWalker:
         self._found_at = -1
         self.found_name_full = False
         # Where the block after the data of a found member whose size the walk
-        # trusted starts (salvage_confirms), with the v7 rule of its search: that
-        # block confirms the member only if it passes the same checks.
-        self._confirm_at: tuple[int, bool] | None = None
+        # trusted starts (salvage_confirms): that block confirms the member only if
+        # it passes the search's checks.
+        self._confirm_at: int | None = None
         # The stream as a window (_Window), once a look ahead on a forward-only walk
         # or a salvage search on a stream that is costly to seek back needs one.
         self._win: _Window | None = None
@@ -1717,7 +1717,7 @@ class TarWalker:
     # Salvage (open_archive(salvage=True)) --------------------------------------
 
     def salvage_search(
-        self, state: SalvageState, start: int, *, v7: bool, layer: str
+        self, state: SalvageState, start: int, *, layer: str
     ) -> SearchResult:
         """Search forward from ``start`` for the next header that passes
         :func:`passes_header_search`, and put the walk there when one does.
@@ -1737,7 +1737,7 @@ class TarWalker:
         result = search_forward(
             state,
             self._salvage_read,
-            tar_header_search(v7=v7),
+            tar_header_search(),
             start=start,
             end=self._end,
             layer=layer,
@@ -1836,7 +1836,7 @@ class TarWalker:
         the zero block before ``pos``, the archive's clean end."""
         return self._clean_tail(pos, BLOCKSIZE) is True
 
-    def salvage_confirms(self, *, v7: bool, searched: bool = False) -> bool | None:
+    def salvage_confirms(self, *, searched: bool = False) -> bool | None:
         """Whether the block where the next header starts confirms the member listed
         past the default walk's end: a header that passes the search's own check, or
         the archive's clean end (the end-of-archive marker, then only zeros).
@@ -1873,10 +1873,10 @@ class TarWalker:
             if self._seekable:
                 return False
             if searched:
-                self._confirm_at = (pos, v7)
+                self._confirm_at = pos
             return None
         confirmed = len(look) == BLOCKSIZE and (
-            passes_header_search(look, v7=v7)
+            passes_header_search(look)
             or (look == _ZERO_BLOCK and self.zeros_to_end(pos + BLOCKSIZE))
         )
         if far and searched and not confirmed:
@@ -1965,10 +1965,10 @@ class TarWalker:
             block = self._read_block(offset)
             if (
                 confirm_at is not None
-                and offset == confirm_at[0]
+                and offset == confirm_at
                 and len(block) == BLOCKSIZE
                 and block != _ZERO_BLOCK
-                and not passes_header_search(block, v7=confirm_at[1])
+                and not passes_header_search(block)
             ):
                 return self._reject(
                     offset,
@@ -3137,41 +3137,123 @@ _BARE_NO_DATA_TYPES = (b"1", b"2", b"5")
 # Salvage's header search (TarWalker.salvage_search) ----------------------------
 
 
-def passes_header_search(block: bytes, *, v7: bool) -> bool:
+def passes_header_search(block: bytes) -> bool:
     """Whether the 512-byte ``block`` passes salvage's header search: its checksum
-    matches and its magic is ``ustar\\0`` (POSIX, PAX) or ``ustar  \\0`` (GNU).
+    matches, and it has the magic ``ustar\\0`` (POSIX, PAX) or ``ustar  \\0`` (GNU),
+    or it is a plausible v7 header (:func:`_plausible_v7`).
 
     A checksum is a byte sum that a random block passes about once in 2**17; the
-    magic adds 48 bits. With ``v7``, a block with no magic passes on its checksum
-    alone, when it is not a zero block: the reader allows that only when every
-    header it listed before the damage was a v7 one.
+    magic adds 48 bits. A v7 header has no magic: its checksum field must hold
+    octal text in range and its five number fields octal numbers, which a random
+    block passes far less often than its checksum (davi, 2026-11-26).
     """
     magic = block[257:265]
-    has_magic = magic[:6] == POSIX_MAGIC or magic == GNU_MAGIC
-    if not has_magic and (not v7 or block == _ZERO_BLOCK):
-        return False
-    try:
-        stored = parse_number(block[148:156])
-    except _BadNumber:
-        return False
+    if magic[:6] == POSIX_MAGIC or magic == GNU_MAGIC:
+        try:
+            stored = parse_number(block[148:156])
+        except _BadNumber:
+            return False
+    else:
+        plausible = _plausible_v7(block)
+        if plausible is None:
+            return False
+        stored = plausible
     return _checksum_matches(block, stored) is not None
 
 
-@lru_cache(maxsize=2)
-def tar_header_search(*, v7: bool) -> HeaderSearch:
+# What a writer puts in a v7 header's checksum field: an optional leading NUL, then
+# spaces or zeros, octal digits, and a NUL or a space (GNU tar and tarfile write
+# "%06o\0 ", v7 and others "%6o\0 " or seven digits and a NUL). Bytes after it are
+# not read.
+_V7_CHECKSUM = re.compile(rb"\x00?[ ]*([0-7]+)(?:[\x00 ]|\Z)")
+# Any checksum: the sum of a block with 8 spaces in its checksum field is at least
+# 8 * 0x20 (the rest zeros) and below 0o377000 (davi's bound, above the 504 * 255 +
+# 256 that a block can sum to).
+_V7_CHECKSUM_RANGE = range(0o400, 0o377000 + 1)
+# A v7 number field: an optional leading NUL, spaces, at least one octal digit, then
+# a NUL, a space or the end of the field. No base-256: it needs GNU magic.
+_V7_NUMBER = re.compile(rb"\x00?[ ]*[0-7]+(?:[\x00 ]|\Z)")
+# The bytes a checksum field holds as text, as bit flags: 1 for each (the octal
+# digits, NUL and space), and 2 for a digit too (_checksum_text_at).
+_CHECKSUM_TEXT_BYTES = bytes(
+    3 if 0x30 <= c <= 0x37 else 1 if c in (0x00, 0x20) else 0 for c in range(256)
+)
+
+
+def _plausible_v7(block: bytes) -> int | None:
+    """The checksum a ``block`` with no magic stores, when it is a plausible v7
+    header: not a zero block, its checksum field octal text (not base-256) whose
+    value is in :data:`_V7_CHECKSUM_RANGE`, and its mode, uid, gid, size and mtime
+    octal numbers. ``None`` otherwise. The checksum itself is checked by the
+    caller."""
+    match = _V7_CHECKSUM.match(block[148:156])
+    if match is None:
+        return None
+    stored = int(match.group(1), 8)
+    if stored not in _V7_CHECKSUM_RANGE:
+        return None
+    for _name, lo, hi in _FIELDS:
+        if _V7_NUMBER.match(block[lo:hi]) is None:
+            return None
+    return stored
+
+
+def _checksum_text_at(window: bytes, start: int, last: int) -> int | None:
+    """The first block start from ``start`` to ``last`` (both block starts in
+    ``window``, ``start`` <= ``last``) whose checksum field holds only octal digits,
+    NULs and spaces, at least one digit among them, and that passes
+    :func:`passes_header_search`; ``None`` if none.
+
+    Each byte of the checksum field is taken for every block at once, as a strided
+    slice mapped to bit flags (``bytes.translate``, :data:`_CHECKSUM_TEXT_BYTES`)
+    and read as one integer with a byte per block. ANDed over the field's eight
+    bytes, bit 0 of a block's byte says all are text; ORed, bit 1 says one is a
+    digit. Only the blocks with both are checked, so the search runs no Python step
+    per block (davi, 2026-11-26). The digit keeps out a field of only spaces, which
+    indented source code has at byte 148 of about one block in fifteen."""
+    count = (last - start) // BLOCKSIZE + 1
+    stride_end = BLOCKSIZE * (count - 1) + 1
+    ones = int.from_bytes(b"\x01" * count, "big")
+    every = -1
+    some = 0
+    for k in range(148, 156):
+        at = start + k
+        flags = window[at : at + stride_end : BLOCKSIZE].translate(_CHECKSUM_TEXT_BYTES)
+        value = int.from_bytes(flags, "big")
+        every &= value
+        if not every & ones:
+            return None
+        some |= value
+    flags = (every & (some >> 1) & ones).to_bytes(count, "big")
+    index = flags.find(1)
+    while index >= 0:
+        at = start + index * BLOCKSIZE
+        if passes_header_search(window[at : at + BLOCKSIZE]):
+            return at
+        index = flags.find(1, index + 1)
+    return None
+
+
+@lru_cache(maxsize=1)
+def tar_header_search() -> HeaderSearch:
     """Salvage's :class:`~archivey.internal.salvage.HeaderSearch` for TAR: every
     512-block from the archive's start, each checked by
-    :func:`passes_header_search`."""
+    :func:`passes_header_search`.
+
+    Two scans, and the first hit of either: one jumps from one ``ustar`` to the
+    next, the other checks the blocks whose checksum field is text
+    (:func:`_checksum_text_at`), which a v7 header needs. A ustar header whose
+    checksum field holds other bytes (a tab, base-256) is found by the first."""
 
     def find_header(window: bytes, start: int, stop: int) -> int | None:
         # The last candidate position examined: before ``stop``, and with the whole
         # block in the window.
         last = min(len(window) - BLOCKSIZE, stop - 1)
-        if v7:
-            for at in range(start, last + 1, BLOCKSIZE):
-                if passes_header_search(window[at : at + BLOCKSIZE], v7=True):
-                    return at
+        if last < start:
             return None
+        v7_hit = _checksum_text_at(window, start, last - (last - start) % BLOCKSIZE)
+        if v7_hit is not None:
+            last = v7_hit - 1
         # Jump from one "ustar" to the next: most blocks hold none. The end bound
         # lets a match start only at a candidate's magic up to ``last``.
         look = start + 257
@@ -3179,9 +3261,9 @@ def tar_header_search(*, v7: bool) -> HeaderSearch:
             hit = window.find(b"ustar", look, last + 257 + 5)
             at = hit - 257
             if hit < 0 or at > last:
-                return None
+                return v7_hit
             if at % BLOCKSIZE == 0 and passes_header_search(
-                window[at : at + BLOCKSIZE], v7=False
+                window[at : at + BLOCKSIZE]
             ):
                 return at
             look = (at // BLOCKSIZE + 1) * BLOCKSIZE + 257

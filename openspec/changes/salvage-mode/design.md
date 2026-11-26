@@ -131,9 +131,10 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
      an intact end, and what follows it is hidden content (later step).
    - **What passes:** a 512-byte block whose checksum passes and whose magic is
      `ustar\0` or `ustar  \0` (POSIX, GNU, PAX), searched at **every 512-byte block**
-     relative to the archive start. A v7 header (no magic) passes only when every header
-     the walk listed before the damage was v7, and only at 512-byte blocks. The checksum
-     is a byte sum (≈2⁻¹⁷); the magic adds 48 bits.
+     relative to the archive start. A v7 header (no magic) passes too, at 512-byte
+     blocks, when its checksum field is octal text in range and its five number fields
+     are octal numbers (below). The checksum is a byte sum (≈2⁻¹⁷); the magic adds 48
+     bits.
    - **Unaligned search** (any byte offset) runs only on a layer whose offsets are not
      known after a gap (stream segments, step 6). In this step every layer keeps its
      offsets, so the search is aligned. The driver takes the step as a parameter.
@@ -142,9 +143,9 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
      plain header whose name field is full and has no record before it gets `"name"` in
      `unchecked`.
    - **Confirmed:** the block after the found member's data (its chain's last header
-     included) is a header that passes checksum and magic, or the clean end. Otherwise
-     unconfirmed; the search resumes at the next block after the found member header
-     (its data is searched; its chain is not).
+     included) is a header that passes the search's checks (either kind), or the clean
+     end. Otherwise unconfirmed; the search resumes at the next block after the found
+     member header (its data is searched; its chain is not).
    - **Compressed TAR** (`.tar.gz` etc.): the search runs on the decoded stream, which
      the reader reads forward; a random-access TAR reader over a decoded stream already
      seeks forward by decoding. Damage in the codec itself stops the decode as today
@@ -243,23 +244,33 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
   zero block"), unless `--ignore-zeros`. Past the default's damage, a zero-block end
   that is not the clean end (a nested tar's marker, with the outer members after it)
   does start a search.
-- **The v7 rule needs a listed header.** A block with no magic passes only when at least
-  one header was listed and every one listed was v7, so a lost start never accepts a v7
-  block on its checksum alone. In v7 mode a v7 header confirms a found member.
+- **The search takes v7 and ustar headers everywhere** (davi, 2026-11-26). A block with
+  no magic passes wherever the search runs, a lost start included, whatever the walk
+  listed before, when it is a plausible v7 header: its checksum field is octal text in
+  a spelling writers use (an optional NUL, spaces or zeros, digits, then a NUL or a
+  space; never base-256) with a value from 0o400 to 0o377000, its mode, uid, gid, size
+  and mtime fields are octal numbers with at least one digit, and its checksum matches.
+  A found member is unconfirmed unless the block after its data passes the same checks
+  (either kind) or is the clean end. To keep the cost near the ustar search, the
+  search first marks the blocks whose eight checksum bytes are all digits, NULs or
+  spaces with at least one digit, with one strided slice per byte over the window, and
+  checks only those (measured 2026-11-26: 1.07x the ustar-only search on random data,
+  1.03x on Python source, 1.18x on digit-heavy text; no false find in 240 MiB of
+  searched member data). This replaces the v7 rule of 2026-11-09, which took a v7
+  block only when every header listed before it was v7.
 - **A found chain is provisional until its member is confirmed.** One rule covers every
   walk (a file, a codec stream, a deb's forward-only `data.tar`, a `stream_members()`
   pass): a found chain whose member is not confirmed changes nothing that outlives it.
-  The search's start puts back what the chain changed (the PAX global records and the
-  v7 rule's record of what was listed), and a confirmation keeps it. A member is
-  confirmed only when the block after its data passes the search's own checks, or is
-  the clean end. A member a forward-only walk trusts (below) is confirmed when the
-  walk reads that block, on the same checks. So a found `g` header counts for later
-  members only once its member is confirmed (davi, 2026-11-26), and a found member
-  nothing confirms neither ends nor starts the v7 rule. The `g` header still applies
-  to its own unconfirmed member, and that member's `MEMBER_FOUND_BY_SCAN` message says
-  so. This departs from GNU tar on purpose: GNU tar `--ignore-zeros` applies such a
-  header to later members, but a chain with no confirmed member is noise. A `g` header
-  the walk itself reaches applies to later members as in GNU tar.
+  The search's start puts back what the chain changed (the PAX global records), and a
+  confirmation keeps it. A member is confirmed only when the block after its data passes
+  the search's own checks, or is the clean end. A member a forward-only walk trusts
+  (below) is confirmed when the walk reads that block, on the same checks. So a found
+  `g` header counts for later members only once its member is confirmed (davi,
+  2026-11-26). The `g` header still applies to its own unconfirmed member, and that
+  member's `MEMBER_FOUND_BY_SCAN` message says so. This departs from GNU tar on purpose:
+  GNU tar `--ignore-zeros` applies such a header to later members, but a chain with no
+  confirmed member is noise. A `g` header the walk itself reaches applies to later
+  members as in GNU tar.
 - **A found chain hits a limit only for what the archive can hold.** A found header's
   numbers may be noise. When a charge against `max_metadata_bytes` fails for data a
   found header claims (an extended header's data, a PAX 1.0 sparse map's entry count)
