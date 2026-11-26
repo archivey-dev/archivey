@@ -4748,14 +4748,14 @@ class RarReader(BaseArchiveReader):
         if self._volume_paths or self._solid_after_unknown:
             return None
         members = self._archive.members
-        if any(info.found is not None for info in members):
-            # Salvage found members past damage: they are read on their own
-            # (``_plan``), so the pass reads the original archive's pipe.
-            return None
         groups: list[_PassRun] = []
         stream_start = -1
         group_start = -2
         for index, info in enumerate(members):
+            if info.found is not None:
+                # Salvage found it past damage: the pass reads it on its own
+                # (``_plan``), so the groups are the default walk's.
+                continue
             if info.unknown_compression_version() is not None:
                 return None
             if not info.file_solid or stream_start < 0:

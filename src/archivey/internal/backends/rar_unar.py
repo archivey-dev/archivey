@@ -448,14 +448,18 @@ class UnarRarPolicy:
         not only out of the demux: ``unar`` 1.10.1 crashes on it, and the crash loses
         output of *earlier* members that ``unar`` had buffered but not yet written.
         """
-        payload = [info for info in self._archive.members if info.is_payload_file()]
+        # A row salvage found is not in the run: the pass serves it on its own,
+        # where ``member_refusal`` refuses it. Leaving it out keeps the run the
+        # default walk's listing gets, every entry selected included.
+        walked = [info for info in self._archive.members if info.found is None]
+        payload = [info for info in walked if info.is_payload_file()]
         for info in payload:
             reason = self.member_refusal(info)
             if reason is not None:
                 self._pass_refusals[id(info)] = reason
         if not self._pass_refusals:
             self._pass_offsets, self._pass_unknown_before, self._pass_unknown = (
-                _place_entries(list(self._archive.members))
+                _place_entries(walked)
             )
             return
         selected: list[RarMemberInfo] = []
@@ -533,7 +537,11 @@ class UnarRarPolicy:
                 for info in self._archive.members
                 if id(info) in self._pass_selected
             )
-        return any(unar_emitted_size(info) > 0 for info in self._archive.members)
+        return any(
+            unar_emitted_size(info) > 0
+            for info in self._archive.members
+            if info.found is None
+        )
 
     def solid_pass_needs_password(self) -> bool:
         """Whether the solid pass's run holds encrypted data.
@@ -551,7 +559,8 @@ class UnarRarPolicy:
         return any(
             info.is_encrypted
             for info in self._archive.members
-            if self._pass_indexes is None or id(info) in self._pass_selected
+            if (self._pass_indexes is None and info.found is None)
+            or id(info) in self._pass_selected
         )
 
     def solid_pass_offset(self, info: RarMemberInfo) -> int | None:

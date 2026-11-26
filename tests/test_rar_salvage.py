@@ -1576,3 +1576,82 @@ def test_each_found_row_names_the_check_that_confirmed_it(
     for message in others:
         assert own in message
         assert "the header after its data passes too" not in message
+
+
+def test_found_rows_leave_the_prefixs_solid_pass_plan_as_it_was(
+    tmp_path: Path,
+) -> None:
+    """A row salvage found is read on its own, so it changes neither decompressor's
+    plan for the members the default walk lists: ``unar``'s run still selects every
+    entry (no 4,000-entry cap), and ``unrar``'s pass over a stream source still
+    plans the prefix's solid streams (no whole-source copy)."""
+    from archivey.internal.backends.rar_reader import RarReader
+    from archivey.internal.backends.rar_unar import UnarRarPolicy
+
+    data = _solid_groups(tmp_path, 100, 110).read_bytes()
+    plans = {}
+    for salvage in (False, True):
+        with open_archive(io.BytesIO(data), salvage=salvage, format="rar") as reader:
+            assert isinstance(reader, RarReader)
+            reader.members_report()
+            archive = reader._archive
+            policy = UnarRarPolicy(archive)
+            prefix = [info for info in archive.members if info.found is None]
+            groups = reader._solid_pass_groups()
+            plans[salvage] = (
+                policy.solid_pass_indexes,
+                [policy.solid_pass_refusal(info) for info in prefix],
+                None if groups is None else [g.indices for g in groups],
+            )
+            found = [info for info in archive.members if info.found is not None]
+            assert bool(found) is salvage
+            for info in found:
+                assert policy.member_refusal(info) is not None
+    assert plans[True] == plans[False]
+    assert plans[False][2] is not None
+
+
+@pytest.mark.parametrize(
+    "decompressor",
+    [
+        pytest.param(RarDecompressor.UNRAR, marks=requires_binary("unrar")),
+        pytest.param(RarDecompressor.UNAR, marks=requires_binary("unar")),
+    ],
+)
+def test_a_stream_pass_with_found_rows_reads_the_prefix_as_the_default_does(
+    decompressor: RarDecompressor, tmp_path: Path
+) -> None:
+    """Through the public pass over a stream source: the default's members read as
+    they do without salvage, and each found row as it reads on its own."""
+    data = _solid_groups(tmp_path, 100, 110).read_bytes()
+    config = ArchiveyConfig(rar_decompressor=decompressor)
+
+    def outcome(read: object) -> object:
+        try:
+            return read()  # type: ignore[operator]
+        except ArchiveyError as exc:
+            return type(exc)
+
+    def passed(salvage: bool) -> dict[str, object]:
+        out: dict[str, object] = {}
+        with open_archive(
+            io.BytesIO(data), salvage=salvage, format="rar", config=config
+        ) as reader:
+            try:
+                for member, stream in reader.stream_members():
+                    if stream is not None and member.is_file:
+                        out[member.name] = outcome(stream.read)
+            except ArchiveyError:
+                pass
+        return out
+
+    def alone() -> dict[str, object]:
+        with open_archive(
+            io.BytesIO(data), salvage=True, format="rar", config=config
+        ) as reader:
+            members = reader.members_report().members
+            return {m.name: outcome(lambda m=m: reader.read(m)) for m in members}
+
+    default, salvage = passed(False), passed(True)
+    assert default == {"a.txt": alone()["a.txt"]}
+    assert salvage == alone()
