@@ -17,7 +17,10 @@
   source that counts range reads, and on a member stream; a trailer over the cap
   refused at load
 - [ ] 1.7c Probe parity: a binary `.cpio` and a binary `initrd.cpio.gz`, on a
-  core-only and a pilot install, named and unnamed
+  core-only and a pilot install and with the provider barred, named and unnamed. The
+  expected result is the same in all three: `(CPIO, GZIP)`, read with the package and
+  refused with the hint without it, through the check core keeps (R13), which the
+  package's handler reuses
 - [ ] 1.8 Spec deltas: `format-manifest` (new), `backend-registry`, `format-detection`
 
 ## 2. Open names (breaking)

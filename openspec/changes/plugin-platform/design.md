@@ -426,7 +426,23 @@ to no data phase, and its rule is today's, kept:
   matched. The conformance recipe (task 3.9a) tests a probe against the non-archive
   corpus, and `providers=` is the caller's control.
 - A hinted format whose package is missing has no probe to run, so it is known by
-  its extension only (Open Question 3 asks whether that is enough).
+  its extension only (Open Question 3 asks whether that is enough). That is not
+  enough where a recognized wrapper would then read the file as something else: an
+  unnamed gzip around a binary CPIO, opened with `always_probe_content`, is
+  `(CPIO, GZIP)` with the package and would be a plain gzip stream without it.
+- **A hint may carry a check that core runs (ruling R13).** For that case core keeps
+  the check itself: the binary CPIO check is 12 lines of arithmetic on the first
+  bytes (the two-byte magic, and a name of the declared size that ends in NUL). Core
+  runs it wherever the package's probe would run, so recognition is the same on every
+  install and under every provider policy, and a missing or barred package means a
+  refusal with the hint, never another reading and never a good file refused. The
+  package's handler names the same function, published in `archivey.formats`, so
+  there is one implementation. The bar for such a check is high: arithmetic over the
+  bytes detection already holds, no decoding, no reading, a few lines, and only where
+  the alternative is a second reading of the same file. Brotli does not qualify (its
+  probe decodes) and does not need it (nothing else reads an unnamed Brotli stream).
+  UDIF needs none: its `koly` trailer and encrypted headers are data, declared by the
+  DMG reader today and listed in the hint table after the move.
 
 **Detect first, judge after (ruling R9).** Every format of an allowed provider takes
 part in detection, whatever the format policy says, and the format policy judges the
@@ -807,7 +823,7 @@ What it cannot undo is a published package name, which is why DMG is split now.
 ## Decisions
 
 All ten were put to the maintainer and agreed on 2026-11-24. Decisions 5, 6 and 7 were
-revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R12 below).
+revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R13 below).
 
 1. **Installed plugins load by themselves, behind the guardrails of §3.** This replaces
    the 2026-10-25 rule (explicit `register_format()` only), which the maintainer
@@ -883,6 +899,12 @@ and the evidence in front of him (review round A):
   before its first release, because "codecs" does not say that it is an optional
   accelerator. Rejected: `archivey-compression-formats` (other archives seem to fit),
   `archivey-compression-methods`, `archivey-accelerators`, `archivey-native`.
+
+- **R13. Core keeps the binary CPIO check** (§4). A hint may carry a small check that
+  core runs when the format has no signature strong enough to be data and a wrapper
+  would otherwise read the file differently. Rejected: a weak two-byte signature that
+  refuses on a match (it would refuse good files), keeping CPIO in core, and
+  documenting the difference as an exception.
 
 Changed without a ruling to revise, because the plan contradicted a spec or the code:
 `CompressionAlgorithm` stays a non-string type, no extra is named after a package, and
