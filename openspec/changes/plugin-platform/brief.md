@@ -2,7 +2,7 @@
 
 **Status:** Plan only, written to circulate and be refined. The maintainer agreed the
 direction and ten decisions on 2026-11-24 and revised three of them on 2026-11-26
-(design.md §Decisions, R1 to R7). No spec deltas
+(design.md §Decisions, R1 to R8). No spec deltas
 yet: each implementation PR brings the deltas for its step. No code until the
 maintainer has read this plan. It replaces `openspec/changes/plugin-api`, whose
 interface it keeps and whose registration, naming and packaging it rewrites.

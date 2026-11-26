@@ -25,11 +25,12 @@
   `CompressionAlgorithm` as an open non-string type, with core's constants;
   construction checks spelling only and touches no registry; membership is checked
   when a call resolves the name, before I/O
+- [ ] 2.1a Tests: a known name whose package is missing, a typo at resolution, and a
+  value built from a stored string before any discovery
 - [ ] 2.1b `FormatPolicy` stores containers, streams and methods by role;
   `only_libraries` by membership; a test that `exclude={StreamFormat("xz")}` still
   reads an xz member of a ZIP
-- [ ] 2.1a Tests: a known name whose package is missing, a typo at resolution, and a
-  value built from a stored string before any discovery
+- [ ] 2.1c Each package exports a constant for every library it uses (R8)
 - [ ] 2.2 Remove `PluginContainer`, `PluginStream` and the `Literal` spelling lists
 - [ ] 2.2a `ExtraKey` and the generic overloads on `MemberExtra` and
   `ArchiveInfoExtra`; key constants for every format; the 62 per-key overloads

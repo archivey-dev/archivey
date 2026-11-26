@@ -209,7 +209,10 @@ Rules:
   `only_libraries`; that exception goes, since core no longer knows which modules are
   a plugin's (**Breaking:** in step 2). A name in either library set is checked when a
   call starts, against the libraries that core and the installed manifests declare, so
-  a typo is still an error and cannot leave a library on.
+  a typo is still an error and cannot leave a library on. `OptionalLibrary` stays a
+  type that extends `str` (ruling R8), and each package exports a constant for every
+  library it uses (`archivey_dmg.CRYPTOGRAPHY`-style names beside core's
+  `OptionalLibrary.PYPPMD`), so a caller rarely types a library name at all.
 - **Policy sets are stored by role.** `FormatPolicy` keeps containers, streams and
   methods apart inside, whatever the caller passed in one `exclude=` set, so no lookup
   compares a method with a stream.
@@ -620,7 +623,7 @@ What it cannot undo is a published package name, which is why DMG is split now.
 ## Decisions
 
 All ten were put to the maintainer and agreed on 2026-11-24. Decisions 5, 6 and 7 were
-revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R7 below).
+revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R8 below).
 
 1. **Installed plugins load by themselves, behind the guardrails of §3.** This replaces
    the 2026-10-25 rule (explicit `register_format()` only), which the maintainer
@@ -663,6 +666,10 @@ and the evidence in front of him (review round A):
   core; ISO, ar and cpio in core.
 - **R7. Four packages: DMG alone, CAB with the package formats** (§7). Rejected: DMG
   and CAB each alone; three packages with CAB in either group.
+
+- **R8. `OptionalLibrary` stays a type that extends `str`**, like `ExtraKey` (§2). Each
+  package defines constants for the libraries it uses, so a caller writes a policy
+  from names and not from spellings. Rejected: plain strings with no type.
 
 Changed without a ruling to revise, because the plan contradicted a spec or the code:
 `CompressionAlgorithm` stays a non-string type, no extra is named after a package, and
@@ -736,9 +743,7 @@ For the next rounds of this plan. None blocks step 1.
 
 1. Field names of the manifest file, and whether `FormatHandler` keeps its declaring
    class attributes or reads them from its entry.
-2. Whether `OptionalLibrary` stays a type. A library name is the module name, so plain
-   strings with core's names as constants would do; the maintainer raised it on
-   2026-11-26 and has not ruled.
+2. The package name `archivey-legacy-formats`.
 3. Whether a known name with no installed package may be detected by signature, or by
    extension only, when the signature needs a probe.
 4. The exact spelling of the off switch and of the provider query.
