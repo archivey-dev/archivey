@@ -8,12 +8,15 @@ The shared search driver (:mod:`archivey.internal.salvage`) asks a format for a
   lost start) that passes its CRC16.
 
 Before a CRC is hashed, each finder checks only what the walk in
-:mod:`~archivey.internal.backends.rar_parser` would also reject: a header the finder
-drops is one the walk would not list. Neither puts a condition on the header flags
-or on a field value the walk lists (method, dictionary size, host OS), because a
-filter there drops real headers: the last FILE header of every volume but the last
-has the split-after flag ``0x10`` set. Values are compared as the walk decodes them,
-so a vint with a non-minimal encoding passes wherever the walk reads it.
+:mod:`~archivey.internal.backends.rar_parser` would also reject, with one
+exception: the RAR5 header-size vint is 1 to 3 bytes, as the RAR5 technical note
+and ``unrar`` 7 require, while the walk decodes a size vint of up to 10 bytes. So a
+header with a 4- to 10-byte size vint is listed where the walk reads it and not
+found by the search. Neither puts a condition on the header flags or on a field
+value the walk lists (method, dictionary size, host OS), because a filter there
+drops real headers: the last FILE header of every volume but the last has the
+split-after flag ``0x10`` set. Every other vint is compared as the walk decodes it,
+in any encoding :func:`load_vint` decodes, the type's included.
 
 A RAR5 header can be 2 MiB long. Hashing such a candidate at each byte would make the
 work grow with what crafted bytes declare, not with the input, so the CRC of a
@@ -45,6 +48,7 @@ from archivey.internal.backends.rar_parser import (
     _RAR5_FILE,
     _RAR5_MAIN,
     _RAR5_SERVICE,
+    RAR5_VINT_MAX_BYTES,
     _parse_rar3_file_header,
     load_vint,
     rar3_main_crc_end,
@@ -70,11 +74,12 @@ _S_U32 = struct.Struct("<L")
 
 # Positions whose bytes can start a RAR5 header: four CRC bytes, a size vint of 1 to
 # 3 bytes, then a type vint whose value is 1 to 5 (in any encoding the walk decodes:
-# the value's low bits, then continuation bytes that add nothing).
+# the value's low bits, then continuation bytes that add nothing, up to
+# ``RAR5_VINT_MAX_BYTES`` bytes in all).
 _RAR5_CANDIDATE = re.compile(
     rb"(?=[\x00-\xff]{4}"
     rb"(?:[\x03-\x7f]|[\x80-\xff][\x00-\x7f]|[\x80-\xff]{2}[\x00-\x7f])"
-    rb"(?:[\x01-\x05]|[\x81-\x85]\x80{0,8}\x00))",
+    rb"(?:[\x01-\x05]|[\x81-\x85]\x80{0,%d}\x00))" % (RAR5_VINT_MAX_BYTES - 2),
     re.DOTALL,
 )
 # Positions whose third byte is a RAR 1.5-4 FILE or SUB type, and with MAIN too.
@@ -217,8 +222,9 @@ def rar5_header_end(window: bytes, pos: int) -> int | None:
     its CRC passes (checks 1 to 5 of ``openspec/changes/salvage-rar-search``
     design §3); ``None`` otherwise.
 
-    The size vint is 1 to 3 bytes (the RAR5 note caps a header at 2 MiB) and at least 3,
-    the smallest header. The type is one the note defines. The extra area, when the
+    The size vint is 1 to 3 bytes (the RAR5 note caps a header at 2 MiB, and
+    ``unrar`` 7 reads no longer one; the walk decodes up to 10) and at least 3, the
+    smallest header. The type is one the note defines. The extra area, when the
     flags declare one, is smaller than the whole header (CRC and size vint included), as
     ``unrar`` and the walk require. The type's own fields fit in the header; no field
     value is checked.

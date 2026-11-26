@@ -27,10 +27,11 @@ search.
 type of 1 to 5; flags of any value; the extra-area and data-size vints the flags
 declare, with the extra area smaller than the header; the type's fields, and for FILE
 and SERVICE a name of at least 1 byte, inside the header; and the header's CRC-32.
-Values SHALL be compared as the walk decodes them, whatever the vint encoding. RAR
-1.5-4: type FILE (`0x74`) or SUB (`0x7A`); `HEAD_SIZE` of at least 32 plus `NAME_SIZE`,
-plus 8 for each of the large-file and salt flags; `NAME_SIZE` of 1 or more; fields that
-parse as the walk parses them; and the CRC16. Neither finder SHALL put a condition on
+Values other than the header size SHALL be compared as the walk decodes them, in
+every vint encoding the walk decodes. RAR 1.5-4: type FILE (`0x74`) or SUB (`0x7A`);
+`HEAD_SIZE` of at least 32 plus `NAME_SIZE`, plus 8 for each of the large-file and salt
+flags; `NAME_SIZE` of 1 or more; fields that parse as the walk parses them; and the
+CRC16. Neither finder SHALL put a condition on
 the header flags or on a field value the walk lists (method, dictionary, host OS).
 
 **Confirmation.** A RAR5 header that passes SHALL be confirmed. A RAR 1.5-4 header that

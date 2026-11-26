@@ -1190,3 +1190,17 @@ def test_a_lost_start_inside_a_quick_open_record_lists_no_copy(tmp_path: Path) -
     # error.
     assert salvage.names == []
     assert isinstance(salvage.error, CorruptionError)
+
+
+def test_a_type_vint_as_long_as_the_walk_reads_is_found() -> None:
+    """The header type in an 11-byte encoding, the longest ``load_vint`` decodes:
+    the walk lists the header, so the finder finds it."""
+    long_type = b"\x82" + b"\x80" * 9 + b"\x00"
+    header = _rar5_block_bytes(long_type + bytes([0, 0, 0, 0, 0, 0, 1]) + b"a")
+    end = _rar5_block_bytes(b"\x05\x00\x00")
+    archive = _RAR5_SIGNATURE + _RAR5_MAIN + header + end
+    with open_archive(io.BytesIO(archive)) as reader:
+        assert [m.name for m in reader.members()] == ["a"]
+    at = len(_RAR5_SIGNATURE + _RAR5_MAIN)
+    assert Rar5Finder().find(archive, 0, None) == len(_RAR5_SIGNATURE)  # MAIN
+    assert Rar5Finder().find(archive, at, None) == at

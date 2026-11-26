@@ -2237,6 +2237,11 @@ def _seek_after_packed(source: BinaryIO, data_offset: int, add_size: int) -> Non
     _seek_to(source, _packed_span_end(data_offset, add_size))
 
 
+# The most bytes :func:`load_vint` decodes for one vint. Salvage's RAR5 finder
+# (``rar_search``) takes its type prefilter's width from it, so the two agree.
+RAR5_VINT_MAX_BYTES = 11
+
+
 def load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
     # Hot path: most RAR5 vints are a single byte (< 0x80). Avoid the multi-byte
     # loop and ``min()`` on every call (listing many-member archives).
@@ -2246,8 +2251,7 @@ def load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
     b = buf[pos]
     if b < 0x80:
         return b, pos + 1
-    limit = pos + 11
-    limit = min(limit, length)
+    limit = min(pos + RAR5_VINT_MAX_BYTES, length)
     res = b & 0x7F
     ofs = 7
     pos += 1

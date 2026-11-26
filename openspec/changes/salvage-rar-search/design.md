@@ -169,7 +169,10 @@ before `stop` where a header passes the checks below, in this order. The checks 
 wherever the walk accepts it. Each check is justified by the RAR5 technical note
 (rarlab.com, "RAR 5.0 archive format") or by `unrar`'s own reader. Only check 6 is the
 format's check. Checks 1 to 5 reject what the walk would also reject, so that they cost
-nothing in recall and exist only to avoid a CRC.
+nothing in recall and exist only to avoid a CRC, with one exception: check 1 limits
+the header-size vint to 3 bytes, as the note and `unrar` 7 do, while the walk decodes
+one of up to 10 bytes. A header with a longer size vint is listed by the walk and not
+found by the search.
 
 1. **Header size: a vint of 1 to 3 bytes, value 3 or more.** The note: "This field must
    not be longer than 3 bytes in current implementation, resulting in 2 MB maximum
