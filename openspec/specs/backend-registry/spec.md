@@ -126,7 +126,7 @@ class ReadBackend(ABC):
     FORMATS: tuple[ArchiveFormat, ...]
     EXTENSIONS: Mapping[str, ArchiveFormat] = {}
     MAGIC: tuple[MagicSignature, ...] = ()
-    CONTENT_PROBES: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = ()
+    CONTENT_PROBES: tuple[tuple[ArchiveFormat, ContentProbe], ...] = ()  # answers None, GUESS or PROBABLE
     HEADER_CHECKS: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = ()
     SUPPORTS_STREAMING_NON_SEEKABLE: bool = False
     OPTIONAL_DEPENDENCY: str | None = None

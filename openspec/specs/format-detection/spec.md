@@ -151,7 +151,9 @@ The system SHALL execute format detection with this algorithm:
    its checksum field as spaces and every numeric field is a number, and the name SHALL
    be non-empty. Match → `PROBABLE` / `detected_by="content_probe"`. This SHALL run on
    every source, whatever its name, after trailer magic and before the content probes.
-7. **Content probes** — formats with no exact magic. Match → `detected_by="content_probe"`.
+7. **Content probes** — formats with no exact magic. Match → `detected_by="content_probe"`,
+   at the grade the probe's verdict gives (see *Magic-less formats are detected by a
+   content probe*).
    Unless `ArchiveyConfig.always_probe_content` is set, only the probe of a stream format
    the source's extension names SHALL run (see *Magic-less formats are detected by a
    content probe*); `open_stream` SHALL run every probe.
@@ -248,7 +250,8 @@ the format, so a common alias is the difference between a file that opens and on
 that is refused.
 Detected formats and `detected_by` MUST match prior behavior. Confidence MUST also
 match prior behavior **except** for an uncorroborated Brotli content-probe match,
-which reports `GUESS` (see the magic-less-formats requirement).
+and a plugin probe's weak match on a source whose name does not name the format, which
+report `GUESS` (see the magic-less-formats requirement).
 
 #### Scenario: table sources matrix
 
@@ -309,6 +312,10 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 | The same block one byte off its checksum, or with an empty name, no extension | `FormatDetectionError` |
 | gzip of such a v7 tar | `TAR_GZ`, `PROBABLE`, `content_probe` |
 | gzip of a binary CPIO archive, named `.cpio.gz` or with `always_probe_content`; the same with no name | `(CPIO, GZIP)`, `PROBABLE`, `content_probe`: a container's content probe runs on the first 512 decoded bytes under the rule it follows on an uncompressed source; with no name, `GZ` |
+| A plugin format's probe answers `GUESS`, no name, `always_probe_content` | The plugin format, `GUESS`, `content_probe` |
+| The same, named with the plugin's extension | The plugin format, `PROBABLE`, `content_probe` |
+| gzip of a plugin sequential format whose probe answers `GUESS`, no name, `always_probe_content`; the same named `.<ext>.gz` | `(<plugin>, GZIP)`, `GUESS`, not corroborated; named, `PROBABLE`, corroborated |
+| A plugin probe answers `True`, `CERTAIN` or another non-verdict | No match; one WARNING on `archivey.detection` |
 | Raw CD sector sync at 0 | ISO, `CERTAIN`, `magic`; a Mode 1 or Mode 2 Form 1 image opens, other layouts raise `UnsupportedFeatureError` |
 | `koly` block at offset 0 | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
 | `koly` trailer, and no earlier step matched | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
@@ -362,6 +369,17 @@ when detection knows it (see the framing requirement below). Skip when the
 decompressor backend is missing (fall through to extension). A probe the extension's
 format does not name does not run, so the extension decides between them; a stream
 named for another format falls through to that extension's `GUESS`.
+
+**A probe answers with a verdict.** Every content probe, built-in or a plugin's
+(`FormatHandler.probe`, `CodecHandler.probe`), SHALL answer `None` (not this format),
+`GUESS` (a weak match) or `PROBABLE` (a match), never a bool and never `CERTAIN`, which
+only a signature gives. A probe that only tells yes from no answers `PROBABLE` or
+`None`; every built-in probe does. Detection SHALL report the verdict as the confidence,
+and SHALL report a `GUESS` as `PROBABLE` when the source's extension names the format.
+The same rule SHALL hold for a container's probe on the first 512 decoded bytes inside a
+compressor. A plugin probe that answers anything else (a bool, `CERTAIN`, any other
+object) SHALL count as no match and be logged on `archivey.detection` as a probe that
+raises is: WARNING the first time, DEBUG after.
 
 A probe match SHALL report `detected_by="content_probe"`. For **Brotli specifically**,
 confidence SHALL be `PROBABLE` when the file extension corroborates the format **or**
@@ -1204,7 +1222,8 @@ cleanly is a success.
 When a content-probe hit is upgraded to a `TAR_*` format because a TAR header was found in
 the decompressed prefix (`_resolve_single_file_or_tar`), that upgrade SHALL count as
 corroborating evidence for the underlying codec identification, equivalent to a matching
-file extension.
+file extension. So SHALL an upgrade by a self-checking header or a container probe's
+`PROBABLE` verdict; a container probe's `GUESS` SHALL NOT.
 
 The upgrade is not a second guess about the same bytes: reaching it required the probe's
 decompression to actually produce output, and that output to contain a `ustar` signature
@@ -1223,6 +1242,7 @@ evidenced than four bytes that happened to parse as a block header.
 | Extensionless stream, Brotli probe hits, decompressed prefix contains a TAR header | `TAR_BROTLI`, `PROBABLE`, `content_probe` — corroborated |
 | Same, and a later read fails | Ordinary error; `format_unconfirmed is False` |
 | Extensionless stream, Brotli probe hits, no TAR header in the decompressed prefix | Unchanged — the probe-only rules decide |
+| Extensionless stream, decompressed prefix weakly matched by a container probe (`GUESS`) | `(<container>, <stream>)`, `GUESS`, **not** corroborated: a weak match is no second signal, so a later read failure is `format_unconfirmed` |
 | `x.tar.br` (extension already corroborates) | Unchanged |
 
 ### Requirement: Detection confidence SHALL NOT be the trigger for error provenance
