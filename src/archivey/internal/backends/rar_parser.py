@@ -3563,6 +3563,14 @@ class _Rar3Walk:
         return self.main_seen or self.main_lost
 
     @property
+    def _may_be_solid(self) -> bool:
+        """Whether a solid stream may run through the walk's members: the main
+        header says so, or it was lost, so nothing says yet (the archive's flag is
+        settled from the members after the walk, ``_flags_without_main``, which
+        clears what was marked when it is not solid)."""
+        return self.is_solid or self.main_lost
+
+    @property
     def _own_main_passed(self) -> bool:
         """Whether the volume's own ``MAIN`` is behind the walk: read, or damaged in
         its place after an intact signature. A ``MAIN`` found after it is a nested
@@ -3709,7 +3717,7 @@ class _Rar3Walk:
             f"the bytes after the header at {self.salvage.where(offset)}, "
             "which nothing confirms"
         )
-        if self.is_solid or self.main_lost:
+        if self._may_be_solid:
             # A member after it in a solid stream decodes on top of a header only a
             # CRC16 checked: without a digest of its own it is refused.
             self.solid_damage = _solid_damage_after_unconfirmed(self.solid_damage)
@@ -4053,7 +4061,7 @@ class _Rar3Walk:
         self.resume_from = block.data_offset
         if damaged:
             member.damaged_header = (self.volume_index, block.start)
-            if self.is_solid:
+            if self._may_be_solid:
                 self.solid_damage = _solid_damage_after(
                     self.solid_damage,
                     block.block_type == _RAR3_SUB,
@@ -4097,7 +4105,9 @@ class _Rar3Walk:
                     check="followed" if damaged else "after_data",
                 )
                 member.after_lost, self.pending_lost = self.pending_lost, None
-                if (self.is_solid or self.main_lost) and self.found_here:
+                # The first member after a search's lost bytes, wherever the
+                # search landed (on it, or on a service header before it).
+                if self._may_be_solid and member.after_lost is not None:
                     self.solid_damage = _solid_damage_after(self.solid_damage, False, 0)
             # The volume's last member decides; an intact end block overrides it.
             self.needs_next_volume = _emit_walked_member(
@@ -5452,6 +5462,14 @@ class _Rar5Walk:
         _seek_to(self.source, first)
 
     @property
+    def _may_be_solid(self) -> bool:
+        """Whether a solid stream may run through the walk's members: the main
+        header says so, or it was lost, so nothing says yet (the archive's flag is
+        settled from the members after the walk, ``_flags_without_main``, which
+        clears what was marked when it is not solid)."""
+        return self.is_solid or self.main_lost
+
+    @property
     def _own_main_passed(self) -> bool:
         """Whether the volume's own ``MAIN`` is behind the walk: read, or damaged in
         its place after an intact signature. A ``MAIN`` found after it is a nested
@@ -5973,7 +5991,7 @@ class _Rar5Walk:
         member.after_damaged_header = self.solid_damage
         if damaged:
             member.damaged_header = (self.volume_index, block.header_offset)
-            if self.is_solid:
+            if self._may_be_solid:
                 self.solid_damage = _solid_damage_after(
                     self.solid_damage, block.block_type == _RAR5_SERVICE, block.add_size
                 )
@@ -6001,7 +6019,9 @@ class _Rar5Walk:
                         check="followed" if damaged else "crc32",
                     )
                     member.after_lost, self.pending_lost = self.pending_lost, None
-                    if (self.is_solid or self.main_lost) and self.found_here:
+                    # The first member after a search's lost bytes, wherever the
+                    # search landed (on it, or on a service header before it).
+                    if self._may_be_solid and member.after_lost is not None:
                         self.solid_damage = _solid_damage_after(
                             self.solid_damage, False, 0
                         )

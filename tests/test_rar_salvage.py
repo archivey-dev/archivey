@@ -1988,3 +1988,26 @@ def test_a_set_whose_first_volume_lost_its_main_is_solid_by_any_volume(
         names = [m.name for m in reader.members_report().members]
         assert names == ["a", "b"]
         assert reader._archive.is_solid  # type: ignore[attr-defined]
+
+
+def test_a_lost_start_solid_stream_keeps_a_damaged_service_headers_mark(
+    tmp_path: Path,
+) -> None:
+    """The start is lost, so no MAIN says the archive is solid until the members
+    settle it after the walk. A SERVICE header with data that failed its CRC and
+    that the walk followed still marks the stream: unrar skips its data, so d.txt,
+    which continues the stream and has no checksum, is refused, not read wrong."""
+    c = _rar5_block(bytes([2, 0x02, 4, 0, 4, 0, 0x80, 0x03, 0, 1]) + b"c") + b"cccc"
+    service = bytearray(
+        _rar5_block(bytes([3, 0x02, 4, 0, 4, 0, 0, 0, 3]) + b"CMT") + b"xxxx"
+    )
+    service[0] ^= 0xFF  # its CRC fails; step 1 follows its sizes to d
+    d = _rar5_block(bytes([2, 0x02, 4, 0, 4, 0, 0xC0, 0x03, 0, 1]) + b"d") + b"dddd"
+    data = bytes(64) + c + bytes(service) + d + _RAR5_END
+    path = _write(tmp_path, data)
+    with open_archive(path, salvage=True) as reader:
+        members = {m.name: m for m in reader.members_report().members}
+        assert set(members) == {"c", "d"}
+        assert reader._archive.is_solid  # type: ignore[attr-defined]
+        with pytest.raises(CorruptionError, match="damaged service header"):
+            reader.read(members["d"])

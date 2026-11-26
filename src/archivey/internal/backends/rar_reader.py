@@ -5387,9 +5387,9 @@ class RarReader(BaseArchiveReader):
         self._diagnostics_collector.emit(
             code=DiagnosticCode.DIGEST_UNVERIFIABLE,
             message=(
-                f"RAR member {quoted(member.name)} has no checksum and follows a "
-                "member listed from a damaged header in a solid archive, so nothing "
-                "checks that its bytes decoded right."
+                f"RAR member {quoted(member.name)} has no checksum and follows, in a "
+                "solid archive, a member listed from a damaged header or found by "
+                "salvage past damage, so nothing checks that its bytes decoded right."
             ),
             context=DigestContext(
                 archive_name=self._archive_name,
