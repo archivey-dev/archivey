@@ -424,8 +424,9 @@ is added on speculation.
 
 **Threads.** The concurrency cut is a separate change that lands before this one
 (decision 9), and it owns the thread contract a reader author sees
-(`openspec/changes/concurrency-cut`). This change takes that contract as it stands and
-does not restate it, so the two cannot drift apart. What the plugin work needs from it:
+(`openspec/changes/archive/2026-11-25-concurrency-cut`). This change takes that
+contract as it stands and does not restate it, so the two cannot drift apart. What the
+plugin work needs from it:
 
 - archivey calls the methods of one reader from one thread at a time;
 - a pass over the archive runs with nothing else reading the archive beside it;
