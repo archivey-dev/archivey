@@ -216,6 +216,9 @@ class ArReader(SequentialReader):
         while True:
             # Whether the search found this header, or the walk walked on to it.
             searched = search_from is not None
+            # A lost start's search at every byte: only a header something confirms
+            # names the alignment of the later searches.
+            base_before = base
             if search_from is not None:
                 assert salvage is not None and damage is not None
                 hit = self._search(salvage, stream, search_from, base, names)
@@ -270,6 +273,7 @@ class ArReader(SequentialReader):
                     # The search goes on inside its data, past this header, which it
                     # must not find again.
                     search_from = salvage.after(offset)
+                    base = base_before
             if entry.table is not None:
                 names = entry.table
                 continue
@@ -307,7 +311,8 @@ class ArReader(SequentialReader):
 
         ``salvage`` is given past damage in salvage mode. The header is then
         ``None`` when its data runs past the layer's end (``WalkSalvage.holds``),
-        checked before anything past the header is read, charged or kept. And it
+        checked before anything past the header is read, charged or kept, and also
+        when it is a long-name table that the header after it does not confirm. And it
         keeps a GNU ``/123`` name whose table is not there, and takes a second
         long-name table."""
         salvaging = salvage is not None
@@ -357,6 +362,12 @@ class ArReader(SequentialReader):
                 raise CorruptionError(
                     f"ar archive has a second long-name table at offset {offset}"
                 )
+            if salvage is not None and not ar_confirmed(
+                salvage, offset + HEADER_SIZE + size + (size & 1)
+            ):
+                # Past the damage, a table nothing confirms is passed over before it
+                # is charged or read: the search goes on inside it.
+                return None
             # The table is held for the whole walk: text the listing retains.
             self._context.charge_metadata(size, what="the ar long-name table")
             table = stream.read_exact(size)

@@ -1163,3 +1163,48 @@ def test_cpio_gz_probe_into_a_damaged_codec_tail_reads_as_the_end(
     assert isinstance(default, CorruptionError)
     assert type(error) is type(default)
     assert error.raw_message.startswith(default.raw_message)  # type: ignore[attr-defined]
+
+
+def test_cpio_lost_start_unconfirmed_header_does_not_set_the_variant(
+    tmp_path: Path,
+) -> None:
+    """A lost start whose first found header is a newc one with a small size that
+    nothing confirms: it is listed, but the search after it still looks for every
+    variant, and finds the odc members."""
+    raw = b"\x01" * 5 + _newc("bogus", b"abcd", 9) + _odc("real.txt", b"hello", 1)
+    raw += _odc("real2.txt", b"world", 2) + _odc("TRAILER!!!", b"", 0)
+    path = _write(tmp_path, raw, "a.cpio")
+    names, _diagnostics, error = _open_lost_start(path)
+    assert names[-2:] == ["real.txt", "real2.txt"]
+    assert isinstance(error, CorruptionError)
+
+
+def test_ar_lost_start_unconfirmed_header_does_not_set_the_alignment(
+    tmp_path: Path,
+) -> None:
+    """A lost start whose first found header sits at an odd offset and that
+    nothing confirms: the members after it, at even offsets, are still found."""
+    raw = b"\x01" * 5 + _ar_header(b"bogus/", 4) + b"abcd" + b"\x01"
+    assert len(raw) % 2 == 0
+    raw += _ar_header(b"real/", 4) + b"real" + _ar_header(b"real2/", 5) + b"real2\n"
+    path = _write(tmp_path, raw, "a.a")
+    names, _diagnostics, error = _open_lost_start(path)
+    assert names[-2:] == ["real", "real2"]
+    assert isinstance(error, CorruptionError)
+
+
+def test_ar_unconfirmed_long_name_table_is_not_charged(tmp_path: Path) -> None:
+    """Past the damage, a found ``//`` table the file holds but that nothing
+    confirms is passed over before it is charged or read: a member found inside
+    its data is listed, and the pass ends in the first damage."""
+    after = _ar_header(b"after/", 5) + b"hello\n"
+    table = after + b"J" * (5000 - len(after))
+    raw = b"!<arch>\n" + _ar_header(b"before/", 4) + b"bbbb"
+    raw += b"J" * 60 + _ar_header(b"//", len(table)) + table + b"J" * 60
+    path = _write(tmp_path, raw, "a.a")
+    limits = ListingLimits(max_metadata_bytes=1000)
+    members, _diagnostics, error = _read(
+        path, salvage=True, config=ArchiveyConfig(listing_limits=limits)
+    )
+    assert [m[0] for m in members] == ["before", "after"]
+    assert isinstance(error, CorruptionError)

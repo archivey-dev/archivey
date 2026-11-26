@@ -250,7 +250,12 @@ Choices made while building PR 3, and where it departs from the decisions above:
 - **A member past the damage whose data runs past the layer's end is not listed**,
   found or walked on to: reading it would end the pass in `TruncatedError` instead of
   the first damage. A default member whose size runs past the end still ends the pass
-  there, as the default does.
+  there, as the default does. A probe for that check, or for a confirmation, that
+  reaches damage in a codec stream (a `.cpio.gz` whose gzip data is damaged) reads
+  that damage as the layer's end. The search itself still stops with the codec error.
+- **An ar long-name table past the damage that nothing confirms is passed over**
+  before it is charged against `max_metadata_bytes` or read: the search goes on inside
+  it, as inside an unconfirmed member's data.
 - **Many candidates cost about one pass over a decoded layer**, not one each: a
   probe of a data end or of the next header reads forward only past what earlier
   probes read, and stops at the end once one reached it; each `search_forward` call
@@ -263,9 +268,11 @@ Choices made while building PR 3, and where it departs from the decisions above:
 - **Lost start (reader side).** `SalvageRequest.lost_start` / `SalvageState.lost_start`
   (`requesting_salvage(..., lost_start=True)`, the TAR PR's shape). With it, a CPIO
   whose first header fails searches all three ASCII magics at every byte; the first
-  header found sets the alignment of later `newc`/`crc` searches. An ar whose magic is
-  missing searches from 0 at **every byte** (not 2: the bytes lost may be odd), then
-  at 2-byte steps from the first header found.
+  found header that the header after it confirms sets the variant and the alignment of
+  later `newc`/`crc` searches. An ar whose magic is missing searches from 0 at **every
+  byte** (not 2: the bytes lost may be odd), then at 2-byte steps from the first
+  confirmed header. A found header nothing confirms is listed, and the search after
+  it still looks for every variant at every byte.
 - **deb.** A damaged ar header after `debian-binary` starts the ar search; a found
   `control.tar*` or `data.tar*` is read as the walk reads one, each inner member
   flagged with the ar header's offset. A found header with another name is passed

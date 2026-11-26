@@ -342,6 +342,9 @@ class CpioReader(SequentialReader):
         while True:
             # Whether the search found this header, or the walk walked on to it.
             searched = search_from is not None
+            # A lost start's search for any variant: only a header something
+            # confirms names the variant and the alignment of the later searches.
+            any_variant = (base, self._variant)
             if search_from is not None:
                 assert salvage is not None and damage is not None
                 hit = self._search(salvage, stream, search_from, base)
@@ -393,6 +396,8 @@ class CpioReader(SequentialReader):
                     # No claim on its data: the search goes on inside it, past this
                     # header, which it must not find again.
                     search_from = salvage.after(header.offset)
+                    if searched and any_variant[1] is None:
+                        base, self._variant = any_variant
             size = header.file_size
             # A file that shares its inode with another.
             key = (header.dev, header.ino)
