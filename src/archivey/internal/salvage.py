@@ -248,7 +248,12 @@ class SalvageState:
         A walk that starts over only to reach a member's data, beside a listing that
         stays, does not call this: it searches with a :class:`QuietSalvageState` of
         its own, which finds the same members, charges nothing to this state and
-        records nothing."""
+        records nothing.
+
+        Records :meth:`hold` kept back are dropped: they describe the walk that is
+        forgotten."""
+        # Records held back for a walk that may start over (``hold``), or ``None``.
+        self._held: list[tuple[RegionSkippedContext, str]] | None = None
         # Bytes the searches have examined, all layers together.
         self.searched_bytes = 0
         # Set once max_search_bytes stops a search; every later search stops at once.
@@ -307,7 +312,7 @@ class SalvageState:
             self._unreported_regions += 1
             return
         self._reported_regions += 1
-        self._emit(
+        self._record(
             RegionSkippedContext(
                 archive_name=self._archive_name,
                 format=self._format_name,
@@ -341,7 +346,7 @@ class SalvageState:
         else:
             stop = "stopped before examining a byte"
         searched = "" if layer == ARCHIVE_LAYER else f"the {layer} stream of "
-        self._emit(
+        self._record(
             RegionSkippedContext(
                 archive_name=self._archive_name,
                 format=self._format_name,
@@ -369,7 +374,7 @@ class SalvageState:
         layer, offset, volume_index = self._first_unreported
         count = self._unreported_regions
         ranges = "range" if count == 1 else "ranges"
-        self._emit(
+        self._record(
             RegionSkippedContext(
                 archive_name=self._archive_name,
                 format=self._format_name,
@@ -384,6 +389,23 @@ class SalvageState:
             f"not reported one by one: SalvageLimits.max_reported_regions is "
             f"{self.limits.max_reported_regions}.",
         )
+
+    def hold(self) -> None:
+        """Keep the records the next walk makes, for a walk that may start over
+        (:meth:`restart` drops them) or stand (:meth:`release` records them)."""
+        self._held = []
+
+    def release(self) -> None:
+        """Record what :meth:`hold` kept back, and stop holding."""
+        held, self._held = self._held, None
+        for context, message in held or ():
+            self._emit(context, message)
+
+    def _record(self, context: RegionSkippedContext, message: str) -> None:
+        if self._held is not None:
+            self._held.append((context, message))
+        else:
+            self._emit(context, message)
 
     def _emit(self, context: RegionSkippedContext, message: str) -> None:
         self._collector.emit(

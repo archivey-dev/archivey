@@ -2788,6 +2788,12 @@ class RarReader(BaseArchiveReader):
                 else SlicingStream(file, start=0, length=self._end)
             )
             handle.seek(self._origin)
+            salvage = self._salvage_mode
+            # A file named as a later volume may turn out to be one only after its
+            # walk: the records of that walk are held until it stands.
+            speculative = salvage.enabled and self._lone_volume_number is not None
+            if speculative:
+                salvage.hold()
             try:
                 archive = parse_rar_archive(
                     handle,
@@ -2796,7 +2802,7 @@ class RarReader(BaseArchiveReader):
                     max_metadata_bytes=max_metadata_bytes,
                     kdf_cache=self._kdf_cache,
                     excluded=self._excluded,
-                    salvage=self._salvage_mode,
+                    salvage=salvage,
                     name_encoding=self._encoding,
                 )
             except UnsupportedFeatureError:
@@ -2806,8 +2812,10 @@ class RarReader(BaseArchiveReader):
                     raise
                 self._volume_numbers = [self._lone_volume_number]
                 handle.seek(self._origin)
-                if self._salvage_mode.enabled:
-                    self._salvage_mode.restart()
+                if salvage.enabled:
+                    # Drops what the first walk held back: the walk below records
+                    # the same ranges, in volume ``_lone_volume_number``.
+                    salvage.restart()
                 return parse_rar_volumes(
                     [handle],
                     password=password,
@@ -2819,6 +2827,10 @@ class RarReader(BaseArchiveReader):
                     name_encoding=self._encoding,
                     volume_numbers=self._volume_numbers,
                 )
+            finally:
+                if speculative:
+                    # The first walk stands (or failed otherwise): its records count.
+                    salvage.release()
             return archive
 
     def _parse_lone_stream(self, password: bytes | None) -> RarArchive:

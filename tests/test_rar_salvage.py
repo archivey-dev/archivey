@@ -1511,3 +1511,30 @@ def test_after_a_damaged_main_an_encryption_header_is_a_nested_archives(
     salvage = _list(_write(tmp_path, data), salvage=True)
     assert "a" in salvage.names
     assert type(salvage.error) is CorruptionError
+
+
+def test_a_lone_later_volume_records_each_skipped_region_once(
+    tmp_path: Path,
+) -> None:
+    """``v.part2.rar`` alone: its first member continues from part 1, and the header
+    after it is zeroed. The first parse searches past the zeroes, then finds the
+    file is a later volume and parses it again as one: the region is recorded once,
+    in volume 2."""
+    from tests.rar_util import _rar3_block
+
+    data = (
+        _RAR3_SIGNATURE
+        + _rar3_block(0x73, 0x0011, bytes(6))  # MAIN: a volume, new numbering
+        + _rar3_file_header(b"a", b"0123456789", flags=0x8001)  # split before
+        + b"0123456789"
+        + bytes(40)
+        + _rar3_file_header(b"c", b"gamma")
+        + b"gamma"
+        + _rar3_block(0x7B, 0x4000, b"")
+    )
+    path = tmp_path / "v.part2.rar"
+    path.write_bytes(data)
+    salvage = _list(path, salvage=True)
+    assert "c" in salvage.names
+    regions = salvage.regions()
+    assert [r.volume_index for r in regions] == [1]
