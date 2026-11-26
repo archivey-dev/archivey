@@ -28,7 +28,11 @@ from archivey import (
 )
 from archivey.diagnostics import DiagnosticCode, SpecialFileDataContext
 from archivey.formats import SequentialReader
-from archivey.internal.backends.cpio_reader import MAX_NAME_BYTES, CpioReader
+from archivey.internal.backends.cpio_reader import (
+    MAX_NAME_BYTES,
+    CpioHandler,
+    CpioReader,
+)
 from archivey.internal.listing_limits import member_metadata_bytes
 from tests.streams_util import ShortReadBytesIO, open_mode
 
@@ -269,7 +273,7 @@ def _binary(name: bytes) -> bytes:
 
 def test_the_binary_probe_answers_with_a_verdict() -> None:
     """The probe knows yes from no, so it answers a match or no."""
-    probe = cpio_reader.CpioHandler.probe
+    probe = CpioHandler.probe
     assert probe is not None
     assert probe(_binary(b"hello")) is archivey.DetectionConfidence.PROBABLE
     assert probe(b"\xc7\x71" + b"\0" * 30) is None
