@@ -109,7 +109,7 @@
   `BackendUse`
 - [ ] 4.3 Tests: a vacant slot with and without its provider; an unrelated
   distribution claiming a higher priority for a stock method; an approved
-  `archivey-codecs` decoder and its fallback; an allow-list keeps its decoder set
+  `archivey-speedups` decoder and its fallback; an allow-list keeps its decoder set
 - [ ] 4.4 ZIP legacy methods through `("zip", n)`; the ZIP reader's legacy table gone;
   `CodecCall` carries the method id, the container flags and whether the input runs
   on; the entry says whether the decoder rejects random input; Implode with both
@@ -117,7 +117,7 @@
   member stay as fast as before
 - [ ] 4.4a `format_availability(ZIP)` counts core's and the hint table's methods
 - [ ] 4.5 The public kernel helper (revision check, panic guard, child), used by core
-  and by the moved readers; `archivey-codecs` unchanged (R1)
+  and by the moved readers; `archivey-speedups` unchanged (R1)
 - [ ] 4.6 `ReaderContext.decompress` by name, with the single-stream option (xar); the
   block call (SquashFS, DMG)
 - [ ] 4.6a Process isolation for package codecs (R4): `native` on a codec entry,
@@ -144,7 +144,7 @@
 - [ ] 5.2 `packages/archivey-legacy-formats`: LHA, ARJ, the legacy ZIP methods
 - [ ] 5.3 `packages/archivey-disk-images`: ISO, UDF, CD images, SquashFS
 - [ ] 5.3a `packages/archivey-dmg`: DMG with HFS+, APFS and encryption
-- [ ] 5.3c `packages/archivey-compression-formats` (R11): lz4, mozlz4, Brotli, lzop,
+- [ ] 5.3c `packages/archivey-compressors` (R11): lz4, mozlz4, Brotli, lzop,
   bzip3, Snappy as codec entries with stream facets; the 7z LZ4 and Brotli bindings;
   their dependencies leave core's `[recommended]` list; `.Z` joins the legacy package;
   SquashFS with LZ4 or LZO, and a 7z with those methods, refused with the hint when

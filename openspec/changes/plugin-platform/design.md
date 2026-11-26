@@ -658,7 +658,7 @@ Tests: a vacant slot with and without its provider; an unrelated distribution cl
 a higher priority for a stock method (refused, reported, the stock decoder runs); a
 test wheel that the owner lists, and its fallback.
 
-**Kernels (ruling R1).** `archivey-codecs` does not go through the codec registry.
+**Kernels (ruling R1).** `archivey-speedups` does not go through the codec registry.
 Review A1 showed that it cannot:
 
 - Eight of its ten kernels are not incremental stream decoders: a checksum (CRC-16), a
@@ -671,8 +671,8 @@ Review A1 showed that it cannot:
   latches the object that panicked, and runs the decoding kernels in the child under
   `NATIVE_DECODERS`. A codec entry has none of that.
 
-So `archivey-codecs` stays what it is: an optional library, named by
-`OptionalLibrary("archivey_codecs")`, that speeds up decoders and changes no result.
+So `archivey-speedups` stays what it is: an optional library, named by
+`OptionalLibrary("archivey_speedups")`, that speeds up decoders and changes no result.
 What becomes public is the switch. A reader asks `ReaderContext` for a kernel by name
 and passes its own Python decoder as the other side; it gets the Rust kernel, wrapped
 with the revision check, the panic guard and the child, or its own decoder back. Core
@@ -716,7 +716,7 @@ for formats (rulings R6 and R7) and one for compressions (R11); sizes measured o
 - `archivey-legacy-formats`: LHA and ARJ with their decoders; ZIP shrink, reduce,
   implode and DCL implode as registered codecs; and Unix compress (`.Z`), whose LZW
   code Shrink shares. About 4,800 lines.
-- `archivey-compression-formats` (R11; the name is Open Question 2): lz4 and mozlz4,
+- `archivey-compressors` (R11, named by R12): lz4 and mozlz4,
   Brotli, lzop, bzip3 and Snappy, about 3,900 lines, with the `lz4`, `brotli`,
   `bzip3`, `compress-utils` and CRC-32C dependencies that leave core's
   `[recommended]` list for this package's own. Each is a codec entry with a stream
@@ -725,7 +725,11 @@ for formats (rulings R6 and R7) and one for compressions (R11); sizes measured o
   7-Zip-zstd fork writes and which this package binds in the `"7z"` namespace. Without
   the package those members are refused with the hint. `04 F7 11 01` (Zstandard)
   stays bound in core, where the decoder is.
-- `archivey-codecs`: unchanged. It is a library that archivey imports, not a plugin (§6).
+- `archivey-speedups`: the Rust kernels, a library that archivey imports and not a
+  plugin (§6). It is `archivey-codecs` on main today, never published; R12 renames it
+  before its first release, with the extra `[speedups]` and the library name
+  `archivey_speedups`, so that it is not taken for the package that adds compressors.
+  The rename is its own change, outside this plan's steps.
 
 `[recommended]`, `[all]`, `[free-threaded]` and `archivey-cli` include all five (the
 compression package under the platform markers its dependencies carry today). The
@@ -753,7 +757,7 @@ What it cannot undo is a published package name, which is why DMG is split now.
 ## Decisions
 
 All ten were put to the maintainer and agreed on 2026-11-24. Decisions 5, 6 and 7 were
-revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R11 below).
+revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R12 below).
 
 1. **Installed plugins load by themselves, behind the guardrails of §3.** This replaces
    the 2026-10-25 rule (explicit `register_format()` only), which the maintainer
@@ -766,7 +770,7 @@ revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R11
 3. **A hint table in core** (§4), counted as the allowed small mention of our packages.
 4. **Codecs by name with method bindings** (§6). The 7z filters, ZipCrypto and AES stay
    in core.
-5. ~~`archivey-codecs` is a second implementation of a codec name.~~ Replaced by R1.
+5. ~~`archivey-speedups` is a second implementation of a codec name.~~ Replaced by R1.
 6. ~~Three format packages, DMG in disk-images.~~ Replaced by R7: four.
 7. **`[recommended]` and `archivey-cli` install every format package.**
 8. **One repository, released together**, each package depending on one minor of core.
@@ -780,7 +784,7 @@ entry point that callers opt in to.
 **Rulings of 2026-11-26**, each taken by the maintainer on its own, with the options
 and the evidence in front of him (review round A):
 
-- **R1. `archivey-codecs` stays a library behind one public kernel helper** (§6).
+- **R1. `archivey-speedups` stays a library behind one public kernel helper** (§6).
   Rejected: the codec registry for all ten kernels (eight are not stream decoders);
   the registry for LZW and LZX only (two mechanisms for one package).
 - **R2. `FormatPolicy(providers=...)` replaces `plugins=`** (§2). Rejected: keeping
@@ -822,6 +826,13 @@ and the evidence in front of him (review round A):
   gains `providers={"archivey"}`, so no package's detection code runs under it (R9).
   Rejected: all 13 other streams leaving core, dropping `COMMON` for
   `providers={"archivey"}` alone, and all streams staying.
+
+- **R12. Two names** (§7). The compression package is `archivey-compressors`: the
+  word a person holding a `.lz4` file uses, and the one the formats page already uses.
+  The Rust kernel library is renamed from `archivey-codecs` to `archivey-speedups`
+  before its first release, because "codecs" does not say that it is an optional
+  accelerator. Rejected: `archivey-compression-formats` (other archives seem to fit),
+  `archivey-compression-methods`, `archivey-accelerators`, `archivey-native`.
 
 Changed without a ruling to revise, because the plan contradicted a spec or the code:
 `CompressionAlgorithm` stays a non-string type, no extra is named after a package, and
@@ -899,8 +910,8 @@ For the next rounds of this plan. None blocks step 1.
 
 1. Field names of the manifest file, and whether `FormatHandler` keeps its declaring
    class attributes or reads them from its entry.
-2. The package names `archivey-legacy-formats` and `archivey-compression-formats`, and
-   whether `.Z` goes with the legacy formats or with the compressions.
+2. The package name `archivey-legacy-formats`, and whether `.Z` goes with the legacy
+   formats or with the compressors.
 3. Whether a known name with no installed package may be detected by signature, or by
    extension only, when the signature needs a probe (the last point of §4 Probes).
 4. The exact spelling of the off switch and of the provider query.
@@ -913,7 +924,7 @@ For the next rounds of this plan. None blocks step 1.
    to `translate_exception`, and the process-pool and memory-limit rules, which have
    special cases for pyppmd today.
 9. The exact shape of the kernel helper, and whether a package may bring a kernel of
-   its own or only use those of `archivey-codecs`.
+   its own or only use those of `archivey-speedups`.
 10. Parallel decoding for readers on `IndexedReader`. Today every stream such a reader
     returns is read under the per-reader lock. A stream that archivey itself builds
     over the shared source (a slice, or a decoder over one) touches no reader state

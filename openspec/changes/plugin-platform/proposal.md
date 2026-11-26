@@ -40,13 +40,13 @@ that other formats use, and solve the import cost with the same mechanism.
   reads each.
 - **Codec registry.** Codecs by name, method bindings per container, and a second
   implementation of a name only where its owner or the caller approves it.
-  `archivey-codecs` stays a library that archivey imports; readers in any package reach
+  `archivey-speedups` stays a library that archivey imports; readers in any package reach
   its kernels through one public helper.
 - **Reader API.** Public helpers replace each `archivey.internal` import of the moved
   readers. `API_VERSION` replaces the exact version pin. The thread rules are the short ones
   that the concurrency cut, a separate change archived 2026-11-25, leaves.
 - **Packages.** `archivey-disk-images`, `archivey-dmg`, `archivey-package-formats`,
-  `archivey-legacy-formats` and `archivey-compression-formats` under `packages/`. The
+  `archivey-legacy-formats` and `archivey-compressors` under `packages/`. The
   last holds lz4, mozlz4, Brotli, lzop, bzip3 and Snappy; `.Z` goes with the legacy
   formats. `[recommended]`, `[all]`, `[free-threaded]` and `archivey-cli` include all
   five. No extra is named after a
