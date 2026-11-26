@@ -7,7 +7,7 @@ plugin format out of detection. No spec deltas yet: each implementation PR bring
 deltas for its step. No code until the maintainer has read this plan. It replaces
 `openspec/changes/plugin-api`, whose interface it keeps and whose registration, naming
 and packaging it rewrites.
-Target: steps 1 and 2 with the other breaking trims of 0.6.0, the package split in
+Target: steps 0 to 2 with the other breaking trims of 0.6.0, the package split in
 0.7.0.
 
 **Why it matters:** archivey has two of everything: one path for its own formats and one

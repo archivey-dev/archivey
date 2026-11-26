@@ -849,7 +849,7 @@ What it cannot undo is a published package name, which is why DMG is split now.
 ## Decisions
 
 All ten were put to the maintainer and agreed on 2026-11-24. Decisions 5, 6 and 7 were
-revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R13 below).
+revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R14 below).
 
 1. **Installed plugins load by themselves, behind the guardrails of §3.** This replaces
    the 2026-10-25 rule (explicit `register_format()` only), which the maintainer
@@ -926,6 +926,13 @@ and the evidence in front of him (review round A):
   accelerator. Rejected: `archivey-compression-formats` (other archives seem to fit),
   `archivey-compression-methods`, `archivey-accelerators`, `archivey-native`.
 
+- **R14. Interface first** (Migration Plan, step 0; the maintainer's proposal of
+  2026-11-26). Before the manifest and before any wheel, the plugin interface is
+  updated and every reader and codec that will move is ported to it in place, with
+  no import from `archivey.internal` left. Rejected: porting each reader just before
+  its move (the earlier task 5.0), which would find a gap in the interface only
+  after packages were already released against it.
+
 - **R13. Core keeps the binary CPIO check** (§4). A hint may carry a small check that
   core runs when the format has no signature strong enough to be data and a wrapper
   would otherwise read the file differently. Rejected: a weak two-byte signature that
@@ -969,6 +976,16 @@ Superseded: "built in, like ISO" (2026-10-28), by the 2026-11-24 direction to sp
 Each step ships by itself and leaves main working. One thing is proved at a time, so a
 failure points at the API, at detection or at distribution, and not at all three.
 
+0. **Interface first: every class that will move is ported in place** (R14). The
+   public plugin interface grows what the moving readers and codecs need (the
+   services of step 4, the probe context of §4, the codec hooks of Open Question 12),
+   and each of the 13 readers and seven codecs is ported while it still lives in
+   core, one pull request each, until its module imports nothing from
+   `archivey.internal`. The public-names test starts here and its list of modules
+   grows with each port. Nothing moves, no name changes for callers, and the
+   manifest is not needed: a ported class registers as it does today. Proves that the
+   interface is enough before anything depends on a wheel, so a gap shows as a
+   failing test in core and not as a package that cannot be built.
 1. **Manifest and lazy loading, inside core.** No public name changes. Proves that
    detection, with the three phases of §4, gives the same answers from data, and that
    `import archivey` loads no reader.
@@ -986,14 +1003,16 @@ failure points at the API, at detection or at distribution, and not at all three
    minor of core. Lands after 0.6.0 is cut, since it moves two formats out.
 4. **Services, pulled by the reader that needs them.** Codecs by name with the
    eligibility rule, the block call, and the public helpers of §5, each landing with
-   the first reader that needs it. The legacy ZIP methods are the first codec to cross
-   a package boundary. A reader moves when it passes the public-imports test, not
-   before, so there is no stage where all ten readers and seven codecs must pass at
-   once.
+   the first reader that needs it. The Python side of each service lands in step 0,
+   with the port that needs it; what is left for this step is the side that needs
+   the manifest (codec entries, method bindings, eligibility). The legacy ZIP methods
+   are the first codec to cross a package boundary. A reader moves when it passes the
+   public-imports test, not before.
 5. **The other moves, one pack at a time.** The rest of the package formats (ar with
    deb, xar with pkg, makeself, CAB), then legacy (with `.Z`), then disk images, then
-   DMG, then `archivey-compressors`, which waits for Open Question 12. Each pack
-   repeats the pilot's checks and the corpus comparison.
+   DMG, then `archivey-compressors`. Each move is files, manifest entry and hint
+   line only, since the code was ported in step 0. Each pack repeats the pilot's
+   checks and the corpus comparison.
 6. **Afterwards.** Aliases removed one release later; the plugin guide rewritten,
    shorter.
 
@@ -1001,7 +1020,7 @@ failure points at the API, at detection or at distribution, and not at all three
 landed (decision 9, archived 2026-11-25), so the reader contract is already the short
 one when step 1 starts and the migration guide of step 3 is written against it.
 
-Rollback: steps 1 and 4 are internal and revert cleanly. Steps 2, 3 and 5 are released
+Rollback: steps 0, 1 and 4 are internal and revert cleanly. Steps 2, 3 and 5 are released
 behaviour; their rollback is a new release.
 
 ## Open Questions
@@ -1035,4 +1054,5 @@ For the next rounds of this plan. None blocks step 1.
     restart points, stored metadata, the slow-path notice and the full-decoder hook,
     which the maintainer kept private on 2026-10-30. Either they become public, or the
     codecs are rewritten onto the incremental `Decompressor`, or the codecs that need
-    the full decoder (Brotli, `.Z`, raw LZO1X) stay in core.
+    the full decoder (Brotli, `.Z`, raw LZO1X) stay in core. Step 0 cannot port those
+    codecs until this is answered.
