@@ -16,11 +16,8 @@
 - [ ] 1.7a One tail window for every trailer declaration: several declarations on a
   source that counts range reads, and on a member stream; a trailer over the cap
   refused at load
-- [ ] 1.7c Probe parity: a binary `.cpio` and a binary `initrd.cpio.gz`, on a
-  core-only and a pilot install and with the provider barred, named and unnamed. The
-  expected result is the same in all three: `(CPIO, GZIP)`, read with the package and
-  refused with the hint without it, through the check core keeps (R13), which the
-  package's handler reuses
+- [ ] 1.7c Core's binary CPIO check (R13): a binary `.cpio` is CPIO with no stream
+  format, and a binary `initrd.cpio.gz` is `(CPIO, GZIP)`, named and unnamed
 - [ ] 1.8 Spec deltas: `format-manifest` (new), `backend-registry`, `format-detection`
 
 ## 2. Open names (breaking)
@@ -98,6 +95,9 @@
   `test.sh --all-configs` extended to `packages/`
 - [ ] 3.7a The public-names test: no `archivey.internal` import and no private
   attribute of an archivey object
+- [ ] 3.7b The same two files on a core-only install, a pilot install and with the
+  provider barred: detected the same in all three, read with the package and refused
+  with the hint without it; the package's handler reuses core's check
 - [ ] 3.8 CI: build the wheel, install it beside a core wheel in a fresh environment,
   run the public-imports test and the pilot checks (discovery, plain and compressed
   CPIO, limits, cleanup); wheel, editable and zipped installs

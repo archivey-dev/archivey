@@ -25,7 +25,9 @@ Checked on main `2b66e25` (2026-11-24).
   signature). ZIP method numbers and 7z coder ids map to an internal `Codec` enum in
   tables inside the readers.
 - **Reader API.** 13 readers are written on `archivey.formats`. ar, cpio and rpm import
-  public names only. The other ten import `archivey.internal` (§5 lists what).
+  public names only. The other ten import `archivey.internal` (§5 lists what). The
+  seven stream codecs that move (R11) are not on the public interface at all: each is
+  an internal `StreamCodec`.
 - **Size.** The 13 readers and their helper modules are about 24,000 lines. ZIP, TAR,
   7z, RAR, single-file and directory are about 43,000.
 - **Core barely names the formats that would move.** Outside the readers and the enum,
@@ -549,6 +551,30 @@ What the ten readers import from `archivey.internal` today, and how each is reso
   and DMG: methods on `ReaderSource`.
 - `register_builtin_format` and its overrides, used by all 13: the manifest entry.
 
+What the seven stream codecs that move (R11) import from `archivey.internal` today.
+None of them is written on the public `CodecHandler`: lz4, mozlz4, Brotli, lzop,
+bzip3, Snappy and `.Z` each subclass the internal `StreamCodec`
+(`internal/streams/codecs/base.py`).
+
+- `StreamCodec`, `Codec`, `CodecParams`, `StreamConfig`, `FramedDecoder` and the
+  decompressor stream, used by all seven: the port to `CodecHandler` and `CodecCall`.
+- Hooks `StreamCodec` has and `CodecHandler` lacks, each used by a moving codec:
+  `stream_index` (restart points for seeking: lz4, lzop, bzip3, Snappy), `frame_check`
+  and `stream_start` (lz4), `extract_metadata` (the stored name and time: lzop,
+  mozlz4), `missing_speedups` (the slow-path notice: lzop, Snappy), and `open`, the
+  full decoder (Brotli, `.Z`, raw LZO1X). Whether these become public, and the
+  full-decoder hook with them, is Open Question 12: the 2026-10-30 ruling keeps that
+  hook private, and without it Brotli and `.Z` cannot move as they are.
+- The child-process switch (`isolated.IN_PROCESS`, `Natives`, the decoder worker and
+  child), used by lz4, mozlz4, Brotli, lzop and Snappy: `call.native(...)` (R4).
+- The kernel switch (`kernels`, `LzwDecompressor`), used by lzop and `.Z`: the public
+  kernel helper, as for CAB, LHA and DMG.
+- `detection_workspace`, used by Brotli's probe: the probe context (§4).
+- `script_payload.check_lz4`, shared by lz4 and makeself: public, or one copy in each
+  package.
+- The diagnostics collector and the timestamp helper: public, as for the readers.
+- `override`: the same shim.
+
 Private attributes of public objects that the readers use today, each of which
 becomes a public call or goes:
 
@@ -962,10 +988,12 @@ failure points at the API, at detection or at distribution, and not at all three
    eligibility rule, the block call, and the public helpers of §5, each landing with
    the first reader that needs it. The legacy ZIP methods are the first codec to cross
    a package boundary. A reader moves when it passes the public-imports test, not
-   before, so there is no stage where all ten must pass at once.
+   before, so there is no stage where all ten readers and seven codecs must pass at
+   once.
 5. **The other moves, one pack at a time.** The rest of the package formats (ar with
-   deb, xar with pkg, makeself, CAB), then legacy, then disk images, then DMG. Each pack repeats the
-   pilot's checks and the corpus comparison.
+   deb, xar with pkg, makeself, CAB), then legacy (with `.Z`), then disk images, then
+   DMG, then `archivey-compressors`, which waits for Open Question 12. Each pack
+   repeats the pilot's checks and the corpus comparison.
 6. **Afterwards.** Aliases removed one release later; the plugin guide rewritten,
    shorter.
 
@@ -1003,3 +1031,8 @@ For the next rounds of this plan. None blocks step 1.
     and could skip the lock, so SquashFS, xar, CAB, LHA, ARJ and DMG would decode
     members in parallel as ZIP does. A speed-up, not a contract change: it comes after
     the concurrency cut and after the moves.
+12. The codec hooks the moving stream codecs need and `CodecHandler` lacks (§5):
+    restart points, stored metadata, the slow-path notice and the full-decoder hook,
+    which the maintainer kept private on 2026-10-30. Either they become public, or the
+    codecs are rewritten onto the incremental `Decompressor`, or the codecs that need
+    the full decoder (Brotli, `.Z`, raw LZO1X) stay in core.
