@@ -215,10 +215,10 @@ same user, and there is no timeout. All of it is on the
 
 Ten of archivey's own decoders (LZX, LZW, LZO1X, BCJ2, the ARM64 and RISC-V filters,
 ZipCrypto, LHA's CRC-16, and Apple's LZFSE and LZVN) have Rust versions in the optional
-`archivey-codecs` package. Each Python decoder has a twin with the package's API, and a
-switch in `internal/kernels/` (one per package module; the two filters share one) picks
-one, so call sites never mention the package. Both give the same bytes and errors. See
-the [codec kernels](../topics/codec-kernels.md) topic page.
+`archivey-speedups` package. Each Python decoder has a twin with the package's API, and
+a switch in `internal/kernels/` (one per package module; the two filters share one)
+picks one, so call sites never mention the package. Both give the same bytes and errors.
+See the [codec kernels](../topics/codec-kernels.md) topic page.
 
 ## Who closes what
 
@@ -236,7 +236,7 @@ child.
 
 AES (7z, RAR 5, WinZip AES in ZIP) runs through the `cryptography` package
 (`streams/crypto.py`); ZipCrypto is archivey's own (`backends/zipcrypto.py`, its cipher in
-`kernels/python/zipcrypto.py` or archivey-codecs). Encryption
+`kernels/python/zipcrypto.py` or archivey-speedups). Encryption
 is a stage in the stack, below the decoder. Password handling is shared: candidates come
 from `password.py`, and `password_confirm.py` has the ladder that decides whether a
 candidate is right when a format's own check can accept a wrong password: a cheap key

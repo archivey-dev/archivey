@@ -1,6 +1,6 @@
 # Changelog
 
-archivey-codecs has its own version and its own releases, tagged `codecs-vX.Y.Z`.
+archivey-speedups has its own version and its own releases, tagged `speedups-vX.Y.Z`.
 
 ## Unreleased
 

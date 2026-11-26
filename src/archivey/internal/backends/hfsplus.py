@@ -1047,7 +1047,8 @@ def decmpfs_reader(
         refusal = context.config.formats._codec_refusal(method)
         if refusal is not None:
             raise UnsupportedFeatureError(f"{refusal}.")
-    # The file's LZFSE or LZVN decoder: archivey-codecs' kernel when the call allows it.
+    # The file's LZFSE or LZVN decoder: archivey-speedups' kernel when the call allows
+    # it.
     apple = (
         decoder_for("lzvn" if kind in _LZVN_KINDS else "lzfse", context.config)
         if method is not None

@@ -777,7 +777,7 @@ class UdifImage:
                 decode = in_house[1]
                 if kind == LZFSE:
                     if self._lzfse is None:
-                        # archivey-codecs' kernel when the call allows it.
+                        # archivey-speedups' kernel when the call allows it.
                         self._lzfse = decoder_for("lzfse", self._context.config)
                     decode = self._lzfse
                 # Each refuses output past the limit itself.

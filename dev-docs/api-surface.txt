@@ -601,7 +601,7 @@ value archivey.OptionalLibrary.BZIP3 = 'bz3'
 value archivey.OptionalLibrary.CRAMJAM = 'cramjam'
 value archivey.OptionalLibrary.GOOGLE_CRC32C = 'google_crc32c'
 value archivey.OptionalLibrary.CRC32C = 'crc32c'
-value archivey.OptionalLibrary.ARCHIVEY_CODECS = 'archivey_codecs'
+value archivey.OptionalLibrary.ARCHIVEY_SPEEDUPS = 'archivey_speedups'
 class archivey.OverwritePolicy(Enum)
 enum archivey.OverwritePolicy
 value archivey.OverwritePolicy.ERROR = 'error'

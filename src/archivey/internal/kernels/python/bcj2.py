@@ -1,4 +1,4 @@
-"""BCJ2 in Python, as ``archivey_codecs.bcj2``: 7-Zip's four-stream x86 branch
+"""BCJ2 in Python, as ``archivey_speedups.bcj2``: 7-Zip's four-stream x86 branch
 converter (7z method ``0x0303011B``).
 
 The encoder splits an executable into four streams, stored as four separate 7z pack

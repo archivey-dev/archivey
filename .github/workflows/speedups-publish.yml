@@ -1,12 +1,12 @@
-name: archivey-codecs wheels
+name: archivey-speedups wheels
 
-# Builds, tests and publishes archivey-codecs (packages/archivey-codecs), the optional
-# Rust package. Its releases are separate from archivey's: tag `codecs-vX.Y.Z`, which
+# Builds, tests and publishes archivey-speedups (packages/archivey-speedups), the optional
+# Rust package. Its releases are separate from archivey's: tag `speedups-vX.Y.Z`, which
 # publish.yml's `v*` filter does not match (design D7 and D8 of the rust-codecs-package
 # change).
 #
 #   • a pull request that touches the package or this file -> build and test only
-#   • pushing a `codecs-v*` tag                              -> real PyPI
+#   • pushing a `speedups-v*` tag                              -> real PyPI
 #   • Run workflow -> target=testpypi                        -> TestPyPI (dry run)
 #   • Run workflow -> target=pypi                            -> real PyPI from the ref
 #
@@ -16,28 +16,28 @@ name: archivey-codecs wheels
 # musllinux_1_2 image, whose interpreters live in /opt/python; those images no longer
 # ship free-threaded 3.13, so the build installs uv's. A 3.13t wheel matters even though
 # 3.13t's free threading is experimental: no environment marker tells 3.13t from 3.13,
-# so without one `archivey[codecs]` would fall back to the sdist and need Rust.
+# so without one `archivey[speedups]` would fall back to the sdist and need Rust.
 # Each wheel, on every platform, is installed in a clean environment with archivey from
 # this checkout and runs the package's own tests (test_api.py, test_parity.py) with
-# CODECS_REQUIRED=1, so a wheel that does not import fails instead of skipping. The abi3
+# SPEEDUPS_REQUIRED=1, so a wheel that does not import fails instead of skipping. The abi3
 # wheel runs them on 3.11 (its floor) and on 3.14. A free-threaded wheel must also leave
 # the GIL off after import (`-W error` turns CPython's re-enable warning into a
 # failure). musllinux wheels are tested in the same pypa musllinux image.
 #
 # Trusted Publishing must be set up on the index side, once, for project
-# `archivey-codecs`, as a "pending publisher" (the project does not exist yet):
-#   • PyPI:     repo archivey-dev/archivey, workflow `codecs-publish.yml`, environment `pypi`
-#   • TestPyPI: repo archivey-dev/archivey, workflow `codecs-publish.yml`, environment `testpypi`
+# `archivey-speedups`, as a "pending publisher" (the project does not exist yet):
+#   • PyPI:     repo archivey-dev/archivey, workflow `speedups-publish.yml`, environment `pypi`
+#   • TestPyPI: repo archivey-dev/archivey, workflow `speedups-publish.yml`, environment `testpypi`
 # The GitHub environments `pypi` and `testpypi` are the ones publish.yml already uses.
 
 on:
   push:
     tags:
-      - 'codecs-v*'
+      - 'speedups-v*'
   pull_request:
     paths:
-      - packages/archivey-codecs/**
-      - .github/workflows/codecs-publish.yml
+      - packages/archivey-speedups/**
+      - .github/workflows/speedups-publish.yml
       # The Python twins and the decoders they wrap: the parity tests compare them
       # with the kernels, so a change to either side runs them.
       - src/archivey/internal/kernels/**
@@ -69,11 +69,11 @@ permissions:
 concurrency:
   # A new push to a PR cancels that PR's previous run. A tag or a dispatch gets its own
   # group, so nothing cancels a publish.
-  group: codecs-publish-${{ github.event.pull_request.number || github.run_id }}
+  group: speedups-publish-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 env:
-  PACKAGE: packages/archivey-codecs
+  PACKAGE: packages/archivey-speedups
 
 jobs:
   rust-checks:
@@ -170,10 +170,10 @@ jobs:
             # timeout) this environment does not install.
             py_exe="$RUNNER_TEMP/venv/bin/python"
             [ -x "$py_exe" ] || py_exe="$RUNNER_TEMP/venv/Scripts/python.exe"
-            CODECS_REQUIRED=1 "$py_exe" -m pytest -q -c /dev/null \
+            SPEEDUPS_REQUIRED=1 "$py_exe" -m pytest -q -c /dev/null \
               --rootdir=. -p no:cacheprovider "$PACKAGE/tests"
             case "$py" in
-              *t) "$py_exe" -W error -c 'import sys, archivey_codecs._codecs; assert not sys._is_gil_enabled()' ;;
+              *t) "$py_exe" -W error -c 'import sys, archivey_speedups._speedups; assert not sys._is_gil_enabled()' ;;
             esac
             echo "::endgroup::"
           done
@@ -196,10 +196,10 @@ jobs:
               [ "$tag" != cp313-cp313t ] || py="$(/opt/python/cp312-cp312/bin/python -m uv python find 3.13t)"
               "$py" -m venv /tmp/venv
               /tmp/venv/bin/pip install -q "$wheel" . pytest
-              CODECS_REQUIRED=1 /tmp/venv/bin/python -m pytest -q -c /dev/null \
+              SPEEDUPS_REQUIRED=1 /tmp/venv/bin/python -m pytest -q -c /dev/null \
                 --rootdir=. -p no:cacheprovider "$0/tests"
               case "$tag" in
-                *t) /tmp/venv/bin/python -W error -c "import sys, archivey_codecs._codecs; assert not sys._is_gil_enabled()" ;;
+                *t) /tmp/venv/bin/python -W error -c "import sys, archivey_speedups._speedups; assert not sys._is_gil_enabled()" ;;
               esac
             done
           ' "$PACKAGE"
@@ -229,8 +229,8 @@ jobs:
       - name: Verify tag matches the package version
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          tag="${GITHUB_REF_NAME#codecs-v}"
-          built="$(ls dist/archivey_codecs-*.tar.gz | sed -E 's|.*/archivey_codecs-(.+)\.tar\.gz|\1|')"
+          tag="${GITHUB_REF_NAME#speedups-v}"
+          built="$(ls dist/archivey_speedups-*.tar.gz | sed -E 's|.*/archivey_speedups-(.+)\.tar\.gz|\1|')"
           echo "tag version = $tag, built version = $built"
           if [ "$tag" != "$built" ]; then
             echo "::error::Tag '$GITHUB_REF_NAME' does not match the package version '$built'. Set [package].version in $PACKAGE/Cargo.toml before tagging." >&2
@@ -240,7 +240,7 @@ jobs:
       # purpose.
       - name: Check sdist contents
         run: |
-          got="$(tar tzf dist/archivey_codecs-*.tar.gz | cut -d/ -f2 | sed '/^$/d' | LC_ALL=C sort -u | paste -sd' ')"
+          got="$(tar tzf dist/archivey_speedups-*.tar.gz | cut -d/ -f2 | sed '/^$/d' | LC_ALL=C sort -u | paste -sd' ')"
           want="$(printf '%s\n' .gitignore CHANGELOG.md Cargo.lock Cargo.toml LICENSE PKG-INFO README.md bench pyproject.toml python src tests | LC_ALL=C sort -u | paste -sd' ')"
           if [ "$got" != "$want" ]; then
             echo "::error::the sdist holds top-level entries [$got], expected [$want]" >&2
@@ -249,8 +249,8 @@ jobs:
       - name: The sdist builds and passes the tests
         run: |
           uv venv --python 3.12 "$RUNNER_TEMP/venv"
-          VIRTUAL_ENV="$RUNNER_TEMP/venv" uv pip install dist/archivey_codecs-*.tar.gz . pytest
-          CODECS_REQUIRED=1 "$RUNNER_TEMP/venv/bin/python" -m pytest -q -c /dev/null \
+          VIRTUAL_ENV="$RUNNER_TEMP/venv" uv pip install dist/archivey_speedups-*.tar.gz . pytest
+          SPEEDUPS_REQUIRED=1 "$RUNNER_TEMP/venv/bin/python" -m pytest -q -c /dev/null \
             --rootdir=. -p no:cacheprovider "$PACKAGE/tests"
       - name: Upload sdist
         uses: actions/upload-artifact@v4
@@ -282,10 +282,10 @@ jobs:
           uv sync --locked --python 3.11 --group dev --extra all
           uv pip install dist/*-abi3-*.whl
       - name: Test
-        # CODECS_REQUIRED=1: tests/conftest.py stops the run when the package does not
+        # SPEEDUPS_REQUIRED=1: tests/conftest.py stops the run when the package does not
         # import, so the tests that need it fail instead of skipping.
         run: >-
-          CODECS_REQUIRED=1 uv run --no-sync pytest -q -n auto --no-cov
+          SPEEDUPS_REQUIRED=1 uv run --no-sync pytest -q -n auto --no-cov
           tests/test_kernels.py tests/test_cab.py tests/test_sevenzip_arm64.py
           tests/test_sevenzip_bcj2.py tests/test_sevenzip_riscv.py
   check:
@@ -308,12 +308,12 @@ jobs:
   pypi:
     name: Publish to PyPI
     needs: [rust-checks, check]
-    # Real PyPI only from the canonical repo: a codecs tag pushed, or a manual run with
+    # Real PyPI only from the canonical repo: a speedups tag pushed, or a manual run with
     # target=pypi. The event is checked too: a manual run started on a tag has a tag
     # ref, and with target=testpypi it must not reach PyPI.
     if: >-
       github.repository == 'archivey-dev/archivey'
-      && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/codecs-v'))
+      && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/speedups-v'))
           || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi'))
     runs-on: ubuntu-latest
     environment: pypi
@@ -327,7 +327,7 @@ jobs:
       # skip-existing lets a re-run finish the files a failed run left out (a PyPI
       # filename can never be uploaded twice). attestations: a PEP 740 attestation per
       # file, as publish.yml does for archivey.
-      - name: Publish archivey-codecs
+      - name: Publish archivey-speedups
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
@@ -350,7 +350,7 @@ jobs:
         with:
           path: dist/
           merge-multiple: true
-      - name: Publish archivey-codecs
+      - name: Publish archivey-speedups
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/

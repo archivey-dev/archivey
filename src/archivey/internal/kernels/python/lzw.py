@@ -1,4 +1,4 @@
-"""Unix ``compress`` (``.Z``) in Python, as ``archivey_codecs.lzw``: the
+"""Unix ``compress`` (``.Z``) in Python, as ``archivey_speedups.lzw``: the
 :class:`lzma.LZMADecompressor` interface plus ``flush()``, since the format has no end
 marker. The decoder is
 :class:`archivey.internal.streams.codecs.unix_compress_decoder.LzwState`; this class

@@ -9,11 +9,11 @@ import pytest
 from archivey.internal import kernels
 from archivey.types import OptionalLibrary
 
-_OFF = frozenset({OptionalLibrary.ARCHIVEY_CODECS})
+_OFF = frozenset({OptionalLibrary.ARCHIVEY_SPEEDUPS})
 
 
 def use_python_twin(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
-    """Make the switch ``kernels.<name>`` give the Python twin, as if archivey-codecs
+    """Make the switch ``kernels.<name>`` give the Python twin, as if archivey-speedups
     were turned off for every call."""
     real = getattr(kernels, name)
 

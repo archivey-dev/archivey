@@ -637,7 +637,7 @@ class DecoderChild:
         return name in self._state
 
     def reported(self, name: str) -> object:
-        """The kernel attribute ``name`` that archivey-codecs' host reported with the
+        """The kernel attribute ``name`` that archivey-speedups' host reported with the
         last reply (``decoder_worker._Codecs.report``)."""
         report = self._state.get("report")
         if not isinstance(report, dict) or name not in report:

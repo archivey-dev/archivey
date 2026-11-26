@@ -1,4 +1,4 @@
-"""LZX in Python, as ``archivey_codecs.lzx``: one LZX stream (a CAB folder) with the
+"""LZX in Python, as ``archivey_speedups.lzx``: one LZX stream (a CAB folder) with the
 :class:`lzma.LZMADecompressor` interface, plus ``flush()`` and ``set_output_size()``.
 
 The decoder is :class:`archivey.internal.streams.codecs.lzx_decoder.LzxDecoder` in push
