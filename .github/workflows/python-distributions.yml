@@ -176,11 +176,21 @@ jobs:
           - name: "Ubuntu 22.04 python3.11 / Linux"
             image: "ubuntu:22.04"
             python: /usr/bin/python3.11
+            # add-apt-repository succeeds when the PPA cannot be reached (a 503 on
+            # 2026-11-24 and 11-25), and apt then installs Ubuntu's own 3.11.0rc1, which
+            # fails tests as if archivey were at fault. So the PPA's index is fetched with
+            # retries and Error-Mode=any, and the job stops unless 3.11 came from it.
             install: >-
               apt-get update
               && apt-get install -y software-properties-common git gcc g++ curl ca-certificates
-              && add-apt-repository -y ppa:deadsnakes/ppa
+              && add-apt-repository -y --no-update ppa:deadsnakes/ppa
+              && for attempt in 1 2 3 4 5; do
+              apt-get -o APT::Update::Error-Mode=any update && break;
+              [ "$attempt" = 5 ] && { echo "::error::the deadsnakes PPA could not be reached"; exit 1; };
+              sleep 60;
+              done
               && apt-get install -y python3.11 python3.11-dev python3.11-venv
+              && /usr/bin/python3.11 -c 'import sys; assert sys.version_info >= (3, 11, 4) and sys.version_info.releaselevel == "final", sys.version'
     steps:
       - name: Install the distribution's Python, git and a compiler
         run: ${{ matrix.install }}
