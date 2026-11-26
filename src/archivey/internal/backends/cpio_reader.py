@@ -258,7 +258,26 @@ class _LinkGroup:
     until one does."""
 
     name: str | None = None
-    held: list[ArchiveMember] = field(default_factory=list)
+    held: list[tuple[ArchiveMember, _Scan | None]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _Scan:
+    """How salvage reached a member past the damage, for its
+    ``MEMBER_FOUND_BY_SCAN`` record, made when the member is listed."""
+
+    offset: int
+    confirmed: bool
+    searched: bool
+
+    def report(self, salvage: WalkSalvage | None, member: ArchiveMember) -> None:
+        assert salvage is not None
+        salvage.found(
+            member,
+            offset=self.offset,
+            confirmed=self.confirmed,
+            searched=self.searched,
+        )
 
 
 # What the held links are, in a limit error (ReaderContext.hold).
@@ -347,7 +366,7 @@ class CpioReader(SequentialReader):
                     search_from = offset
                     continue
             if raw == TRAILER:
-                yield from self._flush(groups)
+                yield from self._flush(groups, salvage)
                 self._check_end(stream)
                 if salvage is not None:
                     if damage is not None:
@@ -355,6 +374,7 @@ class CpioReader(SequentialReader):
                     salvage.state.finish()
                 return
             member = self._member(header, raw)
+            scan: _Scan | None = None
             if damage is not None:
                 # Past the damage every member is one the default does not list: the
                 # one the search found, and those walked on from it.
@@ -366,12 +386,9 @@ class CpioReader(SequentialReader):
                     search_from = salvage.after(header.offset)
                     continue
                 confirmed = self._confirmed(salvage, header, stream.offset)
-                salvage.found(
-                    member,
-                    offset=header.offset,
-                    confirmed=confirmed,
-                    searched=searched,
-                )
+                # Recorded when the member is listed: a link held for its data
+                # may never be.
+                scan = _Scan(header.offset, confirmed, searched)
                 if not confirmed:
                     # No claim on its data: the search goes on inside it, past this
                     # header, which it must not find again.
@@ -395,13 +412,15 @@ class CpioReader(SequentialReader):
                     # newc keeps the data with the last link: hold this one back,
                     # counted toward the listing's limits while it waits.
                     self._context.hold(member, reason=_HELD)
-                    group.held.append(member)
+                    group.held.append((member, scan))
                     stream.skip(size + self._data_pad(header))
                     continue
                 else:
                     # The link that is yielded as the FILE: the first one in binary
                     # and odc, the one carrying the data in newc and crc.
                     group.name = member.name
+            if scan is not None:
+                scan.report(salvage, member)
             yield MemberSpan(member, size, self._digests(header, member))
             if search_from is None:
                 # Not after a member the walk cannot confirm: it moves back into
@@ -409,10 +428,12 @@ class CpioReader(SequentialReader):
                 stream.skip(self._data_pad(header))
             if member.type is MemberType.FILE and header.nlink > 1:
                 group = groups[key]
-                for link in group.held:
+                for link, link_scan in group.held:
                     link.type = MemberType.HARDLINK
                     link.link_target = member.name
                     link.size = None
+                    if link_scan is not None:
+                        link_scan.report(salvage, link)
                     yield MemberSpan(link, 0)
                 group.held.clear()
 
@@ -465,14 +486,19 @@ class CpioReader(SequentialReader):
                 return None
             at = result.found
             salvage.seek(at)
+            # A lost start's first header sets the variant (``_read_header``); one
+            # the search passes over must not narrow the searches after it.
+            variant = self._variant
             try:
                 header, raw = self._read_entry(stream)
             except CorruptionError as exc:
                 if not salvage.is_damage(exc):
                     raise
+                self._variant = variant
                 start = at
                 continue
             if not salvage.holds(stream.offset + header.file_size):
+                self._variant = variant
                 start = at
                 continue
             return header, raw, at if any_variant else base
@@ -491,20 +517,26 @@ class CpioReader(SequentialReader):
         return _passes(whole, 0, magics)
 
     def _flush(
-        self, groups: dict[tuple[tuple[int, int], int], _LinkGroup]
+        self,
+        groups: dict[tuple[tuple[int, int], int], _LinkGroup],
+        salvage: WalkSalvage | None,
     ) -> Iterator[MemberSpan]:
         """At the trailer: the links whose data never arrived, the first as an empty
         file and the rest as links to it."""
         for group in groups.values():
             if not group.held:
                 continue
-            first, *rest = group.held
+            (first, first_scan), *rest = group.held
             first.size = 0
+            if first_scan is not None:
+                first_scan.report(salvage, first)
             yield MemberSpan(first, 0)
-            for link in rest:
+            for link, link_scan in rest:
                 link.type = MemberType.HARDLINK
                 link.link_target = first.name
                 link.size = None
+                if link_scan is not None:
+                    link_scan.report(salvage, link)
                 yield MemberSpan(link, 0)
 
     def _defers_link_data(self) -> bool:

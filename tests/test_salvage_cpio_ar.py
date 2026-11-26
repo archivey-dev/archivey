@@ -1091,3 +1091,75 @@ def test_deb_found_data_tar_that_fails_later_keeps_the_first_error(
     assert isinstance(error, CorruptionError)
     assert isinstance(default, CorruptionError)
     assert error.raw_message.startswith(default.raw_message)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("tables", [1, 2])
+def test_ar_bogus_long_name_table_past_the_end_charges_nothing(
+    tables: int, tmp_path: Path
+) -> None:
+    """Past the damage, a ``//`` header whose size runs past the file's end is
+    passed over before its table is charged or read: the members after it are
+    listed, and the pass ends in the first damage, not a listing limit."""
+    out = b"!<arch>\n" + _ar_header(b"before/", 2) + b"bb"
+    out += b"X" * 60
+    for _ in range(tables):
+        out += _ar_header(b"//", 70_000_000)
+    out += _ar_header(b"after/", 2) + b"aa"
+    path = _write(tmp_path, out, "a.a")
+    members, _diagnostics, error = _read(path, salvage=True)
+    assert [m[0] for m in members] == ["before", "after"]
+    assert isinstance(error, CorruptionError)
+
+
+def test_cpio_lost_start_passed_over_candidate_does_not_set_the_variant(
+    tmp_path: Path,
+) -> None:
+    """A lost start whose first candidate is a newc header whose data runs past
+    the end: the search passes over it and still finds the odc members after it."""
+    bogus = _newc("bogus", b"", 9)
+    bogus = bogus[:54] + b"%08X" % 999_999 + bogus[62:]  # its size field
+    raw = b"\x01" * 5 + bogus + _odc("real.txt", b"hello", 1)
+    raw += _odc("TRAILER!!!", b"", 0)
+    path = _write(tmp_path, raw, "a.cpio")
+    names, _diagnostics, error = _open_lost_start(path)
+    assert names == ["real.txt"]
+    assert isinstance(error, CorruptionError)
+
+
+def test_cpio_held_link_never_listed_is_not_recorded_as_found(tmp_path: Path) -> None:
+    """Past the damage, a newc link held for data that never arrives (the archive
+    ends first) is not listed, so no ``MEMBER_FOUND_BY_SCAN`` names it."""
+    before = _newc("before.txt", b"b" * 8, 1)
+    link = bytearray(_newc("orphan_link", b"", 2))
+    link[6 + 4 * 8 : 6 + 5 * 8] = b"%08X" % 2  # nlink
+    raw = before + b"\0" * 120 + bytes(link)
+    path = _write(tmp_path, raw, "a.cpio")
+    members, diagnostics, error = _read(path, salvage=True)
+    assert [m[0] for m in members] == ["before.txt"]
+    assert _found(diagnostics) == []
+    assert isinstance(error, CorruptionError)
+
+
+def test_cpio_gz_probe_into_a_damaged_codec_tail_reads_as_the_end(
+    tmp_path: Path,
+) -> None:
+    """A .cpio.gz damaged near its end, with a found newc header past the cpio
+    damage whose size points into the damaged gzip tail: the probe of that size
+    reads as the layer's end, so the header is passed over and the members after
+    it are listed. The pass ends in the first damage, the cpio one."""
+    import gzip
+
+    bogus = _newc("bogus", b"", 9)
+    bogus = bogus[:54] + b"%08X" % 500_000 + bogus[62:]
+    raw = _newc("before.txt", b"b" * 8, 1) + b"\0" * 120 + bogus
+    raw += _newc("good_after.txt", b"g" * 8, 2) + _newc("TRAILER!!!", b"", 0)
+    raw += bytes(4096)
+    packed = bytearray(gzip.compress(raw))
+    packed[-20:] = b"\xff" * 20
+    path = _write(tmp_path, bytes(packed), "a.cpio.gz")
+    default = _read(path)[2]
+    members, _diagnostics, error = _read(path, salvage=True)
+    assert [m[0] for m in members] == ["before.txt", "good_after.txt"]
+    assert isinstance(default, CorruptionError)
+    assert type(error) is type(default)
+    assert error.raw_message.startswith(default.raw_message)  # type: ignore[attr-defined]

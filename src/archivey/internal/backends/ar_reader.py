@@ -235,7 +235,11 @@ class ArReader(SequentialReader):
                     return
                 try:
                     entry = self._entry(
-                        stream, raw, offset, names, salvaging=damage is not None
+                        stream,
+                        raw,
+                        offset,
+                        names,
+                        salvage=salvage if damage is not None else None,
                     )
                 except CorruptionError as err:
                     if salvage is None or not salvage.is_damage(err):
@@ -245,18 +249,20 @@ class ArReader(SequentialReader):
                     damage = damage or err
                     search_from = offset
                     continue
+                if entry is None:
+                    # Past the damage, data that runs past the layer's end, as
+                    # ``_search`` refuses for a found header: not listed, since
+                    # reading it would end the pass in TruncatedError. The search
+                    # goes on past this header.
+                    assert salvage is not None
+                    search_from = salvage.after(offset)
+                    continue
             confirmed = True
             if damage is not None:
                 # Past the damage every header is one the default does not reach. It
                 # claims its data only when the header after it passes too.
                 assert salvage is not None
                 size = entry.size
-                if not searched and not salvage.holds(offset + HEADER_SIZE + size):
-                    # Data that runs past the layer's end, as ``_search`` refuses for
-                    # a found header: not listed, since reading it would end the pass
-                    # in TruncatedError. The search goes on past this header.
-                    search_from = salvage.after(offset)
-                    continue
                 confirmed = ar_confirmed(
                     salvage, offset + HEADER_SIZE + size + (size & 1)
                 )
@@ -294,12 +300,17 @@ class ArReader(SequentialReader):
         offset: int,
         names: bytes | None,
         *,
-        salvaging: bool,
-    ) -> _Entry:
+        salvage: WalkSalvage | None,
+    ) -> _Entry | None:
         """What the header ``raw`` at ``offset`` holds, the stream moved past what
-        the walk reads of it: a member's data is left for archivey. ``salvaging``
-        (past damage in salvage mode) keeps a GNU ``/123`` name whose table is not
-        there, and takes a second long-name table."""
+        the walk reads of it: a member's data is left for archivey.
+
+        ``salvage`` is given past damage in salvage mode. The header is then
+        ``None`` when its data runs past the layer's end (``WalkSalvage.holds``),
+        checked before anything past the header is read, charged or kept. And it
+        keeps a GNU ``/123`` name whose table is not there, and takes a second
+        long-name table."""
+        salvaging = salvage is not None
         if len(raw) < HEADER_SIZE:
             raise TruncatedError(
                 f"ar archive ends {len(raw)} bytes into the header at offset {offset}"
@@ -309,10 +320,11 @@ class ArReader(SequentialReader):
         size = _field(raw[48:58], 10, "size", offset)
         if size is None:
             raise CorruptionError(f"ar header at offset {offset} has no size")
+        if salvage is not None and not salvage.holds(offset + HEADER_SIZE + size):
+            return None
         unchecked: tuple[str, ...] = ("position",)
         name_field = raw[:16].rstrip(b" ")
         if name_field.startswith(b"#1/"):
-            self._dialect = self._dialect or "bsd"
             name_size = _field(name_field[3:], 10, "name length", offset)
             if name_size is None:
                 raise CorruptionError(
@@ -323,6 +335,7 @@ class ArReader(SequentialReader):
                     f"ar header at offset {offset}: a name of {name_size} bytes "
                     f"in a member of {size}"
                 )
+            self._dialect = self._dialect or "bsd"
             name = stream.read_exact(name_size).rstrip(b"\0")
             data_length = size - name_size
             if name in _BSD_SYMBOL_TABLES:
@@ -383,14 +396,14 @@ class ArReader(SequentialReader):
             salvage.seek(at)
             try:
                 entry = self._entry(
-                    stream, stream.read(HEADER_SIZE), at, names, salvaging=True
+                    stream, stream.read(HEADER_SIZE), at, names, salvage=salvage
                 )
             except CorruptionError as exc:
                 if not salvage.is_damage(exc):
                     raise
                 start = at
                 continue
-            if not salvage.holds(at + HEADER_SIZE + entry.size):
+            if entry is None:
                 start = at
                 continue
             return at, entry

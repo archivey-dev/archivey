@@ -38,7 +38,7 @@ from archivey.diagnostics import (
     SalvageScanContext,
     SalvageUnavailableContext,
 )
-from archivey.exceptions import ArchiveyError
+from archivey.exceptions import ArchiveyError, CorruptionError
 from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError
 from archivey.internal.logs import backends as logger
 from archivey.internal.overrides import override
@@ -758,7 +758,9 @@ class WalkSalvage:
 
         A probe the decoding limits refuse (the ratio limit, or the listing's budget)
         reads as nothing: the candidate fails its check, and the pass ends in the first
-        damage, not in the limit.
+        damage, not in the limit. So does a probe past damage in a decoded layer (a
+        codec stream cut or corrupt before ``offset``): the layer ends there for the
+        probes. An exception ``on_source_read`` raised is not damage and propagates.
         """
         if self.size is not None:
             return self._read_at_refused_as_nothing(offset, n)
@@ -782,13 +784,20 @@ class WalkSalvage:
             return self._read_at(offset, n)
         except AlwaysStopResourceLimitError:
             return b""
+        except CorruptionError as exc:
+            # A decoded layer damaged before ``offset`` (a codec stream cut or
+            # corrupt there): the probe reads nothing, as at the layer's end. The
+            # walk's own read reaches that damage, if anything does.
+            if not self.is_damage(exc):
+                raise
+            return b""
 
     def _read_forward(self, start: int, offset: int, n: int) -> bytes:
         """``read_at`` past ``start``, the furthest offset known to be there: read
         forward from it, noting how far the layer goes."""
+        at = start
         read, close = self._open_reader(start)
         try:
-            at = start
             while at < offset:
                 got = len(read(at, min(offset - at, _PROBE_STEP)))
                 if not got:
@@ -797,6 +806,13 @@ class WalkSalvage:
                 self._held_to = max(self._held_to, at)
             return read(offset, n)
         except AlwaysStopResourceLimitError:
+            return b""
+        except CorruptionError as exc:
+            # The decoded layer is damaged past ``at``: it ends there for the
+            # probes, so a later one does not decode up to the damage again.
+            if not self.is_damage(exc):
+                raise
+            self._end = at if self._end is None else min(self._end, at)
             return b""
         finally:
             close()
