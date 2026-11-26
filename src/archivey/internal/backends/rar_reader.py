@@ -4124,10 +4124,11 @@ class RarReader(BaseArchiveReader):
     def _lost_chain_error(
         self, member: ArchiveMember, info: RarMemberInfo
     ) -> CorruptionError | None:
-        """Why a program cannot decode this found member, or ``None``: in a solid
-        archive its solid stream runs through bytes salvage lost (``after_lost``).
+        """Why a program cannot decode this found member, or ``None``: its solid
+        stream runs through bytes salvage lost (``after_lost``).
 
-        Decided from the listing, before any program runs. A stored plaintext or
+        Decided from the listing, before any program runs, by the members' own solid
+        flags, which the decoder follows whatever the main header says. A stored plaintext or
         stored encrypted member is read by archivey itself before this is asked.
         From the member back, the first member that restarts the decoder ends the
         stream: one with its own solid flag clear that is not a directory (which has
@@ -4136,7 +4137,7 @@ class RarReader(BaseArchiveReader):
         is decoded with the stream; a member after it with no digest of its own is
         refused when read (``after_damaged_header == "unconfirmed"``).
         """
-        if info.found is None or not self._archive.is_solid:
+        if info.found is None:
             return None
         members = self._archive.members
         position = self._member_position(member)

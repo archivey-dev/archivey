@@ -1725,3 +1725,38 @@ def test_a_parse_retried_with_a_password_records_each_skipped_region_once(
     regions = [(r.offset, r.length, r.reason) for r in salvage.regions()]
     assert regions == [(0, 5, "no_header")]
     assert len(salvage.of(DiagnosticCode.SALVAGE_UNAVAILABLE)) == 1
+
+
+def _solid_groups_main_not_solid(tmp_path: Path, lo: int, hi: int) -> Path:
+    """``_solid_groups`` with the MAIN header's solid flag cleared: b and d keep
+    their own solid flags, which ``unrar`` honours whatever MAIN says."""
+    data = bytearray(_solid_groups(tmp_path, lo, hi).read_bytes())
+    assert data[16] == 0x04  # MAIN's archive flags: solid
+    data[16] = 0
+    data[8:12] = zlib.crc32(bytes(data[12:24])).to_bytes(4, "little")
+    return _write(tmp_path, bytes(data))
+
+
+@pytest.mark.parametrize("main_solid", [True, False])
+def test_a_found_member_with_its_own_solid_flag_across_lost_bytes_is_refused(
+    main_solid: bool, tmp_path: Path
+) -> None:
+    """Whether a found member's data depends on bytes salvage lost is decided by
+    the members' own solid flags, which the decoder follows, not by MAIN's: d.txt
+    continues a stream whose start (b.txt, c.txt) is lost either way."""
+    make = _solid_groups if main_solid else _solid_groups_main_not_solid
+    path = make(tmp_path, 98, 162)
+    with open_archive(path, salvage=True) as reader:
+        members = reader.members_report().members
+        assert [m.name for m in members] == ["a.txt", "d.txt"]
+        with pytest.raises(CorruptionError, match="solid stream runs through"):
+            reader.read(members[1])
+        seen = []
+        with pytest.raises(CorruptionError, match="header CRC mismatch"):
+            for member, stream in reader.stream_members():
+                if member.name == "d.txt":
+                    assert stream is not None
+                    with pytest.raises(CorruptionError, match="solid stream runs"):
+                        stream.read()
+                    seen.append(member.name)
+        assert seen == ["d.txt"]
