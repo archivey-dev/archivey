@@ -562,9 +562,12 @@ class RarMemberInfo:
     damaged_header: tuple[int, int] | None = None
     # In a solid archive, the damaged header the walk went past before this member
     # (``"member"``: a listed FILE; ``"service"``: a skipped SERVICE with data, which
-    # ``unrar`` does not decode, so the solid state after it is wrong). The reader
-    # refuses or flags a member that has no digest to check its bytes with.
-    after_damaged_header: Literal["member", "service"] | None = None
+    # ``unrar`` does not decode, so the solid state after it is wrong;
+    # ``"unconfirmed"``: in salvage mode, a member listed from a header nothing
+    # confirms, which may be a false one). The reader refuses or flags a member that
+    # has no digest to check its bytes with: it flags one after ``"member"``, and
+    # refuses one after either of the others.
+    after_damaged_header: Literal["member", "service", "unconfirmed"] | None = None
     # Salvage mode only: how the member was reached past the default walk's end
     # (:class:`RarFound`); ``None`` for every member the default lists.
     found: RarFound | None = None
@@ -1617,11 +1620,16 @@ def _flags_without_main(archive: RarArchive, first_volume: RarArchive | None) ->
         archive.is_solid = first_volume.is_solid
         archive.is_volume = True
         archive.old_volume_naming = first_volume.old_volume_naming
-        return
-    archive.is_solid = any(member.file_solid for member in members)
-    archive.is_volume = archive.is_volume or any(
-        member.split_before or member.split_after for member in members
-    )
+    else:
+        archive.is_solid = any(member.file_solid for member in members)
+        archive.is_volume = archive.is_volume or any(
+            member.split_before or member.split_after for member in members
+        )
+    if not archive.is_solid:
+        # The walk marked the members after a found one as if the archive were
+        # solid, since nothing said it yet: no solid state runs between them.
+        for member in members:
+            member.after_damaged_header = None
 
 
 def _parse_lost_start(
@@ -2068,14 +2076,27 @@ def _add_damage(current: str | None, text: str) -> str:
 
 
 def _solid_damage_after(
-    current: Literal["member", "service"] | None, service: bool, data_size: int
-) -> Literal["member", "service"] | None:
+    current: Literal["member", "service", "unconfirmed"] | None,
+    service: bool,
+    data_size: int,
+) -> Literal["member", "service", "unconfirmed"] | None:
     """``RarMemberInfo.after_damaged_header`` for the members after a damaged header
     the walk followed in a solid archive. A SERVICE header with data is the worse
     case and stays: ``unrar`` skips its data, so the solid state after it is wrong."""
+    if current == "unconfirmed":
+        return current
     if current == "service" or (service and data_size):
         return "service"
     return current if service else "member"
+
+
+def _solid_damage_after_unconfirmed(
+    current: Literal["member", "service", "unconfirmed"] | None,
+) -> Literal["member", "service", "unconfirmed"]:
+    """``RarMemberInfo.after_damaged_header`` for the members after an unconfirmed
+    member salvage listed in a solid archive. Like a SERVICE header with data, it
+    refuses a member with no digest, so it replaces ``"member"`` and nothing else."""
+    return current if current in ("service", "unconfirmed") else "unconfirmed"
 
 
 def _forward_hold_note(source: BinaryIO) -> str:
@@ -3365,7 +3386,7 @@ class _Rar3Walk:
         # Damaged headers the walk confirmed and is about to list or skip, each with
         # its parsed fields and where its CRC stops (:meth:`_follow_damage`).
         self.resume: list[tuple[_Rar3Block, RarMemberInfo, int]] = []
-        self.solid_damage: Literal["member", "service"] | None = None
+        self.solid_damage: Literal["member", "service", "unconfirmed"] | None = None
         # The SUB headers that failed their CRC and that the walk went past.
         self.damaged_service_headers: list[DamagedServiceHeader] = []
         self.damaged_service_headers_omitted = 0
@@ -3510,9 +3531,11 @@ class _Rar3Walk:
         if member is None:
             return
         member.found = RarFound("header_search", offset, confirmed=False, searched=True)
-        # It claims nothing, so the member listed next still comes after the same
-        # lost bytes: the boundary is kept for it.
-        member.after_lost = self.pending_lost
+        member.after_lost, self.pending_lost = self.pending_lost, None
+        if self.is_solid or self.main_lost:
+            # A member after it in a solid stream decodes on top of a header only a
+            # CRC16 checked: without a digest of its own it is refused.
+            self.solid_damage = _solid_damage_after_unconfirmed(self.solid_damage)
         if block.flags & _RAR3_FILE_COMMENT:
             member.comment = _parse_rar3_old_comment_subblocks(
                 block.hdata, crc_pos, encoding=self.name_encoding
@@ -3872,7 +3895,7 @@ class _Rar3Walk:
                     searched=self.found_here,
                 )
                 member.after_lost, self.pending_lost = self.pending_lost, None
-                if self.is_solid and self.found_here:
+                if (self.is_solid or self.main_lost) and self.found_here:
                     self.solid_damage = _solid_damage_after(self.solid_damage, False, 0)
             # The volume's last member decides; an intact end block overrides it.
             self.needs_next_volume = _emit_walked_member(
@@ -5136,7 +5159,7 @@ class _Rar5Walk:
         # Damaged headers the walk confirmed and is about to list or skip
         # (:meth:`_follow_damage`).
         self.resume: list[_Rar5Block] = []
-        self.solid_damage: Literal["member", "service"] | None = None
+        self.solid_damage: Literal["member", "service", "unconfirmed"] | None = None
         self.main_seen = False
         self.end_block_seen = False
         self.end_block_damaged_at: int | None = None
@@ -5695,7 +5718,7 @@ class _Rar5Walk:
                         searched=self.found_here,
                     )
                     member.after_lost, self.pending_lost = self.pending_lost, None
-                    if self.is_solid and self.found_here:
+                    if (self.is_solid or self.main_lost) and self.found_here:
                         self.solid_damage = _solid_damage_after(
                             self.solid_damage, False, 0
                         )

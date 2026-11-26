@@ -316,12 +316,10 @@ members left. RAR's codecs have no restart point inside a stream. So:
   is missing or that ended at damage, or a lost start: the stream before the first
   header found is lost even when that header is at offset 0, unless the header is
   MAIN (only the signature was lost). For this check the stream starts at a member that
-  restarts the decoder: its own solid flag clear, not a directory (no data, so no
-  restart), and not an unconfirmed candidate (it may be a false header). An unconfirmed
-  candidate claims nothing, so the member after it also comes after the lost bytes.
-  `unrar` gives checksum errors for these members, and the measured `-s` archive
-  confirms it: 0 of 123 decode. This follows the existing rule for a solid member past
-  a missing volume.
+  restarts the decoder: its own solid flag clear, and not a directory (no data, so no
+  restart). `unrar` gives checksum errors for these members, and the measured `-s`
+  archive confirms it: 0 of 123 decode. This follows the existing rule for a solid
+  member past a missing volume.
 - **A found member whose chain starts after the lost bytes reads**, through a synthetic
   archive of its chain (§11). In `-s<N>` and `-se` archives, on each member
   that starts a group, the solid flag is clear. An `-sv` set clears it on some members
@@ -634,9 +632,14 @@ open:
 - **Solid passes.** A found member is left out of the one-pipe pass and read as
   `open()` reads it. A stream source's pass over an archive with found members reads
   the original archive's pipe (`_solid_pass_groups` returns `None`).
-- **The unconfirmed-chain digest rule (§7, last item)** has no case yet: no unconfirmed
-  RAR 1.5-4 candidate appeared in the corpus, and the measured RAR 1.5-4 archives are
-  stored, so archivey slices them with their CRC checked.
+- **The unconfirmed-chain digest rule (§7, last item)** is the walk's
+  `after_damaged_header`: a found confirmed member marks the members after it
+  `"member"` (read with `DIGEST_UNVERIFIABLE` when they have no digest), and an
+  unconfirmed one marks them `"unconfirmed"` (refused when they have no digest), as
+  a skipped SERVICE header with data does. The marks last to the end of the walk.
+  Without MAIN the walk marks as if the archive were solid, and the marks are cleared
+  once the members' flags say it is not. A RAR 1.5-4 member always stores a CRC-32,
+  so no committed archive reaches the refusal.
 - **Measured** (`tests/test_rar_salvage.py`, members read back byte-exact over the 15
   damage kinds): `many_list_store_nonsolid__.rar` 2 607 default, 2 608 `unrar x`,
   3 356 salvage; `many_list_store__.rar` 10 442 / 10 443 / 14 484; RAR 2.9, 2 217 /

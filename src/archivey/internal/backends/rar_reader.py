@@ -4086,9 +4086,11 @@ class RarReader(BaseArchiveReader):
         Decided from the listing, before any program runs. A stored plaintext or
         stored encrypted member is read by archivey itself before this is asked.
         From the member back, the first member that restarts the decoder ends the
-        stream: one with its own solid flag clear, with data (a directory restarts
-        nothing) and not an unconfirmed candidate (which may be a false header). Lost
-        bytes before any member up to that one, that one excluded, break the stream.
+        stream: one with its own solid flag clear that is not a directory (which has
+        no data, so restarts nothing). Lost bytes before any member up to that one,
+        that one excluded, break the stream. An unconfirmed member that restarts it
+        is decoded with the stream; a member after it with no digest of its own is
+        refused when read (``after_damaged_header == "unconfirmed"``).
         """
         if info.found is None or not self._archive.is_solid:
             return None
@@ -4096,12 +4098,7 @@ class RarReader(BaseArchiveReader):
         position = self._member_position(member)
         while True:
             current = members[position]
-            found = current.found
-            restarts = (
-                not current.file_solid
-                and not current.is_directory
-                and (found is None or found.confirmed)
-            )
+            restarts = not current.file_solid and not current.is_directory
             if restarts:
                 return None
             lost = current.after_lost
@@ -5187,6 +5184,16 @@ class RarReader(BaseArchiveReader):
         self, member: ArchiveMember, raw: RarMemberInfo
     ) -> None:
         """See :meth:`_report_member_read`."""
+        if raw.after_damaged_header == "unconfirmed":
+            raise CorruptionError(
+                f"RAR member {quoted(member.name)} has no checksum and follows, in a "
+                "solid archive, a member salvage listed from a header nothing "
+                "confirms: that header may be a false one, so this member's bytes may "
+                "come out wrong.",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
         if raw.after_damaged_header == "service":
             raise CorruptionError(
                 f"RAR member {quoted(member.name)} has no checksum and follows a "

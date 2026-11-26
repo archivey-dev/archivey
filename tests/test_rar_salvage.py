@@ -1021,7 +1021,7 @@ _RAR5_EMPTY_FILE = _rar5_block_bytes(bytes([2, 0, 0, 0, 0, 0, 0, 1]) + b"a")
 _RAR5_MAIN = _rar5_block_bytes(b"\x01\x00\x00")
 
 
-def _rar3_file_header(name: bytes, data: bytes) -> bytes:
+def _rar3_file_header(name: bytes, data: bytes, flags: int = 0x8000) -> bytes:
     from tests.rar_util import _rar3_block
 
     body = struct.pack(
@@ -1036,7 +1036,7 @@ def _rar3_file_header(name: bytes, data: bytes) -> bytes:
         len(name),
         0o100644,
     )
-    return _rar3_block(0x74, 0x8000, body + name)
+    return _rar3_block(0x74, flags, body + name)
 
 
 class _Work:
@@ -1235,14 +1235,10 @@ def test_a_lost_start_at_a_solid_continuation_is_refused(
             reader.read(members[0])
 
 
-@pytest.mark.parametrize("kind", ["unconfirmed", "directory"])
-def test_a_lost_boundary_on_a_member_that_starts_no_stream_still_refuses(
-    kind: str,
-) -> None:
-    """The member right after lost bytes has its solid flag clear but starts no
-    stream: an unconfirmed candidate (it may be a false header) or a directory (no
-    data, so no decoder restart). The solid member after it still continues a stream
-    through the lost bytes, and is refused."""
+def test_a_lost_boundary_on_a_directory_still_refuses() -> None:
+    """The member right after lost bytes is a directory with its solid flag clear:
+    it has no data, so the decoder does not restart there. The solid member after it
+    still continues a stream through the lost bytes, and is refused."""
     from archivey.internal.backends.rar_parser import RarFound
 
     with open_archive(_RAR / "solid_groups__.rar", salvage=True) as reader:
@@ -1251,11 +1247,53 @@ def test_a_lost_boundary_on_a_member_that_starts_no_stream_still_refuses(
         c, d = raws[2], raws[3]
         assert not c.file_solid and d.file_solid  # type: ignore[union-attr]
         c.after_lost = "the lost bytes"  # type: ignore[union-attr]
-        c.found = RarFound(
-            "header_search", 0, confirmed=kind != "unconfirmed", searched=True
-        )  # type: ignore[union-attr]
-        if kind == "directory":
-            c.is_directory = True  # type: ignore[union-attr]
+        c.found = RarFound("header_search", 0, confirmed=True, searched=True)  # type: ignore[union-attr]
+        c.is_directory = True  # type: ignore[union-attr]
         d.found = RarFound("header_search", 0, confirmed=True, searched=False)  # type: ignore[union-attr]
         error = reader._lost_chain_error(members[3], d)  # type: ignore[attr-defined]
         assert error is not None and "the lost bytes" in str(error)
+
+
+def test_a_member_with_no_digest_after_an_unconfirmed_one_is_refused() -> None:
+    """A solid RAR 1.5-4 archive: after damage the search finds ``u``, which nothing
+    confirms, then ``c``, which continues the solid stream and is confirmed. ``c``
+    decodes on top of a header only a CRC16 checked, so without a digest of its own
+    it is refused (design §7); with its CRC-32 it reads, checked by it."""
+    from tests.rar_util import _rar3_block
+
+    data = (
+        _RAR3_SIGNATURE
+        + _rar3_block(0x73, 0x0008, bytes(6))  # MAIN, solid
+        + _rar3_file_header(b"a", b"alpha")
+        + b"alpha"
+        + b"\xff" * 10
+        + _rar3_file_header(b"u", b"u")
+        + b"u"
+        + b"\xff\xfe\xfd"
+        + _rar3_file_header(b"c", b"gamma", flags=0x8010)  # continues the stream
+        + b"gamma"
+        + _rar3_block(0x7B, 0x4000, b"")
+    )
+    with open_archive(io.BytesIO(data), salvage=True) as reader:
+        members = reader.members_report().members
+        assert [m.name for m in members] == ["a", "u", "c"]
+        c = members[2]
+        assert c._raw.after_damaged_header == "unconfirmed"  # type: ignore[union-attr]
+        assert reader.read(c) == b"gamma"
+        c._raw.crc32 = None  # type: ignore[union-attr]
+        with pytest.raises(CorruptionError, match="nothing confirms"):
+            reader.read(c)
+
+
+def test_a_lost_start_of_a_non_solid_archive_marks_no_solid_damage(
+    tmp_path: Path,
+) -> None:
+    """Without MAIN the walk does not know yet whether the archive is solid, so it
+    marks the members after a found one as a solid walk would; once the members' own
+    flags say it is not solid, the marks go."""
+    data = (_RAR / "many_list_store_nonsolid__.rar").read_bytes()[4096:]
+    with open_archive(_write(tmp_path, data), salvage=True) as reader:
+        members = reader.members_report().members
+        assert len(members) > 10
+        assert not reader._archive.is_solid  # type: ignore[attr-defined]
+        assert all(m._raw.after_damaged_header is None for m in members)  # type: ignore[union-attr]
