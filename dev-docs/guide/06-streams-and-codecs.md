@@ -74,6 +74,25 @@ stream has ended**. The `ArchiveSource` supplies that guarantee for every caller
 (by passing through an already buffered object, adding its own buffer to a seekable raw
 one, or asking again on a pipe), and every layer above can rely on it.
 
+### Which read helper to use
+
+A wrapper or parser that reads from another stream picks its helper by what it needs.
+The first five live in `streamtools/binaryio.py` and `streamtools/solid.py`; the last
+row is the parser-facing API in `archivey.formats`.
+
+| Need | Helper |
+| --- | --- |
+| One read, with a stall (`None` from a non-blocking stream) raised as `BlockingIOError` | `read_blocking(stream, n)` |
+| Some bytes as soon as any have arrived, without waiting for all `n` | `read_arrived(stream, n)` |
+| Up to `n` bytes, asking again after a short read; fewer only at EOF | `read_exact(stream, n)` |
+| Fill a caller's buffer, using the stream's own `readinto` when it has a real one | `try_readinto(stream, b)`, then `readinto_via_read(stream, b)` when it returns `None` |
+| Discard `n` bytes of a forward-only stream, in bounded reads | `skip_forward(stream, n)` |
+| Exactly `n` bytes in a format parser, with `TruncatedError` when the data ends first | `ForwardStream.read_exact(n)` or `ReaderSource.read_exact(offset, n)` |
+
+The streamtools `read_exact` returns short at EOF and leaves the check to the caller;
+the parser API's `read_exact` raises. All of them raise `BlockingIOError` on a stall,
+so that a non-blocking stream with nothing ready never passes for the end of the data.
+
 ## The codec layer (`internal/streams/codecs/`)
 
 One module per codec family, with its decoder beside it, plus a registry. Three names are
