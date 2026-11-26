@@ -221,6 +221,15 @@ Rules:
   type that extends `str` (ruling R8), and each package exports a constant for every
   library it uses (`archivey_dmg.CRYPTOGRAPHY`-style names beside core's
   `OptionalLibrary.PYPPMD`), so a caller rarely types a library name at all.
+- **Container and stream names share one namespace (ruling R10).** A name is a
+  container or a stream, never both. The registry refuses a container name that a
+  stream already owns, and the reverse, and the hint table reserves a name for both
+  roles (§4). The reason is the policy's one mixed set: `ContainerFormat("xz")` and
+  `StreamFormat("xz")` are equal strings, so `exclude={...}` with both would hold one
+  value and could not say which role was meant. No name is in both lists today (20
+  container names, 18 stream names). A format that is both a wrapper and an archive
+  takes two names. `CompressionAlgorithm` is outside this rule: it is not a string, and
+  `"xz"` is both a stream and a method on purpose.
 - **Policy sets are stored by role.** `FormatPolicy` keeps containers, streams and
   methods apart inside, whatever the caller passed in one `exclude=` set, so no lookup
   compares a method with a stream.
@@ -692,7 +701,7 @@ What it cannot undo is a published package name, which is why DMG is split now.
 ## Decisions
 
 All ten were put to the maintainer and agreed on 2026-11-24. Decisions 5, 6 and 7 were
-revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R9 below).
+revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R10 below).
 
 1. **Installed plugins load by themselves, behind the guardrails of §3.** This replaces
    the 2026-10-25 rule (explicit `register_format()` only), which the maintainer
@@ -746,6 +755,11 @@ and the evidence in front of him (review round A):
   turned-off plugin formats out of detection. Rejected: leaving a barred format out of
   detection (the same file would read as two things under two policies), and refusing
   every file of the base format.
+
+- **R10. Container and stream names share one namespace** (§2). The policy API stays
+  as it is. Rejected: separate policy arguments per role (every existing `only=` and
+  `exclude=` call would change), and making the two types unequal non-strings (it
+  reverses decision 2).
 
 Changed without a ruling to revise, because the plan contradicted a spec or the code:
 `CompressionAlgorithm` stays a non-string type, no extra is named after a package, and

@@ -36,6 +36,9 @@
 - [ ] 2.1b `FormatPolicy` stores containers, streams and methods by role;
   `only_libraries` by membership; a test that `exclude={StreamFormat("xz")}` still
   reads an xz member of a ZIP
+- [ ] 2.1d One namespace for container and stream names (R10): the registry refuses a
+  name the other role owns, the hint table reserves across roles, and a test pins
+  that core's two lists do not overlap
 - [ ] 2.1c Each package exports a constant for every library it uses (R8)
 - [ ] 2.2 Remove `PluginContainer`, `PluginStream` and the `Literal` spelling lists
 - [ ] 2.2a `ExtraKey` and the generic overloads on `MemberExtra` and
