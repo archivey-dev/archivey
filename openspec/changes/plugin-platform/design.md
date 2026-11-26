@@ -390,6 +390,15 @@ to no data phase, and its rule is today's, kept:
   decoder limits. Step 4 makes that a public argument (a probe context), optional so
   that a one-line probe stays one line. A trial decode by a native library runs in
   the child, as any other decode of that codec does (R4).
+- A probe may grade its answer. Today the grade for Brotli is worked out in core's
+  own detection code (`_brotli_probe_confidence`, which imports Brotli's framing
+  parser): `PROBABLE` when the extension agrees or the first block is compressed,
+  `GUESS` otherwise. Core cannot keep format-specific code for a format it does not
+  ship, so a probe returns either a bool or one of three verdicts: no, a weak match
+  (`GUESS`), a match (`PROBABLE`). Core adds what only it knows, that the extension
+  agrees, and still decides whether a later decode failure is marked
+  `format_unconfirmed`. `CERTAIN` stays for a signature and is never a probe's to
+  give.
 - A probe is the only evidence for its format, so on a nameless source with
   `always_probe_content` every allowed provider's probe runs, and a loose probe in an
   outside package can claim a file core would call "not an archive". It can never
