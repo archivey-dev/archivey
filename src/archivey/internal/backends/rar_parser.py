@@ -5614,6 +5614,8 @@ class _Rar5Walk:
                         continue
                     break
                 chain, self.resume = self.resume, []
+                # The search found the header before these, not them.
+                self.found_here = False
                 for damaged in chain:
                     _seek_to(source, damaged.data_offset)
                     self._on_file_or_service(damaged, damaged=True)

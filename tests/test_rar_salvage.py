@@ -1986,6 +1986,38 @@ def test_a_found_rar5_header_that_fails_after_its_crc_is_damage(
     assert "CRC mismatch at offset 30" in str(listing.error)
 
 
+def test_a_damaged_rar5_header_after_a_found_one_was_not_searched_for(
+    tmp_path: Path,
+) -> None:
+    """A RAR5 header salvage's search found, then one that fails its CRC and whose
+    sizes step 1 follows: the search found the first only, so the damaged one is
+    listed with ``searched=False``, as in RAR 1.5-4."""
+
+    def empty_file(name: bytes) -> bytes:
+        return _rar5_block_bytes(bytes([2, 0, 0, 0, 0, 0, 0, 1]) + name)
+
+    damaged = bytearray(empty_file(b"d"))
+    damaged[0] ^= 0xFF  # its CRC-32
+    data = (
+        _RAR5_SIGNATURE
+        + _RAR5_MAIN
+        + empty_file(b"a")
+        + b"\xff"
+        + empty_file(b"b")
+        + bytes(damaged)
+        + empty_file(b"e")
+        + _RAR5_END
+    )
+    path = _write(tmp_path, data)
+    with open_archive(path, salvage=True) as reader:
+        members = reader.members_report().members
+    found = {m.name: m._raw.found for m in members}  # type: ignore[union-attr]
+    assert list(found) == ["a", "b", "d", "e"]
+    assert found["b"] is not None and found["b"].searched
+    assert found["d"] is not None and found["d"].check == "followed"
+    assert not found["d"].searched
+
+
 def test_a_damaged_header_past_lost_bytes_continues_nothing(tmp_path: Path) -> None:
     """Damage, a found service header (which leaves the lost bytes for the next
     member), then a FILE header that fails its CRC with ``SPLIT_BEFORE`` set and
