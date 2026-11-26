@@ -350,6 +350,9 @@ class CpioReader(SequentialReader):
                 hit = self._search(salvage, stream, search_from, base)
                 search_from = None
                 if hit is None:
+                    # The pass ends in the damage error, with no trailer: the links
+                    # still held for data are listed as at a trailer (recall first).
+                    yield from self._flush(groups, salvage)
                     raise salvage.ending(damage)
                 header, raw, base = hit
             else:
@@ -401,7 +404,12 @@ class CpioReader(SequentialReader):
             size = header.file_size
             # A file that shares its inode with another.
             key = (header.dev, header.ino)
-            if member.type is MemberType.FILE and header.nlink > 1:
+            # A header nothing confirms never decides a link group's file (the name
+            # and the data the group's links take): it is listed as a file of its
+            # own, or held as a newc link waiting for data, and releases nothing.
+            unconfirmed = scan is not None and not scan.confirmed
+            linked = member.type is MemberType.FILE and header.nlink > 1
+            if linked:
                 group = groups.setdefault(key, _LinkGroup())
                 # A conforming newc or crc writer stores the data with one link only.
                 # A later name that carries data of its own anyway is read as a file
@@ -420,6 +428,8 @@ class CpioReader(SequentialReader):
                     group.held.append((member, scan))
                     stream.skip(size + self._data_pad(header))
                     continue
+                elif unconfirmed:
+                    linked = False
                 else:
                     # The link that is yielded as the FILE: the first one in binary
                     # and odc, the one carrying the data in newc and crc.
@@ -431,7 +441,7 @@ class CpioReader(SequentialReader):
                 # Not after a member the walk cannot confirm: it moves back into
                 # the data to search on, and the pad is not where it reads next.
                 stream.skip(self._data_pad(header))
-            if member.type is MemberType.FILE and header.nlink > 1:
+            if linked and member.type is MemberType.FILE:
                 group = groups[key]
                 for link, link_scan in group.held:
                     link.type = MemberType.HARDLINK

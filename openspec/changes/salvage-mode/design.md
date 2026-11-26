@@ -253,6 +253,10 @@ Choices made while building PR 3, and where it departs from the decisions above:
   there, as the default does. A probe for that check, or for a confirmation, that
   reaches damage in a codec stream (a `.cpio.gz` whose gzip data is damaged) reads
   that damage as the layer's end. The search itself still stops with the codec error.
+- **A CPIO header nothing confirms never decides a hard-link group's file.** It is
+  listed as a file of its own, or held as a newc/crc link waiting for data, and it
+  takes no held links. Links still held when the pass ends in the damage error (no
+  trailer) are listed as empty files, as at a trailer.
 - **An ar long-name table past the damage that nothing confirms is passed over**
   before it is charged against `max_metadata_bytes` or read: the search goes on inside
   it, as inside an unconfirmed member's data.

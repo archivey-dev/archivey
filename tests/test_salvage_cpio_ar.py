@@ -1126,17 +1126,18 @@ def test_cpio_lost_start_passed_over_candidate_does_not_set_the_variant(
     assert isinstance(error, CorruptionError)
 
 
-def test_cpio_held_link_never_listed_is_not_recorded_as_found(tmp_path: Path) -> None:
+def test_cpio_held_link_is_recorded_as_found_when_it_is_listed(tmp_path: Path) -> None:
     """Past the damage, a newc link held for data that never arrives (the archive
-    ends first) is not listed, so no ``MEMBER_FOUND_BY_SCAN`` names it."""
+    ends first) is listed as an empty file when the pass ends, and its
+    ``MEMBER_FOUND_BY_SCAN`` record is made then, once."""
     before = _newc("before.txt", b"b" * 8, 1)
     link = bytearray(_newc("orphan_link", b"", 2))
     link[6 + 4 * 8 : 6 + 5 * 8] = b"%08X" % 2  # nlink
     raw = before + b"\0" * 120 + bytes(link)
     path = _write(tmp_path, raw, "a.cpio")
     members, diagnostics, error = _read(path, salvage=True)
-    assert [m[0] for m in members] == ["before.txt"]
-    assert _found(diagnostics) == []
+    assert [m[0] for m in members] == ["before.txt", "orphan_link"]
+    assert [f.member_name for f in _found(diagnostics)] == ["orphan_link"]
     assert isinstance(error, CorruptionError)
 
 
@@ -1262,3 +1263,75 @@ def test_ar_unconfirmed_table_leaves_the_dialect_alone(tmp_path: Path) -> None:
         dialect = reader.info.extra.get("ar.dialect")
     assert names == ["before.o", "after.o"]
     assert dialect == "bsd"
+
+
+def _odc_link(name: str, data: bytes, ino: int) -> bytes:
+    """An odc header with ``nlink=2``."""
+    member = bytearray(_odc(name, data, ino))
+    member[36:42] = b"%06o" % 2
+    return bytes(member)
+
+
+def _links(path: Path, *, lost_start: bool) -> dict[str, tuple[object, object]]:
+    """Each listed name with its link target and the bytes a read gives."""
+    from archivey import core
+
+    original = core.requesting_salvage
+
+    def lost(requested: bool, *, supported: bool, lost_start: bool = False):  # type: ignore[no-untyped-def]
+        return original(requested, supported=supported, lost_start=True)
+
+    if lost_start:
+        core.requesting_salvage = lost  # type: ignore[assignment]
+    try:
+        with open_archive(path, salvage=True, format="cpio") as reader:
+            out = {}
+            for m in reader.members_report().members:
+                data = reader.read(m) if m.is_file or m.link_target else None
+                out[m.name] = (m.link_target, data)
+            return out
+    finally:
+        core.requesting_salvage = original  # type: ignore[assignment]
+
+
+_LINK_TAIL = (
+    b"\x01" * 4
+    + _newc_link("a.txt", b"", 7)
+    + _newc_link("b.txt", b"hello", 7)
+    + _newc("TRAILER!!!", b"", 0)
+)
+
+
+@pytest.mark.parametrize(
+    ("stray", "lost_start"),
+    [
+        (b"\x01" * 4 + _odc_link("bogus", b"", 7), True),
+        (b"\x01" * 4 + _newc_link("bogus", b"zzzz", 7), True),
+        (
+            _newc("x.txt", b"x" * 4, 1) + b"\0" * 8 + _newc_link("bogus", b"zzzz", 7),
+            False,
+        ),
+    ],
+    ids=["odc-lost-start", "data-lost-start", "data-after-damage"],
+)
+def test_cpio_unconfirmed_stray_does_not_take_a_link_group(
+    stray: bytes, lost_start: bool, tmp_path: Path
+) -> None:
+    """A header nothing confirms that shares an inode with real links does not
+    become their group's file: the real link still reads the real data."""
+    path = _write(tmp_path, stray + _LINK_TAIL, "a.cpio")
+    links = _links(path, lost_start=lost_start)
+    assert links["b.txt"][1] == b"hello"
+    assert links["a.txt"] == ("b.txt", b"hello")
+
+
+def test_cpio_held_links_are_listed_when_the_pass_ends_in_damage(
+    tmp_path: Path,
+) -> None:
+    """A newc link held for data that never came is still listed (as an empty file)
+    when the salvage pass ends in the damage error rather than at a trailer."""
+    raw = b"\x01" * 4 + _newc_link("bogus", b"", 7) + _newc("c.txt", b"c" * 4, 1)
+    path = _write(tmp_path, raw, "a.cpio")
+    names, _diagnostics, error = _open_lost_start(path)
+    assert sorted(names) == ["bogus", "c.txt"]
+    assert isinstance(error, CorruptionError)
