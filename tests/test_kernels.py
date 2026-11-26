@@ -1,4 +1,4 @@
-"""archivey-codecs kernels: when archivey uses one, and that the result is the same.
+"""archivey-speedups kernels: when archivey uses one, and that the result is the same.
 
 The selection rows (design D4, D5) run with a fake package, so they need nothing
 installed. The read tests use the real package and skip without it.
@@ -80,16 +80,16 @@ from tests.lha_util import Member, archive
 from tests.streams_util import make_unix_compress
 from tests.zipcrypto import build_stored_zipcrypto_zip, build_zipcrypto_zip
 
-EXCLUDED = frozenset({OptionalLibrary.ARCHIVEY_CODECS})
+EXCLUDED = frozenset({OptionalLibrary.ARCHIVEY_SPEEDUPS})
 TWIN_BRANCHES = (filters_twin.Arm64Decoder, filters_twin.RiscvDecoder)
-OFF = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={"archivey-codecs"}))
+OFF = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={"archivey-speedups"}))
 DMG_FIXTURES = Path(__file__).parent / "fixtures" / "external" / "dmg_hdiutil"
 RISCV_7Z = Path(__file__).parent / "fixtures" / "sevenzip" / "riscv_lzma2.7z"
 # 12 000 lines of text in lzop blocks, as tests/fixtures/external/lzop/README says.
 LZOP_TEXT = Path(__file__).parent / "fixtures" / "external" / "lzop" / "text.txt.lzo"
-# Python's LZO1X decoder: compress-utils, tried after archivey-codecs, is off too.
+# Python's LZO1X decoder: compress-utils, tried after archivey-speedups, is off too.
 PYTHON_LZO = ArchiveyConfig(
-    formats=FormatPolicy(exclude_libraries={"archivey-codecs", "compress_utils"})
+    formats=FormatPolicy(exclude_libraries={"archivey-speedups", "compress_utils"})
 )
 LZOP_DATA = b"".join(b"line %d of the lzop fixture\n" % i for i in range(12000))
 
@@ -102,7 +102,7 @@ PanicException.__module__ = "pyo3_runtime"
 
 
 class _FakeDecryptor:
-    """Stands in for ``archivey_codecs.zipcrypto.Decryptor``: Python's keys, recorded.
+    """Stands in for ``archivey_speedups.zipcrypto.Decryptor``: Python's keys, recorded.
 
     With ``panic`` set, decrypting member data (anything but the 12-byte header)
     raises the fake panic; with ``panic_header`` set, decrypting the header does.
@@ -134,7 +134,7 @@ class _FakeDecryptor:
 
 
 class _FakeBranch:
-    """Stands in for ``archivey_codecs.filters.Arm64Decoder`` and ``RiscvDecoder``:
+    """Stands in for ``archivey_speedups.filters.Arm64Decoder`` and ``RiscvDecoder``:
     the Python filter, recorded. With ``panic`` set, decoding raises the fake panic."""
 
     built: ClassVar[list[int]] = []
@@ -167,7 +167,7 @@ class _FakeRiscv(_FakeBranch):
 
 
 class _FakeLzw:
-    """Stands in for ``archivey_codecs.lzw.Decompressor``: records that it was built,
+    """Stands in for ``archivey_speedups.lzw.Decompressor``: records that it was built,
     and panics on the first ``decompress``."""
 
     built: ClassVar[int] = 0
@@ -193,7 +193,7 @@ class _FakeLzw:
 
 
 class _FakeLzo1x:
-    """Stands in for ``archivey_codecs.lzo1x``: Python's decoder, with the kernel's
+    """Stands in for ``archivey_speedups.lzo1x``: Python's decoder, with the kernel's
     ``max_size`` contract, recorded. With ``panic`` set, decoding raises the fake
     panic."""
 
@@ -213,7 +213,7 @@ class _FakeLzo1x:
 
 
 def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamespace:
-    """Install a fake ``archivey_codecs`` whose ``KERNELS`` is ``kernels``."""
+    """Install a fake ``archivey_speedups`` whose ``KERNELS`` is ``kernels``."""
 
     def crc16_arc(data: bytes, value: int = 0) -> int:
         raise PanicException("index out of bounds")
@@ -244,9 +244,9 @@ def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamesp
         CorruptDataError=corrupt_error,
         UnsupportedDataError=type("UnsupportedDataError", (ValueError,), {}),
     )
-    package = deps.LazyOptional(OptionalLibrary.ARCHIVEY_CODECS, present=True)
+    package = deps.LazyOptional(OptionalLibrary.ARCHIVEY_SPEEDUPS, present=True)
     package._module = module  # type: ignore[assignment]
-    monkeypatch.setattr(deps, "archivey_codecs", package)
+    monkeypatch.setattr(deps, "archivey_speedups", package)
     monkeypatch.setattr(_select, "_too_old_logged", set())
     return module
 
@@ -271,8 +271,8 @@ def _child_kernels(monkeypatch: pytest.MonkeyPatch, module: object) -> list[froz
 def test_an_absent_package_is_not_used(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         deps,
-        "archivey_codecs",
-        deps.LazyOptional(OptionalLibrary.ARCHIVEY_CODECS, present=False),
+        "archivey_speedups",
+        deps.LazyOptional(OptionalLibrary.ARCHIVEY_SPEEDUPS, present=False),
     )
     assert _select.kernels("crc16_arc", frozenset()) is None
     assert kernels.crc16_arc(frozenset()) is lha_reader.crc16
@@ -657,7 +657,7 @@ def test_an_lzw_state_refuses_every_call_after_a_panic(
 ) -> None:
     _fake(monkeypatch, lzw=1)
     lzw = kernels.lzw(frozenset(), isolated=False)
-    assert lzw.library is OptionalLibrary.ARCHIVEY_CODECS
+    assert lzw.library is OptionalLibrary.ARCHIVEY_SPEEDUPS
     d = lzw.Decompressor()
     with pytest.raises(CorruptionError, match="LZW decoder failed") as info:
         d.decompress(b"\x1f\x9d\x90abc")
@@ -976,12 +976,12 @@ def test_opening_a_dmg_without_lzfse_runs_looks_up_no_kernel(
 
 # ── The real package ──────────────────────────────────────────────────────────────────
 
-needs_codecs = pytest.mark.skipif(
-    not deps.archivey_codecs.available(), reason="archivey-codecs is not installed"
+needs_speedups = pytest.mark.skipif(
+    not deps.archivey_speedups.available(), reason="archivey-speedups is not installed"
 )
 
 
-@needs_codecs
+@needs_speedups
 def test_lha_uses_the_kernel_and_reads_the_same() -> None:
     assert kernels.crc16_arc(frozenset()) is not lha_reader.crc16
     data = bytes(range(256)) * 400
@@ -1010,7 +1010,7 @@ def test_lha_uses_the_kernel_and_reads_the_same() -> None:
     assert errors[0] == errors[1]
 
 
-@needs_codecs
+@needs_speedups
 @pytest.mark.parametrize(
     "compression", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED], ids=["stored", "deflate"]
 )
@@ -1025,7 +1025,7 @@ def test_zipcrypto_uses_the_kernel_and_reads_the_same(compression: int) -> None:
             assert reader.read("a.txt") == data
 
 
-@needs_codecs
+@needs_speedups
 def test_zipcrypto_candidate_passwords_pick_the_same_one() -> None:
     raw = build_stored_zipcrypto_zip([(b"right", b"a.txt", b"payload " * 1000)])
     for config in (None, OFF):
@@ -1035,7 +1035,7 @@ def test_zipcrypto_candidate_passwords_pick_the_same_one() -> None:
             assert reader.read("a.txt") == b"payload " * 1000
 
 
-@needs_codecs
+@needs_speedups
 def test_zipcrypto_kernel_matches_python_keys() -> None:
     header = bytes(range(12))
     body = bytes(range(256)) * 300
@@ -1054,7 +1054,7 @@ def test_zipcrypto_kernel_matches_python_keys() -> None:
     )
 
 
-@needs_codecs
+@needs_speedups
 @pytest.mark.parametrize(
     "name", ["riscv_lzma2.7z", "riscv_offset_lzma2.7z", "riscv_special_lzma2.7z"]
 )
@@ -1083,12 +1083,12 @@ def _read_z(raw: bytes, config: ArchiveyConfig | None, piece: int) -> tuple:
     return bytes(out), None, None
 
 
-@needs_codecs
+@needs_speedups
 @requires("ncompress")
 @pytest.mark.parametrize("piece", [1, 4096, -1])
 def test_z_uses_the_kernel_and_reads_the_same(piece: int) -> None:
     lzw = kernels.lzw(frozenset(), isolated=False)
-    assert lzw.library is OptionalLibrary.ARCHIVEY_CODECS
+    assert lzw.library is OptionalLibrary.ARCHIVEY_SPEEDUPS
     assert isinstance(lzw.Decompressor(), rust.LzwDecompressor)
     data = (bytes(range(256)) * 50 + b"text " * 30000) * 3
     raw = make_unix_compress(data)
@@ -1110,7 +1110,7 @@ def test_z_uses_the_kernel_and_reads_the_same(piece: int) -> None:
         assert _read_z(raw, None, piece)[0] == data
 
 
-@needs_codecs
+@needs_speedups
 @requires("ncompress")
 def test_z_seeks_back_through_clear_points_with_the_kernel() -> None:
     """A seekable stream records CLEAR points and restarts at one on a seek back:
@@ -1138,8 +1138,8 @@ def test_a_finished_z_decoder_is_not_fed_again(twin: bool) -> None:
     At its end the kernel takes no more calls (``decompress`` raises ``EOFError``), so
     a finished ``.Z`` decoder reports ``needs_input``; and a stream read past the end
     returns ``b""``."""
-    if not twin and not deps.archivey_codecs.available():
-        pytest.skip("needs archivey-codecs")
+    if not twin and not deps.archivey_speedups.available():
+        pytest.skip("needs archivey-speedups")
     data = b"read me to the end " * 3000
     raw = make_unix_compress(data)
     make = (
@@ -1167,8 +1167,8 @@ def test_a_finished_z_decoder_is_not_fed_again(twin: bool) -> None:
 def test_a_zero_byte_bcj2_read_reads_no_input(twin: bool) -> None:
     """``read(0)`` decodes nothing and reads no input; a later read still runs the
     end check. With an error held, ``read(0)`` raises it."""
-    if not twin and not deps.archivey_codecs.available():
-        pytest.skip("needs archivey-codecs")
+    if not twin and not deps.archivey_speedups.available():
+        pytest.skip("needs archivey-speedups")
     make = kernels.bcj2(EXCLUDED if twin else frozenset(), isolated=False).Decompressor
     main = io.BytesIO(b"x")
     d = make(main, io.BytesIO(), io.BytesIO(), io.BytesIO(), out_size=0)
@@ -1203,8 +1203,8 @@ def test_an_interrupted_bcj2_input_read_stops_the_decoder(
     """An interrupt in an input's ``read()`` is kept like any error: later reads give
     a prefix of the output and then raise it again, and never decode on from the
     half-done step."""
-    if not twin and not deps.archivey_codecs.available():
-        pytest.skip("needs archivey-codecs")
+    if not twin and not deps.archivey_speedups.available():
+        pytest.skip("needs archivey-speedups")
     size = 200_000
     streams = bcj2_encode(random.Random(4), size)
     make = kernels.bcj2(EXCLUDED if twin else frozenset(), isolated=False).Decompressor
@@ -1242,8 +1242,8 @@ def _params(fn: Callable[..., object]) -> list[tuple[str, object, object]]:
 def test_the_switch_gives_the_same_signature_on_both_sides() -> None:
     """A constructor from the switch has its parameters, names, kinds and defaults,
     whichever side it is: a wrong keyword fails on both."""
-    if not deps.archivey_codecs.available():
-        pytest.skip("needs archivey-codecs")
+    if not deps.archivey_speedups.available():
+        pytest.skip("needs archivey-speedups")
     for build in (
         lambda e: kernels.zipcrypto(e).Decryptor,
         lambda e: kernels.filters(e, isolated=False).Arm64Decoder,
@@ -1272,10 +1272,10 @@ def test_a_zipcrypto_decryptor_takes_a_buffer_password_by_keyword(
 def test_the_child_does_not_send_lzx_buffered_input() -> None:
     """The worker reports no ``unused_data``: LZX's getter copies its buffered input,
     and no proxy reads it."""
-    archivey_codecs = deps.archivey_codecs.load()
-    if archivey_codecs is None:
-        pytest.skip("needs archivey-codecs")
-    worker = decoder_worker._Codecs(archivey_codecs)
+    archivey_speedups = deps.archivey_speedups.load()
+    if archivey_speedups is None:
+        pytest.skip("needs archivey-speedups")
+    worker = decoder_worker._Codecs(archivey_speedups)
     worker.build("lzx.Decompressor", [15], {"output_size": 5})
     assert "unused_data" not in worker.report()
 
@@ -1299,8 +1299,8 @@ def test_a_bad_code_met_by_the_final_pass_still_raises(
     """The final pass hands back the bytes before a bad code, and the decoder stays
     open until the error raises: on the next call, through the stream, and through
     ``open_archive``."""
-    if not twin and not deps.archivey_codecs.available():
-        pytest.skip("needs archivey-codecs")
+    if not twin and not deps.archivey_speedups.available():
+        pytest.skip("needs archivey-speedups")
     raw, data = _z_with_a_bad_last_code()
     lzw = (
         types.SimpleNamespace(Decompressor=lzw_twin.Decompressor)
@@ -1350,7 +1350,7 @@ def _z_points(make: Callable[..., object], raw: bytes) -> tuple[bytes, list]:
     return bytes(out + got.data), points + got.points
 
 
-@needs_codecs
+@needs_speedups
 @requires("ncompress")
 def test_z_clear_points_match_and_restart_with_the_kernel() -> None:
     rng = random.Random(3)
@@ -1400,7 +1400,7 @@ def _drive_lzw(d: kernels.LzwDecompressor, data: bytes, cap: int) -> tuple:
     return bytes(out), units, errors, events[-3:]
 
 
-@needs_codecs
+@needs_speedups
 @requires("ncompress")
 def test_lzw_bad_code_inside_flush_raises_from_the_next_call() -> None:
     """A bad code met by ``flush()`` after some output: ``flush()`` returns that
@@ -1428,10 +1428,10 @@ def test_lzw_bad_code_inside_flush_raises_from_the_next_call() -> None:
 
 @pytest.mark.parametrize("twin", [False, True], ids=["kernel", "twin"])
 def test_lzw_drained_to_eof_raises_a_bad_code_one_flush_returns(twin: bool) -> None:
-    """The archivey-codecs README's example: ``flush()`` called until ``eof`` raises
+    """The archivey-speedups README's example: ``flush()`` called until ``eof`` raises
     a bad code that one ``flush()`` passes over, returning the output before it."""
-    if not twin and not deps.archivey_codecs.available():
-        pytest.skip("needs archivey-codecs")
+    if not twin and not deps.archivey_speedups.available():
+        pytest.skip("needs archivey-speedups")
     raw, data = _z_with_a_bad_last_code()
     lzw = (
         types.SimpleNamespace(Decompressor=lzw_twin.Decompressor)
@@ -1453,7 +1453,7 @@ class _OtherByteArray(bytearray):
         return b"\x11\x00\x00"
 
 
-@needs_codecs
+@needs_speedups
 def test_an_isolated_kernel_reads_a_buffer_as_its_own_bytes() -> None:
     """A decoder child gets the buffer's own bytes, as the in-process kernel and
     the twin read them, never ``__bytes__``."""
@@ -1480,7 +1480,7 @@ def test_an_isolated_kernel_reads_a_buffer_as_its_own_bytes() -> None:
     assert outcomes[0][0] == "corrupt"
 
 
-@needs_codecs
+@needs_speedups
 def test_lzo_kernel_matches_python_on_damaged_blocks() -> None:
     """Every damaged or cut block gives the same bytes or the same error message
     as the Python decoder, at an exact size and at a larger SquashFS-style one."""
@@ -1503,7 +1503,7 @@ def test_lzo_kernel_matches_python_on_damaged_blocks() -> None:
             assert results[0] == results[1], bytes(bad).hex()
 
 
-@needs_codecs
+@needs_speedups
 @pytest.mark.parametrize("damage", [None, 60, 400, -20])
 def test_lzop_uses_the_kernel_and_reads_the_same(damage: int | None) -> None:
     data = LZOP_DATA
@@ -1521,7 +1521,7 @@ def test_lzop_uses_the_kernel_and_reads_the_same(damage: int | None) -> None:
     assert (results[0] == ("ok", data)) is (damage is None)
 
 
-@needs_codecs
+@needs_speedups
 @pytest.mark.parametrize("name", ["lzo.sqfs", "lzo1x-1.sqfs"])
 def test_squashfs_lzo_uses_the_kernel_and_reads_the_same(name: str) -> None:
     path = Path(__file__).parent / "fixtures" / "squashfs" / name
@@ -1535,7 +1535,7 @@ def test_squashfs_lzo_uses_the_kernel_and_reads_the_same(name: str) -> None:
     assert results[0]
 
 
-@needs_codecs
+@needs_speedups
 @pytest.mark.parametrize("name", ["hfs-ULFO.dmg", "apfs-ULFO.dmg", "hfs-UDZO.dmg"])
 def test_dmg_uses_the_kernels_and_reads_the_same(name: str) -> None:
     """The real kernels read every file the Python decoders read, ``compressed.txt``
@@ -1582,7 +1582,7 @@ def _damaged_lzfse_runs_fail_the_same_way(
     assert differing
 
 
-@needs_codecs
+@needs_speedups
 def test_damaged_lzfse_runs_fail_the_same_way() -> None:
     """Damage inside the image's LZFSE runs gives the same error with the kernel as
     with the Python decoder."""
@@ -1635,7 +1635,7 @@ def _lzx_cabs() -> list[tuple[str, bytes, list[str]]]:
     return cabs
 
 
-@needs_codecs
+@needs_speedups
 def test_cab_lzx_uses_the_kernel_and_reads_the_same() -> None:
     """Every member of clean, damaged and cut cabinets gives the same bytes or the
     same error with the kernel as with the Python decoder, in order and backwards.
@@ -1676,7 +1676,7 @@ def test_cab_lzx_kernel_is_not_used_when_switched_off_or_no_child(
 
 
 class _FakeLzx:
-    """Stands in for ``archivey_codecs.lzx.Decompressor``: panics on any call."""
+    """Stands in for ``archivey_speedups.lzx.Decompressor``: panics on any call."""
 
     built: ClassVar[int] = 0
 
@@ -1724,7 +1724,7 @@ def _cab_blocks(raw: bytes) -> list[tuple[int, int]]:
     return blocks
 
 
-@needs_codecs
+@needs_speedups
 @pytest.mark.parametrize("window", [15, 21])
 def test_cab_lzx_unchecked_damage_before_a_failed_block_reads_the_same(
     window: int,
@@ -1810,7 +1810,7 @@ def _bcj2_cases(rng: random.Random) -> list[tuple[tuple[bytes, ...], int]]:
     return cases
 
 
-@needs_codecs
+@needs_speedups
 def test_bcj2_uses_the_kernel_and_reads_the_same() -> None:
     """Every read gives the same bytes or raises the same error with the kernel as
     with the Python decoder, at the same read: the kernel hands back the bytes
@@ -1836,7 +1836,7 @@ def test_bcj2_kernel_is_not_used_when_switched_off_or_isolated(
 
 
 class _FakeBcj2:
-    """Stands in for ``archivey_codecs.bcj2.Decompressor``: panics on a read."""
+    """Stands in for ``archivey_speedups.bcj2.Decompressor``: panics on a read."""
 
     built: ClassVar[int] = 0
     calls: ClassVar[int] = 0
@@ -1930,7 +1930,7 @@ def test_bcj2_input_error_raises_the_same_and_again_after(which: int) -> None:
 
 
 class _CountingBcj2:
-    """Stands in for ``archivey_codecs.bcj2.Decompressor``: returns zeros and
+    """Stands in for ``archivey_speedups.bcj2.Decompressor``: returns zeros and
     records the largest read."""
 
     largest: ClassVar[int] = 0
@@ -2001,7 +2001,7 @@ def child_builds(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return built
 
 
-@needs_codecs
+@needs_speedups
 @requires("ncompress")
 def test_z_in_the_child_reads_the_same(child_builds: list[str]) -> None:
     data = (bytes(range(256)) * 50 + b"text " * 30000) * 3
@@ -2017,7 +2017,7 @@ def test_z_in_the_child_reads_the_same(child_builds: list[str]) -> None:
     assert set(child_builds) == {"lzw.Decompressor"}
 
 
-@needs_codecs
+@needs_speedups
 def test_cab_lzx_in_the_child_reads_the_same(child_builds: list[str]) -> None:
     rng = random.Random(31)
     for _, raw, names in _lzx_cabs()[:2]:
@@ -2035,7 +2035,7 @@ def test_cab_lzx_in_the_child_reads_the_same(child_builds: list[str]) -> None:
     assert "lzx.Decompressor" in child_builds
 
 
-@needs_codecs
+@needs_speedups
 def test_cab_lzx_failed_block_in_the_child_reads_the_same(
     child_builds: list[str],
 ) -> None:
@@ -2062,7 +2062,7 @@ def test_cab_lzx_failed_block_in_the_child_reads_the_same(
     assert "lzx.Decompressor" in child_builds
 
 
-@needs_codecs
+@needs_speedups
 @pytest.mark.parametrize("name", ["riscv_lzma2.7z", "riscv_special_lzma2.7z"])
 def test_7z_riscv_in_the_child_reads_the_same(
     name: str, child_builds: list[str]
@@ -2075,7 +2075,7 @@ def test_7z_riscv_in_the_child_reads_the_same(
     assert set(child_builds) == {"filters.RiscvDecoder"}
 
 
-@needs_codecs
+@needs_speedups
 @pytest.mark.parametrize("damage", [None, 400])
 def test_lzop_in_the_child_reads_the_same(
     damage: int | None, child_builds: list[str]
@@ -2095,7 +2095,7 @@ def test_lzop_in_the_child_reads_the_same(
     assert set(child_builds) == {"lzo1x"}
 
 
-@needs_codecs
+@needs_speedups
 @pytest.mark.parametrize("name", ["hfs-ULFO.dmg", "apfs-ULFO.dmg"])
 def test_dmg_in_the_child_reads_the_same(name: str, child_builds: list[str]) -> None:
     """LZFSE runs and LZVN decmpfs chunks decode in the decoder child, to the same
@@ -2106,7 +2106,7 @@ def test_dmg_in_the_child_reads_the_same(name: str, child_builds: list[str]) -> 
     assert set(child_builds) <= {"lzfse", "lzvn"}
 
 
-@needs_codecs
+@needs_speedups
 def test_damaged_lzfse_runs_in_the_child_fail_the_same_way(
     child_builds: list[str],
 ) -> None:
@@ -2171,7 +2171,7 @@ def test_the_childs_codec_errors_are_rebuilt_as_the_packages() -> None:
         ("UnsupportedDataError", kernel_child.ChildUnsupportedDataError),
         ("CodecError", kernel_child.ChildCodecError),
     ):
-        error = type(name, (ValueError,), {"__module__": "_codecs"})("bad code 7")
+        error = type(name, (ValueError,), {"__module__": "_speedups"})("bad code 7")
         rebuilt = rebuild_error(
             decoder_worker.error_payload(error), kernel_child._ERRORS
         )
@@ -2184,7 +2184,7 @@ def test_the_childs_codec_errors_are_rebuilt_as_the_packages() -> None:
 def test_no_child_means_the_python_twin(
     how: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """When no child can run archivey-codecs, the Python twin decodes in this
+    """When no child can run archivey-speedups, the Python twin decodes in this
     process: it is not native, so NATIVE_DECODERS' promise holds. The failure is
     remembered, so later streams start no child to see it fail again."""
     _fake(monkeypatch, lzw=1)
@@ -2216,15 +2216,15 @@ def test_no_child_means_the_python_twin(
     assert len(starts) == (0 if how == "no child" else 1)
     logged = "cannot be imported" if how == "import fails" else "cannot run in a"
     assert sum(logged in r.message for r in caplog.records) == 1
-    assert deps.archivey_codecs.child_import_failed is (how == "import fails")
+    assert deps.archivey_speedups.child_import_failed is (how == "import fails")
     assert _FakeLzw.built == 0
 
 
-@needs_codecs
+@needs_speedups
 def test_the_packages_errors_have_the_module_the_child_matches() -> None:
     """The child's errors are rebuilt by their module and name
-    (``kernel_child._ERRORS``): PyO3 sets that module to ``_codecs``."""
-    import archivey_codecs
+    (``kernel_child._ERRORS``): PyO3 sets that module to ``_speedups``."""
+    import archivey_speedups
 
     for name in (
         "CodecError",
@@ -2232,11 +2232,11 @@ def test_the_packages_errors_have_the_module_the_child_matches() -> None:
         "TruncatedDataError",
         "UnsupportedDataError",
     ):
-        kind = getattr(archivey_codecs, name)
+        kind = getattr(archivey_speedups, name)
         assert (kind.__module__, kind.__qualname__) in kernel_child._ERRORS
 
 
-@needs_codecs
+@needs_speedups
 def test_cab_members_open_at_once_give_their_children_back(
     child_builds: list[str],
 ) -> None:
@@ -2286,7 +2286,7 @@ def test_an_excluded_package_starts_no_child(monkeypatch: pytest.MonkeyPatch) ->
     assert kernel_child.open_kernels(EXCLUDED) is None
 
 
-@needs_codecs
+@needs_speedups
 def test_an_old_kernel_in_the_child_is_not_used(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

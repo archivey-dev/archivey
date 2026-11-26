@@ -1,9 +1,9 @@
 ## ADDED Requirements
 
-### Requirement: archivey-codecs holds only codecs that archivey also has in Python
+### Requirement: archivey-speedups holds only codecs that archivey also has in Python
 
-The `archivey-codecs` distribution SHALL contain only codecs, filters and checksums for
-which archivey ships a pure-Python version that stays the reference. It SHALL NOT
+The `archivey-speedups` distribution SHALL contain only codecs, filters and checksums
+for which archivey ships a pure-Python version that stays the reference. It SHALL NOT
 contain archive parsers, archive types, I/O, or policy, and SHALL NOT depend on any
 package other than its build-time binding layer. It SHALL NOT import archivey. Its API
 SHALL hold only what archivey calls or a planned archivey feature needs. An int
@@ -15,7 +15,7 @@ know).
 
 | Case | Expected |
 | --- | --- |
-| `import archivey_codecs` with archivey absent | Succeeds; every kernel usable |
+| `import archivey_speedups` with archivey absent | Succeeds; every kernel usable |
 | A kernel with no archivey Python twin | Not added |
 | A wrapper of zlib, bz2 or LZMA | Not added |
 | A name that no archivey call site uses and no planned archivey feature needs | Not added |
@@ -140,7 +140,7 @@ a seek point is the block's offset.
 
 ### Requirement: KERNELS reports a revision per kernel
 
-`archivey_codecs.KERNELS` SHALL map each kernel's name to an integer revision. A
+`archivey_speedups.KERNELS` SHALL map each kernel's name to an integer revision. A
 release that changes a kernel's observable behaviour (output bytes, error kind or
 message, reported state such as seek points) SHALL raise that kernel's revision. A
 release SHALL NOT remove a kernel or lower a revision before 1.0, nor within a major
@@ -157,10 +157,10 @@ names and error classes; a change to any of them SHALL use a new `KERNELS` key.
 | A new required constructor argument for LZX | A new key (for example `"lzx2"`); `"lzx"` stays |
 | A refactor with identical behaviour | No revision changes |
 
-### Requirement: archivey-codecs is versioned and released on its own
+### Requirement: archivey-speedups is versioned and released on its own
 
 The package SHALL carry its own semantic version, single-sourced in `Cargo.toml`, and
-its own changelog. A release SHALL come from a `codecs-vX.Y.Z` tag that matches that
+its own changelog. A release SHALL come from a `speedups-vX.Y.Z` tag that matches that
 version, and SHALL publish abi3 wheels for CPython 3.11 and later on manylinux and
 musllinux (x86_64, aarch64), macOS (arm64, x86_64) and Windows (x86_64, arm64),
 per-version free-threaded wheels on the same platforms from CPython 3.13t on, and an
@@ -171,6 +171,6 @@ upload.
 
 | Case | Expected |
 | --- | --- |
-| Tag `codecs-v0.2.0` with `Cargo.toml` at 0.2.0 | Wheels built, tested, uploaded |
+| Tag `speedups-v0.2.0` with `Cargo.toml` at 0.2.0 | Wheels built, tested, uploaded |
 | Tag and `Cargo.toml` disagree | The workflow fails before upload |
-| Tag `v0.6.0` (an archivey release) | The codecs workflow does not run |
+| Tag `v0.6.0` (an archivey release) | The speedups workflow does not run |

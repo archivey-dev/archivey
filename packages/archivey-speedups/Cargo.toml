@@ -1,15 +1,15 @@
 [package]
-name = "archivey-codecs"
+name = "archivey-speedups"
 # The package's only version: pyproject.toml reads it (dynamic version).
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 publish = false
-description = "Rust codecs with a standard-library-shaped Python API, used by archivey"
+description = "Native (Rust) speedups for archivey: faster versions of its pure-Python decoders"
 repository = "https://github.com/archivey-dev/archivey"
 
 [lib]
-name = "_codecs"
+name = "_speedups"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

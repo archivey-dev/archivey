@@ -527,18 +527,18 @@ def pytest_configure(config: pytest.Config) -> None:
     property module itself skips collection).
 
     It also puts a WinRAR install on ``PATH`` first (:func:`_put_winrar_on_path`),
-    and with ``CODECS_REQUIRED=1`` (CI's run with the archivey-codecs wheel) stops when
-    the package does not import, so its tests fail instead of skipping.
+    and with ``SPEEDUPS_REQUIRED=1`` (CI's run with the archivey-speedups wheel) stops
+    when the package does not import, so its tests fail instead of skipping.
     """
     _put_winrar_on_path()
-    if os.environ.get("CODECS_REQUIRED") == "1":
+    if os.environ.get("SPEEDUPS_REQUIRED") == "1":
         from archivey.internal.streams.codecs import deps
 
         # load(), not available(): a package that is found but fails to import
         # stops the run too.
-        if deps.archivey_codecs.load() is None:
+        if deps.archivey_speedups.load() is None:
             raise pytest.UsageError(
-                "CODECS_REQUIRED=1, but archivey-codecs is missing or fails to import"
+                "SPEEDUPS_REQUIRED=1, but archivey-speedups is missing or fails to import"
             )
     try:
         from hypothesis import settings

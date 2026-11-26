@@ -1,5 +1,5 @@
 """ZipCrypto (PKWARE's traditional ZIP cipher) in Python, as
-``archivey_codecs.zipcrypto``: APPNOTE.txt §6.1, a 96-bit key state seeded from the
+``archivey_speedups.zipcrypto``: APPNOTE.txt §6.1, a 96-bit key state seeded from the
 password, each byte XORed with a keystream byte derived from the evolving state."""
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ _DECRYPT_CHUNK = 16 * 1024
 
 
 class Decryptor:
-    """The 96-bit ZipCrypto key state, as ``archivey_codecs.zipcrypto.Decryptor``."""
+    """The 96-bit ZipCrypto key state, as ``archivey_speedups.zipcrypto.Decryptor``."""
 
     __slots__ = ("k0", "k1", "k2", "total_in")
 

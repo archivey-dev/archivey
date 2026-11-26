@@ -26,7 +26,7 @@ LZMA); making any format depend on the package; a crates.io release.
 
 ## D1. Name and scope
 
-Distribution `archivey-codecs`, import `archivey_codecs` (question 2). The name says
+Distribution `archivey-speedups`, import `archivey_speedups` (question 2). The name says
 what is inside and keeps the link to archivey's tests and fuzzing, which are why anyone
 would trust it. `archivey-native` says how it is built, not what it does. All three
 candidate names were free on PyPI on 2026-11-21.
@@ -46,7 +46,7 @@ BLAKE2sp (RAR5) stays in Python: after PR 1709 it runs on the standard library's
 **LZFSE and LZVN, for the DMG reader** (maintainer, 2026-11-21, "Build the DMG reader"
 thread: own fast kernel here rather than the `lzfse` PyPI package, which has no output
 cap and accepts blocks whose matches use more literals than the block decoded). They
-go in the first codecs release after the DMG reader's pure-Python twin
+go in the first archivey-speedups release after the DMG reader's pure-Python twin
 (`streams/codecs/lzfse_decoder.py`) lands, as one-shot functions
 (`lzfse.decompress(chunk, out_size=)`, DMG chunks record their sizes). The kernel keeps
 every check of the Python decoder: the v2/v1 `n_raw` exact, the literal count a
@@ -68,7 +68,7 @@ DOS-era ZIP methods and ARJ method 4.
 ## D2. Hash API
 
 ```python
-archivey_codecs.crc16_arc(data, value=0) -> int     # function, like zlib.crc32
+archivey_speedups.crc16_arc(data, value=0) -> int     # function, like zlib.crc32
 ```
 
 - A CRC is a function in snake case (`crc16_arc`), the `zlib.crc32` form, named after
@@ -83,11 +83,11 @@ archivey_codecs.crc16_arc(data, value=0) -> int     # function, like zlib.crc32
 ## D3. Decoder API
 
 ```python
-d = archivey_codecs.lzx.Decompressor(window_bits=21)
+d = archivey_speedups.lzx.Decompressor(window_bits=21)
 out = d.decompress(data, max_length=-1)
 d.eof, d.needs_input, d.unused_data
 
-archivey_codecs.lzo1x.decompress(block, out_size=n)
+archivey_speedups.lzo1x.decompress(block, out_size=n)
 ```
 
 The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
@@ -231,11 +231,12 @@ f.seek(stream_start + point[1])         # feed input from total_in; output resum
 
 ## D4. Compatibility: per-kernel revisions
 
-`archivey_codecs.KERNELS` maps each kernel name to a revision, raised whenever the
+`archivey_speedups.KERNELS` maps each kernel name to a revision, raised whenever the
 kernel's observable behaviour changes (output, error kind or message, seek points).
-archivey's `internal/kernels/_select.py` holds the minimum revision it needs per kernel and uses
-a kernel only at that revision or newer; otherwise it uses the Python decoder and logs
-once at DEBUG. The dependency range is `archivey-codecs>=0.1,<1` (question 7).
+archivey's `internal/kernels/_select.py` holds the minimum revision it needs per kernel
+and uses a kernel only at that revision or newer; otherwise it uses the Python decoder
+and logs once at DEBUG. The dependency range is `archivey-speedups>=0.1,<1` (question
+7).
 
 So adding a kernel never breaks an older archivey, an old package with a new archivey
 loses only the kernels that changed, and neither package's release waits for the
@@ -260,7 +261,7 @@ a CLEAR's pending group padding, stay at revision 1.
 
 The "change it twice" rule stays: a fix to a twinned Python decoder is made in Rust in
 the same PR, and the kernel's revision goes up. Users get the fixed Python version
-until the next codecs release turns the kernel back on.
+until the next archivey-speedups release turns the kernel back on.
 
 ## D4a. archivey's side: one API, one switch
 
@@ -281,7 +282,7 @@ the two. `src/archivey/internal/kernels/` holds it:
   panics, with the same API.
 - `kernels/__init__.py`: the switch. `kernels.lzx(excluded, isolated=...)` (and one
   function per kernel) returns a namespace with that module's names, the package's or
-  the twin's, and `library`: archivey-codecs when the package decodes, for a call site
+  the twin's, and `library`: archivey-speedups when the package decodes, for a call site
   that records its backend (LZO does). `kernels.filters` has `arm64_library` and
   `riscv_library` instead, one for each kernel. Under `isolated`, `kernels.bcj2` always
   gives the twin until the decoder child can carry BCJ2's four inputs (task 2.7), so
@@ -297,11 +298,12 @@ the twins and the package.
 
 ## D5. How archivey installs and turns it off
 
-- Extra `archivey[codecs]` with platform markers, so pip never falls back to the sdist:
+- Extra `archivey[speedups]` with platform markers, so pip never falls back to the
+  sdist:
 
   ```toml
   codecs = [
-    "archivey-codecs>=0.1,<1; platform_python_implementation == 'CPython' and (sys_platform == 'linux' or sys_platform == 'darwin' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ARM64')",
+    "archivey-speedups>=0.1,<1; platform_python_implementation == 'CPython' and (sys_platform == 'linux' or sys_platform == 'darwin' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ARM64')",
   ]
   ```
 
@@ -311,9 +313,9 @@ the twins and the package.
   Windows never ask for the package. No marker tells a free-threaded build apart, so
   D7 builds free-threaded wheels for every free-threaded CPython from 3.13t on. The
   implementation PR checks the marker with pip and uv on each excluded platform.
-- `archivey-cli` depends on `archivey[codecs]` from the first archivey release that
+- `archivey-cli` depends on `archivey[speedups]` from the first archivey release that
   knows the package; `[recommended]` gains it one archivey release later (question 9).
-- `OptionalLibrary.ARCHIVEY_CODECS` (question 8), passed through every call site (the
+- `OptionalLibrary.ARCHIVEY_SPEEDUPS` (question 8), passed through every call site (the
   prototype reached only LZO). It is the only switch: tests that need the Python path
   pass `exclude_libraries`, or use a fixture that patches the switch in
   `internal/kernels` (`tests/kernels_util.use_python_twin`). No
@@ -338,16 +340,16 @@ the twins and the package.
   then BCJ2 runs as the Python twin in the caller's process under `NATIVE_DECODERS`
   (D4a). If no
   child can start, archivey uses the Python twin in the caller's process, as if
-  `ARCHIVEY_CODECS` were excluded: a Python decoder is not native, so the promise holds,
-  and the read gives the same bytes as without the package. LZO then goes to
+  `ARCHIVEY_SPEEDUPS` were excluded: a Python decoder is not native, so the promise
+  holds, and the read gives the same bytes as without the package. LZO then goes to
   compress-utils, which raises `ResourceUnavailableError` as today, and to Python only
   when compress-utils is absent.
-- LZO order: archivey-codecs, then compress-utils, then Python (question 11), because
+- LZO order: archivey-speedups, then compress-utils, then Python (question 11), because
   ours is tested against our Python twin message for message.
 
 ## D6. Repository layout
 
-`packages/archivey-codecs/` in this repo (question 3), next to `archivey-cli`:
+`packages/archivey-speedups/` in this repo (question 3), next to `archivey-cli`:
 
 ```
 Cargo.toml          single source of the version (pyproject: dynamic version)
@@ -355,7 +357,7 @@ pyproject.toml      maturin backend, abi3-py311
 CHANGELOG.md, README.md
 src/lib.rs          bindings only
 src/kernels/*.rs    one module per kernel
-python/archivey_codecs/__init__.pyi, py.typed
+python/archivey_speedups/__init__.pyi, py.typed
 tests/test_api.py      the API alone, no archivey import
 tests/test_parity.py   each kernel against archivey's Python twin
 ```
@@ -386,13 +388,13 @@ arm64 and x86_64, Windows x86_64 and arm64. About 300 KB each.
 
 1. A session opens the release PR: version in `Cargo.toml`, the package changelog,
    raised kernel revisions; it gives davi the merge commit and paste-ready notes.
-2. davi creates the release in the GitHub web UI with tag `codecs-vX.Y.Z` and unticks
+2. davi creates the release in the GitHub web UI with tag `speedups-vX.Y.Z` and unticks
    "Set as latest release", so the repo's latest release stays archivey's.
-3. `codecs-publish.yml` runs on `codecs-v*` (archivey's `publish.yml` runs on `v*`,
-   which `codecs-v…` does not match), checks the tag against `Cargo.toml`, builds and
+3. `speedups-publish.yml` runs on `speedups-v*` (archivey's `publish.yml` runs on `v*`,
+   which `speedups-v…` does not match), checks the tag against `Cargo.toml`, builds and
    tests the matrix, and uploads through Trusted Publishing.
-4. One-time: PyPI and TestPyPI pending publishers for `archivey-codecs`, and a TestPyPI
-   dry run through `workflow_dispatch`.
+4. One-time: PyPI and TestPyPI pending publishers for `archivey-speedups`, and a
+   TestPyPI dry run through `workflow_dispatch`.
 5. `scripts/release.py` support only if releases become frequent.
 
 Release when a kernel is added or its revision changes, or for a security fix.
@@ -430,8 +432,8 @@ pass only sizes they read and checked.
 All ruled by the maintainer (davi, project thread, 2026-11-21, cards unless noted).
 
 1. Go ahead with a separately versioned package, starting from #1416? RULED yes.
-2. D1: name `archivey-codecs`? RULED yes.
-3. D6: same repo, `packages/archivey-codecs/`? RULED yes.
+2. D1: name `archivey-speedups`? RULED yes.
+3. D6: same repo, `packages/archivey-speedups/`? RULED yes.
 4. D3: streaming decoders in the `LZMADecompressor` shape, and one-shot
    `decompress(block, out_size=)` functions for codecs whose blocks stand alone (LZO,
    later ADC and LZFSE)? RULED yes (the split confirmed in the thread).
@@ -443,13 +445,13 @@ All ruled by the maintainer (davi, project thread, 2026-11-21, cards unless note
 6. D2: CRC `digest()` big-endian? RULED yes.
 7. D4: per-kernel revisions with a minimum per kernel in archivey, range `>=0.1,<1`?
    RULED yes.
-8. D5: public `OptionalLibrary.ARCHIVEY_CODECS`? RULED yes.
+8. D5: public `OptionalLibrary.ARCHIVEY_SPEEDUPS`? RULED yes.
 9. D5: `[recommended]` gains the package one archivey release after codecs 0.1? RULED
-   yes, and `archivey-cli` depends on `archivey[codecs]` from the first archivey
+   yes, and `archivey-cli` depends on `archivey[speedups]` from the first archivey
    release that knows the package (davi in words).
 10. D7: free-threaded wheels in 0.1, no PyPy wheels until measured? RULED yes.
-11. D5: LZO order archivey-codecs, then compress-utils, then Python? RULED yes.
-12. Name of the extra: `[codecs]`? RULED yes.
+11. D5: LZO order archivey-speedups, then compress-utils, then Python? RULED yes.
+12. Name of the extra: `[speedups]`? RULED yes.
 13. D5: under `ProcessIsolation.NATIVE_DECODERS`, where do the kernels run? RULED: in
     archivey's decoder child, like the other native decoders, so the setting keeps its
     promise and keeps the speed-up (card, after an earlier card had chosen Python

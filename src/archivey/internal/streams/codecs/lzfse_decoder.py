@@ -168,7 +168,7 @@ def decoder(
     *,
     isolated: bool,
 ) -> Decode:
-    """The LZFSE or the raw LZVN decoder to use: archivey-codecs' ``kernel`` when
+    """The LZFSE or the raw LZVN decoder to use: archivey-speedups' ``kernel`` when
     :mod:`archivey.internal.kernels` allows it (installed, not in ``excluded``; in a
     decoder child when ``isolated``, for ``NATIVE_DECODERS``), else
     :func:`lzfse_decompress` or :func:`lzvn_decompress`. Both give the same bytes and

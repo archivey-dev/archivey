@@ -1,4 +1,4 @@
-# archivey-codecs
+# archivey-speedups
 
 Rust versions of the decoders that [archivey](https://github.com/archivey-dev/archivey)
 otherwise runs in Python. When archivey finds this package, those decoders get faster,
@@ -24,15 +24,15 @@ what archivey calls, plus the saved-state methods its seek points will use.
 Each twin (in `archivey.internal.kernels.python`) has the subset of the package's API
 that archivey's call sites use, with the same names, arguments and behaviour. It
 leaves out the state methods (`getstate`, `from_state`, `copy` other than ZipCrypto's)
-and LZX's `unused_data` and `total_in`. The stubs in `python/archivey_codecs/` give
+and LZX's `unused_data` and `total_in`. The stubs in `python/archivey_speedups/` give
 the package's whole API. archivey's call sites cannot tell which one runs, except
 LZO's, which tries compress-utils between the two.
 
 ```python
-import archivey_codecs
-from archivey_codecs import lzw
+import archivey_speedups
+from archivey_speedups import lzw
 
-archivey_codecs.crc16_arc(b"123456789")  # 0xBB3D
+archivey_speedups.crc16_arc(b"123456789")  # 0xBB3D
 d = lzw.Decompressor()
 data = d.decompress(z_bytes)
 # flush() returns the output before a bad code, and the next call raises it:
@@ -60,13 +60,13 @@ its window; see `src/kernels/lzx.rs`. The kernel modules (`src/kernels/`) forbid
 From the archivey checkout:
 
 ```sh
-uv pip install ./packages/archivey-codecs   # then use `uv run --no-sync`
-CODECS_PARITY_CASES=1000 uv run --no-sync pytest --no-cov packages/archivey-codecs/tests
-uv run --no-sync python packages/archivey-codecs/bench/bench_kernels.py
+uv pip install ./packages/archivey-speedups   # then use `uv run --no-sync`
+SPEEDUPS_PARITY_CASES=1000 uv run --no-sync pytest --no-cov packages/archivey-speedups/tests
+uv run --no-sync python packages/archivey-speedups/bench/bench_kernels.py
 ```
 
 A change to a Python decoder in the table needs the same change here, in the same pull
 request. The differential tests in `tests/test_parity.py` compare the two on clean,
 damaged and random input.
 
-The version lives in `Cargo.toml` only. Releases are tagged `codecs-vX.Y.Z`.
+The version lives in `Cargo.toml` only. Releases are tagged `speedups-vX.Y.Z`.

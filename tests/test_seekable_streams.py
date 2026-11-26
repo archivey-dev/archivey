@@ -2209,7 +2209,7 @@ _SEEK_INTERLEAVE_CASES = [
     ),
     pytest.param(
         _compress_unix_parts,
-        # The kernel when archivey-codecs is installed, as a default read uses it.
+        # The kernel when archivey-speedups is installed, as a default read uses it.
         functools.partial(
             UnixCompressDecompressorStream, excluded=NO_EXCLUSIONS, isolated=False
         ),

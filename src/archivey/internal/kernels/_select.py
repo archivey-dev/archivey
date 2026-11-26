@@ -1,13 +1,13 @@
-"""Which archivey-codecs kernels a call may use, and the guards around them.
+"""Which archivey-speedups kernels a call may use, and the guards around them.
 
 :mod:`archivey.internal.kernels` asks here for a kernel by its name in
-``archivey_codecs.KERNELS`` and gets the module (or its stand-in in a decoder child), or
-``None`` to use the Python twin. Design: openspec change ``rust-codecs-package``, D4
+``archivey_speedups.KERNELS`` and gets the module (or its stand-in in a decoder child),
+or ``None`` to use the Python twin. Design: openspec change ``rust-codecs-package``, D4
 (revisions) and D5 (installing and turning it off).
 
 A kernel is used when all of these hold:
 
-- the call's ``FormatPolicy`` does not turn ``OptionalLibrary.ARCHIVEY_CODECS`` off
+- the call's ``FormatPolicy`` does not turn ``OptionalLibrary.ARCHIVEY_SPEEDUPS`` off
   (``exclude_libraries`` or ``only_libraries``), the one switch a caller sets for it;
 - the package is installed and imports;
 - its ``KERNELS`` revision for that kernel is at least :data:`MIN_REVISIONS`' (an older
@@ -63,16 +63,16 @@ _too_old_logged: set[str] = set()
 
 
 Kernels = ModuleType | ChildCodecs
-"""The ``archivey_codecs`` module, or its stand-in whose kernels run in a decoder
+"""The ``archivey_speedups`` module, or its stand-in whose kernels run in a decoder
 child."""
 
 
 def kernels(name: str, excluded: frozenset[OptionalLibrary]) -> ModuleType | None:
-    """The ``archivey_codecs`` module when its ``name`` kernel is to be used in this
+    """The ``archivey_speedups`` module when its ``name`` kernel is to be used in this
     process for a call whose policy turns off ``excluded``, else ``None``."""
-    if OptionalLibrary.ARCHIVEY_CODECS in excluded:
+    if OptionalLibrary.ARCHIVEY_SPEEDUPS in excluded:
         return None
-    module = deps.archivey_codecs.load()
+    module = deps.archivey_speedups.load()
     if module is None or not _current(name, getattr(module, "KERNELS", None)):
         return None
     return module
@@ -87,7 +87,7 @@ def decoding_kernels(
     (:func:`child.open_kernels`)."""
     if not isolated:
         return kernels(name, excluded)
-    if OptionalLibrary.ARCHIVEY_CODECS in excluded:
+    if OptionalLibrary.ARCHIVEY_SPEEDUPS in excluded:
         return None
     module = child.open_kernels(excluded)
     if module is None or not _current(name, module.KERNELS):
@@ -105,7 +105,7 @@ def _current(name: str, table: Mapping[str, object] | None) -> bool:
     if name not in _too_old_logged:
         _too_old_logged.add(name)
         logs.streams.debug(
-            "archivey-codecs has %r kernel revision %r; archivey needs %d or "
+            "archivey-speedups has %r kernel revision %r; archivey needs %d or "
             "newer, so it uses its Python decoder for it",
             name,
             have,
@@ -157,7 +157,7 @@ def _as_corruption(kernel: str, exc: BaseException) -> BaseException:
     caller raises it from the panic), else ``exc`` itself."""
     if is_panic(exc):
         return CorruptionError(
-            f"archivey-codecs' {kernel} decoder failed on this data: {exc}"
+            f"archivey-speedups' {kernel} decoder failed on this data: {exc}"
         )
     return exc
 

@@ -41,7 +41,7 @@ exception to "accelerators never change the result" for LZFSE blocks whose liter
 counts are inconsistent. With that ruling, Part H can use the package now: in a child
 process, behind the header walk and the length check (§Using it safely).
 
-A third way is the Rust codecs package (`archivey-codecs`, planned separately). It
+A third way is the Rust speedups package (`archivey-speedups`, planned separately). It
 could hold its own LZFSE kernel with archivey's checks. That is more work, and decision
 D3 in the design prefers an established package as an extra.
 

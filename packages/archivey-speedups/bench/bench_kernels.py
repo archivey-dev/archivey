@@ -15,14 +15,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tests"))
 
-import archivey_codecs
+import archivey_speedups
 
 from archivey.internal.kernels.python import filters, lzfse, lzo1x, lzx, zipcrypto
 
 PYTHON = types.SimpleNamespace(
     filters=filters, lzfse=lzfse, lzo1x=lzo1x, lzx=lzx, zipcrypto=zipcrypto
 )
-RUST = archivey_codecs
+RUST = archivey_speedups
 
 
 def both(fn, py_repeat=1):

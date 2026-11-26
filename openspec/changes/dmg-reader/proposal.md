@@ -19,7 +19,7 @@ before it is implemented in parts (2026-11-21).
 - `required_source` for DMG becomes `SEEKABLE`.
 - Detection keeps every current answer and adds the encrypted-image signatures.
 - Later parts: the partition CRC-32 as a spanning check, and a fast LZFSE and LZVN
-  kernel in the `archivey-codecs` Rust package (ruled 2026-11-21, A0.2).
+  kernel in the `archivey-speedups` Rust package (ruled 2026-11-21, A0.2).
 - **Breaking:** none for callers that read archives; a caller that relied on
   `UnsupportedFeatureError` for every `.dmg` now gets its members.
 

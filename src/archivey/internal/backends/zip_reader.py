@@ -564,7 +564,7 @@ def _is_candidate_integrity_failure(
     payload is in the file (``payload_complete()``, asked only then: it costs a seek);
     otherwise the file really is short.
     The local header is not encrypted, so a damaged one is never the key's doing: it
-    raises before decryption starts. Nor is a panic in archivey-codecs' ZipCrypto
+    raises before decryption starts. Nor is a panic in archivey-speedups' ZipCrypto
     kernel: every byte string is valid input to the cipher, so the panic is a kernel
     bug, and it stays a ``CorruptionError`` that names the kernel.
     """
@@ -4171,7 +4171,7 @@ class ZipReader(BaseArchiveReader):
             raw = self._open_raw_payload(loc, member)
             try:
                 header = self._read_zipcrypto_header(raw, loc, member.name)
-                # The key state may be archivey-codecs', which can fail too.
+                # The key state may be archivey-speedups', which can fail too.
                 keys, check = keys_after_header(
                     password, header, self._stream_config.excluded_libraries
                 )

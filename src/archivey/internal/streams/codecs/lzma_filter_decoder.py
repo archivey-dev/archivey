@@ -269,9 +269,9 @@ def FilterStream(
     """Apply a filter-only stage — BCJ branch filter or Delta (forward-only).
 
     ``lzma_filter`` is a liblzma filter dict. The ARM64 and RISC-V filters, which
-    Python's ``lzma`` refuses, run in archivey-codecs or in Python
+    Python's ``lzma`` refuses, run in archivey-speedups or in Python
     (:class:`BranchFilterDecoder`); ``excluded`` is the call's excluded libraries,
-    which can turn ``OptionalLibrary.ARCHIVEY_CODECS`` off.
+    which can turn ``OptionalLibrary.ARCHIVEY_SPEEDUPS`` off.
 
     ``owns_inner`` is True when this filter wraps a private previous stage
     (later 7z BCJ stages, including the LZMA1 cap slice). First-stage

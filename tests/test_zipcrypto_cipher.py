@@ -47,7 +47,7 @@ def test_decrypt_across_calls_matches_encrypt(split_sizes: list[int]) -> None:
 
     # The Python cipher, whose key words are compared below.
     keys, check = zip_backend.keys_after_header(
-        b"pw", ciphertext, frozenset({OptionalLibrary.ARCHIVEY_CODECS})
+        b"pw", ciphertext, frozenset({OptionalLibrary.ARCHIVEY_SPEEDUPS})
     )
     assert isinstance(keys, zipcrypto.Decryptor)
     assert check == 0x42

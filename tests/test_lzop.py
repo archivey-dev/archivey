@@ -55,7 +55,7 @@ _MTIME = datetime.datetime(2024, 3, 1, 12, 0, tzinfo=datetime.UTC)
 TAR_LZOP = ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZOP)
 
 _has_compress_utils = lzo_decoder._compress_utils(frozenset()) is not None
-_has_codecs = lzo_decoder._archivey_codecs(frozenset(), IN_PROCESS, None) is not None
+_has_codecs = lzo_decoder._archivey_speedups(frozenset(), IN_PROCESS, None) is not None
 
 
 @pytest.fixture(
@@ -68,16 +68,16 @@ _has_codecs = lzo_decoder._archivey_codecs(frozenset(), IN_PROCESS, None) is not
             ),
         ),
         pytest.param(
-            "archivey-codecs",
-            marks=pytest.mark.skipif(not _has_codecs, reason="needs archivey-codecs"),
+            "archivey-speedups",
+            marks=pytest.mark.skipif(not _has_codecs, reason="needs archivey-speedups"),
         ),
     ]
 )
 def decoder(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
     """Each LZO1X decoder in turn: archivey's own, compress-utils' and
-    archivey-codecs'."""
-    if request.param != "archivey-codecs":
-        monkeypatch.setattr(lzo_decoder, "_archivey_codecs", lambda *_: None)
+    archivey-speedups'."""
+    if request.param != "archivey-speedups":
+        monkeypatch.setattr(lzo_decoder, "_archivey_speedups", lambda *_: None)
     if request.param == "python":
         monkeypatch.setattr(lzo_decoder, "_compress_utils", lambda *_: None)
     return request.param
@@ -85,8 +85,8 @@ def decoder(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> 
 
 @pytest.fixture
 def no_codecs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """compress-utils' tests: archivey-codecs, tried first, is not used."""
-    monkeypatch.setattr(lzo_decoder, "_archivey_codecs", lambda *_: None)
+    """compress-utils' tests: archivey-speedups, tried first, is not used."""
+    monkeypatch.setattr(lzo_decoder, "_archivey_speedups", lambda *_: None)
 
 
 _FILES = {
@@ -386,7 +386,7 @@ def test_a_compress_utils_built_without_lzo_is_not_used(
     POOL.close_idle()
     try:
         use_compress_utils_without_lzo_or_snappy(tmp_path, monkeypatch)
-        monkeypatch.setattr(lzo_decoder, "_archivey_codecs", lambda *_: None)
+        monkeypatch.setattr(lzo_decoder, "_archivey_speedups", lambda *_: None)
         natives = (
             ISOLATED if isolation is ProcessIsolation.NATIVE_DECODERS else (IN_PROCESS)
         )

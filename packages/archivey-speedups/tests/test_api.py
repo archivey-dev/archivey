@@ -1,4 +1,4 @@
-"""archivey-codecs' public API on its own: no archivey import, so it also runs where
+"""archivey-speedups' public API on its own: no archivey import, so it also runs where
 archivey is not installed."""
 
 from __future__ import annotations
@@ -9,12 +9,12 @@ import random
 
 import pytest
 
-if os.environ.get("CODECS_REQUIRED") == "1":
-    import archivey_codecs  # CI: a missing build must fail, not skip
+if os.environ.get("SPEEDUPS_REQUIRED") == "1":
+    import archivey_speedups  # CI: a missing build must fail, not skip
 else:
-    archivey_codecs = pytest.importorskip("archivey_codecs")
+    archivey_speedups = pytest.importorskip("archivey_speedups")
 
-from archivey_codecs import (
+from archivey_speedups import (
     KERNELS,
     CodecError,
     CorruptDataError,
@@ -350,7 +350,7 @@ def test_lzx_output_size_after_an_error_is_refused() -> None:
     first = bytes.fromhex("0030a000") + r_regs + b"0123456789"
     bad = bytes.fromhex("00e000000000")  # block type 7, after the first block
     d = lzx.Decompressor(15)
-    with pytest.raises(archivey_codecs.CorruptDataError, match="block type 7"):
+    with pytest.raises(archivey_speedups.CorruptDataError, match="block type 7"):
         d.decompress(first + bad)
     with pytest.raises(ValueError, match="after a decode error"):
         d.set_output_size(10)
@@ -372,19 +372,19 @@ def test_lzx_without_output_size() -> None:
 def test_lzx_cut_stream() -> None:
     d = lzx.Decompressor(15, output_size=len(_HELLO))
     assert d.decompress(_LZX_HELLO[:-10]) == b""
-    with pytest.raises(archivey_codecs.TruncatedDataError):
+    with pytest.raises(archivey_speedups.TruncatedDataError):
         d.flush()
 
 
 def test_lzx_damage_raises_again() -> None:
     d = lzx.Decompressor(15, output_size=100)
     for _ in range(2):
-        with pytest.raises(archivey_codecs.CorruptDataError, match="block type 7"):
+        with pytest.raises(archivey_speedups.CorruptDataError, match="block type 7"):
             d.decompress(_LZX_BAD)
 
 
 def test_lzx_window_range() -> None:
-    with pytest.raises(archivey_codecs.CorruptDataError, match="window"):
+    with pytest.raises(archivey_speedups.CorruptDataError, match="window"):
         lzx.Decompressor(14)
 
 
@@ -411,16 +411,16 @@ def test_lzx_state_resumes_from_total_in() -> None:
 def test_lzx_state_refusals() -> None:
     d = lzx.Decompressor(15, output_size=len(_HELLO))
     state = d.getstate()
-    with pytest.raises(archivey_codecs.CorruptDataError, match="cut off"):
+    with pytest.raises(archivey_speedups.CorruptDataError, match="cut off"):
         lzx.Decompressor.from_state(state[:-1])
-    with pytest.raises(archivey_codecs.CorruptDataError, match="follow"):
+    with pytest.raises(archivey_speedups.CorruptDataError, match="follow"):
         lzx.Decompressor.from_state(state + b"\0")
     bad = bytearray(state)
     bad[1 + len("lzx") + 4] = 22  # the window bits
-    with pytest.raises(archivey_codecs.CorruptDataError, match="window"):
+    with pytest.raises(archivey_speedups.CorruptDataError, match="window"):
         lzx.Decompressor.from_state(bytes(bad))
-    other = archivey_codecs.zipcrypto.Decryptor(b"pw").getstate()
-    with pytest.raises(archivey_codecs.UnsupportedDataError):
+    other = archivey_speedups.zipcrypto.Decryptor(b"pw").getstate()
+    with pytest.raises(archivey_speedups.UnsupportedDataError):
         lzx.Decompressor.from_state(other)
     with pytest.raises(CodecError):
         d.flush()
@@ -460,17 +460,17 @@ def test_lzx_stream_cut_inside_a_block_on_a_frame_boundary() -> None:
     data = bytes.fromhex("0830a000") + r_regs + bytes(range(256)) * 128
     d = lzx.Decompressor(15)
     out = d.decompress(data)
-    with pytest.raises(archivey_codecs.TruncatedDataError):
+    with pytest.raises(archivey_speedups.TruncatedDataError):
         out += d.flush()
     assert out == bytes(range(256)) * 128
 
 
 def test_lzx_takes_no_input_after_a_decode_error() -> None:
     d = lzx.Decompressor(15)
-    with pytest.raises(archivey_codecs.CorruptDataError):
+    with pytest.raises(archivey_speedups.CorruptDataError):
         d.decompress(_LZX_BAD)
     assert not d.needs_input
-    with pytest.raises(archivey_codecs.CorruptDataError):
+    with pytest.raises(archivey_speedups.CorruptDataError):
         d.decompress(b"x" * 100)
     assert not d.needs_input
 
@@ -489,7 +489,7 @@ def test_lzx_state_whose_frame_disagrees_with_its_output_size() -> None:
     assert state[at - 1 : at + 8] == b"\1" + (20).to_bytes(8, "little")
     for size in (15, 10, 21, 40):
         bad = state[:at] + size.to_bytes(8, "little") + state[at + 8 :]
-        with pytest.raises(archivey_codecs.CorruptDataError, match="do not agree"):
+        with pytest.raises(archivey_speedups.CorruptDataError, match="do not agree"):
             lzx.Decompressor.from_state(bad)
 
 
@@ -512,7 +512,7 @@ def test_lzx_state_of_a_frame_with_all_its_bytes_decoded_is_refused() -> None:
             lzx.Decompressor.from_state(bad)
             continue
         with pytest.raises(
-            archivey_codecs.CorruptDataError, match=f"a frame of 20 bytes with {done}"
+            archivey_speedups.CorruptDataError, match=f"a frame of 20 bytes with {done}"
         ):
             lzx.Decompressor.from_state(bad)
 
@@ -520,9 +520,9 @@ def test_lzx_state_of_a_frame_with_all_its_bytes_decoded_is_refused() -> None:
 def test_lzx_after_an_error_raises_again_and_refuses_getstate() -> None:
     d = lzx.Decompressor(15, output_size=len(_HELLO))
     d.decompress(_LZX_HELLO[:-10])
-    with pytest.raises(archivey_codecs.TruncatedDataError):
+    with pytest.raises(archivey_speedups.TruncatedDataError):
         d.flush()
-    with pytest.raises(archivey_codecs.TruncatedDataError):
+    with pytest.raises(archivey_speedups.TruncatedDataError):
         d.flush()
     with pytest.raises(ValueError, match="after a decode error"):
         d.getstate()
@@ -545,7 +545,7 @@ def test_lzw_flush_keeps_its_cap(tmp_path) -> None:
     del z
     probe = (
         "import sys\n"
-        "from archivey_codecs import lzw\n"
+        "from archivey_speedups import lzw\n"
         "z = open(sys.argv[1], 'rb').read()\n"
         "rss = lambda: int(open('/proc/self/statm').read().split()[1]) * 4096\n"
         "before = rss()\n"
@@ -967,7 +967,7 @@ def test_lzx_frame_of_empty_blocks_holds_little_input() -> None:
     if not sys.platform.startswith("linux"):
         pytest.skip("reads /proc/self/statm")
     probe = (
-        "from archivey_codecs import lzx\n"
+        "from archivey_speedups import lzx\n"
         "rss = lambda: int(open('/proc/self/statm').read().split()[1]) * 4096\n"
         # The stream header bit and an empty uncompressed block, then more of them
         # (each 16 bytes: type and length, alignment, three repeated offsets).
@@ -993,10 +993,10 @@ def test_an_int_outside_its_parameter_raises_a_fixed_value_error() -> None:
     """Not PyO3's ``OverflowError``, whose message differs by platform."""
     stream = io.BytesIO
     calls = {
-        "start_offset": lambda n: archivey_codecs.filters.Arm64Decoder(n),
+        "start_offset": lambda n: archivey_speedups.filters.Arm64Decoder(n),
         "output_size": lambda n: lzx.Decompressor(15, output_size=n),
-        "out_size": lambda n: archivey_codecs.lzo1x.decompress(b"", out_size=n),
-        "max_size": lambda n: archivey_codecs.lzfse.decompress(b"", max_size=n),
+        "out_size": lambda n: archivey_speedups.lzo1x.decompress(b"", out_size=n),
+        "max_size": lambda n: archivey_speedups.lzfse.decompress(b"", max_size=n),
     }
     for name, call in calls.items():
         for n in (-1, 2**64, -(2**70)):
@@ -1005,17 +1005,17 @@ def test_an_int_outside_its_parameter_raises_a_fixed_value_error() -> None:
             ):
                 call(n)
     with pytest.raises(ValueError, match="^out_size is outside"):
-        archivey_codecs.bcj2.Decompressor(
+        archivey_speedups.bcj2.Decompressor(
             stream(), stream(), stream(), stream(), out_size=-1
         )
     with pytest.raises(ValueError, match="^output_size is outside"):
         lzx.Decompressor(15).set_output_size(-1)
     for n in (-1, 8, 17, 2**32):
         with pytest.raises(ValueError, match="^max_width is outside 9 to 16$"):
-            archivey_codecs.lzw.Decompressor(max_width=n, block_mode=True)
+            archivey_speedups.lzw.Decompressor(max_width=n, block_mode=True)
     for n in (-1, 2**32):
         with pytest.raises(
-            archivey_codecs.CorruptDataError, match="^LZX window bits outside"
+            archivey_speedups.CorruptDataError, match="^LZX window bits outside"
         ):
             lzx.Decompressor(n)
 
@@ -1040,4 +1040,4 @@ def test_any_int_is_a_max_length() -> None:
 
 def test_a_non_int_still_raises_type_error() -> None:
     with pytest.raises(TypeError, match="start_offset"):
-        archivey_codecs.filters.Arm64Decoder(1.5)  # type: ignore[arg-type]
+        archivey_speedups.filters.Arm64Decoder(1.5)  # type: ignore[arg-type]
