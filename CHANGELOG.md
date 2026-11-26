@@ -22,6 +22,9 @@ line. How to write the entry: see
 
 ### Changed
 
+- RAR5: a header whose size field is longer than 3 bytes is refused with
+  `CorruptionError`, as the RAR5 technical note requires ("must not be longer than 3
+  bytes") and as salvage's header search already did; it was read as a header.
 - **Breaking:** with `concurrent_operations=True`, `stream_members()`, `extract_all()`
   and `verify_all()` no longer run beside other calls: while a pass runs, `open()`,
   `read()`, `get()`, `members()`, `members_report()`, iteration or another pass raises

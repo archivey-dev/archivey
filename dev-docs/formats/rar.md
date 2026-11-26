@@ -163,9 +163,10 @@ cut, prints "Unexpected end of archive" and exits nonzero. Until then archivey r
 `CorruptionError` at open ("Unexpected EOF while reading RAR3 block header" or "… header
 body", and the RAR5 equivalents) and listed nothing. Only a file that ends before the
 header's declared bytes counts as a cut: a declared size that is invalid while the bytes
-are present (a RAR3 size below 7, a RAR5 size over 2 MiB, a size vint over 10 bytes)
-stays `CorruptionError`. A cut exactly at a header boundary lists the members before
-the cut, then warns: RAR5 writers always close a volume with `ENDARC`, so a RAR5 walk
+are present (a RAR3 size below 7, a RAR5 size vint over 3 bytes, the RAR5 note's
+limit, which keeps a header under 2 MiB) stays `CorruptionError`. A cut exactly at a
+header boundary lists the members before the cut, then warns: RAR5 writers always close
+a volume with `ENDARC`, so a RAR5 walk
 that reaches end of file without one emits `ARCHIVE_EOF_MARKER_MISSING`
 (`expected_marker="end_of_archive_block"`, `format="rar"`, `observed_kind="absent"`)
 once per archive after the members, naming the volumes that lacked it. That is TAR's

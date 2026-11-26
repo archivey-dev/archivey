@@ -1795,3 +1795,47 @@ def test_a_pass_decodes_found_solid_streams_in_a_bounded_number_of_runs(
     else:
         assert sorted(got) == sorted(original.items())
     assert len(spawns) <= 2, len(spawns)
+
+
+def _rar5_block_with_size_vint(body: bytes, width: int) -> bytes:
+    """A RAR5 header whose size vint is ``width`` bytes: the value's low 7 bits,
+    then continuation bytes that add nothing, its CRC-32 over both as written."""
+    assert len(body) < 0x80
+    size = (
+        bytes([len(body)])
+        if width == 1
+        else bytes([0x80 | len(body)]) + b"\x80" * (width - 2) + b"\x00"
+    )
+    return zlib.crc32(size + body).to_bytes(4, "little") + size + body
+
+
+@pytest.mark.parametrize("width", [3, 4, 10])
+def test_the_walk_refuses_a_header_size_vint_longer_than_3_bytes(
+    width: int, tmp_path: Path
+) -> None:
+    """The RAR5 note: the header size "must not be longer than 3 bytes in current
+    implementation, resulting in 2 MB maximum header size". The default walk
+    refuses a longer one, and the finder finds none, so no member is listed by
+    one and not the other."""
+    body = bytes([2, 0, 0, 0, 0, 0, 0, 1]) + b"x"
+    data = (
+        _RAR5_SIGNATURE
+        + _RAR5_MAIN
+        + _RAR5_EMPTY_FILE
+        + _rar5_block_with_size_vint(body, width)
+        + _RAR5_END
+    )
+    path = _write(tmp_path, data)
+    listing = _list(path)
+    salvage = _list(path, salvage=True)
+    if width <= 3:
+        assert listing.names == salvage.names == ["a", "x"]
+        assert listing.error is salvage.error is None
+        return
+    # An invalid declared size raises at open by default, as a header too large
+    # does; salvage lists what comes before it, then raises the same error.
+    assert listing.names == []
+    assert type(listing.error) is CorruptionError
+    assert "header size" in str(listing.error)
+    assert salvage.names == ["a"]
+    assert type(salvage.error) is CorruptionError

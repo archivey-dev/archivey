@@ -233,7 +233,8 @@ def test_encrypted_header_plaintext_tell_breaks_the_walk(
     """Red-green for thread 1: if ``tell`` subtracted leftover ``_buf``, listing
     these fixtures fails — the next salt/IV is read from inside AES padding.
 
-    The misread IV decrypts a garbage RAR5 header size, which raises. In RAR3 the
+    The misread IV decrypts a garbage RAR5 header size vint, longer than the 3 bytes
+    the walk reads, which raises. In RAR3 the
     misread salt decrypts a garbage header after file1.txt's header has proved the key
     by its CRC16, and its size runs to the end of the file, so the walk lists
     file1.txt and reports a cut in the header that starts at byte 114.
@@ -249,7 +250,7 @@ def test_encrypted_header_plaintext_tell_breaks_the_walk(
     path = _fixture(name)
     with path.open("rb") as handle:
         if expected_names is None:
-            with pytest.raises(CorruptionError, match="RAR5 header too large"):
+            with pytest.raises(CorruptionError, match="Invalid RAR5 header size"):
                 parse_rar_archive(handle, password="header_password")
             return
         archive = parse_rar_archive(handle, password="header_password")
@@ -626,10 +627,11 @@ def test_rar5_cut_inside_a_multibyte_header_size_is_truncated() -> None:
     [
         # RAR3 header size (bytes 25-26) below the 7-byte block header.
         (_PLAIN_RAR4, 25, 2, b"\x05\x00", "Invalid RAR3 header size"),
-        # RAR5 header-size vint (byte 27) over the 2 MiB cap: 0x400000.
-        (_PLAIN_RAR5, 27, 1, b"\x80\x80\x80\x02", "RAR5 header too large"),
-        # RAR5 header-size vint longer than 10 bytes.
-        (_PLAIN_RAR5, 27, 1, b"\x80" * 12, "variable-length integer too long"),
+        # RAR5 header-size vint (byte 27) of 4 bytes, over the 2 MiB cap: 0x400000.
+        # The RAR5 note allows at most 3 bytes, which cannot reach the cap.
+        (_PLAIN_RAR5, 27, 1, b"\x80\x80\x80\x02", "longer than 3 bytes"),
+        # RAR5 header-size vint longer than any vint.
+        (_PLAIN_RAR5, 27, 1, b"\x80" * 12, "longer than 3 bytes"),
     ],
     ids=["rar4-size-too-small", "rar5-size-too-large", "rar5-vint-too-long"],
 )

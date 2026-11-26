@@ -2375,6 +2375,11 @@ def _seek_after_packed(source: BinaryIO, data_offset: int, add_size: int) -> Non
 # The most bytes :func:`load_vint` decodes for one vint. Salvage's RAR5 finder
 # (``rar_search``) takes its type prefilter's width from it, so the two agree.
 RAR5_VINT_MAX_BYTES = 11
+# The most bytes of a RAR5 header-size vint. The RAR5 technical note: the field "must
+# not be longer than 3 bytes in current implementation, resulting in 2 MB maximum
+# header size". The walk (:func:`_read_rar5_block`) refuses a longer one, and
+# salvage's RAR5 finder (``rar_search``) finds none, so the two agree.
+RAR5_HEADER_SIZE_VINT_MAX_BYTES = 3
 
 
 def load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
@@ -2756,8 +2761,9 @@ class _HeaderDecryptStream:
     ``_HeaderDecryptStream``" row in ``dev-docs/formats/rar.md``.
 
     ``read`` rejects unbounded ``n < 0``. It has no per-read size cap: the
-    caller already bounds the ask. RAR5 refuses ``hdrlen > _RAR5_MAX_HEADER``
-    (2 MiB) before the body ``read_exact``; RAR3 ``header_size`` is a 16-bit
+    caller already bounds the ask. RAR5 reads a header-size vint of at most 3 bytes,
+    so ``hdrlen`` is under ``_RAR5_MAX_HEADER`` (2 MiB) before the body
+    ``read_exact``; RAR3 ``header_size`` is a 16-bit
     field (max 65 535). A tighter 8 KiB cap here used to reject a well-formed
     header as ``wrong password?``.
     """
@@ -6025,14 +6031,14 @@ def _read_rar5_block(fd: _Readable) -> _Rar5Block | None:
         return None
     if len(head) < preload:
         raise _RarHeaderCutError("Unexpected EOF while reading RAR5 header")
-    # The header-size vint starts at byte 4 (after the 4-byte CRC). A vint is at most
-    # 10 bytes; cap the continuation so a crafted run of 0x80 bytes cannot drive an
-    # unbounded, O(n^2) byte-at-a-time read of the source before ``load_vint``'s own
-    # 11-byte guard (which only runs *after* this loop) would reject it.
+    # The header-size vint starts at byte 4 (after the 4-byte CRC), and is at most
+    # ``RAR5_HEADER_SIZE_VINT_MAX_BYTES`` bytes, as the RAR5 note requires. The cap
+    # also keeps a crafted run of 0x80 bytes from driving a long byte-at-a-time read.
     while head[-1] & 0x80:
-        if len(head) - 4 >= 10:
+        if len(head) - 4 >= RAR5_HEADER_SIZE_VINT_MAX_BYTES:
             raise CorruptionError(
-                "Invalid RAR5 header size (variable-length integer too long)"
+                "Invalid RAR5 header size (variable-length integer longer than "
+                f"{RAR5_HEADER_SIZE_VINT_MAX_BYTES} bytes)"
             )
         b = fd.read(1)
         if not b:
@@ -6040,9 +6046,8 @@ def _read_rar5_block(fd: _Readable) -> _Rar5Block | None:
         head += b
     start_bytes = bytes(head)
     header_crc, pos = _load_le32(start_bytes, 0)
+    # At most 3 bytes: under 2 MiB (``_RAR5_MAX_HEADER``), the note's cap.
     hdrlen, pos = load_vint(start_bytes, pos)
-    if hdrlen > _RAR5_MAX_HEADER:
-        raise CorruptionError(f"RAR5 header too large: {hdrlen}")
     header_size = pos + hdrlen
     hdata = start_bytes + read_exact(fd, header_size - len(start_bytes))
     if len(hdata) != header_size:

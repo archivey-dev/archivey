@@ -8,11 +8,10 @@ The shared search driver (:mod:`archivey.internal.salvage`) asks a format for a
   lost start) that passes its CRC16.
 
 Before a CRC is hashed, each finder checks only what the walk in
-:mod:`~archivey.internal.backends.rar_parser` would also reject, with one
-exception: the RAR5 header-size vint is 1 to 3 bytes, as the RAR5 technical note
-and ``unrar`` 7 require, while the walk decodes a size vint of up to 10 bytes. So a
-header with a 4- to 10-byte size vint is listed where the walk reads it and not
-found by the search. Neither puts a condition on the header flags or on a field
+:mod:`~archivey.internal.backends.rar_parser` would also reject: the RAR5
+header-size vint is 1 to ``RAR5_HEADER_SIZE_VINT_MAX_BYTES`` (3) bytes for both, as
+the RAR5 technical note and ``unrar`` 7 require. Neither puts a condition on the
+header flags or on a field
 value the walk lists (method, dictionary size, host OS), because a filter there
 drops real headers: the last FILE header of every volume but the last has the
 split-after flag ``0x10`` set. Every other vint is compared as the walk decodes it,
@@ -48,6 +47,7 @@ from archivey.internal.backends.rar_parser import (
     _RAR5_FILE,
     _RAR5_MAIN,
     _RAR5_SERVICE,
+    RAR5_HEADER_SIZE_VINT_MAX_BYTES,
     RAR5_VINT_MAX_BYTES,
     _parse_rar3_file_header,
     load_vint,
@@ -58,7 +58,7 @@ from archivey.internal.salvage import HeaderSearch
 # The longest header each finder reads from a candidate position: the CRC, a size
 # vint of at most 3 bytes and the size it holds (RAR5); ``HEAD_SIZE``, a u16 (RAR
 # 1.5-4). The driver's windows overlap by this much, less one byte.
-RAR5_MAX_HEADER_SPAN = 4 + 3 + (1 << 21)
+RAR5_MAX_HEADER_SPAN = 4 + RAR5_HEADER_SIZE_VINT_MAX_BYTES + (1 << 21)
 RAR3_MAX_HEADER_SPAN = 0xFFFF
 
 # A candidate up to this long has its CRC hashed directly; a longer one gets it from
@@ -78,8 +78,9 @@ _S_U32 = struct.Struct("<L")
 # ``RAR5_VINT_MAX_BYTES`` bytes in all).
 _RAR5_CANDIDATE = re.compile(
     rb"(?=[\x00-\xff]{4}"
-    rb"(?:[\x03-\x7f]|[\x80-\xff][\x00-\x7f]|[\x80-\xff]{2}[\x00-\x7f])"
-    rb"(?:[\x01-\x05]|[\x81-\x85]\x80{0,%d}\x00))" % (RAR5_VINT_MAX_BYTES - 2),
+    rb"(?:[\x03-\x7f]|[\x80-\xff]{1,%d}[\x00-\x7f])"
+    rb"(?:[\x01-\x05]|[\x81-\x85]\x80{0,%d}\x00))"
+    % (RAR5_HEADER_SIZE_VINT_MAX_BYTES - 1, RAR5_VINT_MAX_BYTES - 2),
     re.DOTALL,
 )
 # Positions whose third byte is a RAR 1.5-4 FILE or SUB type, and with MAIN too.
@@ -222,8 +223,8 @@ def rar5_header_end(window: bytes, pos: int) -> int | None:
     its CRC passes (checks 1 to 5 of ``openspec/changes/salvage-rar-search``
     design §3); ``None`` otherwise.
 
-    The size vint is 1 to 3 bytes (the RAR5 note caps a header at 2 MiB, and
-    ``unrar`` 7 reads no longer one; the walk decodes up to 10) and at least 3, the
+    The size vint is 1 to ``RAR5_HEADER_SIZE_VINT_MAX_BYTES`` (3) bytes, as for the
+    walk (the RAR5 note caps a header at 2 MiB), and its value at least 3, the
     smallest header. The type is one the note defines. The extra area, when the
     flags declare one, is smaller than the whole header (CRC and size vint included), as
     ``unrar`` and the walk require. The type's own fields fit in the header; no field
@@ -231,27 +232,17 @@ def rar5_header_end(window: bytes, pos: int) -> int | None:
     """
     n = len(window)
     q = pos + 4
-    if q >= n:
-        return None
-    b0 = window[q]
-    if b0 < 0x80:
-        size = b0
-        q += 1
-    else:
-        if q + 1 >= n:
+    size = 0
+    for index in range(RAR5_HEADER_SIZE_VINT_MAX_BYTES):
+        if q >= n:
             return None
-        b1 = window[q + 1]
-        if b1 < 0x80:
-            size = (b0 & 0x7F) | (b1 << 7)
-            q += 2
-        else:
-            if q + 2 >= n:
-                return None
-            b2 = window[q + 2]
-            if b2 >= 0x80:
-                return None
-            size = (b0 & 0x7F) | ((b1 & 0x7F) << 7) | (b2 << 14)
-            q += 3
+        byte = window[q]
+        q += 1
+        size |= (byte & 0x7F) << (7 * index)
+        if byte < 0x80:
+            break
+    else:
+        return None
     if size < 3:
         return None
     end = q + size
@@ -613,9 +604,9 @@ def lost_start_search(finder: LostStartFinder | None = None) -> HeaderSearch:
 
 def _rar5_header_length(head: bytes) -> int | None:
     """The whole length of the RAR5 header ``head`` starts (at least 7 bytes of it),
-    from its size vint; ``None`` when the vint is not 1 to 3 bytes."""
+    from its size vint; ``None`` when the vint is longer than the walk reads."""
     size = 0
-    for index in range(3):
+    for index in range(RAR5_HEADER_SIZE_VINT_MAX_BYTES):
         byte = head[4 + index]
         size |= (byte & 0x7F) << (7 * index)
         if byte < 0x80:

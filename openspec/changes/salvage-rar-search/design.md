@@ -134,7 +134,7 @@ The stop points of the two walks, and where the search starts at each:
 | --- | --- | --- | --- |
 | It fails its CRC and step 1 cannot follow it | Members before it, `CorruptionError` | D | P |
 | Its type reads as `ENDARC`, and it is not taken as the end block | Same | D | P |
-| Its declared size is invalid: RAR5 size vint longer than 10 bytes or over 2 MiB, RAR 1.5-4 `HEAD_SIZE` under 7 | `CorruptionError` at open (§16, F1) | D | P |
+| Its declared size is invalid: RAR5 size vint longer than 3 bytes, RAR 1.5-4 `HEAD_SIZE` under 7 | `CorruptionError` at open (§16, F1) | D | P |
 | It runs past the end of the volume | Members before it, `TruncatedError` | D | P |
 | The data of the last member runs past the end of the volume | Same | nothing (the member claims to the end) | P |
 | MAIN fails its CRC | `CorruptionError` at open | lost start after the signature (§8.2) | same |
@@ -169,10 +169,10 @@ before `stop` where a header passes the checks below, in this order. The checks 
 wherever the walk accepts it. Each check is justified by the RAR5 technical note
 (rarlab.com, "RAR 5.0 archive format") or by `unrar`'s own reader. Only check 6 is the
 format's check. Checks 1 to 5 reject what the walk would also reject, so that they cost
-nothing in recall and exist only to avoid a CRC, with one exception: check 1 limits
-the header-size vint to 3 bytes, as the note and `unrar` 7 do, while the walk decodes
-one of up to 10 bytes. A header with a longer size vint is listed by the walk and not
-found by the search.
+nothing in recall and exist only to avoid a CRC. Check 1's 3-byte limit on the
+header-size vint is the walk's too (`RAR5_HEADER_SIZE_VINT_MAX_BYTES`, one constant
+for both): the walk decoded a size vint of up to 10 bytes until davi ruled, on #1769
+(K5), that it refuses a longer one, as the note says.
 
 1. **Header size: a vint of 1 to 3 bytes, value 3 or more.** The note: "This field must
    not be longer than 3 bytes in current implementation, resulting in 2 MB maximum

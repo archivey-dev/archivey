@@ -1,10 +1,26 @@
 # format-rar — salvage step 4 delta
 
 These requirements apply with `salvage=True` only (`archive-reading`, "Salvage mode is
-opt-in, add-only and needs a seekable source"). With `salvage=False` every RAR
-requirement reads as before, the walk included: it does not search the bytes.
+opt-in, add-only and needs a seekable source"), except the first. With `salvage=False`
+every other RAR requirement reads as before, the walk included: it does not search the
+bytes.
 
 ## ADDED Requirements
+
+### Requirement: The RAR5 walk refuses a header-size field longer than 3 bytes
+
+The RAR5 walk SHALL refuse a header whose size vint is longer than 3 bytes with
+`CorruptionError`, as a declared size that is invalid: the RAR5 technical note says the
+field "must not be longer than 3 bytes in current implementation, resulting in 2 MB
+maximum header size". The walk and salvage's RAR5 finder SHALL take the limit from one
+definition.
+
+#### Scenario: header-size vint width
+
+| Case | Expected |
+| --- | --- |
+| A FILE header whose size vint is 3 bytes (non-minimal) | Listed |
+| The same with 4 or 10 bytes | `CorruptionError` at open by default; with `salvage=True`, the members before it, then the same error |
 
 ### Requirement: Salvage mode searches past RAR header damage
 
