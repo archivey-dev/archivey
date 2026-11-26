@@ -1517,7 +1517,9 @@ class TarReader(BaseArchiveReader):
         trusted = looked is None
         confirmed = bool(looked)
         if trusted:
-            salvage.trusted = (found, walker.position)
+            # The member header, not the chain's start: a search back starts after
+            # it, so the chain before it is not found again.
+            salvage.trusted = (entry.header.offset, walker.position)
             if self._streaming:
                 self._trusted_spans.add(entry.data_offset)
         if searched and looked is False and self._streaming:

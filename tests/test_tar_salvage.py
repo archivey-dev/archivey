@@ -2093,3 +2093,40 @@ def test_held_text_weighs_what_its_member_keeps(raw: bytes) -> None:
         assert weight == str_retained_bytes(raw.decode("utf-8"))
     except UnicodeDecodeError:
         assert weight == 4 * len(raw)
+
+
+@pytest.mark.parametrize("typeflag", [tarfile.XHDTYPE, tarfile.GNUTYPE_LONGNAME])
+def test_a_trusted_found_member_after_extended_headers_is_listed_once_in_a_deb(
+    typeflag: bytes,
+) -> None:
+    # A forward-only walk (a deb's data.tar) trusts m.txt's lying size; when
+    # nothing confirms it, the search goes back from after m.txt's own header,
+    # not from inside its chain, as the plain .tar's search does.
+    record = (
+        b"21 path=hijacked.txt\n" if typeflag == tarfile.XHDTYPE else b"longname.txt\0"
+    )
+    payload = record + b"\0" * (-len(record) % BLOCKSIZE)
+    info = tarfile.TarInfo("m.txt")
+    info.size = 8 << 20
+    data = (
+        _member("before.txt", b"before")
+        + b"X" * BLOCKSIZE
+        + _extended_header(typeflag, len(record))
+        + payload
+        + info.tobuf(tarfile.USTAR_FORMAT)
+        + b"m" * BLOCKSIZE
+        + b"Y" * BLOCKSIZE
+        + _member("real.txt", b"real")
+        + b"\0" * (2 * BLOCKSIZE)
+    )
+    plain = _list(data, salvage=True).names
+    deb = [
+        n
+        for n in _list(_as_deb(data), salvage=True).names
+        if not n.startswith("DEBIAN")
+    ]
+    assert deb == plain
+    assert (
+        plain.count("m.txt") + plain.count("hijacked.txt") + plain.count("longname.txt")
+        == 1
+    )
