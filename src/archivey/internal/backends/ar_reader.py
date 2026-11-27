@@ -59,7 +59,7 @@ from archivey.formats import (
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
-from archivey.internal.salvage import HeaderSearch, WalkSalvage
+from archivey.internal.salvage import HeaderSearch, WalkSalvage, walk_salvage
 from archivey.terminal import quoted
 from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
 
@@ -198,7 +198,7 @@ class ArReader(SequentialReader):
         # damage the walk met, where the next search starts, and the origin of the
         # candidate positions: 0, the first header found after a lost start, or
         # ``None`` while a lost start's search runs at every byte.
-        salvage = self._context._salvage(stream) if self._context._salvage else None
+        salvage = walk_salvage(self._context, stream)
         damage: CorruptionError | None = None
         search_from: int | None = None
         base: int | None = 0

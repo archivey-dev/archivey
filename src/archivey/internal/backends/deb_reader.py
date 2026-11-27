@@ -61,7 +61,7 @@ from archivey.internal.filters import (
 )
 from archivey.internal.format_adapter import HeldInnerData, register_builtin_format
 from archivey.internal.overrides import override
-from archivey.internal.salvage import WalkSalvage
+from archivey.internal.salvage import WalkSalvage, walk_salvage
 from archivey.internal.streams.callers_source import from_source_callback
 from archivey.terminal import quoted
 from archivey.types import (
@@ -530,7 +530,7 @@ class DebReader(SequentialReader):
         # debian-binary is damaged, the walk searches on for the next ar header, as
         # the ar reader does, and lists the tar it finds; the pass ends in the first
         # damage. The tars themselves are read as they are.
-        salvage = self._context._salvage(stream) if self._context._salvage else None
+        salvage = walk_salvage(self._context, stream)
         damage: CorruptionError | None = None
         search_from: int | None = None
         control = False

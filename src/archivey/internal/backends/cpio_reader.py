@@ -72,7 +72,7 @@ from archivey.formats import (
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
-from archivey.internal.salvage import HeaderSearch, WalkSalvage
+from archivey.internal.salvage import HeaderSearch, WalkSalvage, walk_salvage
 from archivey.terminal import quoted
 from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
 
@@ -347,7 +347,7 @@ class CpioReader(SequentialReader):
         # Salvage (``open_archive(salvage=True)``): the layer's search, the first
         # damage the walk met, where the next search starts, and the origin of the
         # candidate positions (0, or a header found after a lost start).
-        salvage = self._context._salvage(stream) if self._context._salvage else None
+        salvage = walk_salvage(self._context, stream)
         damage: CorruptionError | None = None
         search_from: int | None = None
         # What the walk carries from one header to the next: the variant and the

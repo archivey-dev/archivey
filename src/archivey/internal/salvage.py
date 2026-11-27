@@ -47,6 +47,7 @@ from archivey.terminal import escape_control_chars
 
 if TYPE_CHECKING:
     from archivey.config import SalvageLimits
+    from archivey.formats import ForwardStream, ReaderContext
     from archivey.internal.diagnostics_collector import DiagnosticCollector
     from archivey.types import ArchiveMember
 
@@ -892,3 +893,15 @@ class WalkSalvage:
         """Finish the walk's salvage records and give the damage error to raise."""
         self.state.finish()
         return noting_search_limit(self.state, error)
+
+
+def walk_salvage(context: ReaderContext, stream: ForwardStream) -> WalkSalvage | None:
+    """The salvage search of the layer ``stream`` reads, or ``None`` when the caller did
+    not ask for salvage. A reader's walk calls this once, before its first header.
+
+    It is the one place a reader reaches the context's salvage hook, so that readers
+    bound for a plugin package read no private attribute of ``ReaderContext``. Plugins
+    get salvage later through a hook of their own (openspec/changes/salvage-mode,
+    design decision 4)."""
+    search = context._salvage
+    return search(stream) if search is not None else None
