@@ -50,6 +50,7 @@ from archivey.config import (
 from archivey.detection import FormatInfo
 from archivey.diagnostics import (
     DiagnosticCode,
+    OnDiagnostic,
     UnusedArgumentContext,
 )
 from archivey.exceptions import (
@@ -145,6 +146,7 @@ from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
     MemberStreams,
+    OnSourceRead,
     PluginStream,
     StreamFormat,
 )
@@ -163,7 +165,6 @@ if TYPE_CHECKING:
     from archivey.detection import (
         DetectionConfidence as DetectionConfidence,  # noqa: PLC0414
     )
-    from archivey.diagnostics import OnDiagnostic
     from archivey.formats import FormatHandler
     from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
     from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -172,7 +173,6 @@ if TYPE_CHECKING:
         FormatAvailability as FormatAvailability,  # noqa: PLC0414
         FormatSupport as FormatSupport,  # noqa: PLC0414
         MissingComponent as MissingComponent,  # noqa: PLC0414
-        OnSourceRead,
     )
 
 #: The names this module's ``__all__`` listed until 0.6.0 that it does not define, and

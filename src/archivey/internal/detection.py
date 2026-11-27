@@ -105,6 +105,7 @@ from archivey.diagnostics import (
     DetectionDecoderLimitContext,
     DiagnosticCode,
     FormatConflictContext,
+    OnDiagnostic,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -187,7 +188,6 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
-    from archivey.diagnostics import OnDiagnostic
     from archivey.internal.streams.codecs.base import CodecId
     from archivey.types import OptionalLibrary
 
