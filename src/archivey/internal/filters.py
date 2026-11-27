@@ -1044,13 +1044,15 @@ def _collapse_dotdot(name: str) -> str:
 
 
 def extracted_segments(name: str) -> list[str]:
-    """The segments of the path a member named ``name`` extracts to, under every
-    extraction policy, each spelled as stored.
+    """The segments of the furthest-reaching path that ``name`` can extract to, under
+    any extraction policy or filter, each spelled as stored.
 
-    It makes the rewrites that can move a name between directories: the root is
+    It makes every rewrite that can move a name between directories: the root is
     dropped (``/``, ``\\``, a drive letter and its separator), each ``..`` is resolved
     against the segments before it and dropped when nothing is left to climb out of,
-    and both ``/`` and ``\\`` separate segments. Empty and ``.`` segments go.
+    as ``sanitize_names`` resolves it (by default extraction refuses the name
+    instead), and both ``/`` and ``\\`` separate segments. A trailing dot or space is
+    kept, as ``STANDARD`` keeps it; :func:`collision_key` folds it. Empty and ``.`` segments go.
     ``"/a/./b/../c"`` gives ``["a", "c"]``.
 
     A reader that must keep members inside a folder (the payload of a macOS package,
@@ -1183,8 +1185,13 @@ def sanitize_names(member: ArchiveMember) -> ArchiveMember:
 
 
 def collision_key(name: str, policy: ExtractionPolicy) -> str:
-    """The key under which extraction with ``policy`` takes two member names for one
-    file: two names with the same key land on the same path, on some filesystem.
+    """A key for a member's ``name`` that two names share whenever extraction with
+    ``policy`` may write them to one file, on some filesystem.
+
+    Under ``STRICT`` and ``STANDARD`` the key folds case, Unicode normalization and
+    Win32's trailing dot and space for every platform at once, so it is coarser than
+    any one filesystem: names with one key may still be two files on some
+    filesystem (``Straße`` and ``strasse``).
 
     A reader that checks where its members land (a member that must stay inside a
     folder, :func:`extracted_segments`) compares keys rather than names. ``name`` is
