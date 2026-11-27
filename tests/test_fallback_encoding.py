@@ -18,6 +18,7 @@ import pytest
 
 import archivey
 from archivey import ArchiveyConfig, ArchiveyUsageError
+from archivey.exceptions import DiagnosticRaisedError
 
 
 def _zip_with_name(raw: bytes) -> bytes:
@@ -262,8 +263,9 @@ def test_a_utf8_flag_the_bytes_contradict_is_reported_and_strict_refuses() -> No
     assert _MISMATCH in codes
     assert _FALLBACK in codes
     strict = ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.STRICT)
-    with pytest.raises(archivey.ArchiveyError):
+    with pytest.raises(DiagnosticRaisedError) as excinfo:
         _codes(data, config=strict)
+    assert excinfo.value.diagnostic.code is _MISMATCH
 
 
 @pytest.mark.parametrize(

@@ -3585,7 +3585,7 @@ class BaseArchiveReader(ArchiveReader):
         *,
         codec: str,
         format_label: str,
-        why: str = "is not valid UTF-8 and declares no encoding",
+        why: str = "is not valid UTF-8 and declares no encoding its bytes fit",
     ) -> None:
         """Report one ``MEMBER_NAME_FALLBACK_ENCODING`` finding, attached to ``member``:
         its name declares no encoding usable for its bytes and is not valid UTF-8, so
