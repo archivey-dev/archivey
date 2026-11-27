@@ -1393,15 +1393,18 @@ class RarOptions:
     unar_path: str | None = None
 ```
 
-`format_options` SHALL hold at most one object of each class, and only dataclass
-instances; a second object of one class, or anything else, SHALL raise
+`format_options` SHALL hold at most one object of each class, and only frozen
+dataclass instances that are not other archivey config classes or subclasses of
+`ZipOptions` or `RarOptions`; a second object of one class, or anything else, SHALL raise
 `ArchiveyUsageError` at construction. A format's reader SHALL read its settings from the
 object of its class, or from the class's defaults when there is none
 (`ReaderContext.options(cls)` for a plugin). Option fields SHALL hold plain values only:
 text, numbers, booleans, a named choice or a path. The deprecated fields
 `zip_unflagged_fallback_encoding`, `rar_decompressor`, `unrar_path` and `unar_path`
 (0.6.0, removed in 0.7.0) SHALL default to unset; a caller who sets one SHALL get a
-`DeprecationWarning` at their line, and it SHALL decide as its options field would.
+`DeprecationWarning` at their line, its value SHALL move into its options object in
+`format_options`, and the field SHALL read back as unset, so a `dataclasses.replace` copy
+keeps the setting only through `format_options`.
 Setting one beside an options object of its class that says otherwise SHALL raise
 `ArchiveyUsageError`.
 

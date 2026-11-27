@@ -115,3 +115,55 @@ def test_the_zip_fallback_encoding_decodes_an_unflagged_name() -> None:
     config = ArchiveyConfig(format_options=[ZipOptions(fallback_encoding="cp1252")])
     with archivey.open_archive(io.BytesIO(bytes(raw)), config=config) as reader:
         assert [m.name for m in reader.members()] == ["é"]
+
+
+def test_a_copy_decides_only_with_the_options_it_passes() -> None:
+    """An old field decides only on the construction that names it: it reads back as
+    ``None``, so a ``dataclasses.replace`` copy that sets ``format_options`` gets
+    exactly those options, neither refused nor overridden by the old field."""
+    with pytest.warns(DeprecationWarning):
+        base = ArchiveyConfig(rar_decompressor="unrar", unrar_path=_ABS)
+    assert base.rar_decompressor is None
+    assert base.unrar_path is None
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        other = dataclasses.replace(
+            base, format_options=[RarOptions(decompressor="unar")]
+        )
+        cleared = dataclasses.replace(base, format_options=[])
+    assert other.format_options == (RarOptions(decompressor="unar"),)
+    assert cleared.format_options == ()
+
+
+@dataclasses.dataclass
+class _MutableOptions:
+    x: int = 1
+
+
+@dataclasses.dataclass(frozen=True)
+class _PluginOptions:
+    x: int = 1
+
+
+class _RarOptionsSubclass(RarOptions):
+    pass
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        archivey.config.ListingLimits(max_members=5),
+        _MutableOptions(),
+        _RarOptionsSubclass(decompressor="unar"),
+    ],
+    ids=["archivey-config-class", "mutable-dataclass", "options-subclass"],
+)
+def test_an_object_no_reader_would_read_is_refused(item: object) -> None:
+    with pytest.raises(ArchiveyUsageError, match="format_options"):
+        ArchiveyConfig(format_options=[item])
+
+
+def test_a_plugins_frozen_options_class_is_taken_and_hashable() -> None:
+    config = ArchiveyConfig(format_options=[_PluginOptions(x=2)])
+    hash(config)
+    assert format_options_of(config, _PluginOptions) == _PluginOptions(x=2)

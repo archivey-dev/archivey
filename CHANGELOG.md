@@ -64,8 +64,9 @@ line. How to write the entry: see
 - **Breaking:** `ArchiveyConfig.use_rapidgzip` decides bzip2 too, so
   `use_rapidgzip="off"` alone now keeps rapidgzip away from bzip2 as well.
 - **Breaking:** the deprecated `ArchiveyConfig` fields `zip_unflagged_fallback_encoding`,
-  `rar_decompressor`, `unrar_path`, `unar_path` and `use_indexed_bzip2` read back as
-  `None` unless the caller set them. Read the setting from its options object, or from
+  `rar_decompressor`, `unrar_path` and `unar_path` always read back as `None`: a value
+  passed to one moves into `format_options`, so read it from the options object.
+  `use_indexed_bzip2` reads back as `None` unless the caller set it; read
   `use_rapidgzip`.
 - A streaming pass over a format with an index (a ZIP, 7z, RAR, ISO, CAB and others)
   reads the whole index before its first member, so `members_report_if_available()`

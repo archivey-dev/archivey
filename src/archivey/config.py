@@ -23,7 +23,7 @@ import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from archivey.detection_cost import (
     BALANCED_BUDGET,
@@ -1022,6 +1022,10 @@ _MOVED_TO_OPTIONS: dict[str, tuple[type, str]] = {
     "unar_path": (RarOptions, "unar_path"),
 }
 
+# Archivey's own options classes: the only ``archivey`` classes ``format_options`` takes,
+# and none of them may be subclassed there, since a reader looks its class up exactly.
+_OPTIONS_CLASSES: tuple[type, ...] = (ZipOptions, RarOptions)
+
 
 @dataclass(frozen=True)
 class ArchiveyConfig:
@@ -1089,11 +1093,13 @@ class ArchiveyConfig:
 
     zip_unflagged_fallback_encoding: str | None = None
     """Deprecated since 0.6.0: pass ``format_options=[ZipOptions(fallback_encoding=...)]``.
-    Setting it warns, and archivey 0.7.0 removes it."""
+    Setting it warns and moves the value into :attr:`format_options`, so the field
+    always reads back as ``None``; archivey 0.7.0 removes it."""
 
     rar_decompressor: RarDecompressor | None = None
     """Deprecated since 0.6.0: pass ``format_options=[RarOptions(decompressor=...)]``.
-    Setting it warns, and archivey 0.7.0 removes it."""
+    Setting it warns and moves the value into :attr:`format_options`, so the field
+    always reads back as ``None``; archivey 0.7.0 removes it."""
 
     read_link_targets: bool = True
     """Whether the reader reads a symlink's target when the format stores it as member
@@ -1209,11 +1215,13 @@ class ArchiveyConfig:
 
     unrar_path: str | os.PathLike[str] | None = None
     """Deprecated since 0.6.0: pass ``format_options=[RarOptions(unrar_path=...)]``.
-    Setting it warns, and archivey 0.7.0 removes it."""
+    Setting it warns and moves the value into :attr:`format_options`, so the field
+    always reads back as ``None``; archivey 0.7.0 removes it."""
 
     unar_path: str | os.PathLike[str] | None = None
     """Deprecated since 0.6.0: pass ``format_options=[RarOptions(unar_path=...)]``.
-    Setting it warns, and archivey 0.7.0 removes it."""
+    Setting it warns and moves the value into :attr:`format_options`, so the field
+    always reads back as ``None``; archivey 0.7.0 removes it."""
 
     recover_partial_data: PartialDataRecovery = PartialDataRecovery.BEFORE_DAMAGE
     """Which bytes a read that meets damage hands back before it raises: a
@@ -1562,9 +1570,10 @@ def _convert_format_options(config: ArchiveyConfig, moved: list[str]) -> None:
     """Store ``format_options`` as a tuple of options objects, at most one per class,
     with the deprecated fields named in ``moved`` folded in as their options objects.
 
-    A copy of a config built from the old fields passes them again, beside the objects
-    they made: an object equal to the one they make is that same setting, not a second
-    one."""
+    The folded fields are cleared, so they always read back as ``None`` and a
+    ``dataclasses.replace`` copy never passes them again: only the construction that
+    names them decides with them. Beside them, an equal object is the same setting and
+    a different one is refused."""
     value = config.format_options
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise _UsageTypeError(
@@ -1573,10 +1582,23 @@ def _convert_format_options(config: ArchiveyConfig, moved: list[str]) -> None:
         )
     by_class: dict[type, object] = {}
     for item in value:
-        if not dataclasses.is_dataclass(item) or isinstance(item, type):
+        if (
+            not dataclasses.is_dataclass(item)
+            or isinstance(item, type)
+            or not _frozen_dataclass(item)
+            or (
+                type(item).__module__.split(".")[0] == "archivey"
+                and type(item) not in _OPTIONS_CLASSES
+            )
+            or (
+                isinstance(item, _OPTIONS_CLASSES)
+                and type(item) not in _OPTIONS_CLASSES
+            )
+        ):
             raise _UsageTypeError(
-                "ArchiveyConfig(format_options=) takes options objects such as "
-                f"ZipOptions or RarOptions, got {type(item).__name__}."
+                "ArchiveyConfig(format_options=) takes options objects, instances of "
+                "a frozen dataclass a format reads its settings from (ZipOptions, "
+                f"RarOptions, or a plugin's own), got {type(item).__name__}."
             )
         if type(item) in by_class:
             raise _UsageValueError(
@@ -1598,7 +1620,16 @@ def _convert_format_options(config: ArchiveyConfig, moved: list[str]) -> None:
                 f"format_options=; pass the {cls.__name__} alone."
             )
         by_class[cls] = made
+    for name in moved:
+        object.__setattr__(config, name, None)
     object.__setattr__(config, "format_options", tuple(by_class.values()))
+
+
+def _frozen_dataclass(item: object) -> bool:
+    """Whether ``item``'s class is a dataclass declared ``frozen=True``."""
+    cls: Any = type(item)
+    params = getattr(cls, "__dataclass_params__", None)
+    return params is not None and bool(params.frozen)
 
 
 def _coerce_program_path(call: str, value: object) -> str | None:
@@ -1626,6 +1657,7 @@ def _coerce_program_path(call: str, value: object) -> str | None:
 
 
 DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig()
+"""The configuration used when a call is given no ``config=``: ``ArchiveyConfig()``."""
 
 ArchiveyConfig.UNTRUSTED = ArchiveyConfig(
     formats=FormatPolicy.COMMON,
@@ -1640,7 +1672,6 @@ ArchiveyConfig.UNTRUSTED = ArchiveyConfig(
     ),
     use_rapidgzip=AcceleratorMode.OFF,
 )
-"""The configuration used when a call is given no ``config=``: ``ArchiveyConfig()``."""
 
 
 @dataclass(frozen=True)

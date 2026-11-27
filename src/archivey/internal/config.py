@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -224,10 +224,11 @@ OptionsT = TypeVar("OptionsT")
 
 def format_options_of(config: ArchiveyConfig, cls: type[OptionsT]) -> OptionsT:
     """The ``cls`` object in ``config.format_options``, or ``cls()`` when there is
-    none: what a format's reader reads its settings from."""
+    none: what a format's reader reads its settings from. The class must match
+    exactly, as ``ArchiveyConfig`` keys its one-object-per-class rule on it."""
     for item in config.format_options:
-        if isinstance(item, cls) and type(item) is cls:
-            return item
+        if type(item) is cls:
+            return cast("OptionsT", item)
     return cls()
 
 

@@ -891,6 +891,14 @@ tells extraction whether the archive holds a target the reader could not reach.
 index itself can bound that work by `config.listing_limits`. archivey applies those
 limits to the members it is handed in any case.
 
+A format with settings of its own gives them an options class: a frozen dataclass whose
+fields hold plain values (text, numbers, booleans, a named choice or a path) and all have
+defaults. The caller passes one object of it in
+`ArchiveyConfig(format_options=[MyFormatOptions(...)])`, and the reader reads it with
+`context.options(MyFormatOptions)`, which returns the caller's object, or
+`MyFormatOptions()` when there is none. The lookup matches the class exactly, so a
+subclass is a different options class.
+
 A reader that keeps members back to yield them later, such as a CPIO hard link held
 until the link that carries its data, passes each one to `ReaderContext.hold()` when it
 keeps it, from `walk()` or `iter_members()`; a call made anywhere else raises

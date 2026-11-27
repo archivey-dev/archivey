@@ -343,10 +343,11 @@ UnlockedT = TypeVar("UnlockedT")
 header."""
 
 ResultT = TypeVar("ResultT")
-# A format's options class (``ReaderContext.options``).
-OptionsT = TypeVar("OptionsT")
 """What the plugin call returns once the unit is unlocked: the reader, or a
 :class:`MemberData`."""
+
+# A format's options class (``ReaderContext.options``).
+OptionsT = TypeVar("OptionsT")
 
 
 @dataclass(frozen=True)
