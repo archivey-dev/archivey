@@ -4,10 +4,12 @@
   may import only public names and read no private attribute. It starts with ar, cpio
   and rpm, and it allows two internal names for now, `register_builtin_format` and
   `override`, which all 13 readers import
-- [ ] 0.1a Registration leaves the reader modules (review F3): core registers the 13
-  handler classes from a table; DMG's magic and trailer and pkg's refinement become
-  handler declarations; `override` is a shim in each module. The test of 0.1 then
-  drops its two allowed names
+- [x] 0.1a Registration leaves the reader modules (review F3): core registers the 13
+  handler classes from a table (`internal/format_table.py`); DMG's offset-0 magic is a
+  handler declaration, and what a handler cannot declare yet (DMG's trailers, pkg's
+  refinement, the LHA and ARJ stub scans) is data in the table entry, as in step 1's
+  entries; `override` is a shim in each ported module. The test of 0.1 then drops its
+  two allowed names
 - [ ] 0.2 For each of the other ten readers, one pull request: the reader still lives
   in core, the public interface gains what it needs (tasks 0.4 to 0.9, the probe
   context), and its module joins the list of 0.1. What each

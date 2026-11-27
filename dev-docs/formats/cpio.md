@@ -10,7 +10,7 @@ a format added from outside uses, and is registered as a built-in the way ISO an
 
 | | |
 | --- | --- |
-| Read | Yes. `internal/backends/cpio_reader.py`, a `CpioHandler` (`SequentialFormatHandler`) and a `CpioReader` (`SequentialReader`), registered with `register_builtin_format` |
+| Read | Yes. `internal/backends/cpio_reader.py`, a `CpioHandler` (`SequentialFormatHandler`) and a `CpioReader` (`SequentialReader`), registered from core's format table |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A file, a stream that can seek, or a pipe (`pipe=True`). Inside any single-file compression stream (`.cpio.gz`, `.cpio.xz`, …), as TAR is |
 | Listing cost | `REQUIRES_SCANNING`, header by header; inside a compression stream, `REQUIRES_DECOMPRESSION`, as a compressed TAR is |
@@ -156,8 +156,8 @@ header can ask for:
 ## 6. Decisions
 
 - **Built in, not a separate package.** The maintainer's call (2026-10-28), as for ar.
-  The reader still imports only public names (apart from `register_builtin_format` and
-  the `override` decorator).
+  The reader still imports only public names (core's format table
+  registers its handler).
 - **The variant goes in `extra["cpio.variant"]`, not `format_version`.** A header
   variant is not a version; TAR and ar report `format_version=None` for the same reason.
 - **In newc and crc, the link with the data is listed first, as the `FILE`.** Hard links

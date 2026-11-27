@@ -4,7 +4,7 @@
 
 ARJ archives (`.arj`; what ARJ for DOS, ARJ32 and ARJ for Unix write) are read through
 the unified `ArchiveReader` API. The reader is a built-in written against
-`archivey.formats` and registered with `register_builtin_format`; methods 1 to 4 are
+`archivey.formats` and registered from core's format table; methods 1 to 4 are
 decoded by archivey's own decoders, in Python. The format handbook is
 `dev-docs/formats/arj.md`.
 

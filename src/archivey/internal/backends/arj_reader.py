@@ -60,7 +60,6 @@ from archivey.formats import (
     ReaderContext,
     ReaderSource,
 )
-from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
 from archivey.internal.password import unverified_data_error
 from archivey.internal.sfx import (
@@ -84,7 +83,6 @@ from archivey.types import (
     CompressionMethod,
     CreateSystem,
     HashAlgorithm,
-    MagicSignature,
     MemberType,
 )
 
@@ -868,7 +866,7 @@ class _Degarbled(io.RawIOBase):
 _SFX_NEEDLES = (ScanNeedle(_MAGIC, 0),)
 
 
-def _validate_main_header(
+def validate_stub_hit(
     peek_more: Callable[[int], bytes], remaining: int | None
 ) -> HitOutcome:
     """Whether an ARJ main header starts at the candidate: its size, CRC-32, layout
@@ -898,7 +896,7 @@ def _payload(source: ReaderSource) -> ReaderSource:
     ``format=`` reads the archive detection would."""
     if source.read_at(0, 2) == _MAGIC:
         return source
-    scan = scan_reader_source(source, _SFX_NEEDLES, _validate_main_header)
+    scan = scan_reader_source(source, _SFX_NEEDLES, validate_stub_hit)
     if scan.hit is None:
         raise scan_miss_error("ARJ", scan)
     return rebased_source(source, scan.hit.candidate_origin)
@@ -920,11 +918,3 @@ class ArjHandler(IndexedFormatHandler):
     @override
     def open(self, source: ReaderSource, context: ReaderContext) -> ArjReader:
         return ArjReader(source, context)
-
-
-ArjReadBackend = register_builtin_format(
-    ArjHandler,
-    SFX_MAGIC=(MagicSignature(0, _MAGIC, ArchiveFormat.ARJ),),
-    SFX_HIT_VALIDATOR=staticmethod(_validate_main_header),
-    SFX_PARSER_SCANS=True,
-)

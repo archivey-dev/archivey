@@ -32,17 +32,19 @@ never arrives (all its links empty, as for an empty file) is yielded at the trai
 the first as an empty ``FILE``, the rest as links to it.
 
 The reader is written against ``archivey.formats`` and archivey's public names only,
-as a format added from outside would be; ``register_builtin_format`` is the one
-internal name it uses (``tests/test_cpio.py`` checks). Handbook page:
+as a format added from outside would be (``tests/test_plugin_modules_use_public_api.py``
+checks); core's format table registers its handler. Handbook page:
 ``dev-docs/formats/cpio.md``.
 """
 
 from __future__ import annotations
 
 import struct
+import typing
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from archivey.detection import DetectionConfidence
 from archivey.diagnostics import (
@@ -67,10 +69,15 @@ from archivey.formats import (
     SequentialReader,
     unix_member_type,
 )
-from archivey.internal.format_adapter import register_builtin_format
-from archivey.internal.overrides import override
 from archivey.terminal import quoted
 from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
+
+# ``typing.override`` (Python 3.12) where there is one. A format written outside
+# archivey carries the same lines, so the module imports no internal name for it.
+if TYPE_CHECKING:
+    from typing_extensions import override
+else:
+    override = getattr(typing, "override", lambda method: method)
 
 TRAILER = b"TRAILER!!!"
 # A stored name longer than this is damage: no file system takes a path this long, and
@@ -564,6 +571,3 @@ class CpioHandler(SequentialFormatHandler):
     @override
     def open_sequential(self, context: ReaderContext) -> CpioReader:
         return CpioReader(context)
-
-
-CpioReadBackend = register_builtin_format(CpioHandler)

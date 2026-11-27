@@ -135,7 +135,6 @@ from archivey.internal.backends.udf import (
     udf_timestamp,
 )
 from archivey.internal.base_reader import special_file_has_data_report
-from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.listing_limits import (
     check_metadata_budget,
     metadata_limit_error,
@@ -2398,6 +2397,3 @@ class IsoHandler(IndexedFormatHandler):
                 return IsoReader(disc, context)
             source = cooked_source(source, layout, context.archive_name)
         return IsoReader(source, context)
-
-
-IsoReadBackend = register_builtin_format(IsoHandler)

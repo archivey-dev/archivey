@@ -4,7 +4,7 @@
 
 SquashFS 4.0 images (snap packages, live-system roots, what `mksquashfs` writes) are read
 through the unified `ArchiveReader` API. The reader is a built-in written against
-`archivey.formats` and registered with `register_builtin_format`. The format handbook is
+`archivey.formats` and registered from core's format table. The format handbook is
 `dev-docs/formats/squashfs.md`.
 
 ## Related specs
