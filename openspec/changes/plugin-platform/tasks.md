@@ -264,16 +264,16 @@
   streams, their `ArchiveFormat` constants, the moved methods), clean under both type
   checkers; importing archivey warns nothing
 - [ ] 5.7 Spec deltas: `packaging-and-extras`, the moved format specs
-- [ ] 5.8 Remove `openspec/changes/plugin-api`, which this change replaces, only
+- [x] 5.8 Remove `openspec/changes/plugin-api`, which this change replaces, only
   after its requirements that survive are in `openspec/specs/` (review AG10): the
   reader contract, `hold()`, `data_on_demand`, inner-stream detection and
   `CodecHandler` exist only in that change's deltas today. Either `plugin-api` is
   archived first, or the implementing change of step 2 folds them into its
   `format-plugins` and `compressed-streams` deltas; a dry-run `openspec archive`
-  shows it
-- [ ] 5.8a Archive `nested-archives`, `plugin-passwords` and `dmg-reader` before the
+  shows it. *Archived first, in PR 1854 (2026-11-27).*
+- [x] 5.8a Archive `nested-archives`, `plugin-passwords` and `dmg-reader` before the
   readers they describe move, so their format specs are in `openspec/specs/` when
-  step 5 edits them
+  step 5 edits them. *Archived in PR 1854 (2026-11-27).*
 
 ## 6. Afterwards
 
