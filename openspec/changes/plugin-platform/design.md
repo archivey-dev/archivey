@@ -795,6 +795,19 @@ because each open member stream that reads its data through a walk has a walk of
 own. A reader keeps a walk's state in the generator. The rules are the same for every
 format.
 
+**Options of one format** (R24). A format or codec that has settings of its own
+ships a frozen options class whose fields hold plain values only: text, numbers,
+booleans, a named choice, a path. `ArchiveyConfig(format_options=[...])` takes such
+objects, at most one per class; a reader or codec asks its context for its class and
+gets the caller's object or the class default. Core does not know a plugin's class.
+Core's own formats use the same shape: `ZipOptions` and `RarOptions` replace the four
+per-format fields of `ArchiveyConfig` (the API trim of R21 makes that change). A
+manifest entry names its options class under a short name, so a name and a mapping of
+plain values can be turned into the object, and back, without importing anything
+else: an unknown name or field is refused when it is read. No reader or writer of
+config files is built now; the two rules keep one possible, and the command line is
+its likely first user.
+
 **Version.** `archivey.formats.API_VERSION` is a pair, `(major, minor)`, with its own
 numbering, apart from archivey's version.
 
@@ -1044,7 +1057,7 @@ What it cannot undo is a published package name, which is why DMG is split now.
 ## Decisions
 
 All ten were put to the maintainer and agreed on 2026-11-24. Decisions 5, 6 and 7 were
-revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R23 below).
+revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R24 below).
 
 1. **Installed plugins load by themselves, behind the guardrails of §3.** This replaces
    the 2026-10-25 rule (explicit `register_format()` only), which the maintainer
@@ -1215,6 +1228,15 @@ and the evidence in front of him (review round A):
   declared by a plugin stay a Non-Goal until a format needs one. Rejected: folding
   them into broader codes (less precise reports), and package-declared codes (new
   public surface with no reader that needs it).
+
+- **R24. A format takes its own options as a typed object** (§5; maintainer,
+  2026-11-27). One frozen class per format or codec, passed in
+  `ArchiveyConfig(format_options=...)` and read through the context; ZIP and RAR use
+  the same shape as a plugin. So that a config can later be written to and read from
+  a file, the manifest names each options class under a short name and option fields
+  hold plain values only. Rejected: a mapping of names and values per format
+  (untyped, and a typo shows late), and a group for core's options only (ZIP and RAR
+  would change shape again when a plugin needs options).
 
 - **R13. Core keeps the binary CPIO check** (§4). A hint may carry a small check that
   core runs when the format has no signature strong enough to be data and a wrapper

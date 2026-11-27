@@ -129,6 +129,12 @@
   bars an outside probe (review F9);
   the recorder test uses a file that would run an outside probe
   and one that would run an outside refinement check under another policy
+- [ ] 2.3d Format options (R24): `ArchiveyConfig.format_options`, the context call
+  that returns a reader's or codec's options object or its default, and the options
+  class named on the manifest entry under a short name; tests that two objects of one
+  class are refused, that a field holding a callable is refused when the class is
+  declared, and that a name with a mapping of plain values builds the same object.
+  `ZipOptions` and `RarOptions` themselves land with the config trim (R21)
 - [ ] 2.4 `register_format` and `register_builtin_format` become one function that
   takes an entry
 - [ ] 2.5 `CHANGELOG.md` **Breaking:** lines; `dev-docs/api-surface.txt` updated
