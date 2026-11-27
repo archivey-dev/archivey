@@ -1746,6 +1746,10 @@ class TarWalker:
         found, the walk's next :meth:`next_entry` parses it as it parses any header.
         ``end`` bounds the search: the second salvage pass searches one range the
         first pass stepped over (``TarReader._second_pass``).
+
+        A ``start`` at or past the end (``end``, or the archive's known end) searches
+        nothing: the walk can end there, past a member whose size the archive cuts
+        short, and the shared search takes a start past its end as a bug.
         """
         if self._end is not None:
             end = self._end if end is None else min(end, self._end)

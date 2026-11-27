@@ -430,7 +430,8 @@ def search_forward(
     forward, each read starting where the one before ended, so a decoded stream can
     serve it without seeking back. ``end``, when known, is where the layer ends; the
     search reads nothing at or past it, and an ``end`` before ``start`` or before the
-    layer's search position is a bug (``AssertionError``). Under a budget the search
+    layer's search position is a bug (``AssertionError``): a format whose start comes
+    from a size the archive gives clamps it to ``end`` first. Under a budget the search
     reads no further than the last header the budget lets it reach (one byte more
     when ``end`` is not known and the budget pays for every byte read, to see
     whether the layer ends there), and with no budget left it reads nothing.
