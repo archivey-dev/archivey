@@ -991,7 +991,6 @@ def _probe_completes(
     whole = workspace.peek_prefix(length)
     workspace.charge_decode(input_bytes=len(whole))
     try:
-        # Confirms the match or turns it away; the grade stays the window's.
         # The probe has seen more: its whole-source answer stands, weaker or stronger.
         return probe(
             whole,

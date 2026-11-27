@@ -380,11 +380,13 @@ signature gives. A probe that only tells yes from no answers `PROBABLE` or `REJE
 every built-in probe does. When detection runs a probe again on the whole source (the
 completion check), that second verdict SHALL be the one graded; a probe not run again
 keeps its window verdict. Detection SHALL report the verdict as the confidence, and
-SHALL report a `GUESS` as `PROBABLE` when the source's extension names the format. The
-same rule SHALL hold for a container's probe on the first 512 decoded bytes inside a
-compressor. A plugin probe that answers anything else (a bool, `CERTAIN`, any other
-object, `None`) SHALL count as no match and be logged on `archivey.detection` as a probe
-that raises is: WARNING the first time, DEBUG after.
+SHALL report a `GUESS` as `PROBABLE` when the source's extension names the format.
+Inside a compressor, a container's probe runs on the first 512 decoded bytes. Only a
+`PROBABLE` verdict, or a `GUESS` the extension raises, SHALL switch the source to that
+container; a `GUESS` the name does not raise leaves the source the compressor (see the
+inner-TAR corroboration requirement). A plugin probe that answers anything else (a bool,
+`CERTAIN`, any other object, `None`) SHALL count as no match and be logged on
+`archivey.detection` as a probe that raises is: WARNING the first time, DEBUG after.
 
 A probe match SHALL report `detected_by="content_probe"`. For **Brotli specifically**,
 confidence SHALL be `PROBABLE` when the file extension corroborates the format **or**
