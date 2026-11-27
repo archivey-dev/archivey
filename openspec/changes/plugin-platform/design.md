@@ -493,7 +493,7 @@ to no data phase, and its rule is today's, kept:
   `always_probe_content` every allowed provider's probe runs, and a loose probe in an
   outside package can claim a file core would call "not an archive". It can never
   take a file from a format with a signature, because probes run only when none
-  matched. The conformance recipe (task 3.9a) tests a probe against the non-archive
+  matched. The test kit (R19, task 3.9a) tests a probe against the non-archive
   corpus, and `providers=` is the caller's control.
 - A hinted format whose package is missing has no probe to run, so it is known by
   its extension only (Open Question 3 asks whether that is enough). That is not
@@ -1041,7 +1041,7 @@ What it cannot undo is a published package name, which is why DMG is split now.
 ## Decisions
 
 All ten were put to the maintainer and agreed on 2026-11-24. Decisions 5, 6 and 7 were
-revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R17 below).
+revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R22 below).
 
 1. **Installed plugins load by themselves, behind the guardrails of §3.** This replaces
    the 2026-10-25 rule (explicit `register_format()` only), which the maintainer
@@ -1114,8 +1114,8 @@ and the evidence in front of him (review round A):
   LZ4, needs the compressors as a provider after the split. The recipe is rewritten
   in the same step to carry `providers` and to name the package it adds
   (`providers=FormatPolicy.COMMON.providers | {"archivey-compressors"}`), with a
-  test that a policy built by the recipe bars an outside probe. Whether a method
-  that returns a changed copy should replace hand-copying is Open Question 12.
+  test that a policy built by the recipe bars an outside probe. R22 makes the
+  recipe a `dataclasses.replace` call, so no field is copied by hand.
   Rejected: all 13 other streams leaving core, dropping `COMMON` for
   `providers={"archivey"}` alone, and all streams staying.
 
@@ -1157,6 +1157,51 @@ and the evidence in front of him (review round A):
   registers at run time, in place of a manifest, would share the program's name and
   be allowed with it); and leaving such entries outside `providers=` (it loosens
   `COMMON`).
+
+- **R18. The format packages get lighter compatibility checks and the same safety
+  checks** (§7; maintainer, 2026-11-27). A change to core runs core and every package
+  on the full matrix. A change to one package runs core and that package on Linux,
+  and with it each package that declares a dependency on it (SquashFS decodes with the
+  compressors' LZ4 and LZO; four packages call kernels of `archivey-speedups`), read
+  from the packages' declared dependencies. `archivey-speedups` keeps Windows and
+  macOS on its own changes, as the only native code, and DMG keeps its macOS job,
+  which compares the reader with `hdiutil`. The full matrix for everything runs
+  nightly and before a release. Fuzz targets, limit checks and the type checkers
+  are not lightened. A job the rule skips reports success, so the merge queue does
+  not wait for it. Rejected: core's rules for every package (the split would then
+  save no maintenance), and a lighter rule for two packages only.
+
+- **R19. The test kit is a helper in the repository during step 0 and a public
+  module at the pilot** (§5; maintainer, 2026-11-27). Each port uses it and shapes
+  it: truncation and bit flips, short reads and a pipe, a repeated listing, small
+  limits, early close, hostile names through extraction, and the probe over files
+  that are not archives. With R18 a package change runs only core and that package,
+  and the kit is what that run checks the package with. It is published as
+  `archivey.testing` (name to be confirmed then) with the pilot wheel, where the
+  outside-author trial needs it installed. No outside author is assumed: its users
+  are our packages. Rejected: a public module from step 0 (its names would change in
+  public through thirteen ports), and a written recipe only (each package would copy
+  the test code).
+
+- **R20. No placeholder releases** (§7; maintainer, 2026-11-27). Each package is
+  published when it has code. PyPI discourages empty projects, and owning five names
+  does not stop a sixth `archivey-` name from being registered. Each step that
+  publishes a package checks the name first; a taken name means a rename before any
+  file names it.
+
+- **R21. All four breaking trims ship in 0.6.0** (decision 10; maintainer,
+  2026-11-27): one extraction error setting, the tiered root namespace, the smaller
+  `ArchiveyConfig`, and the diagnostic-code audit
+  (`review/direction-2026-11/assessment.md`, items 4 to 7). They are a separate
+  change and share no files with step 0. The root tiering lands before step 2, so
+  that a root name step 2 retypes moves once.
+
+- **R22. A policy is built from `COMMON` with `dataclasses.replace`** (§2;
+  maintainer, 2026-11-27). The docstring's recipe becomes
+  `dataclasses.replace(FormatPolicy.COMMON, only=...)`, which carries every field,
+  `providers` included, and a test keeps that call working. Rejected: a new method
+  on `FormatPolicy` (a new public name; it could not be called `replace`, which is
+  a field), and a recipe that copies each field by hand.
 
 - **R13. Core keeps the binary CPIO check** (§4). A hint may carry a small check that
   core runs when the format has no signature strong enough to be data and a wrapper
@@ -1231,7 +1276,7 @@ failure points at the API, at detection or at distribution, and not at all three
    pkg, which reads its payloads as nested CPIO. rpm parses its own payload and
    nothing opens it. The wheel is installed beside a core wheel in a fresh
    environment. Checked through the public API: discovery, an rpm read with a
-   compressed payload, limits, cleanup, and the recorder test. The conformance recipe starts
+   compressed payload, limits, cleanup, and the recorder test. The test kit is published
    here. A session that did not work on the migration writes the guide's indexed
    example from the guide alone, and its unchanged wheel is tried against the next
    minor of core. Lands after 0.6.0 is cut, since it moves a format out.
@@ -1272,7 +1317,8 @@ For the next rounds of this plan. None blocks the start of step 0.
    are bytes or their hex spelling in an entry.
 6. The crypto facade's size: which primitives, and whether it requires `cryptography`
    as core does today.
-7. Whether the conformance kit (`archivey.testing`) is part of step 5 or later.
+7. The public name and layout of the test kit when it is published at the pilot
+   (R19).
 8. For the decoder child of package codecs (R4): how an error from the child is handed
    to `translate_exception`, and the process-pool and memory-limit rules, which have
    special cases for pyppmd today.
@@ -1287,7 +1333,6 @@ For the next rounds of this plan. None blocks the start of step 0.
 11. The public names and exact shape of the richer decoder of R15, and the wording
     of its rule that every pass offers the same restart points. Settled by the first
     port that uses it (`.Z`), in step 0.
-12. A method on `FormatPolicy` that returns a copy with changes, so that a policy
-    built on `COMMON` carries every field, `providers` included, without the caller
-    copying each one. A public name, so the maintainer's call; until then the
-    docstring's recipe copies `providers` by hand.
+12. Whether a plugin may define diagnostic codes of its own (a Non-Goal above for
+    now). Decided after the diagnostic-code audit of R21, which shows which codes
+    survive and whether a moved reader loses one it needs (maintainer, 2026-11-27).
