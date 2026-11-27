@@ -64,10 +64,13 @@ line. How to write the entry: see
   errors callers catch most. The other 67 come from the submodule that defines them,
   such as `archivey.config.DecoderLimits`, `archivey.types.OverwritePolicy` and
   `archivey.exceptions.ReadError`; the [API page](docs/api.md) heads each entry with
-  its full name. `archivey.<name>` still works for those 67 in 0.6 with a
-  `DeprecationWarning` that names the new import, and 0.7.0 removes it.
-  `sanitize_names` moved to `archivey.paths`. The experimental `PluginContainer` and
-  `PluginStream` left the root at once and come from `archivey.types`.
+  its full name. `archivey.<name>` still works for 65 of them in 0.6 with a
+  `DeprecationWarning` that names the new import, and 0.7.0 removes it. The other two,
+  the experimental `PluginContainer` and `PluginStream`, left the root at once and come
+  from `archivey.types`. `sanitize_names` moved to `archivey.paths`. `archivey.core`
+  keeps only its six functions: `AcceleratorMode`, `ExtractionLimits`, `ListingLimits`,
+  `DetectionConfidence`, `FormatAvailability`, `FormatSupport` and `MissingComponent`
+  still work from it in 0.6 with the same warning.
 - `extract_all(on_error=, on_blocked=, abort_on=)` and their enums `OnError`,
   `OnBlocked` and `AbortOn` keep working in 0.6 with a `DeprecationWarning`; use
   `on_problem=`. The name events have no `on_problem` value: `"stop"` already stops at a

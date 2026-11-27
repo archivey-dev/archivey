@@ -32,6 +32,8 @@ left the root in 0.6.0 still works as ``archivey.<name>`` for the 0.6 series, wi
 # ``__getattr__`` at the end of this file, on first access.
 __version__: str
 
+from typing import TYPE_CHECKING
+
 from archivey.config import ArchiveyConfig
 from archivey.core import detect_format, format_availability, open_archive, open_stream
 from archivey.diagnostics import (
@@ -176,6 +178,94 @@ _MOVED_IN_0_6: dict[str, str] = {
     "Verification": "archivey.types",
 }
 
+if TYPE_CHECKING:
+    # A type checker does not run ``__getattr__``: these give the old spellings their
+    # real types, so a typed caller sees the deprecation and not an error.
+    from archivey.config import (
+        DEFAULT_ARCHIVEY_CONFIG as DEFAULT_ARCHIVEY_CONFIG,
+        AcceleratorMode as AcceleratorMode,
+        DecoderLimits as DecoderLimits,
+        ExtractionLimits as ExtractionLimits,
+        ListingLimits as ListingLimits,
+        PartialDataRecovery as PartialDataRecovery,
+        PasswordInput as PasswordInput,
+        PasswordProvider as PasswordProvider,
+        PasswordRequest as PasswordRequest,
+        ProcessIsolation as ProcessIsolation,
+        RarDecompressor as RarDecompressor,
+        SalvageLimits as SalvageLimits,
+        SpoolLimits as SpoolLimits,
+    )
+    from archivey.core import (
+        list_known_formats as list_known_formats,
+        list_supported_formats as list_supported_formats,
+    )
+    from archivey.cost import (
+        AccessCost as AccessCost,
+        CostReceipt as CostReceipt,
+        ListingCost as ListingCost,
+        StreamCapability as StreamCapability,
+    )
+    from archivey.detection import (
+        DetectionConfidence as DetectionConfidence,
+        FormatInfo as FormatInfo,
+    )
+    from archivey.diagnostics import (
+        ARCHIVE_INTEGRITY_CODES as ARCHIVE_INTEGRITY_CODES,
+        DiagnosticContext as DiagnosticContext,
+        DiagnosticSummary as DiagnosticSummary,
+        MemberListReport as MemberListReport,
+        OnDiagnostic as OnDiagnostic,
+        VerifyReport as VerifyReport,
+    )
+    from archivey.exceptions import (
+        DiagnosticRaisedError as DiagnosticRaisedError,
+        ExtractionError as ExtractionError,
+        FilterRejectionError as FilterRejectionError,
+        LinkTargetNotFoundError as LinkTargetNotFoundError,
+        LinkTargetNotFoundReason as LinkTargetNotFoundReason,
+        NameCollisionError as NameCollisionError,
+        NameRewrittenError as NameRewrittenError,
+        OpenError as OpenError,
+        ReadError as ReadError,
+        ResourceUnavailableError as ResourceUnavailableError,
+        SourceChangedError as SourceChangedError,
+        StreamNotSeekableError as StreamNotSeekableError,
+    )
+    from archivey.paths import (
+        sanitize_names as sanitize_names,
+    )
+    from archivey.reader import (
+        MemberPass as MemberPass,
+        MemberSelector as MemberSelector,
+    )
+    from archivey.types import (
+        AbortOn as AbortOn,
+        ArchiveInfoExtra as ArchiveInfoExtra,
+        BackendKindStr as BackendKindStr,
+        BackendUse as BackendUse,
+        CompressionAlgorithm as CompressionAlgorithm,
+        CompressionMethod as CompressionMethod,
+        CreateSystem as CreateSystem,
+        ExtractionProgress as ExtractionProgress,
+        ExtractionResult as ExtractionResult,
+        ExtractionStatus as ExtractionStatus,
+        FormatAvailability as FormatAvailability,
+        FormatSupport as FormatSupport,
+        HashAlgorithm as HashAlgorithm,
+        MemberExtra as MemberExtra,
+        MemberFilter as MemberFilter,
+        MissingComponent as MissingComponent,
+        NameRewrite as NameRewrite,
+        OnBlocked as OnBlocked,
+        OnError as OnError,
+        OptionalLibrary as OptionalLibrary,
+        OverwritePolicy as OverwritePolicy,
+        SourceProgress as SourceProgress,
+        Verification as Verification,
+    )
+del TYPE_CHECKING  # not a public name of the root
+
 
 def _pin_public_module() -> None:
     """Report a public module as the module of every public function defined under ``internal``.
@@ -258,9 +348,10 @@ def __getattr__(name: str) -> object:
     """Compute ``__version__`` on first access, and serve the moved names (PEP 562).
 
     A name in ``_MOVED_IN_0_6`` is imported from its submodule and returned with a
-    ``DeprecationWarning`` that names the new import. ``stacklevel=2`` attributes it to
-    the caller's line, for ``archivey.Name`` and ``from archivey import Name`` alike.
-    The value is not cached in the module globals, so every use warns.
+    ``DeprecationWarning`` that names the new import, at the caller's line, for
+    ``archivey.Name`` and ``from archivey import Name`` alike
+    (:func:`~archivey.internal.moved_names.moved_name`). The value is not cached in the
+    module globals, so every use warns.
 
     ``importlib.metadata`` is a measurable part of ``import archivey`` on a core-only
     install, for a string most callers never read. (Some optional codec packages import
@@ -277,17 +368,6 @@ def __getattr__(name: str) -> object:
             value = "0.0.0+unknown"
         globals()["__version__"] = value
         return value
-    module_name = _MOVED_IN_0_6.get(name)
-    if module_name is not None:
-        import importlib
-        import warnings
+    from archivey.internal.moved_names import moved_name
 
-        warnings.warn(
-            f"archivey.{name} is deprecated; use {module_name}.{name} "
-            f"(from {module_name} import {name}). archivey 0.7.0 removes the old "
-            "spelling.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return getattr(importlib.import_module(module_name), name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return moved_name(__name__, _MOVED_IN_0_6, name)
