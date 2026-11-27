@@ -8,10 +8,12 @@ arguments go to :func:`archivey.open_archive` and everything else to
 :meth:`~archivey.ForwardArchiveReader.extract_all`, so the report's diagnostics are
 extraction-only, as a caller's would be.
 
-Unlike ``extract_all()`` itself, it defaults to ``on_blocked="skip"``: most tests check
-what happened to each member, refused ones included, so they want the report back
-rather than the ``FilterRejectionError`` the library raises by default. A test of that
-default passes ``on_blocked="raise"``.
+Unlike ``extract_all()`` itself, it returns the report when members were refused: most
+tests check what happened to each member, refused ones included, so they want the
+report back rather than the ``FilterRejectionError`` the library raises by default. A
+failed member still raises its own error, as under the default, so a test of damaged
+data needs no extra argument. Given ``on_problem=``, it passes that through unchanged,
+which is how a test of the library's default passes ``on_problem="finish"``.
 
 It also checks, after every run that returned or raised, that no ``.archivey-tmp-*``
 staging file is left under the destination: only a hard kill may leave one
@@ -28,6 +30,7 @@ import pytest
 
 from archivey import ArchiveFormat, ArchiveyConfig, ExtractionReport, open_archive
 from archivey.config import PasswordInput
+from archivey.types import ExtractionStatus
 from tests.streams_util import open_mode
 
 
@@ -50,11 +53,23 @@ def open_and_extract(
         encoding=encoding,
         config=config,
     ) as reader:
-        extract_kwargs.setdefault("on_blocked", "skip")
+        chosen = "on_problem" in extract_kwargs or any(
+            name in extract_kwargs for name in ("on_error", "on_blocked", "abort_on")
+        )
+        if not chosen:
+            extract_kwargs["on_problem"] = "continue"
         try:
-            return reader.extract_all(dest, **extract_kwargs)
+            report = reader.extract_all(dest, **extract_kwargs)
         finally:
             assert_no_staging_files(dest)
+        if not chosen:
+            for result in report.results:
+                if (
+                    result.status is ExtractionStatus.FAILED
+                    and result.error is not None
+                ):
+                    raise result.error
+        return report
 
 
 def assert_no_staging_files(dest: str | Path) -> None:

@@ -41,7 +41,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.types import ExtractionResult, ExtractionStatus, OnError, OverwritePolicy
+from archivey.types import ExtractionResult, ExtractionStatus, OverwritePolicy
 from tests.extract_util import open_and_extract
 from tests.memory_util import traced_peak
 
@@ -127,7 +127,7 @@ def _extract(
         dest,
         streaming=streaming,
         policy=policy,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
         overwrite=OverwritePolicy.REPLACE,
     )
     root = Path(os.path.abspath(dest))
@@ -297,7 +297,7 @@ def test_py7zr_cve_2026_55195_decompression_bomb(
         io.BytesIO(_archive(packed, header)),
         dest,
         streaming=streaming,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     (result,) = list(report)
     assert result.status is ExtractionStatus.FAILED

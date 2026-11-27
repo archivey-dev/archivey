@@ -65,9 +65,7 @@ with archivey.open_archive("download.zip") as archive:
         "out/",
         policy="strict",     # how much to trust names and permissions
         overwrite="error",   # what to do when a file is already there
-        on_error="stop",     # whether a damaged member stops the rest
-        on_blocked="raise",  # whether a refused member raises at the end
-        abort_on=[],         # events that stop the whole extraction at once
+        on_problem="finish", # what a damaged or refused member does to the rest
         on_progress=None,    # called as files are written
         limits=archivey.config.ExtractionLimits(max_extracted_bytes=2 * 2**30),  # how much it may write
         dry_run=False,       # run it without keeping anything
@@ -92,8 +90,8 @@ time it was written, and a time the system refuses doesn't fail the member.
 
 | `overwrite` | Effect |
 |---|---|
-| `"error"` (default) | The member fails, and `on_error` decides whether extraction goes on |
-| `"skip"` | The existing file stays. This isn't a failure, so `on_error` doesn't apply |
+| `"error"` (default) | The member fails, and `on_problem` decides whether extraction goes on |
+| `"skip"` | The existing file stays. This isn't a failure, so `on_problem` doesn't apply |
 | `"replace"` | The existing file is deleted, and the member is written. An existing folder is replaced only if it's empty, and otherwise the member fails |
 | `"rename"` | The member is written next to it, with a number before the extension: `a.txt` becomes `a (1).txt` |
 
@@ -114,46 +112,37 @@ links; on one without them (FAT, some network drives), or when a hard-linked fil
 used up the link slots the filesystem allows, the later writer replaces the earlier
 one's file.
 
-`on_error` decides what a failed member does to the rest of the extraction:
+`on_problem` decides what a member that fails or is refused does to the rest of the extraction.
+A member fails when its data is damaged, when writing it fails, or when a file is already at its
+path under `overwrite="error"`. It's refused when a safety check won't write it, such as a name
+that leads out of the destination:
 
-| `on_error` | Effect |
+| `on_problem` | Effect |
 |---|---|
-| `"stop"` (default) | The first failure raises, and extraction stops there |
-| `"continue"` | The failure is recorded in the report, and extraction goes on |
+| `"stop"` | The first failed or refused member raises at once, and nothing after it is written |
+| `"finish"` (default) | Every member is tried. If one failed or was refused, the call then raises the first one's error, with the full report as its `report` attribute |
+| `"continue"` | Every member is tried, and the call returns the report |
 | `"keep_partial"` | As `"continue"`, and a file whose data fails partway keeps the bytes written before the failure |
 
-A refused member isn't a failure, so `"stop"` doesn't stop there. The rest of the archive is
-extracted, and `on_blocked` decides what the call does at the end:
+A refused member is never written, whatever `on_problem` says. After `"stop"` there's no report,
+and the files already written stay on disk.
 
-| `on_blocked` | Effect |
-|---|---|
-| `"raise"` (default) | Once every other member is written, the call raises `FilterRejectionError`. Its `report` attribute is the full report |
-| `"skip"` | The call returns the report, with each refused member as `BLOCKED` |
+??? note "Why does the default finish before it raises?"
+    Refusing a member is the protection doing its job, and the rest of the archive is still safe
+    to write. Stopping at once would let one stray name, such as an absolute path in an archive
+    made on another system, or one damaged file, stop everything after it. Returning quietly would
+    let a caller that never looks at the report miss that something was left out. GNU tar, `unrar
+    x` and `7z x` do the same: they extract what they can, then exit with an error.
 
-To stop at the first refused member, before the rest are written, use
-`abort_on=["blocked_member"]`.
-
-??? note "Why does a refused member raise only at the end?"
-    Refusing it is the protection doing its job, and the rest of the archive is still safe to write.
-    Stopping at once would let one stray name, such as an absolute path in an archive made on
-    another system, stop everything after it. Returning quietly would let a caller that never looks
-    at the report miss that something was left out. GNU tar does the same: it extracts what it can,
-    then exits with an error.
-
-`abort_on` lists events that stop the whole extraction immediately if they happen, even ones that
-aren't failures. It's empty by default:
-
-| `abort_on` value | Raises when |
-|---|---|
-| `"blocked_member"` | A member is refused |
-| `"name_collision"` | Two members of the archive would be written to the same path. This includes a file member landing on a folder that an earlier member created, as `x` does after `x/f`. This raises before `overwrite` is applied, so even with `"rename"` the second member isn't written. Not checked under `"trusted"` |
-| `"name_sanitized"` | A name is rewritten to its portable spelling, or an absolute name is placed inside the destination. Under `"strict"` an absolute name is refused instead, so `"blocked_member"` is the one that catches it |
-
-After an abort there's no report, and the files already written stay on disk.
+Until 0.6.0, three arguments did this job: `on_error`, `on_blocked` and `abort_on`. They still work
+in the 0.6 releases, with a `DeprecationWarning`, and 0.7.0 removes them. Two `abort_on` events
+have no `on_problem` value. Instead of `"name_collision"`, keep the default `overwrite="error"`: a
+second member at the same path then fails. Instead of `"name_sanitized"`, read
+`ExtractionResult.rewrites` in the report.
 
 Each of these strings is also an enum value, so `policy=archivey.ExtractionPolicy.STRICT` works as
-well as `policy="strict"`. The enums are `ExtractionPolicy`, `OverwritePolicy`, `OnError` and
-`AbortOn`. The strings ignore case, and `-` works in place of `_`.
+well as `policy="strict"`. The enums are `ExtractionPolicy`, `OverwritePolicy` and `OnProblem`. The
+strings ignore case, and `-` works in place of `_`.
 
 `on_progress` gets a snapshot after each member and every so often during a large one: the member,
 the bytes and members done so far, and the expected totals when the archive records them. It's
@@ -271,54 +260,57 @@ out, by `members=` or a filter, the link is written as a separate copy of its co
 link is refused too. Changing a hard link's target in a filter does nothing.
 
 A refused member isn't written, and the rest of the archive still extracts. Then the call raises
-`FilterRejectionError`. Its `report` attribute is the report the call would have returned, with
-one result for each member: the path it was written to in `result.path` and the member as the
-archive stored it in `result.member`. That shows what was refused:
+`FilterRejectionError`, or the member's own error when a failed member came first. Its `report`
+attribute is the report the call would have returned, with one result for each member: the path it
+was written to in `result.path` and the member as the archive stored it in `result.member`. That
+shows what was refused:
 
 ```python
 with archivey.open_archive("download.zip") as archive:
     try:
         report = archive.extract_all("out/")
-    except archivey.exceptions.FilterRejectionError as e:
+    except archivey.ArchiveyError as e:
         report = e.report
-        assert report is not None  # always set on the end-of-call error
+        if report is None:  # not the end-of-call error: the run stopped early
+            raise
         for result in report:
             if result.status is archivey.types.ExtractionStatus.BLOCKED:
                 print(result.member.name, result.error)
 ```
 
-With `on_blocked="skip"` the call returns the report instead, and `report.ok` is `False` when a
+With `on_problem="continue"` the call returns the report instead, and `report.ok` is `False` when a
 member was refused or failed; `report.raise_for_failure()` raises the first one's error. Test
 `report.ok`, not the report: `if report:` always raises `TypeError`. As a sequence, its truth would
 only say whether it is empty, and a report of a failed extraction is not, while the report of an
-empty archive is. If you'd rather stop at the first refused member, `abort_on=["blocked_member"]`
-raises there, and its error has no report.
+empty archive is. If you'd rather stop at the first refused member, `on_problem="stop"` raises
+there, and its error has no report.
 
 ## Damaged members
 
 By default, a member that fails partway leaves nothing behind. Archivey writes each file under a
 temporary name and renames it only once it's complete. The files written before the failure stay on
-disk, even with `on_error="stop"`.
+disk, even with `on_problem="stop"`.
 
 To keep what a damaged file holds, as `unrar x -kb`, 7-Zip and GNU tar do, pass
-`on_error="keep_partial"`. The file gets the bytes written before the failure, and its result in the
-report is `FAILED`, with the error and the file's `path`. A file whose only damage is a wrong CRC or
-size keeps every byte, except where the decoder checks the CRC itself, as gzip does, and can lose
-its last few bytes: extraction reads such a member as `recover_partial_data=PartialDataRecovery.ALL`
-does (see [Errors and diagnostics](errors-and-diagnostics.md)), whatever the config says. The file
+`on_problem="keep_partial"`. The file gets the bytes written before the failure, and its result in
+the report is `FAILED`, with the error and the file's `path`. A file whose only damage is a wrong
+CRC or size keeps every byte, except where the decoder checks the CRC itself, as gzip does, and can
+lose its last few bytes: extraction reads such a member as
+`recover_partial_data=PartialDataRecovery.ALL` does (see [Errors and
+diagnostics](errors-and-diagnostics.md)), whatever the config says. The file
 gets a modification time of now and archivey's own file mode, not the ones the archive stores, so it
 doesn't pass for the real one. Under `overwrite="replace"`, the partial file replaces an entry
 already at its name, as a complete one would. A member that fails before any byte is written leaves
 nothing, and so does one that goes over a limit.
 
 Going over the total size or entry count in `limits`, or the whole
-archive expanding too much, stops the extraction even with `on_error="continue"`, since it's a sign
-that the whole archive is hostile. A single member that expands too much fails like any other
+archive expanding too much, stops the extraction even with `on_problem="continue"`, since it's a
+sign that the whole archive is hostile. A single member that expands too much fails like any other
 member.
 
 If the damage is in the list of members itself, such as a TAR, RAR or ZIP cut short, the members
-before it are written and the call then raises, whatever `on_error` says, and returns no report.
-Under `on_error="keep_partial"`, a note on that error names each partial file the run kept. If
+before it are written and the call then raises, whatever `on_problem` says, and returns no report.
+Under `on_problem="keep_partial"`, a note on that error names each partial file the run kept. If
 a ZIP's central directory is damaged, archivey also finds the members after the damage from the
 header in front of each one's data, and writes those too before it raises. A damaged 7z index fails
 `open_archive` before anything is written.

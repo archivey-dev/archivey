@@ -21,6 +21,7 @@ ambiguity, rather than leaving it to resolve silently to the wrong member.
 from __future__ import annotations
 
 import ast
+import contextlib
 import os
 import struct
 import zipfile
@@ -65,6 +66,8 @@ from archivey.types import (
     OnBlockedStr,
     OnError,
     OnErrorStr,
+    OnProblem,
+    OnProblemStr,
     OptionalLibrary,
     OptionalLibraryStr,
     OverwritePolicy,
@@ -81,6 +84,7 @@ PUBLIC_ENUMS: tuple[type[Enum], ...] = (
     OnError,
     OnBlocked,
     AbortOn,
+    OnProblem,
     AcceleratorMode,
     ProcessIsolation,
     RarDecompressor,
@@ -252,11 +256,11 @@ def test_on_error_as_a_string_stops_instead_of_continuing(tmp_path: Path) -> Non
     path.write_bytes(bytes(raw))
 
     with pytest.raises(ArchiveyError):
-        open_and_extract(path, tmp_path / "stop_str", on_error="stop")
+        open_and_extract(path, tmp_path / "stop_str", on_problem="stop")
 
     # The opposite value still reports rather than raising, so the test above is not
     # just asserting that any extraction of this archive fails.
-    report = open_and_extract(path, tmp_path / "continue", on_error="continue")
+    report = open_and_extract(path, tmp_path / "continue", on_problem="continue")
     assert ExtractionStatus.FAILED in [r.status for r in report.results]
 
 
@@ -265,6 +269,7 @@ def test_on_error_as_a_string_stops_instead_of_continuing(tmp_path: Path) -> Non
     [
         ("policy", "nonsense"),
         ("overwrite", "nonsense"),
+        ("on_problem", "nonsense"),
         ("on_error", "nonsense"),
     ],
 )
@@ -272,7 +277,13 @@ def test_extract_refuses_a_bad_spelling_with_a_usage_error(
     archive: Path, tmp_path: Path, param: str, value: str
 ) -> None:
     """Not a ``KeyError`` from a transform table, and not silence."""
-    with pytest.raises(ArchiveyUsageError) as exc_info:
+    # on_error= is deprecated (0.6.0) but still checks its value until 0.7.0.
+    with (
+        pytest.raises(ArchiveyUsageError) as exc_info,
+        pytest.warns(DeprecationWarning)
+        if param == "on_error"
+        else contextlib.nullcontext(),
+    ):
         open_and_extract(archive, tmp_path / "out", **{param: value})
 
     assert param in str(exc_info.value)
@@ -288,11 +299,9 @@ def test_extract_refuses_before_it_writes_anything(
     assert not dest.exists() or not os.listdir(dest)
 
 
-def test_abort_on_accepts_the_spelling_the_cli_advertises(
-    archive: Path, tmp_path: Path
-) -> None:
-    """``--abort-on blocked-member`` from ``--help``, pasted into a script."""
-    open_and_extract(archive, tmp_path / "out", abort_on=["blocked-member"])
+def test_on_problem_accepts_the_dash_spelling(archive: Path, tmp_path: Path) -> None:
+    """``keep-partial``, the CLI's spelling of a value, pasted into a script."""
+    open_and_extract(archive, tmp_path / "out", on_problem="keep-partial")
 
 
 # --- the same contract on the other entry points -----------------------------------
@@ -362,6 +371,7 @@ LITERAL_ALIASES: tuple[tuple[type[Enum], object], ...] = (
     (ExtractionPolicy, ExtractionPolicyStr),
     (OverwritePolicy, OverwritePolicyStr),
     (OnError, OnErrorStr),
+    (OnProblem, OnProblemStr),
     (AbortOn, AbortOnStr),
     (OnBlocked, OnBlockedStr),
     (DiagnosticCode, DiagnosticCodeStr),

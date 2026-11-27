@@ -42,7 +42,7 @@ from archivey.internal.windows_reparse import (
     normalize_windows_link_target,
 )
 from archivey.paths import sanitize_names
-from archivey.types import ArchiveMember, ExtractionStatus, MemberType, OnError
+from archivey.types import ArchiveMember, ExtractionStatus, MemberType
 from tests.test_audit_rar_iso_dir import (
     _fixture,
     _rar5_build,
@@ -277,9 +277,7 @@ def test_windows_link_targets_extract_alike_in_every_format(
     path = built([c[0] for c in _CASES])
     dest = tmp_path / "out"
     with open_archive(path) as archive:
-        report = archive.extract_all(
-            dest, policy=policy, on_error=OnError.CONTINUE, on_blocked="skip"
-        )
+        report = archive.extract_all(dest, policy=policy, on_problem="continue")
     for case_id, case, result in zip(_IDS, _CASES, report.results, strict=True):
         _stored, listed, guarded, trusted = case
         expected = trusted if policy is ExtractionPolicy.TRUSTED else guarded
@@ -315,8 +313,7 @@ def test_a_tar_symlink_with_a_windows_root_is_refused(
         (result,) = archive.extract_all(
             tmp_path / "out",
             policy=policy,
-            on_error=OnError.CONTINUE,
-            on_blocked="skip",
+            on_problem="continue",
         ).results
     assert result.status is ExtractionStatus.BLOCKED
     assert isinstance(result.error, FilterRejectionError)
@@ -353,9 +350,7 @@ def test_a_hardlink_to_a_member_with_a_windows_root_gets_what_the_member_gets(
     )
     dest = tmp_path / "out"
     with open_archive(path) as archive:
-        report = archive.extract_all(
-            dest, policy=policy, on_error=OnError.CONTINUE, on_blocked="skip"
-        )
+        report = archive.extract_all(dest, policy=policy, on_problem="continue")
     member, link = report.results
     if policy is ExtractionPolicy.STRICT or target == "c:x":
         assert member.status is ExtractionStatus.BLOCKED
@@ -381,7 +376,7 @@ def test_a_backslash_rooted_symlink_target_extracts_on_posix(
     dest = tmp_path / "out"
     with open_archive(path) as archive:
         (result,) = archive.extract_all(
-            dest, policy=policy, on_error=OnError.CONTINUE, on_blocked="skip"
+            dest, policy=policy, on_problem="continue"
         ).results
     if policy is ExtractionPolicy.TRUSTED:
         assert result.status is ExtractionStatus.EXTRACTED, result.error
@@ -407,9 +402,7 @@ def test_a_backslash_rooted_hardlink_target_gets_what_its_member_gets(
     )
     dest = tmp_path / "out"
     with open_archive(path) as archive:
-        report = archive.extract_all(
-            dest, policy=policy, on_error=OnError.CONTINUE, on_blocked="skip"
-        )
+        report = archive.extract_all(dest, policy=policy, on_problem="continue")
     member, link = report.results
     if policy is ExtractionPolicy.STRICT:
         assert member.status is ExtractionStatus.BLOCKED
@@ -443,8 +436,7 @@ def test_sanitize_names_rewrites_a_symlink_target_s_segments(tmp_path: Path) -> 
             dest,
             policy=ExtractionPolicy.STANDARD,
             filter=sanitize_names,
-            on_error=OnError.CONTINUE,
-            on_blocked="skip",
+            on_problem="continue",
         )
     results = {r.member.name: r for r in report.results}
     assert results["file:stream"].status is ExtractionStatus.EXTRACTED
@@ -497,8 +489,7 @@ def test_sanitize_names_rewrites_a_symlink_target_read_after_the_filter(
             dest,
             policy=ExtractionPolicy.STANDARD,
             filter=recording,
-            on_error=OnError.CONTINUE,
-            on_blocked="skip",
+            on_problem="continue",
         )
     assert seen[-1] == "file:stream"
     results = {r.member.name: r for r in report.results}
@@ -524,8 +515,7 @@ def test_sanitize_names_removes_a_bidi_override_before_a_drive_target(
             tmp_path / "out",
             policy=policy,
             filter=sanitize_names,
-            on_error=OnError.CONTINUE,
-            on_blocked="skip",
+            on_problem="continue",
         ).results
     assert result.status is ExtractionStatus.BLOCKED
     assert isinstance(result.error, FilterRejectionError)

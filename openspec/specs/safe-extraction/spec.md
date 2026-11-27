@@ -30,11 +30,14 @@ def extract_all(
     filter: MemberFilter | None = None,
     policy: ExtractionPolicy = ExtractionPolicy.STRICT,
     overwrite: OverwritePolicy = OverwritePolicy.ERROR,
-    on_error: OnError = OnError.STOP,
-    on_blocked: OnBlocked = OnBlocked.RAISE,
-    abort_on: Collection[AbortOn] = (),
+    on_problem: OnProblem = OnProblem.FINISH,
     on_progress: Callable[[ExtractionProgress], None] | None = None,
     limits: ExtractionLimits | None = None,
+    dry_run: bool = False,
+    # Deprecated in 0.6.0, removed in 0.7.0: see "One problem setting".
+    on_error: OnError | None = None,
+    on_blocked: OnBlocked | None = None,
+    abort_on: Collection[AbortOn] | None = None,
 ) -> ExtractionReport: ...
 ```
 
@@ -1350,6 +1353,35 @@ are the per-result outcome.
 | Same pair under `ERROR` | `A.txt` stays `EXTRACTED`; `a.txt` is `FAILED` with the error |
 | Same pair under `TRUSTED` | No collision event; local OS behavior; no `OVERWRITTEN` |
 | Result ordering after a retroactive revision | Results stay in member-processing order; only the revised member's fields change |
+
+### Requirement: One problem setting (on_problem)
+
+`extract_all()` SHALL take one setting, `on_problem=` (`OnProblem`), for what a
+**problem** does: a member that failed (the `OnError` requirement below) or was refused
+(`BLOCKED`). Its values SHALL map onto the internal switches the requirements below
+describe:
+
+| `on_problem` | Same as | Call ends |
+| --- | --- | --- |
+| `"stop"` | `OnError.STOP`, `AbortOn.BLOCKED_MEMBER` | The first problem raises at once; no report |
+| `"finish"` (default) | `OnError.CONTINUE`, `OnBlocked.SKIP` | Every member is tried; when one had a problem, the first one in member order raises with the full report as its `report` attribute (a refusal raises the summary `FilterRejectionError` of "A refused member raises once the rest are extracted") |
+| `"continue"` | `OnError.CONTINUE`, `OnBlocked.SKIP` | Returns the report |
+| `"keep_partial"` | `OnError.KEEP_PARTIAL`, `OnBlocked.SKIP` | Returns the report |
+
+Always-stop errors (limits, a halting diagnostic, damage that ends the member list) stop
+the run under every value. `on_error=`, `on_blocked=` and `abort_on=` SHALL keep their
+0.5 meaning and defaults through 0.6, each with a `DeprecationWarning` naming
+`on_problem=`; passing one with `on_problem=` SHALL raise `ArchiveyUsageError`.
+
+#### Scenario: on_problem values
+
+| Case | Expected |
+| --- | --- |
+| Damaged member, then a good one, default | The good one is written; the damaged member's error raises with `report` set |
+| Refused member, then a good one, `"stop"` | `FilterRejectionError` at the refused member; the good one is not written |
+| Damaged member, `"continue"` | Report returned; the member is `FAILED` |
+| `on_error="continue"` alone | `DeprecationWarning`; behaves as in 0.5 |
+| `on_problem="continue"` with `on_blocked="skip"` | `ArchiveyUsageError` |
 
 ### Requirement: Error Policy (OnError) for extraction failures
 

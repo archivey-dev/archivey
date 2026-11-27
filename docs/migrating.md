@@ -191,7 +191,7 @@ every policy.
 
 When archivey refuses a member, it skips it and goes on with the others, then raises
 `FilterRejectionError` at the end, where tarfile's data filter raises and ends the whole extraction
-at once. `abort_on=["blocked_member"]` makes archivey stop at once too.
+at once. `on_problem="stop"` makes archivey stop at once too.
 If you want zipfile's renaming, pass `filter=archivey.paths.sanitize_names`. `filter=` also takes
 your own function, which can rename, skip or change each member ([Extracting all or some
 members](extracting.md#extracting-all-or-some-members)).

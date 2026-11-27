@@ -166,7 +166,7 @@ def test_tree_matches_what_extract_all_writes(
         tree = {p: fs.cat(p) for p in fs.find("")}
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(data)) as reader:
-        reader.extract_all(dest, policy=policy, on_error="continue", on_blocked="skip")
+        reader.extract_all(dest, policy=policy, on_problem="continue")
     written = {
         p.relative_to(dest).as_posix(): p.read_bytes()
         for p in dest.rglob("*")
@@ -414,7 +414,7 @@ def test_a_symlink_reads_what_its_target_reaches_on_disk(
     memfs.pipe("/d/sl.tar", data)
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(data)) as reader:
-        reader.extract_all(dest, policy=policy, on_error="continue", on_blocked="skip")
+        reader.extract_all(dest, policy=policy, on_problem="continue")
     links = [p.name for p in dest.iterdir() if p.is_symlink()]
     assert links
     with ArchiveyFileSystem("memory://d/sl.tar", policy=policy) as fs:
@@ -486,7 +486,7 @@ def test_tree_matches_extraction_on_links_and_collisions(
     memfs.pipe("/d/lc.tar", data)
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(data)) as reader:
-        reader.extract_all(dest, policy=policy, on_error="continue", on_blocked="skip")
+        reader.extract_all(dest, policy=policy, on_problem="continue")
     with ArchiveyFileSystem("memory://d/lc.tar", policy=policy) as fs:
         written = _written(dest)
         listed = _listed(fs)

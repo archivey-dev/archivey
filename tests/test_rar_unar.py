@@ -275,7 +275,7 @@ def test_a_member_unar_drops_is_an_error_not_wrong_bytes(
                     except ArchiveyError as exc:
                         got[member.name] = exc
         else:
-            report = archive.extract_all(tmp_path / "out", on_error="continue")
+            report = archive.extract_all(tmp_path / "out", on_problem="continue")
             for result in report:
                 if result.error is not None:
                     assert isinstance(result.error, ArchiveyError), result

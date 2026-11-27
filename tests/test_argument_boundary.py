@@ -47,6 +47,7 @@ import dataclasses
 import inspect
 import io
 import stat
+import warnings
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -769,8 +770,17 @@ def _open_member(archive: Path, member: Any) -> Any:
         return reader.open(member)
 
 
-def _extract_all(archive: Path, dest: str | Path, members: Any, **kwargs: Any) -> Any:
-    with open_archive(archive) as reader:
+def _extract_all(
+    archive: Path,
+    dest: str | Path,
+    members: Any,
+    *,
+    _deprecated: bool = False,
+    **kwargs: Any,
+) -> Any:
+    with open_archive(archive) as reader, warnings.catch_warnings():
+        if _deprecated:
+            warnings.simplefilter("ignore", DeprecationWarning)
         return reader.extract_all(dest, members=members, **kwargs)
 
 
@@ -886,6 +896,7 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     # belongs in _cases, not here.
     ("extract_all", "policy"): "coerced by enum_args; test_enum_arguments.py",
     ("extract_all", "overwrite"): "coerced by enum_args; test_enum_arguments.py",
+    ("extract_all", "on_problem"): "coerced by enum_args; test_enum_arguments.py",
     ("extract_all", "on_error"): "coerced by enum_args; test_enum_arguments.py",
     ("extract_all", "on_blocked"): "coerced by enum_args; test_enum_arguments.py",
     # Collection[AbortOn], not an enum, so the container shape is a second way to get
@@ -1278,7 +1289,10 @@ _BUILTIN_CASES: list[tuple[str, Callable[[Path, Path], Any], type[Exception]]] =
     ),
     (
         "extract_all(abort_on='blocked_member')",
-        lambda a, t: _extract_all(a, t / "o2", None, abort_on="blocked_member"),
+        # abort_on= is deprecated (0.6.0): it still checks its type until 0.7.0.
+        lambda a, t: _extract_all(
+            a, t / "o2", None, abort_on="blocked_member", _deprecated=True
+        ),
         TypeError,
     ),
     (

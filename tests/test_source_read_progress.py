@@ -484,7 +484,7 @@ def test_a_stop_ends_an_extraction_that_continues_on_errors(
         pytest.raises(_StopOS),
         open_archive(path, config=config) as reader,
     ):
-        reader.extract_all(tmp_path / "out", on_error="continue")
+        reader.extract_all(tmp_path / "out", on_problem="continue")
 
 
 def _bad_crc_gz(tmp_path: Path, seed: int, random_size: int, run: int) -> Path:
@@ -526,7 +526,7 @@ def test_a_stop_during_the_re_decode_of_a_damaged_member_is_not_lost(
         )
         if call == "extract_all":
             with open_archive(path, config=config) as reader:
-                reader.extract_all(tmp_path / "out", on_error="continue")
+                reader.extract_all(tmp_path / "out", on_problem="continue")
             return
         size = 1 << 20 if call == "read_bounded_twice" else -1
         with open_stream(path, config=config) as stream:

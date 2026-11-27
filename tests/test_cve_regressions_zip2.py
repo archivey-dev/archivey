@@ -26,7 +26,7 @@ from archivey.exceptions import (
     FilterRejectionError,
     TruncatedError,
 )
-from archivey.types import ExtractionStatus, OnError, OverwritePolicy
+from archivey.types import ExtractionStatus, OverwritePolicy
 from tests.conftest import requires
 from tests.extract_util import open_and_extract
 from tests.memory_util import traced_peak
@@ -361,7 +361,7 @@ def test_ghsa_q7v9_x93c_xqv3_symlink_declaring_a_huge_target(
     def extract() -> None:
         dest = tmp_path / f"d{len(list(tmp_path.iterdir()))}"
         with _open(data, mode) as reader:
-            report = reader.extract_all(dest, on_error=OnError.CONTINUE)
+            report = reader.extract_all(dest, on_problem="continue")
         ((outcome,),) = [list(report)]
         assert outcome.status is ExtractionStatus.FAILED
         assert isinstance(outcome.error, ArchiveyError)
@@ -393,7 +393,7 @@ def test_ghsa_hjqx_j4rw_g7xv_absolute_link_into_the_destination(
         dest,
         streaming=streaming,
         policy=policy,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
         overwrite=OverwritePolicy.REPLACE,
     )
     outcomes = {r.member.name: r for r in report}

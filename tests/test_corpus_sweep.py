@@ -20,7 +20,7 @@ import pytest
 
 from archivey import ArchiveyError, EncryptionError, MemberType, open_archive
 from archivey.internal.hashing import crc32_digest
-from archivey.types import ExtractionStatus, HashAlgorithm, OnError
+from archivey.types import ExtractionStatus, HashAlgorithm
 from tests.sample_archives import (
     CORPUS,
     CorpusEntry,
@@ -206,8 +206,7 @@ def _check_extraction(tmp_path: Path, source, entry: CorpusEntry, key: str) -> N
     with open_archive(source, password=list(entry.passwords) or None) as ar:
         results = ar.extract_all(
             dest,
-            on_error=OnError.CONTINUE,
-            on_blocked="skip",
+            on_problem="continue",
         ).results
 
     by_member_name: dict[str, list] = {}

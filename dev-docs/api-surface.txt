@@ -109,7 +109,7 @@ property archivey.ArchiveReader.backends_used: tuple[BackendUse, ...]
 method archivey.ArchiveReader.close(self) -> None
 property archivey.ArchiveReader.cost: CostReceipt
 property archivey.ArchiveReader.diagnostics: DiagnosticSummary
-method archivey.ArchiveReader.extract_all(self, dest: str | Path, *, members: MemberSelector = None, filter: MemberFilter | None = None, policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT, overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR, on_error: OnError | OnErrorStr = OnError.STOP, on_blocked: OnBlocked | OnBlockedStr = OnBlocked.RAISE, abort_on: Collection[AbortOn | AbortOnStr] = (), on_progress: Callable[[ExtractionProgress], None] | None = None, limits: ExtractionLimits | None = None, dry_run: bool = False) -> ExtractionReport
+method archivey.ArchiveReader.extract_all(self, dest: str | Path, *, members: MemberSelector = None, filter: MemberFilter | None = None, policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT, overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR, on_problem: OnProblem | OnProblemStr | None = None, on_progress: Callable[[ExtractionProgress], None] | None = None, limits: ExtractionLimits | None = None, dry_run: bool = False, on_error: OnError | OnErrorStr | None = None, on_blocked: OnBlocked | OnBlockedStr | None = None, abort_on: Collection[AbortOn | AbortOnStr] | None = None) -> ExtractionReport
 property archivey.ArchiveReader.format: ArchiveFormat
 property archivey.ArchiveReader.format_info: FormatInfo | None
 method archivey.ArchiveReader.get(self, name: str, default: ArchiveMember | None = None) -> ArchiveMember | None
@@ -170,6 +170,7 @@ field archivey.ArchiveyConfig.use_rapidgzip: AcceleratorMode = AcceleratorMode.A
 field archivey.ArchiveyConfig.zip_unflagged_fallback_encoding: str = 'cp437'
 class archivey.ArchiveyError(Exception)
 init archivey.ArchiveyError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.ArchiveyError.report: ExtractionReport | None
 class archivey.ArchiveyUsageError(Exception)
 init archivey.ArchiveyUsageError(message: str, *, refused_member_type: MemberType | None = None) -> None
 class archivey.ContainerFormat(StrEnum)
@@ -196,6 +197,7 @@ value archivey.ContainerFormat.RAW_STREAM = 'raw_stream'
 value archivey.ContainerFormat.UNKNOWN = 'unknown'
 class archivey.CorruptionError(ReadError)
 init archivey.CorruptionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.CorruptionError.report: ExtractionReport | None
 class archivey.Diagnostic()
 init archivey.Diagnostic(occurrence_id: str, code: DiagnosticCode, message: str, context: DiagnosticContext) -> None
 field archivey.Diagnostic.code: DiagnosticCode
@@ -262,6 +264,7 @@ attribute archivey.DiagnosticPolicy.PEDANTIC = DiagnosticPolicy(...)
 attribute archivey.DiagnosticPolicy.STRICT = DiagnosticPolicy(...)
 class archivey.EncryptionError(ReadError)
 init archivey.EncryptionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.EncryptionError.report: ExtractionReport | None
 class archivey.ExtractionPolicy(Enum)
 enum archivey.ExtractionPolicy
 value archivey.ExtractionPolicy.STRICT = 'strict'
@@ -275,6 +278,7 @@ property archivey.ExtractionReport.ok: bool
 method archivey.ExtractionReport.raise_for_failure(self) -> None
 class archivey.FormatDetectionError(OpenError)
 init archivey.FormatDetectionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.FormatDetectionError.report: ExtractionReport | None
 class archivey.FormatPolicy()
 init archivey.FormatPolicy(*, only: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream] | None = None, exclude: Iterable[ContainerFormat | PluginContainer | StreamFormat | PluginStream | CompressionAlgorithm] = (), plugins: bool = True, replace: Mapping[ContainerFormat, type[IndexedFormatHandler]] | None = None, exclude_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] = (), only_libraries: Iterable[OptionalLibrary | OptionalLibraryStr] | None = None) -> None
 field archivey.FormatPolicy.exclude: frozenset[ContainerFormat | PluginContainer | StreamFormat | PluginStream | CompressionAlgorithm]
@@ -291,7 +295,7 @@ property archivey.ForwardArchiveReader.backends_used: tuple[BackendUse, ...]
 method archivey.ForwardArchiveReader.close(self) -> None
 property archivey.ForwardArchiveReader.cost: CostReceipt
 property archivey.ForwardArchiveReader.diagnostics: DiagnosticSummary
-method archivey.ForwardArchiveReader.extract_all(self, dest: str | Path, *, members: MemberSelector = None, filter: MemberFilter | None = None, policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT, overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR, on_error: OnError | OnErrorStr = OnError.STOP, on_blocked: OnBlocked | OnBlockedStr = OnBlocked.RAISE, abort_on: Collection[AbortOn | AbortOnStr] = (), on_progress: Callable[[ExtractionProgress], None] | None = None, limits: ExtractionLimits | None = None, dry_run: bool = False) -> ExtractionReport
+method archivey.ForwardArchiveReader.extract_all(self, dest: str | Path, *, members: MemberSelector = None, filter: MemberFilter | None = None, policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT, overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR, on_problem: OnProblem | OnProblemStr | None = None, on_progress: Callable[[ExtractionProgress], None] | None = None, limits: ExtractionLimits | None = None, dry_run: bool = False, on_error: OnError | OnErrorStr | None = None, on_blocked: OnBlocked | OnBlockedStr | None = None, abort_on: Collection[AbortOn | AbortOnStr] | None = None) -> ExtractionReport
 property archivey.ForwardArchiveReader.format: ArchiveFormat
 property archivey.ForwardArchiveReader.format_info: FormatInfo | None
 property archivey.ForwardArchiveReader.info: ArchiveInfo
@@ -307,11 +311,19 @@ value archivey.MemberType.SYMLINK = 'symlink'
 value archivey.MemberType.HARDLINK = 'hardlink'
 value archivey.MemberType.OTHER = 'other'
 value archivey.MemberType.ANTI = 'anti'
+class archivey.OnProblem(StrEnum)
+enum archivey.OnProblem
+value archivey.OnProblem.STOP = 'stop'
+value archivey.OnProblem.FINISH = 'finish'
+value archivey.OnProblem.CONTINUE = 'continue'
+value archivey.OnProblem.KEEP_PARTIAL = 'keep_partial'
 class archivey.PackageNotInstalledError(ArchiveyError)
 init archivey.PackageNotInstalledError(message: str, *, missing: tuple[MissingComponent, ...] = (), source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 field archivey.PackageNotInstalledError.missing: tuple[MissingComponent, ...]
+field archivey.PackageNotInstalledError.report: ExtractionReport | None
 class archivey.ResourceLimitError(ArchiveyError)
 init archivey.ResourceLimitError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.ResourceLimitError.report: ExtractionReport | None
 class archivey.StreamFormat(StrEnum)
 enum archivey.StreamFormat
 value archivey.StreamFormat.UNCOMPRESSED = 'uncompressed'
@@ -334,8 +346,10 @@ value archivey.StreamFormat.UU = 'uu'
 value archivey.StreamFormat.BASE64 = 'b64'
 class archivey.TruncatedError(CorruptionError)
 init archivey.TruncatedError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.TruncatedError.report: ExtractionReport | None
 class archivey.UnsupportedFeatureError(ArchiveyError)
 init archivey.UnsupportedFeatureError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.UnsupportedFeatureError.report: ExtractionReport | None
 function archivey.detect_format(source: SourceItem, *, config: ArchiveyConfig | None = None, follow_stub_volumes: bool = True) -> FormatInfo
 function archivey.format_availability(fmt: ArchiveFormat | str, *, check_programs: bool = True, config: ArchiveyConfig | None = None) -> FormatAvailability
 function archivey.open_archive(source: OpenSourceInput, *, format: ArchiveFormat | str | None = None, streaming: bool = False, pipe: bool = False, seekable_members: bool = False, concurrent_operations: bool = False, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None, parent: ForwardArchiveReader | None = None, salvage: bool = False) -> ForwardArchiveReader
@@ -512,6 +526,7 @@ enum archivey.types.OnError
 value archivey.types.OnError.STOP = 'stop'
 value archivey.types.OnError.CONTINUE = 'continue'
 value archivey.types.OnError.KEEP_PARTIAL = 'keep_partial'
+reexport archivey.types.OnProblem = archivey.OnProblem
 class archivey.types.OptionalLibrary(StrEnum)
 enum archivey.types.OptionalLibrary
 value archivey.types.OptionalLibrary.PYPPMD = 'pyppmd'
@@ -668,15 +683,19 @@ reexport archivey.exceptions.ArchiveyUsageError = archivey.ArchiveyUsageError
 reexport archivey.exceptions.CorruptionError = archivey.CorruptionError
 class archivey.exceptions.DiagnosticRaisedError(ArchiveyError)
 init archivey.exceptions.DiagnosticRaisedError(message: str, *, diagnostic: Diagnostic, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None) -> None
+field archivey.exceptions.DiagnosticRaisedError.report: ExtractionReport | None
 reexport archivey.exceptions.EncryptionError = archivey.EncryptionError
 class archivey.exceptions.ExtractionError(ArchiveyError)
 init archivey.exceptions.ExtractionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.exceptions.ExtractionError.report: ExtractionReport | None
 class archivey.exceptions.FilterRejectionError(ExtractionError)
 init archivey.exceptions.FilterRejectionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False, report: ExtractionReport | None = None) -> None
+field archivey.exceptions.FilterRejectionError.report: ExtractionReport | None
 reexport archivey.exceptions.FormatDetectionError = archivey.FormatDetectionError
 class archivey.exceptions.LinkTargetNotFoundError(ReadError)
 init archivey.exceptions.LinkTargetNotFoundError(message: str, *, reason: LinkTargetNotFoundReason, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 field archivey.exceptions.LinkTargetNotFoundError.reason: LinkTargetNotFoundReason
+field archivey.exceptions.LinkTargetNotFoundError.report: ExtractionReport | None
 class archivey.exceptions.LinkTargetNotFoundReason(StrEnum)
 enum archivey.exceptions.LinkTargetNotFoundReason
 value archivey.exceptions.LinkTargetNotFoundReason.NOT_RECORDED = 'not_recorded'
@@ -684,20 +703,27 @@ value archivey.exceptions.LinkTargetNotFoundReason.UNREADABLE = 'unreadable'
 value archivey.exceptions.LinkTargetNotFoundReason.UNRESOLVED = 'unresolved'
 class archivey.exceptions.NameCollisionError(ExtractionError)
 init archivey.exceptions.NameCollisionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.exceptions.NameCollisionError.report: ExtractionReport | None
 class archivey.exceptions.NameRewrittenError(ExtractionError)
 init archivey.exceptions.NameRewrittenError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.exceptions.NameRewrittenError.report: ExtractionReport | None
 class archivey.exceptions.OpenError(ArchiveyError)
 init archivey.exceptions.OpenError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.exceptions.OpenError.report: ExtractionReport | None
 reexport archivey.exceptions.PackageNotInstalledError = archivey.PackageNotInstalledError
 class archivey.exceptions.ReadError(ArchiveyError)
 init archivey.exceptions.ReadError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.exceptions.ReadError.report: ExtractionReport | None
 reexport archivey.exceptions.ResourceLimitError = archivey.ResourceLimitError
 class archivey.exceptions.ResourceUnavailableError(ResourceLimitError)
 init archivey.exceptions.ResourceUnavailableError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.exceptions.ResourceUnavailableError.report: ExtractionReport | None
 class archivey.exceptions.SourceChangedError(ReadError)
 init archivey.exceptions.SourceChangedError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.exceptions.SourceChangedError.report: ExtractionReport | None
 class archivey.exceptions.StreamNotSeekableError(OpenError)
 init archivey.exceptions.StreamNotSeekableError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
+field archivey.exceptions.StreamNotSeekableError.report: ExtractionReport | None
 reexport archivey.exceptions.TruncatedError = archivey.TruncatedError
 reexport archivey.exceptions.UnsupportedFeatureError = archivey.UnsupportedFeatureError
 module archivey.format_policy

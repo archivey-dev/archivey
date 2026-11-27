@@ -176,7 +176,7 @@ def test_standard_escapes_the_surrogate(archive: Path, tmp_path: Path) -> None:
 def test_strict_blocks_a_lone_surrogate(archive: Path, tmp_path: Path) -> None:
     """``STRICT`` refuses a name with a lone surrogate and writes the rest."""
     dest = tmp_path / "out"
-    results = open_and_extract(archive, dest, on_error="continue")
+    results = open_and_extract(archive, dest, on_problem="continue")
     by_name = {r.member.name: r.status for r in results}
     assert by_name.pop("ok.txt") is ExtractionStatus.EXTRACTED
     assert set(by_name.values()) == {ExtractionStatus.BLOCKED}
@@ -279,7 +279,7 @@ def test_a_utf8_only_filesystem_refusal_is_a_typed_failure(
     """On APFS ``TRUSTED``'s bytes are refused: a typed failure, not a crash."""
     dest = tmp_path / "out"
     results = open_and_extract(
-        archive, dest, policy=ExtractionPolicy.TRUSTED, on_error="continue"
+        archive, dest, policy=ExtractionPolicy.TRUSTED, on_problem="continue"
     )
     by_name = {r.member.name: r for r in results}
     assert by_name["ok.txt"].status is ExtractionStatus.EXTRACTED
@@ -355,7 +355,7 @@ def test_a_rejection_names_the_stored_member(tmp_path: Path) -> None:
     archive = tmp_path / "escape.7z"
     archive.write_bytes(_surrogate_7z([("\ud800/../x", b"x"), ("ok.txt", b"ok")]))
     dest = tmp_path / "out"
-    results = open_and_extract(archive, dest, on_error="continue")
+    results = open_and_extract(archive, dest, on_problem="continue")
     blocked, ok = results
     assert ok.status is ExtractionStatus.EXTRACTED
     assert blocked.status is ExtractionStatus.BLOCKED
@@ -385,8 +385,7 @@ def test_an_error_while_writing_names_the_member_as_listed(tmp_path: Path) -> No
             tmp_path / "out",
             policy=ExtractionPolicy.TRUSTED,
             filter=rename,
-            on_error="continue",
-            on_blocked="skip",
+            on_problem="continue",
         )
     assert isinstance(result.error, LinkTargetNotFoundError)
     assert result.error.member_name == "h\ud800"
@@ -440,8 +439,7 @@ def test_a_deferred_hardlink_error_names_the_member_as_listed(
             dest,
             policy=ExtractionPolicy.TRUSTED,
             filter=rename,
-            on_error="continue",
-            on_blocked="skip",
+            on_problem="continue",
         )
     (failed,) = [r for r in results if r.member.name == failing]
     assert failed.error is not None
@@ -486,8 +484,7 @@ def test_a_removed_symlink_names_its_target_as_listed(
             tmp_path / "out",
             policy=policy,
             filter=add_surrogate,
-            on_error="continue",
-            on_blocked="skip",
+            on_problem="continue",
         )
     (removed,) = [r for r in results if r.member.name == "l"]
     assert removed.status is ExtractionStatus.BLOCKED

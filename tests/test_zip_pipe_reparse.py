@@ -134,7 +134,7 @@ def test_a_folder_the_pass_meets_as_a_junction_is_never_made(tmp_path: Path) -> 
         out = tmp_path / ("pipe" if piped else "file")
         source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
         with archivey.open_archive(source, pipe=piped) as reader:
-            report = reader.extract_all(out, on_blocked="skip")
+            report = reader.extract_all(out, on_problem="continue")
         assert [r.status for r in report.results] == [ExtractionStatus.BLOCKED]
         trees.append(sorted(p.relative_to(out) for p in out.rglob("*")))
     assert trees == [[], []]
@@ -206,7 +206,7 @@ def test_parent_folders_of_a_link_refused_at_placement_are_never_made(
         out = tmp_path / ("pipe" if piped else "file")
         source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
         with archivey.open_archive(source, pipe=piped) as reader:
-            report = reader.extract_all(out, on_blocked="skip")
+            report = reader.extract_all(out, on_problem="continue")
         assert [r.status for r in report.results] == [ExtractionStatus.BLOCKED]
         trees.append(sorted(p.relative_to(out) for p in out.rglob("*")))
     assert trees == [[], []]
@@ -217,7 +217,7 @@ def _extracted(
 ) -> tuple[list[ExtractionStatus], list[tuple[Path, bool]]]:
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
     with archivey.open_archive(source, pipe=piped, config=config) as reader:
-        report = reader.extract_all(out, on_blocked="skip")
+        report = reader.extract_all(out, on_problem="continue")
     tree = sorted((p.relative_to(out), p.is_symlink()) for p in out.rglob("*"))
     return [r.status for r in report.results], tree
 
@@ -336,7 +336,7 @@ def test_a_reparse_buffer_that_is_all_the_data_has_its_crc_checked(
         source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
         with archivey.open_archive(source, pipe=streaming) as reader:
             report = reader.extract_all(
-                tmp_path / str(streaming), on_error="continue", on_blocked="skip"
+                tmp_path / str(streaming), on_problem="continue"
             )
         results.append([r.status for r in report.results])
     assert results == [[ExtractionStatus.FAILED]] * 2

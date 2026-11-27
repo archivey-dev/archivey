@@ -46,6 +46,8 @@ from archivey.types import (
     OnBlockedStr,
     OnError,
     OnErrorStr,
+    OnProblem,
+    OnProblemStr,
     OverwritePolicy,
     OverwritePolicyStr,
     Verification,
@@ -780,12 +782,13 @@ class ForwardArchiveReader(ABC):
         filter: MemberFilter | None = None,
         policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT,
         overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR,
-        on_error: OnError | OnErrorStr = OnError.STOP,
-        on_blocked: OnBlocked | OnBlockedStr = OnBlocked.RAISE,
-        abort_on: Collection[AbortOn | AbortOnStr] = (),
+        on_problem: OnProblem | OnProblemStr | None = None,
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         limits: ExtractionLimits | None = None,
         dry_run: bool = False,
+        on_error: OnError | OnErrorStr | None = None,
+        on_blocked: OnBlocked | OnBlockedStr | None = None,
+        abort_on: Collection[AbortOn | AbortOnStr] | None = None,
     ) -> ExtractionReport:
         """Extract members to ``dest`` (safe-by-default; see ``safe-extraction``).
 
@@ -799,9 +802,16 @@ class ForwardArchiveReader(ABC):
         :class:`~archivey.ExtractionReport` whose diagnostic summary is the delta for
         this extraction call.
 
-        ``abort_on`` names events that end the whole call the first time they occur —
-        raising instead of returning a report. It is independent of ``on_error``: see
-        :class:`~archivey.types.AbortOn`.
+        ``on_problem`` says what a member that fails or that a safety check refuses
+        does to the call: ``"stop"`` raises at the first one, ``"finish"`` (the
+        default) tries every member and then raises the first problem's error with the
+        report as its ``report`` attribute, ``"continue"`` returns the report, and
+        ``"keep_partial"`` returns it and keeps what a damaged file held. See
+        :class:`~archivey.OnProblem`. A refused member is never written.
+
+        ``on_error``, ``on_blocked`` and ``abort_on`` are the deprecated spellings
+        (0.6.0) and keep their old behaviour, with a ``DeprecationWarning``; archivey
+        0.7.0 removes them. They cannot be combined with ``on_problem``.
 
         ``dry_run=True`` runs the same extraction into a private scratch directory and
         removes it afterwards. Every check runs and every member body is read and
@@ -812,45 +822,38 @@ class ForwardArchiveReader(ABC):
         as the report of a real extraction into the same ``dest`` would, with paths
         under ``dest``.
 
-        A member refused by a safety check is never written, and the rest still
-        extract. Under ``on_blocked="raise"`` (the default) the call then raises
-        :class:`~archivey.exceptions.FilterRejectionError`, whose ``report`` attribute is the full
-        report; under ``on_blocked="skip"`` it returns the report, with the member as
-        ``BLOCKED``. ``abort_on=["blocked_member"]`` raises at the first refusal
-        instead, before the rest are extracted (see :class:`~archivey.types.OnBlocked`).
-
         Raises:
-            FilterRejectionError: Under ``on_blocked="raise"`` (the default), a
-                safety check refused at least one member: raised once every member has
-                been processed, with the full report as its ``report`` attribute. Under
-                ``abort_on=["blocked_member"]``, raised at the first refusal, with
-                ``report`` set to ``None``.
-            ExtractionError: Under ``on_error="stop"`` (the default), a member could not
-                be written, such as a file already at its destination under
-                ``overwrite="error"``. Its subclasses
-                :class:`~archivey.exceptions.NameCollisionError` and
-                :class:`~archivey.exceptions.NameRewrittenError` are raised for the events
-                ``abort_on`` names, whatever ``on_error`` says.
-            ReadError: Under ``on_error="stop"``, a member's data could not be read: a
-                :class:`~archivey.CorruptionError` for damage, an
-                :class:`~archivey.EncryptionError` for a missing or wrong password, a
-                :class:`~archivey.exceptions.LinkTargetNotFoundError`.
+            FilterRejectionError: A safety check refused a member. Under
+                ``"finish"``, raised once every member has been processed, when the
+                first problem is a refusal, with the full report as its ``report``
+                attribute; under ``"stop"``, raised at the refusal, with ``report``
+                set to ``None``.
+            ExtractionError: A member could not be written, such as a file already
+                at its destination under ``overwrite="error"``: at once under
+                ``"stop"``, and at the end under ``"finish"`` when it is the first
+                problem.
+            ReadError: A member's data could not be read, at once under ``"stop"`` and
+                at the end under ``"finish"``: a :class:`~archivey.CorruptionError` for
+                damage, an :class:`~archivey.EncryptionError` for a missing or wrong
+                password, a :class:`~archivey.exceptions.LinkTargetNotFoundError`.
             ResourceLimitError: The extraction exceeds
                 :class:`~archivey.config.ExtractionLimits`: a total stops the extraction
-                whatever ``on_error`` says, and a single member over ``max_ratio`` fails
-                on its own, under ``on_error``. A member that asks a decoder for more
-                memory than :class:`~archivey.config.DecoderLimits` allows fails on its own
-                too.
+                whatever ``on_problem`` says, and a single member over ``max_ratio``
+                fails on its own, under ``on_problem``. A member that asks a decoder for
+                more memory than :class:`~archivey.config.DecoderLimits` allows fails on
+                its own too.
             DiagnosticRaisedError: A diagnostic that the
                 :class:`~archivey.DiagnosticPolicy` in the config raises on, whatever
-                ``on_error`` says.
+                ``on_problem`` says.
             ArchiveyUsageError: One argument has a type or value the call cannot use
                 (then also a ``TypeError`` or ``ValueError``); the reader is closed,
                 also when ``close()`` comes while the call runs (from another thread, or
                 from ``on_progress`` or ``filter`` to cancel it); another pass or call
                 is running; or a member stream from :meth:`~ArchiveReader.open` is still
                 open, which raises before ``dest`` is created.
-            OSError: ``dest`` cannot be created or written to.
+            OSError: ``dest`` cannot be created or written to. A member's own write
+                error is raised as the other member errors are, and under
+                ``"finish"`` it carries the report as its ``report`` attribute too.
         """
         ...
 

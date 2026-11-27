@@ -50,7 +50,6 @@ from archivey.types import (
     ArchiveMember,
     ExtractionStatus,
     MemberType,
-    OnError,
     OverwritePolicy,
 )
 from tests.conftest import requires_binary
@@ -431,7 +430,7 @@ def test_a_targetless_link_is_skipped_and_the_rest_extracts(
     extraction reads it once the link is accepted, so it is written in both modes.
     """
     with open_archive(_JUNCTION_DIR / fixture, streaming=streaming) as opened:
-        report = opened.extract_all(tmp_path, on_error=OnError.STOP, on_blocked="skip")
+        report = opened.extract_all(tmp_path, on_problem="continue")
     by_name = {r.member.name: r for r in report.results}
     for name in ("tree/junction_dir", "tree/symlink_dir"):
         assert by_name[name].status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
@@ -462,13 +461,15 @@ def test_an_omission_only_the_data_shows_is_reported_in_both_modes(
         + struct.pack("<HHHHI", 0, 0, 0, 0, 0),
     )
     with open_archive(archive) as opened:
-        (result,) = opened.extract_all(tmp_path / "seekable", on_blocked="skip").results
+        (result,) = opened.extract_all(
+            tmp_path / "seekable", on_problem="continue"
+        ).results
     assert result.status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
     assert result.error is None
 
     with open_archive(archive, streaming=True) as opened:
         (result,) = opened.extract_all(
-            tmp_path / "streaming", on_blocked="skip"
+            tmp_path / "streaming", on_problem="continue"
         ).results
     assert result.status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
     assert result.error is None
@@ -542,9 +543,7 @@ def test_extraction_writes_a_reparse_member_that_is_not_a_link_as_a_file(
     dest = tmp_path / "out"
     config = ArchiveyConfig(read_link_targets=read_link_targets)
     with open_archive(archive, streaming=streaming, config=config) as opened:
-        (result,) = opened.extract_all(
-            dest, on_error=OnError.CONTINUE, on_blocked="skip"
-        ).results
+        (result,) = opened.extract_all(dest, on_problem="continue").results
     assert result.member.type is MemberType.FILE
     if streaming and not read_link_targets:
         assert result.status is ExtractionStatus.FAILED
@@ -574,7 +573,7 @@ def test_a_filter_sees_a_reparse_member_again_once_it_is_known_to_be_a_file(
 
     config = ArchiveyConfig(read_link_targets=False)
     with open_archive(archive, config=config) as opened:
-        opened.extract_all(tmp_path / "out", filter=recording, on_blocked="skip")
+        opened.extract_all(tmp_path / "out", filter=recording, on_problem="continue")
     assert seen == [MemberType.SYMLINK, MemberType.FILE]
 
 
@@ -785,7 +784,7 @@ def test_a_7z_pass_extracts_a_non_link_reparse_member_as_a_file(
     )
     dest = tmp_path / "out"
     with open_archive(archive, streaming=streaming) as opened:
-        (result,) = opened.extract_all(dest, on_blocked="skip").results
+        (result,) = opened.extract_all(dest, on_problem="continue").results
     assert result.member.type is MemberType.FILE
     assert result.status is ExtractionStatus.EXTRACTED
     assert (dest / "weird").read_bytes() == _LONG_CONTENT
@@ -863,9 +862,7 @@ def test_a_unc_symlink_is_blocked_at_extraction(tmp_path: Path) -> None:
     )
     dest = tmp_path / "out"
     with open_archive(archive) as opened:
-        (result,) = opened.extract_all(
-            dest, on_error=OnError.CONTINUE, on_blocked="skip"
-        ).results
+        (result,) = opened.extract_all(dest, on_problem="continue").results
     assert result.member.link_target == "//server/share/dir"
     assert result.status is ExtractionStatus.BLOCKED
     assert isinstance(result.error, FilterRejectionError)
@@ -1148,7 +1145,7 @@ def test_a_directory_shaped_link_buffer_with_data_past_it_stays_a_targetless_lin
         assert member.type is MemberType.SYMLINK
         assert member.link_target is None
         assert _unavailable_reasons(opened) == ["reparse_data_unrecognized"]
-        report = opened.extract_all(tmp_path / "out", on_blocked="skip")
+        report = opened.extract_all(tmp_path / "out", on_problem="continue")
     (result,) = report.results
     assert result.status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
     assert not (tmp_path / "out" / "linkdir").exists()
@@ -1238,9 +1235,7 @@ def test_a_missing_target_is_reported_once_per_member(
         assert archive.diagnostics.counts.get(code) == 2
 
     with open_archive(_JUNCTION_DIR / fixture, streaming=streaming) as archive:
-        report = archive.extract_all(
-            tmp_path, on_error=OnError.CONTINUE, on_blocked="skip"
-        )
+        report = archive.extract_all(tmp_path, on_problem="continue")
         assert archive.diagnostics.counts.get(code) == 2
         # The archive's own omissions, which is narrower than "no target came back":
         # in streaming `tree/symlink_file` also arrives without one, because its target
@@ -1299,7 +1294,7 @@ def test_a_missing_target_is_counted_once_even_when_it_attaches_to_nothing(
     with open_archive(
         _JUNCTION_DIR / "junction_7zip_snl.zip", streaming=streaming, config=config
     ) as archive:
-        archive.extract_all(tmp_path, on_error=OnError.CONTINUE, on_blocked="skip")
+        archive.extract_all(tmp_path, on_problem="continue")
         assert archive.diagnostics.counts.get(code) == 2
 
 
@@ -1380,7 +1375,7 @@ def test_an_encrypted_link_says_why_its_target_is_missing(
         assert _unavailable_reasons(opened) == ["password_required"]
 
     dest = tmp_path / "out"
-    results = open_and_extract(archive, dest, on_error=OnError.CONTINUE)
+    results = open_and_extract(archive, dest, on_problem="continue")
     by_name = {r.member.name: r for r in results}
     assert by_name["tree/link.txt"].status is ExtractionStatus.FAILED
     assert isinstance(by_name["tree/link.txt"].error, LinkTargetNotFoundError)
@@ -1485,8 +1480,7 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
             report = opened.extract_all(
                 dest / "continue",
                 members=only_links,
-                on_error=OnError.CONTINUE,
-                on_blocked="skip",
+                on_problem="continue",
             )
         link_results = report.results
         assert link_results, "the symlinks should reach a write decision"
@@ -1500,7 +1494,7 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
                 open_archive(fixture) as opened,
                 pytest.raises(LinkTargetNotFoundError),
             ):
-                opened.extract_all(dest / "stop", members=only_links, on_blocked="skip")
+                opened.extract_all(dest / "stop", members=only_links, on_problem="stop")
         else:
             assert all(
                 r.status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
@@ -1509,7 +1503,7 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
             assert all(r.error is None for r in link_results)
             # Not a failure, so the library default carries on through it.
             with open_archive(fixture) as opened:
-                opened.extract_all(dest / "stop", members=only_links, on_blocked="skip")
+                opened.extract_all(dest / "stop", members=only_links, on_problem="stop")
 
 
 def test_a_rar_symlink_target_split_across_real_volumes_is_joined(
@@ -1569,7 +1563,7 @@ def test_a_streaming_symlink_is_written(tmp_path: Path) -> None:
 
     dest = tmp_path / "out"
     with open_archive(archive, streaming=True) as opened:
-        report = opened.extract_all(dest, on_blocked="skip")
+        report = opened.extract_all(dest, on_problem="continue")
     by_name = {r.member.name: r for r in report.results}
     assert by_name["link"].status is ExtractionStatus.EXTRACTED
     assert os.readlink(dest / "link") == "target.txt"

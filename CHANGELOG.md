@@ -47,13 +47,19 @@ line. How to write the entry: see
   call, which is how to cancel an `extract_all()`. Closing a member stream from such a
   callback raises `ArchiveyUsageError`, and `info` read there gives its last value
   without reading the archive.
+- **Breaking:** `extract_all()` takes one setting for problems, `on_problem=`
+  (`archivey.OnProblem`): `"stop"`, `"finish"`, `"continue"` or `"keep_partial"`. The
+  default, `"finish"`, tries every member and then raises the first problem's error with
+  the full report as its `report` attribute. A damaged member no longer stops the run at
+  once: pass `on_problem="stop"` for that, which also stops at the first refused member.
+  `archivey extract --stop-on-error` now stops at a refused member too.
 - A streaming pass over a format with an index (a ZIP, 7z, RAR, ISO, CAB and others)
   reads the whole index before its first member, so `members_report_if_available()`
   gives the same answer inside the loop as before it.
 
 ### Deprecated
 
-- The package root keeps 30 names: `open_archive`, `open_stream`, `detect_format`,
+- The package root keeps 31 names: `open_archive`, `open_stream`, `detect_format`,
   `format_availability`, the reader, member, format, policy and report types, and the
   errors callers catch most. The other 67 come from the submodule that defines them,
   such as `archivey.config.DecoderLimits`, `archivey.types.OverwritePolicy` and
@@ -62,6 +68,12 @@ line. How to write the entry: see
   `DeprecationWarning` that names the new import, and 0.7.0 removes it.
   `sanitize_names` moved to `archivey.paths`. The experimental `PluginContainer` and
   `PluginStream` left the root at once and come from `archivey.types`.
+- `extract_all(on_error=, on_blocked=, abort_on=)` and their enums `OnError`,
+  `OnBlocked` and `AbortOn` keep working in 0.6 with a `DeprecationWarning`; use
+  `on_problem=`. The name events have no `on_problem` value: `"stop"` already stops at a
+  second member at one path under the default `overwrite="error"`, and
+  `ExtractionResult.rewrites` lists every rewritten name. `archivey extract --abort-on`
+  is deprecated the same way. 0.7.0 removes them.
 
 ## [0.5.1] - 2026-11-20
 

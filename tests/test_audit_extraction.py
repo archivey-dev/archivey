@@ -62,7 +62,7 @@ def test_symlink_made_escaping_by_a_later_member_is_not_left_on_disk(
     dest = tmp_path / "out"
 
     with archivey.open_archive(archive, streaming=streaming) as reader:
-        reader.extract_all(dest, on_error="continue", on_blocked="skip")
+        reader.extract_all(dest, on_problem="continue")
 
     # docs/extracting.md: "Escaping links are removed and rejected." After the run no
     # link under dest may resolve outside it.
@@ -85,9 +85,7 @@ def test_hardlink_to_directory_member_reports_an_accurate_error(
     _build_tar(archive, [("d", "dir", None), ("h", "hard", "d")])
 
     with archivey.open_archive(archive, streaming=streaming) as reader:
-        report = reader.extract_all(
-            tmp_path / "out", on_error="continue", on_blocked="skip"
-        )
+        report = reader.extract_all(tmp_path / "out", on_problem="continue")
 
     by_name = {r.member.name.rstrip("/"): r for r in report.results}
     assert by_name["d"].status is ExtractionStatus.EXTRACTED
@@ -155,7 +153,7 @@ def test_empty_symlink_target_is_reported_as_no_target(
     # SYMLINK_TARGET_UNAVAILABLE diagnostic, and extracted as LINK_TARGET_UNAVAILABLE.
     archive = _empty_target_archive(kind, tmp_path)
     with archivey.open_archive(archive, streaming=streaming) as reader:
-        report = reader.extract_all(tmp_path / "out", on_blocked="skip")
+        report = reader.extract_all(tmp_path / "out", on_problem="continue")
         link = next(r for r in report.results if r.member.name == "link")
         assert link.status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
         assert link.error is None
@@ -179,7 +177,7 @@ def test_member_under_an_earlier_file_member_is_not_an_untyped_os_error(
 
     # The conflict is in the archive, not the filesystem, so it must be a typed
     # per-member outcome and not abort the run as a bare OSError.
-    report = open_and_extract(archive, tmp_path / "out", on_error="continue")
+    report = open_and_extract(archive, tmp_path / "out", on_problem="continue")
     by_name = {r.member.name: r for r in report.results}
     assert by_name["d"].status is ExtractionStatus.EXTRACTED
     child = by_name["d/f"]
@@ -199,7 +197,7 @@ def test_member_under_an_earlier_file_member_names_the_file(
     )
     _build_tar(archive, [("d", "file", b"x"), child, ("e", "file", b"z")])
 
-    report = open_and_extract(archive, tmp_path / "out", on_error="continue")
+    report = open_and_extract(archive, tmp_path / "out", on_problem="continue")
 
     by_name = {r.member.name.rstrip("/"): r for r in report.results}
     failed = by_name[child[0]]
@@ -285,9 +283,7 @@ def test_link_target_bidi_control_is_reported_once(
             # Listing reads the target; extraction then looks at it again, and must
             # not report it a second time.
             reader.members()
-        report = reader.extract_all(
-            tmp_path / "out", on_error="continue", on_blocked="skip"
-        )
+        report = reader.extract_all(tmp_path / "out", on_problem="continue")
         (result,) = report.results
         link = result.member
         # Presented exactly as stored.

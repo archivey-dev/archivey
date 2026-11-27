@@ -1004,7 +1004,7 @@ def test_a_rock_ridge_device_node_without_data_is_other(tmp_path: Path) -> None:
         assert "special_file_type" not in by_name["bbb"].extra
         codes = [d.code for d in ar.diagnostics.retained]
         assert DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA not in codes
-        ar.extract_all(tmp_path / "out", on_blocked="skip")
+        ar.extract_all(tmp_path / "out", on_problem="continue")
     assert not (tmp_path / "out" / "aaa").exists()
     assert (tmp_path / "out" / "bbb").read_bytes() == b"BBBB"
 
@@ -1054,7 +1054,7 @@ def test_a_rock_ridge_device_node_with_data_is_a_file(tmp_path: Path) -> None:
         assert context["member_name"] == "aaa"
         assert context["special_file_type"] == "char_device"
         assert context["size"] == 4
-        ar.extract_all(tmp_path / "out", on_blocked="skip")
+        ar.extract_all(tmp_path / "out", on_problem="continue")
     assert (tmp_path / "out" / "aaa").read_bytes() == b"AAAA"
     assert (tmp_path / "out" / "bbb").read_bytes() == b"BBBB"
 
@@ -1084,7 +1084,7 @@ def test_plain_iso_versions_keep_the_newest_current(tmp_path: Path) -> None:
         ]
         assert ar.read("FOO") == b"NEW VERSION"
         assert ar.read("FOO.;1") == b"OLD VERSION"
-        ar.extract_all(tmp_path / "out", on_blocked="skip")
+        ar.extract_all(tmp_path / "out", on_problem="continue")
     assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["BAR.TXT", "FOO"]
     assert (tmp_path / "out" / "FOO").read_bytes() == b"NEW VERSION"
 
@@ -1156,7 +1156,7 @@ def test_joliet_names_lose_their_version_like_plain_names(tmp_path: Path) -> Non
         ]
         assert ar.read("foo") == b"NEW VERSION"
         assert ar.read("foo.;1") == b"OLD VERSION"
-        ar.extract_all(tmp_path / "out", on_blocked="skip")
+        ar.extract_all(tmp_path / "out", on_problem="continue")
     assert sorted(p.name for p in (tmp_path / "out").iterdir()) == [
         ";1",
         "foo",
@@ -1494,7 +1494,7 @@ def test_the_el_torito_boot_catalog_reads_and_extracts(tmp_path: Path) -> None:
 
     with open_archive(io.BytesIO(image.getvalue())) as ar:
         catalog = ar.read("BOOT.CAT")
-        ar.extract_all(tmp_path, on_blocked="skip")
+        ar.extract_all(tmp_path, on_problem="continue")
     # The El Torito validation entry: header id 1, key bytes 0x55 0xAA at 30-31.
     assert len(catalog) == 2048
     assert catalog[0] == 1 and catalog[30:32] == b"\x55\xaa"
@@ -1662,7 +1662,7 @@ def test_a_repeated_identifier_without_the_flag_lists_each_file(tmp_path: Path) 
         # The second record is reported: a reader that keeps the first lists another
         # file under that name.
         assert dict(ar.diagnostics.counts) == {DiagnosticCode.MEMBER_NAME_DUPLICATE: 1}
-        ar.extract_all(tmp_path, on_blocked="skip")
+        ar.extract_all(tmp_path, on_problem="continue")
     assert (tmp_path / "BIG.BIN").read_bytes() == b"b" * 1000
 
 
@@ -1747,7 +1747,7 @@ def test_a_repeated_superseded_version_stays_not_current(tmp_path: Path) -> None
             ("FOO.;1", 1000, False),
             ("FOO", 3, True),
         ]
-        ar.extract_all(tmp_path, on_blocked="skip")
+        ar.extract_all(tmp_path, on_problem="continue")
     assert [p.name for p in tmp_path.iterdir()] == ["FOO"]
     assert (tmp_path / "FOO").read_bytes() == b"NEW"
 
@@ -2315,7 +2315,7 @@ def test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded(
         assert zzz.diagnostics == ()
         assert ar.read("zzz") == _ZISOFS_PLAIN
         assert ar.read("bbb") == b"BBBB"
-        ar.extract_all(tmp_path / "out", on_blocked="skip")
+        ar.extract_all(tmp_path / "out", on_problem="continue")
     assert (tmp_path / "out" / "zzz").read_bytes() == _ZISOFS_PLAIN
 
 

@@ -123,10 +123,10 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   index at the end says which members the extraction keeps. The extraction limits count what's
   staged while it's there, so a member that's then not extracted, one your `filter` drops
   included, can still stop the extraction under `max_entries` or `max_extracted_bytes`, where the
-  same archive read from a file completes. The name checks and `abort_on` run on each member's
-  name as the pass meets it, so a hostile archive is refused before the rest of it is decoded, and
-  the extraction can stop for a member the index would have left out. A run that stops before the
-  index leaves nothing of its own in the destination.
+  same archive read from a file completes. The name checks and `on_problem="stop"` run on each
+  member's name as the pass meets it, so a hostile archive is refused before the rest of it is
+  decoded, and the extraction can stop for a member the index would have left out. A run that stops
+  before the index leaves nothing of its own in the destination.
 - **An archive you open on its own has its own limits.** A small archive can hold archives that each
   expand up to the limit, and those can hold more, so the total grows with every level you open.
   Open an archive found inside another with `parent=` set to the outer reader, and the levels count

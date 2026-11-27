@@ -60,10 +60,11 @@ What each call returns, and the errors you're most likely to meet. The
   [Read everything in one pass](index.md#read-everything-in-one-pass)
 - **`archive.extract_all(dest)`** returns an [`ExtractionReport`][archivey.ExtractionReport]
   with one result per member. A refused member, such as `../evil.txt`, isn't written, and the
-  rest still extracts. Then the call raises `FilterRejectionError`, whose `report` attribute is
-  the full report; pass `on_blocked="skip"` to get the report back instead. By default the first member that
-  fails raises and ends the extraction: `ExtractionError` for a file already at the destination,
-  `CorruptionError` for damaged data. [Extracting](extracting.md)
+  rest still extracts. A member that fails, such as one with damaged data, doesn't stop the rest
+  either. Then the call raises the first problem's error, `FilterRejectionError` for a refusal,
+  `ExtractionError` for a file already at the destination or `CorruptionError` for damaged data,
+  with the full report as its `report` attribute. Pass `on_problem="continue"` to get the report
+  back instead, or `on_problem="stop"` to raise at the first problem. [Extracting](extracting.md)
 - **`open_stream(source)`** returns a file object with the decompressed contents. On a
   `.tar.gz` you get the TAR's bytes. A ZIP, 7z, RAR, ISO or plain TAR raises
   `FormatDetectionError`. [Single compressed files](opening.md#single-compressed-files)
@@ -126,8 +127,7 @@ with archivey.open_archive("download.zip") as archive:
         "defaults/",
         policy="strict",    # portable names; no setuid bits or group and other write
         overwrite="error",  # an existing file fails the member
-        on_error="stop",    # the first failed member raises
-        on_blocked="raise", # a refused member raises once the rest are done
+        on_problem="finish",  # a failed or refused member raises once the rest are done
         limits=archivey.config.ExtractionLimits(
             max_extracted_bytes=2 * 2**30,  # 2 GiB written in total
             max_entries=262_144,            # files, folders and links created

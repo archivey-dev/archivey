@@ -217,7 +217,7 @@ def test_link_target_zero_width_character_is_reported_once(
     with archivey.open_archive(archive, streaming=streaming) as reader:
         if not streaming:
             reader.members()
-        report = reader.extract_all(tmp_path / "out", on_error="continue")
+        report = reader.extract_all(tmp_path / "out", on_problem="continue")
         (result,) = report.results
         link = result.member
         assert link.link_target == _TARGET

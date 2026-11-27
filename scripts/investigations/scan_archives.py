@@ -381,8 +381,7 @@ def _scan_open_reader(
             report = reader.extract_all(
                 Path(tmp) / "out",
                 dry_run=True,
-                on_error="continue",
-                on_blocked="skip",
+                on_problem="continue",
                 on_progress=on_progress,
             )
     except Exception as exc:  # noqa: BLE001

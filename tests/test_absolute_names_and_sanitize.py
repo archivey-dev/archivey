@@ -22,6 +22,12 @@ from archivey.internal.naming import resolve_link_target_name
 from archivey.paths import sanitize_names
 from archivey.types import AbortOn, ArchiveMember, ExtractionStatus, MemberType
 
+# abort_on= is deprecated (0.6.0); its name events, which on_problem= has no value
+# for, keep working until 0.7.0. These tests pin them until then.
+_ABORT_ON_DEPRECATED = (
+    r"ignore:extract_all\((on_error|on_blocked|abort_on)=:DeprecationWarning"
+)
+
 
 def _tar(path: Path, specs: list[tuple[str, str, object]]) -> Path:
     """(kind, name, payload): kind "file" (bytes), "hard"/"sym" (link name), "dir"."""
@@ -115,7 +121,7 @@ def test_absolute_names_extract_inside_dest(
     )
     dest = tmp_path / "out"
     with open_archive(src) as r:
-        report = r.extract_all(dest, policy=policy, on_blocked="skip")
+        report = r.extract_all(dest, policy=policy, on_problem="continue")
     assert _files(dest) == {"etc/x", "win.txt", "ok"}
     by_name = {res.member.name: res for res in report.results}
     # The result keeps the stored name; the path shows where it went.
@@ -128,7 +134,7 @@ def test_strict_refuses_absolute_names(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     with open_archive(src) as r:
         report = r.extract_all(
-            dest, policy=ExtractionPolicy.STRICT, on_error="continue", on_blocked="skip"
+            dest, policy=ExtractionPolicy.STRICT, on_problem="continue"
         )
     assert _files(dest) == {"ok"}
     blocked = [res for res in report.results if res.status is ExtractionStatus.BLOCKED]
@@ -145,9 +151,7 @@ def test_dotdot_is_still_refused_outside_strict(
     src = _tar(tmp_path / "a.tar", [("file", "../up", b"u"), ("file", "/a/../b", b"b")])
     dest = tmp_path / "out"
     with open_archive(src) as r:
-        report = r.extract_all(
-            dest, policy=policy, on_error="continue", on_blocked="skip"
-        )
+        report = r.extract_all(dest, policy=policy, on_problem="continue")
     assert _files(dest) == set()
     assert all(res.status is ExtractionStatus.BLOCKED for res in report.results)
     assert not (tmp_path / "up").exists()
@@ -163,7 +167,7 @@ def test_absolute_hardlink_links_to_the_rerooted_member(tmp_path: Path) -> None:
     with open_archive(src) as r:
         assert r.get("/d/b").link_target_member is r.get("/d/a")
         report = r.extract_all(
-            dest, policy=ExtractionPolicy.STANDARD, on_blocked="skip"
+            dest, policy=ExtractionPolicy.STANDARD, on_problem="continue"
         )
     assert all(res.status is ExtractionStatus.EXTRACTED for res in report.results)
     assert (dest / "d" / "b").read_bytes() == b"data"
@@ -188,7 +192,7 @@ def test_strict_refuses_a_hardlink_to_an_absolute_member(tmp_path: Path) -> None
     dest = tmp_path / "out"
     with open_archive(src) as r:
         report = r.extract_all(
-            dest, policy=ExtractionPolicy.STRICT, on_error="continue", on_blocked="skip"
+            dest, policy=ExtractionPolicy.STRICT, on_problem="continue"
         )
     statuses = {res.member.name: res.status for res in report.results}
     assert statuses == {
@@ -199,6 +203,7 @@ def test_strict_refuses_a_hardlink_to_an_absolute_member(tmp_path: Path) -> None
     }
 
 
+@pytest.mark.filterwarnings(_ABORT_ON_DEPRECATED)
 def test_reroot_is_a_rewrite_for_abort_on_name_sanitized(tmp_path: Path) -> None:
     src = _tar(tmp_path / "a.tar", [("file", "/etc/x", b"x")])
     with open_archive(src) as r, pytest.raises(NameRewrittenError):
@@ -221,9 +226,7 @@ def test_absolute_symlink_target_is_not_re_rooted(
     src = _tar(tmp_path / "a.tar", [("sym", "/l", "/etc/passwd")])
     dest = tmp_path / "out"
     with open_archive(src) as r:
-        report = r.extract_all(
-            dest, policy=policy, on_error="continue", on_blocked="skip"
-        )
+        report = r.extract_all(dest, policy=policy, on_problem="continue")
     if policy is ExtractionPolicy.TRUSTED:
         assert report.results[0].status is ExtractionStatus.EXTRACTED
         # Written with the platform's separators, as every link target is.
@@ -247,7 +250,7 @@ def test_filter_sees_and_can_rescue_an_unsafe_member(tmp_path: Path) -> None:
 
     with open_archive(src) as r:
         report = r.extract_all(
-            dest, policy=ExtractionPolicy.STRICT, filter=rename, on_blocked="skip"
+            dest, policy=ExtractionPolicy.STRICT, filter=rename, on_problem="continue"
         )
     assert seen == ["../up"]
     assert report.results[0].status is ExtractionStatus.EXTRACTED
@@ -268,7 +271,7 @@ def test_filter_sees_the_rerooted_name(tmp_path: Path) -> None:
             tmp_path / "out",
             policy=ExtractionPolicy.STANDARD,
             filter=record,
-            on_blocked="skip",
+            on_problem="continue",
         )
     assert seen == ["etc/x"]
 
@@ -282,8 +285,7 @@ def test_what_the_filter_returns_is_checked(tmp_path: Path, bad: str) -> None:
             dest,
             policy=ExtractionPolicy.TRUSTED,
             filter=lambda m: m.replace(name=bad),
-            on_error="continue",
-            on_blocked="skip",
+            on_problem="continue",
         )
     assert report.results[0].status is ExtractionStatus.BLOCKED
     assert _files(tmp_path) == {"a.tar"}
@@ -364,7 +366,7 @@ def test_sanitize_names_extracts_what_would_be_refused(
     dest = tmp_path / "out"
     with open_archive(src) as r:
         report = r.extract_all(
-            dest, policy=policy, filter=sanitize_names, on_blocked="skip"
+            dest, policy=policy, filter=sanitize_names, on_problem="continue"
         )
     assert all(res.status is ExtractionStatus.EXTRACTED for res in report.results)
     assert _files(dest) == {"etc/x", "up", "inner", "CON_.txt"}
@@ -398,9 +400,7 @@ def test_drive_relative_name_is_not_rerooted_onto_a_real_member(
     src = _tar(tmp_path / "a.tar", [("file", "a:b", b"one"), ("file", "b", b"two")])
     dest = tmp_path / "out"
     with open_archive(src) as r:
-        report = r.extract_all(
-            dest, policy=policy, on_error="continue", on_blocked="skip"
-        )
+        report = r.extract_all(dest, policy=policy, on_problem="continue")
     statuses = {res.member.name: res.status for res in report.results}
     assert statuses == {
         "a:b": ExtractionStatus.BLOCKED,
@@ -409,6 +409,7 @@ def test_drive_relative_name_is_not_rerooted_onto_a_real_member(
     assert (dest / "b").read_bytes() == b"two"
 
 
+@pytest.mark.filterwarnings(_ABORT_ON_DEPRECATED)
 @pytest.mark.parametrize(
     "keep", [lambda m: None, lambda m: m.replace(name="mine/x")], ids=["drop", "rename"]
 )
@@ -435,7 +436,10 @@ def test_reroot_is_recorded_in_presented_name(tmp_path: Path) -> None:
 
     with open_archive(src) as r:
         report = r.extract_all(
-            dest, policy=ExtractionPolicy.STANDARD, filter=rename_y, on_blocked="skip"
+            dest,
+            policy=ExtractionPolicy.STANDARD,
+            filter=rename_y,
+            on_problem="continue",
         )
     presented = {res.member.name: res.presented_name for res in report.results}
     # A name the filter chose is not a rewrite; the re-rooted one is.

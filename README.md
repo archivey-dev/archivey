@@ -54,9 +54,9 @@ import archivey
 
 # Extract safely: traversal, link escapes and bombs are blocked by default.
 # A refused member isn't written; once the rest are, FilterRejectionError is
-# raised with the full report. abort_on makes the first refusal raise at once.
+# raised with the full report. on_problem="stop" makes the first refusal raise at once.
 with archivey.open_archive("untrusted.zip") as reader:
-    reader.extract_all("out/", abort_on=["blocked_member"])
+    reader.extract_all("out/", on_problem="stop")
 
 # List and read members, whatever the format.
 with archivey.open_archive("photos.tar.gz") as reader:

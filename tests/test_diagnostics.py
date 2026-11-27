@@ -37,7 +37,7 @@ from archivey.exceptions import (
     FilterRejectionError,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector, EmitLog
-from archivey.types import AbortOn, ArchiveFormat, ExtractionStatus, MemberType, OnError
+from archivey.types import ArchiveFormat, ExtractionStatus, MemberType
 from tests.extract_util import open_and_extract
 from tests.scandir_util import patch_dir_entry_stat
 
@@ -696,8 +696,8 @@ def test_directory_scan_race_diagnostic(
         assert DiagnosticCode.SCAN_ENTRY_VANISHED in reader.diagnostics.counts
 
 
-@pytest.mark.parametrize("on_error", [OnError.CONTINUE, OnError.STOP])
-def test_extraction_blocked_is_result_only(tmp_path: Path, on_error: OnError) -> None:
+@pytest.mark.parametrize("on_problem", ["continue", "keep_partial"])
+def test_extraction_blocked_is_result_only(tmp_path: Path, on_problem: str) -> None:
     """A blocked member is recorded in ``results`` and nowhere else.
 
     The placement clause: extraction returns a per-item report, so the outcome has no
@@ -711,7 +711,7 @@ def test_extraction_blocked_is_result_only(tmp_path: Path, on_error: OnError) ->
     report = open_and_extract(
         io.BytesIO(buf.getvalue()),
         dest,
-        on_error=on_error,
+        on_problem=on_problem,
     )
     blocked = [r for r in report.results if r.status is ExtractionStatus.BLOCKED]
     assert blocked
@@ -725,12 +725,12 @@ def test_extraction_blocked_is_result_only(tmp_path: Path, on_error: OnError) ->
     ]
 
 
-def test_abort_on_blocked_member_stops_despite_continue(tmp_path: Path) -> None:
+def test_stop_ends_the_run_at_the_first_blocked_member(tmp_path: Path) -> None:
     """The named replacement for RAISE-on-EXTRACTION_MEMBER_BLOCKED.
 
     Same behaviour the disposition used to give by accident — abort on the first unsafe
-    member, under ``OnError.CONTINUE`` — now spelled out, and raising the underlying
-    rejection rather than a ``DiagnosticRaisedError``.
+    member — now spelled ``on_problem="stop"``, and raising the underlying rejection
+    rather than a ``DiagnosticRaisedError``.
     """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -742,8 +742,7 @@ def test_abort_on_blocked_member_stops_despite_continue(tmp_path: Path) -> None:
         open_and_extract(
             io.BytesIO(buf.getvalue()),
             dest,
-            on_error=OnError.CONTINUE,
-            abort_on={AbortOn.BLOCKED_MEMBER},
+            on_problem="stop",
         )
     # No report is returned, and the later member was never processed.
     assert not (dest / "ok.txt").exists()
@@ -756,9 +755,7 @@ def test_blocked_member_does_not_abort_without_opt_in(tmp_path: Path) -> None:
         zf.writestr("ok.txt", b"y")
     dest = tmp_path / "out"
     dest.mkdir()
-    report = open_and_extract(
-        io.BytesIO(buf.getvalue()), dest, on_error=OnError.CONTINUE
-    )
+    report = open_and_extract(io.BytesIO(buf.getvalue()), dest, on_problem="continue")
     assert [r.status for r in report.results] == [
         ExtractionStatus.BLOCKED,
         ExtractionStatus.EXTRACTED,
@@ -786,7 +783,7 @@ def test_reading_diagnostic_raise_still_halts_extraction(tmp_path: Path) -> None
         open_and_extract(
             io.BytesIO(buf.getvalue()),
             dest,
-            on_error=OnError.CONTINUE,
+            on_problem="continue",
             config=ArchiveyConfig(diagnostic_policy=policy),
         )
     diagnostic = ei.value.diagnostic

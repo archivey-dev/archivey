@@ -407,7 +407,7 @@ def _extract(
             password=_password(container),
             streaming=streaming,
         ) as reader:
-            reader.extract_all(dest, on_error="continue", policy=policy)
+            reader.extract_all(dest, on_problem="continue", policy=policy)
     except ArchiveyError as exc:
         return _tree(dest), type(exc).__name__
     return _tree(dest), None

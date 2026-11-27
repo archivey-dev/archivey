@@ -169,7 +169,7 @@ def test_extract(tmp_path: Path, name: str, pipe: bool) -> None:
     dest = tmp_path / "out"
     source = _Pipe(data) if pipe else DATA / f"{name}.cpio"
     with open_archive(source, pipe=pipe) as reader:
-        reader.extract_all(dest, on_blocked="skip")
+        reader.extract_all(dest, on_problem="continue")
     for member_name, content in CONTENT.items():
         assert (dest / member_name).read_bytes() == content
     assert os.readlink(dest / "dir" / "link") == os.path.join("..", "a.txt")

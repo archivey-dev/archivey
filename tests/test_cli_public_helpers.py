@@ -340,7 +340,7 @@ def test_extraction_fails_a_link_with_the_same_reason(tmp_path: Path) -> None:
         tmp_path / "a.zip", {"too-long": b"x" * (MAX_LINK_TARGET_BYTES + 1)}
     )
     with open_archive(archive) as reader:
-        report = reader.extract_all(tmp_path / "out", on_error="continue")
+        report = reader.extract_all(tmp_path / "out", on_problem="continue")
     link = next(r for r in report.results if r.member.name == "too-long")
     assert link.status is ExtractionStatus.FAILED
     assert isinstance(link.error, LinkTargetNotFoundError)
@@ -355,7 +355,7 @@ def test_a_hardlink_with_no_source_fails_as_unresolved(tmp_path: Path) -> None:
         info.linkname = "absent"
         tf.addfile(info)
     with open_archive(archive) as reader:
-        report = reader.extract_all(tmp_path / "out", on_error="continue")
+        report = reader.extract_all(tmp_path / "out", on_problem="continue")
     (result,) = report.results
     assert isinstance(result.error, LinkTargetNotFoundError)
     assert result.error.reason is LinkTargetNotFoundReason.UNRESOLVED

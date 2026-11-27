@@ -664,7 +664,7 @@ def test_a_link_whose_kept_data_was_dropped_leaves_no_file_behind(
     with archivey.open_archive(
         _pipe(data), pipe=True, config=_limited(20_000)
     ) as reader:
-        report = reader.extract_all(tmp_path, on_error="continue")
+        report = reader.extract_all(tmp_path, on_problem="continue")
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         f"f{i:03d}.txt" for i in range(10)
     ]

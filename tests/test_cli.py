@@ -599,12 +599,10 @@ def test_extract_strict_blocks_device_name_and_continues(
     assert (dest / "ok.txt").read_bytes() == b"y"
 
 
-def test_extract_strict_stop_on_error_continues_on_device_name(
+def test_extract_strict_stop_on_error_stops_on_device_name(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # --stop-on-error = library STOP = failures only; policy blocks continue.
-    from archivey.cli.exit_codes import EXIT_POLICY
-
+    # --stop-on-error = on_problem="stop": a refused member stops the run too.
     bad = _zip(tmp_path / "bad.zip", {"NUL": b"x", "ok.txt": b"y"})
     dest = tmp_path / "out"
     code = main(
@@ -618,12 +616,11 @@ def test_extract_strict_stop_on_error_continues_on_device_name(
             "--stop-on-error",
         ]
     )
-    assert code == EXIT_POLICY
+    assert code == EXIT_FAIL
     err = capsys.readouterr().err
     assert "NUL" in err
-    assert "blocked:" in err
-    assert "extraction stopped" not in err.lower()
-    assert (dest / "ok.txt").read_bytes() == b"y"
+    assert "extraction stopped" in err.lower()
+    assert not (dest / "ok.txt").exists()
 
 
 def test_extract_zip_root_slash_under_default_strict(tmp_path: Path) -> None:
@@ -3138,13 +3135,11 @@ def test_extract_continues_after_traversal(
     assert not (tmp_path / "escape.txt").exists()
 
 
-def test_extract_stop_on_error_continues_on_policy_block(
+def test_extract_stop_on_error_stops_on_policy_block(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from archivey.cli.exit_codes import EXIT_POLICY
-
     monkeypatch.chdir(tmp_path)
-    # Policy block under --stop-on-error: continue, extract safe members, exit 3.
+    # A refused member under --stop-on-error stops the run: nothing after it, exit 1.
     archive = _tar(
         tmp_path / "evil.tar",
         {
@@ -3153,17 +3148,17 @@ def test_extract_stop_on_error_continues_on_policy_block(
         },
     )
     code = main(["extract", str(archive), "-d", "out", "--stop-on-error"])
-    assert code == EXIT_POLICY
+    assert code == EXIT_FAIL
     err = capsys.readouterr().err
-    assert "blocked:" in err
-    assert "extraction stopped" not in err
-    assert (tmp_path / "out" / "safe.txt").read_bytes() == b"ok"
+    assert "escape.txt" in err
+    assert "extraction stopped" in err
+    assert not (tmp_path / "out" / "safe.txt").exists()
 
 
 def test_extract_stop_on_error_aborts_on_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """--stop-on-error aborts on a genuine member failure (CRC), not a policy block."""
+    """--stop-on-error aborts on a member failure (CRC) too."""
     monkeypatch.chdir(tmp_path)
     from tests.zip_corrupt import zip_with_flipped_cd_crc
 
@@ -3357,7 +3352,7 @@ def test_unknown_option_before_double_dash_still_rejected(
 def test_extract_stop_on_error_reports_extracted_and_blocked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Q1.5: STOP abort reports extracted vs blocked counts separately."""
+    """A stop at a refused member counts what was extracted before it."""
     monkeypatch.chdir(tmp_path)
     from tests.zip_corrupt import zip_with_flipped_cd_crc
 
@@ -3375,7 +3370,8 @@ def test_extract_stop_on_error_reports_extracted_and_blocked(
     code = main(["extract", str(path), "-d", "out", "--stop-on-error"])
     assert code == EXIT_FAIL  # Q8: abort → 1
     err = capsys.readouterr().err
-    assert "1 member(s) extracted, 1 blocked before the stop" in err
+    assert "evil.txt" in err
+    assert "1 member(s) extracted before the stop" in err
     assert "extraction stopped" in err
     assert (tmp_path / "out" / "safe.txt").read_bytes() == b"ok"
     assert not (tmp_path / "out" / "later.txt").exists()
@@ -3456,8 +3452,28 @@ def test_extract_abort_on_blocked_member(
     dest = tmp_path / "out"
     code = main(["x", str(archive), "-d", str(dest), "--abort-on", "blocked-member"])
     assert code == EXIT_FAIL
-    assert "extraction stopped" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "extraction stopped" in err
+    assert "--abort-on is deprecated; use --stop-on-error" in err
     assert not (dest / "ok.txt").exists()
+
+
+def test_extract_abort_on_name_event_still_counts_blocked_members(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Until 0.7.0 a name event keeps its old meaning: refusals before it are skipped.
+    archive = _zip(
+        tmp_path / "t.zip",
+        {"ok.txt": b"y", "../escape.txt": b"x", "foo.": b"z", "later.txt": b"w"},
+    )
+    dest = tmp_path / "out"
+    code = main(["x", str(archive), "-d", str(dest), "--abort-on", "name-sanitized"])
+    assert code == EXIT_FAIL
+    err = capsys.readouterr().err
+    assert "1 member(s) extracted, 1 blocked before the stop" in err
+    assert "--abort-on is deprecated" in err
+    assert (dest / "ok.txt").read_bytes() == b"y"
+    assert not (dest / "later.txt").exists()
 
 
 def test_extract_unknown_abort_on_event_is_usage_error(tmp_path: Path) -> None:

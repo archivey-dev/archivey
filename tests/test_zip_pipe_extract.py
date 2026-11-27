@@ -36,7 +36,6 @@ from archivey.types import (
     ExtractionStatus,
     MemberType,
     NameRewrite,
-    OnError,
     OverwritePolicy,
 )
 from tests.sample_archives import CORPUS, build_archive, skip_unless_runnable
@@ -96,7 +95,7 @@ def _extract(
 ) -> list[tuple[str, ExtractionStatus, str | None]]:
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
     with archivey.open_archive(source, pipe=piped) as reader:
-        report = reader.extract_all(dest, **{"on_blocked": "skip", **options})  # type: ignore[arg-type]
+        report = reader.extract_all(dest, **{"on_problem": "continue", **options})  # type: ignore[arg-type]
     return [
         (
             r.member.name,
@@ -200,7 +199,7 @@ def test_a_link_out_of_the_destination_is_refused_from_a_pipe(
     data = _link_zip("../../etc/passwd", name="payload")
     if written == "streamed":
         data = _streamed(data)
-    results, tree = _both(data, tmp_path, policy="standard", on_error="continue")
+    results, tree = _both(data, tmp_path, policy="standard", on_problem="continue")
     assert results[1][:2] == ("payload", ExtractionStatus.BLOCKED)
     assert "payload" not in tree
 
@@ -212,7 +211,7 @@ def test_a_refused_link_stops_the_run_under_abort_on(tmp_path: Path) -> None:
     for piped in (False, True):
         dest = tmp_path / str(piped)
         with pytest.raises(FilterRejectionError):
-            _extract(data, dest, piped=piped, abort_on=["blocked_member"])
+            _extract(data, dest, piped=piped, on_problem="stop")
         assert not (dest / "payload").exists()
 
 
@@ -308,7 +307,7 @@ def test_a_filter_rename_of_a_refused_local_name_fails_from_a_pipe(
     data = _zip([(_entry("../evil.txt"), b"evil!!!")])
     from_file = _extract(data, tmp_path / "file", piped=False, filter=rename)
     from_pipe = _extract(
-        data, tmp_path / "pipe", piped=True, filter=rename, on_error="continue"
+        data, tmp_path / "pipe", piped=True, filter=rename, on_problem="continue"
     )
     assert from_file == [("../evil.txt", ExtractionStatus.EXTRACTED, "safe.txt")]
     assert from_pipe == [("../evil.txt", ExtractionStatus.FAILED, None)]
@@ -327,9 +326,7 @@ def test_a_member_a_predicate_takes_only_in_the_end_is_an_extraction_error(
 
     source = NonSeekableBytesIO(_dos_docs())
     with archivey.open_archive(source, pipe=True) as reader:
-        report = reader.extract_all(
-            tmp_path, members=docs_only, on_error="continue", on_blocked="skip"
-        )
+        report = reader.extract_all(tmp_path, members=docs_only, on_problem="continue")
     errors = [r.error for r in report.results if r.error is not None]
     if os.name == "nt":
         assert errors == []
@@ -362,7 +359,7 @@ def test_a_member_the_list_leaves_out_in_the_end_keeps_the_callers_file(
         times=False,
         members=["x/y"],
         overwrite=overwrite,
-        on_error="continue",
+        on_problem="continue",
     )
     assert results == []
     assert tree["x/y"][0] == b"MINE"
@@ -385,7 +382,7 @@ def test_a_member_the_list_leaves_out_in_the_end_keeps_the_callers_parent(
         times=False,
         members=["x/y"],
         overwrite=overwrite,
-        on_error="continue",
+        on_problem="continue",
     )
     assert results == []
     assert tree == {"x": (b"MINE", 0o644)}
@@ -406,7 +403,7 @@ def test_a_member_the_list_takes_in_the_end_meets_the_callers_parent(
         times=False,
         members=["docs/r.txt"],
         overwrite=overwrite,
-        on_error="continue",
+        on_problem="continue",
     )
     expected = {
         "replace": ["docs", "docs/r.txt"],
@@ -433,7 +430,7 @@ def test_a_run_stopped_in_the_pass_leaves_the_callers_parent(
                 piped=piped,
                 members=["x/y", "../evil"],
                 overwrite="replace",
-                abort_on=["blocked_member"],
+                on_problem="stop",
             )
         assert (tmp_path / where / "x").read_bytes() == b"MINE"
         assert sorted(p.name for p in (tmp_path / where).iterdir()) == ["x"]
@@ -453,7 +450,7 @@ def test_a_read_only_file_of_the_callers_is_handled_as_from_a_file(
             times=False,
             members=["docs/r.txt"],
             overwrite="replace",
-            on_error="continue",
+            on_problem="continue",
         )
     finally:
         for where in ("file", "pipe"):
@@ -465,7 +462,7 @@ def test_a_read_only_file_of_the_callers_is_handled_as_from_a_file(
 @pytest.mark.parametrize(
     ("second", "options"),
     [
-        ("../evil", {"abort_on": ["blocked_member"]}),
+        ("../evil", {"on_problem": "stop"}),
         ("z.txt", {"limits": ExtractionLimits(max_entries=1)}),
     ],
 )
@@ -478,7 +475,7 @@ def test_a_run_stopped_in_the_pass_leaves_the_callers_file(
     for where, piped in (("file", False), ("pipe", True)):
         _seed(tmp_path / where, {"x/y": b"MINE"})
         # From a file the entry limit is never reached: x\\y is not selected.
-        stops = piped or "abort_on" in options
+        stops = piped or "on_problem" in options
         with pytest.raises(ArchiveyError) if stops else contextlib.nullcontext():
             _extract(
                 data,
@@ -514,7 +511,7 @@ def test_a_run_stopped_during_placement_keeps_the_member_placed_before(
                 piped=piped,
                 members=["docs/r.txt", "payload"],
                 overwrite="replace",
-                abort_on=["blocked_member"],
+                on_problem="stop",
             )
         assert (tmp_path / where / "docs/r.txt").read_bytes() == b"read me"
 
@@ -547,9 +544,9 @@ def _possible_links(last: tuple[zipfile.ZipInfo, bytes]) -> bytes:
             (_entry("bomb.bin"), b"\0" * 100_000),
             {"limits": ExtractionLimits(max_extracted_bytes=50_000)},
         ),
-        ((_entry("../evil"), b"Z"), {"abort_on": ["blocked_member"]}),
+        ((_entry("../evil"), b"Z"), {"on_problem": "stop"}),
     ],
-    ids=["limit", "abort_on"],
+    ids=["limit", "stop"],
 )
 def test_a_run_stopped_in_the_pass_leaves_nothing_in_the_destination(
     last: tuple[zipfile.ZipInfo, bytes], options: dict[str, object], tmp_path: Path
@@ -587,7 +584,7 @@ def test_a_run_stopped_during_placement_keeps_what_it_placed(
     )
     for where, piped in (("file", False), ("pipe", True)):
         with pytest.raises(ArchiveyError):
-            _extract(data, tmp_path / where, piped=piped, abort_on=["blocked_member"])
+            _extract(data, tmp_path / where, piped=piped, on_problem="stop")
     tree = _tree(tmp_path / "file", times=False)
     assert _tree(tmp_path / "pipe", times=False) == tree
     assert tree == {
@@ -704,13 +701,13 @@ def test_the_filter_sees_each_member_once_and_final(tmp_path: Path) -> None:
         seen.append((member.name, member.member_state_final))
         return member
 
-    _extract(data, tmp_path, piped=True, filter=probe, on_error="continue")
+    _extract(data, tmp_path, piped=True, filter=probe, on_problem="continue")
     assert [final for _, final in seen] == [True]
 
 
 def test_a_special_file_the_directory_reveals_is_refused(tmp_path: Path) -> None:
     data = _zip([(_entry("fifo", mode=0o010644), b""), (_entry("b"), b"after")])
-    results, tree = _both(data, tmp_path, on_error="continue")
+    results, tree = _both(data, tmp_path, on_problem="continue")
     assert results[0][:2] == ("fifo", ExtractionStatus.BLOCKED)
     assert sorted(tree) == ["b"]
 
@@ -769,7 +766,7 @@ def test_a_unix_name_ending_in_a_backslash_is_a_file(
     """The pass takes a trailing ``\\`` for a folder until the directory names the
     host; a Unix host makes it a file, empty or not."""
     data = _zip([(_entry("odd\\", mode=0o100644), b""), (_entry("b"), b"after")])
-    results, _ = _both(data, tmp_path, policy=policy, on_error="continue")
+    results, _ = _both(data, tmp_path, policy=policy, on_problem="continue")
     assert [status for _, status, _ in results] == [ExtractionStatus.EXTRACTED] * 2
 
 
@@ -789,7 +786,7 @@ def test_a_unix_file_ending_in_a_backslash_with_data_fails_from_a_pipe(
     source = NonSeekableBytesIO(data)
     with archivey.open_archive(source, pipe=True) as reader:
         report = reader.extract_all(
-            tmp_path / "pipe", policy=policy, on_error="continue", on_blocked="skip"
+            tmp_path / "pipe", policy=policy, on_problem="continue"
         )
     [result] = report.results
     assert (result.member.name, result.status) == ("odd\\", ExtractionStatus.FAILED)
@@ -829,7 +826,7 @@ def test_the_corpus_extracts_from_a_pipe_as_from_a_file(
     skip_unless_runnable(entry, "zip")  # type: ignore[arg-type]
     path = tmp_path / "corpus.zip"
     build_archive(entry, "zip", path)  # type: ignore[arg-type]
-    _both(path.read_bytes(), tmp_path, on_error=OnError.CONTINUE)
+    _both(path.read_bytes(), tmp_path, on_problem="continue")
 
 
 # -- Failures found at the end of the pass (design.md, same heading) -----------------
@@ -839,7 +836,7 @@ def _piped_report(
     data: bytes, dest: Path, **options: object
 ) -> archivey.ExtractionReport:
     with archivey.open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
-        return reader.extract_all(dest, **{"on_blocked": "skip", **options})  # type: ignore[arg-type]
+        return reader.extract_all(dest, **{"on_problem": "continue", **options})  # type: ignore[arg-type]
 
 
 def _outcomes(
@@ -873,7 +870,7 @@ def test_a_reversed_same_name_pair_fails_the_current_copy(tmp_path: Path) -> Non
     """The pass staged the second copy; the directory makes the first current, whose
     bytes have gone by. Random access writes "first" there."""
     data = _reversed_pair()
-    report = _piped_report(data, tmp_path / "pipe", on_error=OnError.CONTINUE)
+    report = _piped_report(data, tmp_path / "pipe", on_problem="continue")
     assert _outcomes(report) == [
         ("dup.txt", ExtractionStatus.FAILED, CorruptionError),
         ("dup.txt", ExtractionStatus.SUPERSEDED, None),
@@ -890,7 +887,7 @@ def test_a_reversed_pair_under_stop_raises_when_placement_reaches_it(
     """The first failure in listing order stops the run, so ``other.txt``, after
     it, is not placed."""
     with pytest.raises(CorruptionError, match="current copy") as raised:
-        _piped_report(_reversed_pair(), tmp_path, on_error=OnError.STOP)
+        _piped_report(_reversed_pair(), tmp_path, on_problem="stop")
     assert raised.value.member_name == "dup.txt"
     assert list(tmp_path.iterdir()) == []
 
@@ -911,7 +908,7 @@ def test_an_empty_current_copy_is_written_again(tmp_path: Path) -> None:
 
 def test_a_contradicted_descriptor_fails_the_member(tmp_path: Path) -> None:
     data, _whole = _planted_prefix_zip()
-    report = _piped_report(data, tmp_path, on_error=OnError.CONTINUE)
+    report = _piped_report(data, tmp_path, on_problem="continue")
     assert _outcomes(report) == [
         ("outer.bin", ExtractionStatus.FAILED, CorruptionError),
         ("after.txt", ExtractionStatus.EXTRACTED, None),
@@ -929,7 +926,7 @@ def test_a_contradicted_descriptor_under_stop_raises(tmp_path: Path) -> None:
         _piped_report(
             data,
             tmp_path,
-            on_error=OnError.STOP,
+            on_problem="stop",
             members=lambda m: m.name != "inner",
         )
     assert raised.value.member_name == "outer.bin"
@@ -949,7 +946,7 @@ def _contradicted_header() -> bytes:
 
 
 def test_a_contradicted_local_header_fails_the_member(tmp_path: Path) -> None:
-    report = _piped_report(_contradicted_header(), tmp_path, on_error=OnError.CONTINUE)
+    report = _piped_report(_contradicted_header(), tmp_path, on_problem="continue")
     assert _outcomes(report) == [
         ("a.txt", ExtractionStatus.FAILED, CorruptionError),
         ("b.txt", ExtractionStatus.EXTRACTED, None),
@@ -960,7 +957,7 @@ def test_a_contradicted_local_header_fails_the_member(tmp_path: Path) -> None:
 
 def test_a_contradicted_local_header_under_stop_raises(tmp_path: Path) -> None:
     with pytest.raises(CorruptionError, match="local header and its central") as raised:
-        _piped_report(_contradicted_header(), tmp_path, on_error=OnError.STOP)
+        _piped_report(_contradicted_header(), tmp_path, on_problem="stop")
     assert raised.value.member_name == "a.txt"
     assert list(tmp_path.iterdir()) == []
 
@@ -982,7 +979,7 @@ def _missing_entry(name: bytes = b"b.txt") -> bytes:
 def test_a_directory_entry_with_no_local_entry_gets_a_failed_result(
     tmp_path: Path,
 ) -> None:
-    report = _piped_report(_missing_entry(), tmp_path, on_error=OnError.CONTINUE)
+    report = _piped_report(_missing_entry(), tmp_path, on_problem="continue")
     assert _outcomes(report) == [
         ("a.txt", ExtractionStatus.EXTRACTED, None),
         ("b.txt", ExtractionStatus.FAILED, CorruptionError),
@@ -1000,7 +997,7 @@ def test_a_name_the_two_headers_disagree_on_is_written_by_the_directory_name(
     data = bytearray(hand.directory(0, 1))
     cd = data.rindex(b"PK\x01\x02")
     data[cd + 46 : cd + 51] = b"z.txt"
-    results, tree = _both(bytes(data), tmp_path, on_error=OnError.CONTINUE)
+    results, tree = _both(bytes(data), tmp_path, on_problem="continue")
     assert [result[:2] for result in results] == [
         ("a.txt", ExtractionStatus.EXTRACTED),
         ("z.txt", ExtractionStatus.EXTRACTED),
@@ -1012,7 +1009,7 @@ def test_a_directory_entry_with_no_local_entry_under_stop_raises(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     with pytest.raises(CorruptionError) as raised:
-        _piped_report(_missing_entry(), tmp_path, on_error=OnError.STOP)
+        _piped_report(_missing_entry(), tmp_path, on_problem="stop")
     assert raised.value.member_name == "b.txt"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"]
     # The raise is the record: no "Skipping" line beside it.
@@ -1024,7 +1021,7 @@ def test_a_directory_entry_with_no_local_entry_is_reported_to_on_progress(
 ) -> None:
     seen: list[archivey.types.ExtractionProgress] = []
     report = _piped_report(
-        _missing_entry(), tmp_path, on_error=OnError.CONTINUE, on_progress=seen.append
+        _missing_entry(), tmp_path, on_problem="continue", on_progress=seen.append
     )
     failed = report.results[-1].member
     assert report.results[-1].status is ExtractionStatus.FAILED
@@ -1041,7 +1038,7 @@ def test_a_directory_entry_with_no_local_entry_can_be_blocked(tmp_path: Path) ->
         _piped_report(
             _missing_entry(b"../.."),
             tmp_path / "b",
-            abort_on={AbortOn.BLOCKED_MEMBER},
+            on_problem="stop",
         )
 
 
@@ -1052,7 +1049,7 @@ def test_a_directory_entry_with_no_local_entry_records_its_rewrite(
     report = _piped_report(
         _missing_entry(b"a?.tx"),
         tmp_path,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
         policy=ExtractionPolicy.STANDARD,
     )
     result = report.results[-1]
@@ -1070,7 +1067,7 @@ def test_a_name_the_two_headers_disagree_on_under_stop_is_written_alike(
     data = bytearray(hand.directory(0, 1))
     cd = data.rindex(b"PK\x01\x02")
     data[cd + 46 : cd + 51] = b"z.txt"
-    _, tree = _both(bytes(data), tmp_path, on_error=OnError.STOP)
+    _, tree = _both(bytes(data), tmp_path, on_problem="stop")
     assert sorted(tree) == ["a.txt", "z.txt"]
 
 
@@ -1090,8 +1087,7 @@ def test_a_reversed_pair_under_skip_matches_the_seekable_results(
             report = reader.extract_all(
                 dest,
                 overwrite=OverwritePolicy.SKIP,
-                on_error=OnError.CONTINUE,
-                on_blocked="skip",
+                on_problem="continue",
             )
         outcomes[piped] = sorted(
             (r.member._member_id is not None and r.member.is_current, r.status.value)
@@ -1134,9 +1130,7 @@ def test_a_reversed_pair_refused_before_the_write_matches_the_seekable_results(
         dest = tmp_path / ("pipe" if piped else "file")
         source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
         with archivey.open_archive(source, pipe=piped) as reader:
-            report = reader.extract_all(
-                dest, on_error=OnError.CONTINUE, **{"on_blocked": "skip", **options}
-            )  # type: ignore[arg-type]
+            report = reader.extract_all(dest, **{"on_problem": "continue", **options})  # type: ignore[arg-type]
         outcomes[piped] = sorted(
             (r.member.is_current, r.status.value) for r in report.results
         )
@@ -1157,9 +1151,7 @@ def _compare_with_file_read(
             (dest / "b.txt").write_bytes(seed)
         source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
         with archivey.open_archive(source, pipe=piped) as reader:
-            report = reader.extract_all(
-                dest, on_error=OnError.CONTINUE, **{"on_blocked": "skip", **options}
-            )  # type: ignore[arg-type]
+            report = reader.extract_all(dest, **{"on_problem": "continue", **options})  # type: ignore[arg-type]
         runs[piped] = (
             sorted(
                 (
@@ -1241,16 +1233,16 @@ def test_a_refused_first_member_stops_the_run_before_the_rest_is_decoded(
     monkeypatch.setattr(ExtractionCoordinator, "_write_staged", counting)
     data = _zip([(_entry("../../etc/passwd"), b"root"), (_entry("big"), b"\0" * 4096)])
     with pytest.raises(FilterRejectionError):
-        _extract(data, tmp_path, piped=True, abort_on={AbortOn.BLOCKED_MEMBER})
+        _extract(data, tmp_path, piped=True, on_problem="stop")
     assert staged == []
     assert list(tmp_path.iterdir()) == []
 
 
-def test_a_refused_local_name_blocks_and_the_stop_run_goes_on(tmp_path: Path) -> None:
-    """``on_error="stop"`` does not stop on a refusal: the member is blocked, from a
-    pipe as from a file, and the members after it are extracted."""
+def test_a_refused_local_name_blocks_and_the_run_goes_on(tmp_path: Path) -> None:
+    """The member is blocked, from a pipe as from a file, and the members after it
+    are extracted."""
     data = _zip([(_entry("../../etc/passwd"), b"root"), (_entry("big"), b"\0" * 4096)])
-    results, tree = _both(data, tmp_path, on_error="stop")
+    results, tree = _both(data, tmp_path, on_problem="continue")
     assert [(name, status) for name, status, _ in results] == [
         ("../../etc/passwd", ExtractionStatus.BLOCKED),
         ("big", ExtractionStatus.EXTRACTED),
@@ -1280,11 +1272,11 @@ def test_a_data_failure_while_staging_stops_a_stop_run_at_once(
     monkeypatch.setattr(ExtractionCoordinator, "_write_staged", failing)
     data = _zip([(_entry("a.txt"), b"one"), (_entry("b.txt"), b"two")])
     with pytest.raises(CorruptionError, match="damaged by the test"):
-        _extract(data, tmp_path / "stop", piped=True, on_error="stop")
+        _extract(data, tmp_path / "stop", piped=True, on_problem="stop")
     assert staged == [0]
     assert list((tmp_path / "stop").iterdir()) == []
     staged.clear()
-    results = _extract(data, tmp_path / "continue", piped=True, on_error="continue")
+    results = _extract(data, tmp_path / "continue", piped=True, on_problem="continue")
     assert [r[:2] for r in results] == [
         ("a.txt", ExtractionStatus.FAILED),
         ("b.txt", ExtractionStatus.EXTRACTED),
@@ -1357,7 +1349,7 @@ def test_a_read_only_staged_file_is_removed_when_the_run_stops(
     monkeypatch.setattr(ExtractionCoordinator, "_write_staged", read_only)
     data = _zip([(_entry("a.txt"), b"one"), (_entry("../evil"), b"Z")])
     with pytest.raises(FilterRejectionError):
-        _extract(data, tmp_path, piped=True, abort_on={AbortOn.BLOCKED_MEMBER})
+        _extract(data, tmp_path, piped=True, on_problem="stop")
     assert list(tmp_path.iterdir()) == []
 
 
@@ -1401,13 +1393,14 @@ def test_a_collision_abort_keeps_the_member_placed_before_it(tmp_path: Path) -> 
     data = _zip([(_entry("A.txt"), b"first"), (_entry("a.txt"), b"second")])
     from archivey.exceptions import NameCollisionError
 
-    with pytest.raises(NameCollisionError):
-        _extract(
-            data,
-            tmp_path,
-            piped=True,
-            overwrite="replace",
-            abort_on={AbortOn.NAME_COLLISION},
+    # abort_on= is deprecated (0.6.0); its name events keep working until 0.7.0.
+    with (
+        archivey.open_archive(NonSeekableBytesIO(data), pipe=True) as reader,
+        pytest.raises(NameCollisionError),
+        pytest.warns(DeprecationWarning, match="on_problem"),
+    ):
+        reader.extract_all(
+            tmp_path, overwrite="replace", abort_on={AbortOn.NAME_COLLISION}
         )
     assert [(p.name, p.read_bytes()) for p in tmp_path.iterdir()] == [
         ("A.txt", b"first")
@@ -1433,5 +1426,7 @@ def test_an_unmatched_entry_under_raise_places_nothing(tmp_path: Path) -> None:
         ) as reader,
         pytest.raises(DiagnosticRaisedError),
     ):
-        reader.extract_all(tmp_path, members=["a.txt", "typo.txt"], on_blocked="skip")
+        reader.extract_all(
+            tmp_path, members=["a.txt", "typo.txt"], on_problem="continue"
+        )
     assert list(tmp_path.iterdir()) == []

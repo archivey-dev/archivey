@@ -569,9 +569,8 @@ def _add_extract_verb(
         "--stop-on-error",
         action="store_true",
         help=(
-            "stop at the first member failure "
-            "(policy blocks are always reported and continued; "
-            "default: continue and report)"
+            "stop at the first member that fails or is refused "
+            "(default: try every member, then report and exit non-zero)"
         ),
     )
     p_extract.add_argument(
@@ -583,11 +582,9 @@ def _add_extract_verb(
         metavar="EVENT",
         dest="abort_on",
         help=(
-            "abort the whole extraction the first time EVENT occurs, instead of "
-            "recording it and continuing; repeatable. blocked-member is the "
-            "fail-closed choice for untrusted archives. name-sanitized is a narrow "
-            "escape hatch for byte-fidelity work, not part of ordinary strict "
-            "extraction"
+            "deprecated, removed in 0.7.0: blocked-member is now --stop-on-error. "
+            "name-collision and name-sanitized still abort the extraction the first "
+            "time EVENT occurs; repeatable"
         ),
     )
     p_extract.add_argument(

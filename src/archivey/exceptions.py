@@ -112,6 +112,12 @@ class ArchiveyError(Exception):
     stay.
     """
 
+    report: ExtractionReport | None = None
+    """The :class:`~archivey.ExtractionReport` of the whole call, when
+    ``extract_all(on_problem="finish")`` raised this error at its end, after trying
+    every member: what happened to each one, the failed and refused ones included.
+    ``None`` on an error any other call raised."""
+
     def __init__(
         self,
         message: str,
@@ -290,10 +296,10 @@ class FilterRejectionError(ExtractionError):
     isolate). The member is ``BLOCKED`` whichever check fired, and the message says which.
 
     ``report`` is the :class:`~archivey.ExtractionReport` of the whole call when
-    ``extract_all()`` raised this at its end under ``on_blocked="raise"``, after
+    ``extract_all()`` raised this at its end under ``on_problem="finish"``, after
     extracting every member it could: every refused member is in it as ``BLOCKED``.
     It is ``None`` when the error stopped the call at the first refusal
-    (``abort_on=["blocked_member"]``), and on the error a ``BLOCKED`` result holds.
+    (``on_problem="stop"``), and on the error a ``BLOCKED`` result holds.
     """
 
     def __init__(
@@ -321,11 +327,11 @@ class FilterRejectionError(ExtractionError):
 class NameCollisionError(ExtractionError):
     """A member resolved to a destination another member of this run already claimed.
 
-    Raised only when the caller opted in with ``AbortOn.NAME_COLLISION``; without that
-    opt-in a collision is not an error at all — ``OverwritePolicy`` resolves it and both
-    members' ``ExtractionResult`` records the outcome. It is raised for *every*
-    non-``TRUSTED`` collision regardless of how the policy would have resolved it, since
-    the trigger is the collision itself, not its resolution.
+    Raised only when the caller opted in with the deprecated ``AbortOn.NAME_COLLISION``;
+    without that opt-in a collision is not an error at all — ``OverwritePolicy``
+    resolves it and both members' ``ExtractionResult`` records the outcome. It is raised
+    for *every* non-``TRUSTED`` collision regardless of how the policy would have
+    resolved it, since the trigger is the collision itself, not its resolution.
     """
 
 
@@ -333,9 +339,9 @@ class NameRewrittenError(ExtractionError):
     """A member name was rewritten: to its portable spelling, or re-rooted inside the
     destination.
 
-    Raised only when the caller opted in with ``AbortOn.NAME_SANITIZED`` — a narrow
-    escape hatch for callers who require the on-disk name to match the archive's byte
-    for byte. Without the opt-in the rewrite is a success, recorded as
+    Raised only when the caller opted in with the deprecated ``AbortOn.NAME_SANITIZED``
+    — a narrow escape hatch for callers who require the on-disk name to match the
+    archive's byte for byte. Without the opt-in the rewrite is a success, recorded as
     ``ExtractionResult.presented_name``.
     """
 
@@ -522,7 +528,8 @@ class DiagnosticRaisedError(ArchiveyError):
     """A diagnostic was escalated to an error via :class:`~archivey.diagnostics.DiagnosticPolicy`.
 
     Always-stop: extraction MUST NOT catch this as a per-member failure under
-    ``OnError.CONTINUE``. Carries the escalated :class:`~archivey.diagnostics.Diagnostic`.
+    ``on_problem="continue"``. Carries the escalated
+    :class:`~archivey.diagnostics.Diagnostic`.
     """
 
     def __init__(

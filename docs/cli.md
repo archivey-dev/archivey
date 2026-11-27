@@ -95,17 +95,19 @@ report instead of stopping at the first problem:
 | When | `archivey extract` | `extract_all()` |
 | --- | --- | --- |
 | A file with the member's name is already there | writes the member as `photo (1).jpg` | raises an error |
-| A member fails | reports it, carries on, and exits with `1` at the end | raises an error at once |
-| A member is refused | reports it and carries on | writes the rest, then raises `FilterRejectionError` |
+| A member fails | reports it, carries on, and exits with `1` at the end | writes the rest, then raises that member's error |
+| A member is refused | reports it, carries on, and exits with `3` at the end | writes the rest, then raises `FilterRejectionError` |
 
-`--overwrite error --stop-on-error` makes the command behave like the library. `--overwrite` also
-takes `skip` (keep the file that's there) and `replace` (write over it).
+`--overwrite error` makes the command treat a file already there as the library does. `--overwrite`
+also takes `skip` (keep the file that's there) and `replace` (write over it).
 
-`--stop-on-error` stops at the first member that fails, but refused members are still only
-reported. To stop on those too, pass `--abort-on blocked-member`, which is the safest choice for an
-archive you don't trust. `--abort-on name-collision` stops when two members land on the same name,
-and `--abort-on name-sanitized` when a name had to be changed to be written. `--abort-on` can be
-given more than once. Files written before the stop stay on disk.
+`--stop-on-error` stops at the first member that fails or is refused, as `on_problem="stop"` does
+in the library. It is the safest choice for an archive you don't trust. Files written before the
+stop stay on disk.
+
+`--abort-on` is deprecated and goes in 0.7.0. `--abort-on blocked-member` now does what
+`--stop-on-error` does. `--abort-on name-collision` and `--abort-on name-sanitized` still stop when
+two members land on the same name or a name had to be changed to be written.
 
 `--dry-run` runs every check and reads every member, but writes nothing. It prints the same report
 and exits with the same code as a real extraction into the destination as it is now: a member that
@@ -120,9 +122,9 @@ the end. Some formats also weigh paths or tables of their own against `max_metad
 an ISO image's UDF paths or a CAB file's block tables, and what archivey holds only while it reads
 the member list is gone by the time the line is printed. So an archive can still be refused with
 `max_metadata_bytes` set above this number. A part that is zero is left out, and when every part is
-zero there is no line. A run that stops before its summary, such as a limit refusal or `--abort-on`,
-prints no line either. Decoder memory counts only the allocations archivey checks itself: xz, LZMA
-Alone and zstd leave that check to their library.
+zero there is no line. A run that stops before its summary, such as a limit refusal or
+`--stop-on-error`, prints no line either. Decoder memory counts only the allocations archivey checks
+itself: xz, LZMA Alone and zstd leave that check to their library.
 
 `--outer` removes only the compression layer: `archivey extract data.tgz --outer` writes
 `data.tar` and keeps the original, as `gunzip -k` does.

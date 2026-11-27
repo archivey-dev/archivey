@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ExtractionPolicy
-from archivey.types import ExtractionStatus, OnError, OverwritePolicy
+from archivey.types import ExtractionStatus, OverwritePolicy
 from tests.conftest import requires_binary
 from tests.extract_util import open_and_extract
 
@@ -91,7 +91,7 @@ def test_trusted_writes_an_image_as_stored(tmp_path: Path, streaming: bool) -> N
         dest,
         streaming=streaming,
         policy=ExtractionPolicy.TRUSTED,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     assert {r.member.name: r.status for r in report} == dict.fromkeys(
         (name for _kind, name, _value in _ROOTFS), ExtractionStatus.EXTRACTED
@@ -116,7 +116,7 @@ def test_the_other_policies_still_refuse_them(
         dest,
         streaming=streaming,
         policy=policy,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     refused = {r.member.name for r in report if r.status is ExtractionStatus.BLOCKED}
     # The hard link is the symlink it names, with that symlink's target.
@@ -189,7 +189,7 @@ def test_nothing_is_written_through_a_rooted_link(
         dest,
         streaming=streaming,
         policy=ExtractionPolicy.TRUSTED,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
         overwrite=overwrite,
     )
     statuses = {r.member.name: r.status for r in report}
@@ -262,7 +262,7 @@ def test_an_earlier_link_through_a_later_rooted_link_is_removed(
         dest,
         streaming=streaming,
         policy=ExtractionPolicy.TRUSTED,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     statuses = {r.member.name: r.status for r in report}
     assert statuses["r"] is ExtractionStatus.BLOCKED
@@ -282,7 +282,7 @@ def test_a_loop_closed_by_a_later_rooted_link_is_removed(
         dest,
         streaming=streaming,
         policy=ExtractionPolicy.TRUSTED,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     assert {r.member.name: r.status for r in report} == {
         "b": ExtractionStatus.BLOCKED,
@@ -309,9 +309,7 @@ def test_a_rooted_link_back_into_the_destination(tmp_path: Path) -> None:
             ]
         )
     )
-    report = open_and_extract(
-        archive, dest, policy=ExtractionPolicy.TRUSTED, on_blocked="skip"
-    )
+    report = open_and_extract(archive, dest, policy=ExtractionPolicy.TRUSTED)
     assert {r.member.name: r.status for r in report} == {
         "sub/": ExtractionStatus.EXTRACTED,
         "abs-dir": ExtractionStatus.EXTRACTED,
