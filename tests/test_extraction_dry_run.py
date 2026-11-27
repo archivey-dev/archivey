@@ -1361,7 +1361,7 @@ def test_errors_and_warnings_name_dest(
         reader.extract_all(
             dest,
             policy=ExtractionPolicy.TRUSTED,
-            on_problem="continue",
+            on_problem="stop",
             dry_run=True,
         )
     assert str(dest / "ro") in str(caught.value)

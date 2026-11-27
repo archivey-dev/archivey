@@ -316,7 +316,7 @@ are omitted from that line).
 | `archivey extract <archive> -d .` | Extracts into cwd verbatim (classic splatter, opt-in) |
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
 | `archivey extract <archive-with-traversal-and-safe-members>` | Safe members extracted; `blocked:` lines; exit `3` |
-| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first **failure**; reports extracted/blocked counts before stop; policy blocks alone do not stop |
+| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at the first failed or refused member; reports the members extracted before the stop |
 | Subcommand includes glob pattern(s) after the archive | Operation limited to matching member names (positional = include) |
 | `archivey extract <archive> out` where `out/` exists and matches no member | stderr warning with `(did you mean -d out?)`; exit `1` |
 | `archivey extract <archive> docs` with members `docs/`, `docs/a.txt`, `docs.txt` | Extracts `docs/` and `docs/a.txt`, not `docs.txt`; no warning |
@@ -513,12 +513,12 @@ a failure and MUST NOT assume `1` is the only failure code.
 | `archivey test <truncated-tar>` (plain or compressed) whose stream ends on the error a member read already reported | One `FAIL <member>:` line, then `test stopped; remaining members were not tested`; the summary counts that member once; exit `1` |
 | `archivey test <archive>` when a digest goes unchecked (`DIGEST_UNVERIFIABLE` / `ENCRYPTED_MEMBER_UNVERIFIED`) | Summary includes `V not verified`; exit `1` |
 | `archivey extract <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` |
-| `archivey extract --stop-on-error <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` (blocks always continue) |
+| `archivey extract --stop-on-error <archive-with-traversal-and-safe-members>` | Stops at the refused member; nothing after it is written; prints the stop line; exit `1` |
 | `archivey extract <archive-with-corrupt-member>` | Extracts recoverable members; prints `failed:`; exit `1` |
 | `archivey extract --stop-on-error <archive-with-corrupt-member>` | Stops at first failure; exit `1` |
 | `archivey extract <archive>` with a blocked or failed member | One line for each `BLOCKED` / `FAILED` result in the report (`blocked:` / `failed:`); the library's `Skipping …` warning is not printed too |
 | `archivey extract <streamed archive>` where a later copy of a name supersedes an earlier copy that failed | The earlier copy's error is dropped with it, as the library's report drops it and as a random-access run never meets it; only the later copy's outcome is reported |
-| `archivey extract --stop-on-error <archive>` that blocks a member, then stops on a failure | No report is returned, so the `WARNING: Skipping …` line for the blocked member is printed before the stop line |
+| `archivey extract --abort-on name-sanitized <archive>` that blocks a member, then stops on a rewritten name | No report is returned, so the `WARNING: Skipping …` line for the blocked member is printed before the stop line, and the stop counts it as blocked |
 | Ctrl-C during `archivey test` or `archivey extract`, including between members of the read pass | Prints `interrupted`; exit `130` |
 | Any verb whose stdout or stderr pipe closes while it writes (`archivey t big.zip 2>&1 \| head -1`) | Stops without a message or traceback; exit `141`, so a `test` that had not finished verifying does not report success |
 | `archivey --help \| true`, or a usage error whose stderr pipe is closed | No message or traceback; exit `141` (not `0` or `2`) |

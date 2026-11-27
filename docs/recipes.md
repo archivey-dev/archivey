@@ -418,7 +418,7 @@ LIMITS = archivey.config.ExtractionLimits(
 
 
 def extract_upload(upload, dest):
-    """Extract ``upload`` into ``dest``, a folder that must not exist yet."""
+    """Extract ``upload`` into ``dest``, a folder that must not hold anything yet."""
     dest = Path(dest)
     staging = Path(tempfile.mkdtemp(prefix=".upload-", dir=dest.parent))
     try:
@@ -436,8 +436,9 @@ default `policy="strict"` refuses or rewrites every kind of unsafe member archiv
 `on_problem="stop"` turns the first refused or damaged member into an exception. So does a second
 member at a path already written, because `overwrite` stays `"error"`. On any exception, including
 a limit, the staging folder and everything in it are deleted. The staging folder is in the
-destination's parent, so the final `rename` doesn't copy anything, and it fails if `dest` already
-exists. `dest` keeps the staging folder's permissions, readable by its owner only. [What each
+destination's parent, so the final `rename` doesn't copy anything. It fails if `dest` is a file or
+a folder with anything in it. An empty folder at `dest` is replaced on Linux and macOS, and refused
+on Windows. `dest` keeps the staging folder's permissions, readable by its owner only. [What each
 policy does with unusual members](extracting.md#what-each-policy-does-with-unusual-members) lists
 the cases.
 

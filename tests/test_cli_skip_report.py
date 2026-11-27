@@ -76,6 +76,18 @@ def test_a_stopped_run_names_the_refused_member_once(tmp_path: Path) -> None:
     assert not (tmp_path / "out" / "ok.txt").exists()
 
 
+def test_a_name_event_stop_still_names_the_members_it_skipped(tmp_path: Path) -> None:
+    """A stop returns no report, so the held warning is the only line for ``bad``."""
+    src = tmp_path / "evil.zip"
+    _zip(src)
+    with zipfile.ZipFile(src, "a") as zf:
+        zf.writestr("foo.", b"x")
+    code, err = _extract(src, tmp_path / "out", "--abort-on", "name-sanitized")
+    assert code == EXIT_FAIL, err
+    skip = err.index("WARNING: Skipping symlink 'bad'")
+    assert skip < err.index("Name rewritten") < err.index("extraction stopped")
+
+
 def test_other_handlers_still_see_the_skip_warning(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

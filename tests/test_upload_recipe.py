@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import re
+import sys
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -104,6 +105,21 @@ def test_an_upload_over_a_limit_leaves_nothing(tmp_path: Path) -> None:
     with pytest.raises(ResourceLimitError):
         namespace["extract_upload"](upload, parent / "upload-1")
     assert list(parent.iterdir()) == []
+
+
+def test_an_empty_destination_is_replaced_except_on_windows(tmp_path: Path) -> None:
+    extract_upload = _recipe()["extract_upload"]
+    upload = _zip(tmp_path / "up.zip", [("a.txt", b"a")])
+    dest = tmp_path / "upload-1"
+    dest.mkdir()
+    if sys.platform == "win32":
+        with pytest.raises(OSError):
+            extract_upload(upload, dest)
+        assert list(dest.iterdir()) == []
+    else:
+        assert extract_upload(upload, dest).ok
+        assert (dest / "a.txt").read_bytes() == b"a"
+    assert _leftovers(tmp_path) == []
 
 
 def test_an_existing_destination_is_not_touched(tmp_path: Path) -> None:

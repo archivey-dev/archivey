@@ -2363,10 +2363,10 @@ class ExtractionStatus(StrEnum):
     FAILED = "failed"
     """Extraction failed: damaged data, a limit such as the expansion ratio, or a write
     error. Nothing of the member is left at its destination, except the partial file
-    that ``OnError.KEEP_PARTIAL`` keeps, which ``path`` then names."""
+    that ``on_problem="keep_partial"`` keeps, which ``path`` then names."""
     LINK_TARGET_UNAVAILABLE = "link_target_unavailable"
     """A symlink whose target the archive never recorded, so it cannot be written. Not a
-    failure: extraction goes on whatever ``on_error`` says. The archive is reported with
+    failure: extraction goes on whatever ``on_problem`` says. The archive is reported with
     the ``SYMLINK_TARGET_UNAVAILABLE`` diagnostic, which ``DiagnosticPolicy.STRICT``
     raises."""
 
@@ -2509,9 +2509,8 @@ class ExtractionResult:
 
     path: Path | None
     """Where the member was written, or ``None`` if it was not. On a ``FAILED``
-    result it is ``None``, except under ``OnError.KEEP_PARTIAL``, where it names the
-    partial file kept for the
-    member."""
+    result it is ``None``, except under ``on_problem="keep_partial"``, where it names
+    the partial file kept for the member."""
 
     status: ExtractionStatus
     """What happened to the member."""

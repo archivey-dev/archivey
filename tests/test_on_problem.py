@@ -10,6 +10,7 @@ problem's error, carrying the whole report.
 from __future__ import annotations
 
 import io
+import os
 import zipfile
 from contextlib import nullcontext
 from pathlib import Path
@@ -50,6 +51,12 @@ def _statuses(report: archivey.ExtractionReport) -> dict[str, ExtractionStatus]:
     return {r.member.name: r.status for r in report.results}
 
 
+@pytest.fixture(params=[False, True], ids=["random-access", "streaming"])
+def streaming(request: pytest.FixtureRequest) -> bool:
+    """Every value is checked on both reader kinds."""
+    return request.param
+
+
 def test_on_problem_is_a_root_name() -> None:
     assert "OnProblem" in archivey.__all__
     assert archivey.OnProblem is OnProblem
@@ -62,11 +69,14 @@ def test_on_problem_is_a_root_name() -> None:
 
 
 def test_the_default_finishes_then_raises_the_failure_with_the_report(
-    tmp_path: Path,
+    tmp_path: Path, streaming: bool
 ) -> None:
     src = _zip(tmp_path / "a.zip", damaged=True)
     dest = tmp_path / "out"
-    with open_archive(src) as reader, pytest.raises(CorruptionError) as caught:
+    with (
+        open_archive(src, streaming=streaming) as reader,
+        pytest.raises(CorruptionError) as caught,
+    ):
         reader.extract_all(dest)
     report = caught.value.report
     assert report is not None
@@ -82,11 +92,14 @@ def test_the_default_finishes_then_raises_the_failure_with_the_report(
 
 
 def test_the_default_finishes_then_raises_a_refusal_with_the_report(
-    tmp_path: Path,
+    tmp_path: Path, streaming: bool
 ) -> None:
     src = _zip(tmp_path / "a.zip", unsafe=True)
     dest = tmp_path / "out"
-    with open_archive(src) as reader, pytest.raises(FilterRejectionError) as caught:
+    with (
+        open_archive(src, streaming=streaming) as reader,
+        pytest.raises(FilterRejectionError) as caught,
+    ):
         reader.extract_all(dest, on_problem="finish")
     report = caught.value.report
     assert report is not None
@@ -95,21 +108,25 @@ def test_the_default_finishes_then_raises_a_refusal_with_the_report(
 
 
 @pytest.mark.parametrize("kind", ["damaged", "unsafe"])
-def test_stop_raises_at_the_first_problem(tmp_path: Path, kind: str) -> None:
+def test_stop_raises_at_the_first_problem(
+    tmp_path: Path, kind: str, streaming: bool
+) -> None:
     src = _zip(tmp_path / "a.zip", **{kind: True})
     dest = tmp_path / "out"
     expected = CorruptionError if kind == "damaged" else FilterRejectionError
-    with open_archive(src) as reader, pytest.raises(expected):
+    with open_archive(src, streaming=streaming) as reader, pytest.raises(expected):
         reader.extract_all(dest, on_problem=OnProblem.STOP)
     assert (dest / "first.txt").exists()
     assert not (dest / "last.txt").exists()
 
 
 @pytest.mark.parametrize("kind", ["damaged", "unsafe"])
-def test_continue_returns_the_report(tmp_path: Path, kind: str) -> None:
+def test_continue_returns_the_report(
+    tmp_path: Path, kind: str, streaming: bool
+) -> None:
     src = _zip(tmp_path / "a.zip", **{kind: True})
     dest = tmp_path / "out"
-    with open_archive(src) as reader:
+    with open_archive(src, streaming=streaming) as reader:
         report = reader.extract_all(dest, on_problem="continue")
     assert not report.ok
     problem = "bad.bin" if kind == "damaged" else "../evil.txt"
@@ -121,19 +138,23 @@ def test_continue_returns_the_report(tmp_path: Path, kind: str) -> None:
     assert not (dest / "bad.bin").exists()
 
 
-def test_keep_partial_keeps_the_damaged_file_and_returns(tmp_path: Path) -> None:
+def test_keep_partial_keeps_the_damaged_file_and_returns(
+    tmp_path: Path, streaming: bool
+) -> None:
     src = _zip(tmp_path / "a.zip", damaged=True)
     dest = tmp_path / "out"
-    with open_archive(src) as reader:
+    with open_archive(src, streaming=streaming) as reader:
         report = reader.extract_all(dest, on_problem="keep_partial")
     assert _statuses(report)["bad.bin"] is ExtractionStatus.FAILED
     assert (dest / "bad.bin").stat().st_size == len(_PAYLOAD)
 
 
-def test_a_clean_archive_returns_the_report_in_every_mode(tmp_path: Path) -> None:
+def test_a_clean_archive_returns_the_report_in_every_mode(
+    tmp_path: Path, streaming: bool
+) -> None:
     src = _zip(tmp_path / "a.zip")
     for value in OnProblem:
-        with open_archive(src) as reader:
+        with open_archive(src, streaming=streaming) as reader:
             report = reader.extract_all(tmp_path / value.value, on_problem=value)
         assert report.ok
 
@@ -156,13 +177,13 @@ def test_a_bad_value_is_a_usage_error(tmp_path: Path) -> None:
     ],
 )
 def test_an_old_keyword_warns_and_keeps_its_behaviour(
-    tmp_path: Path, old: str, value: object
+    tmp_path: Path, old: str, value: object, streaming: bool
 ) -> None:
     src = _zip(tmp_path / "a.zip", damaged=True)
     # The old default on_error="stop" raises at the damaged member.
     stopped = pytest.raises(CorruptionError) if old != "on_error" else nullcontext()
     with (
-        open_archive(src) as reader,
+        open_archive(src, streaming=streaming) as reader,
         stopped,
         pytest.warns(DeprecationWarning, match="on_problem") as caught,
     ):
@@ -180,3 +201,36 @@ def test_an_old_keyword_beside_on_problem_is_a_usage_error(tmp_path: Path) -> No
         pytest.raises(ArchiveyUsageError, match="on_problem"),
     ):
         reader.extract_all(tmp_path / "out", on_problem="continue", on_blocked="skip")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes anywhere"
+)
+def test_the_default_attaches_the_report_to_a_raw_write_error(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """A write error is an ``OSError``, not an ``ArchiveyError``; ``"finish"`` still
+    raises it at the end with the report on it."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("ro/f", b"locked")
+        zf.writestr("last.txt", b"last")
+    src = tmp_path / "a.zip"
+    src.write_bytes(buf.getvalue())
+    dest = tmp_path / "out"
+    (dest / "ro").mkdir(parents=True)
+    (dest / "ro").chmod(0o555)
+    try:
+        with (
+            open_archive(src, streaming=streaming) as reader,
+            pytest.raises(OSError) as caught,
+        ):
+            reader.extract_all(dest)
+    finally:
+        (dest / "ro").chmod(0o755)
+    assert not isinstance(caught.value, archivey.ArchiveyError)
+    report = getattr(caught.value, "report", None)
+    assert report is not None
+    assert _statuses(report)["ro/f"] is ExtractionStatus.FAILED
+    assert (dest / "last.txt").read_bytes() == b"last"

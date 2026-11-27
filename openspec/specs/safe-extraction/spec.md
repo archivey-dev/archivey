@@ -69,7 +69,7 @@ extract (ADR 0019).
 library default. `ExtractionLimits.UNLIMITED` disables the byte and entry-count
 guards. The ratio guards (per-member, archive-wide and live) take their fields from
 the reader's `config.decoder_limits`, which no per-call argument changes. Policy, overwrite,
-`on_error`, progress, and member-selection/filter arguments remain operational
+`on_problem`, progress, and member-selection/filter arguments remain operational
 arguments outside config.
 
 `extract_all()` always returns `ExtractionReport` with an accumulated immutable result
@@ -1385,6 +1385,12 @@ the run under every value. `on_error=`, `on_blocked=` and `abort_on=` SHALL keep
 
 ### Requirement: Error Policy (OnError) for extraction failures
 
+This requirement describes the three switches that `on_problem` sets (see "One problem
+setting"): `"stop"` is `OnError.STOP` with `AbortOn.BLOCKED_MEMBER`, `"finish"` and
+`"continue"` are `OnError.CONTINUE`, and `"keep_partial"` is `OnError.KEEP_PARTIAL`. A
+caller reaches `OnError`, `on_blocked` and `AbortOn` directly only through the
+deprecated `on_error=`, `on_blocked=` and `abort_on=` keywords.
+
 `OnError.STOP`, `OnError.CONTINUE` and `OnError.KEEP_PARTIAL` SHALL govern per-member
 **failures** only — a non-rejection member-scoped `ArchiveyError`, a permitted
 read/write `OSError`, or a per-member ratio violation. A policy **block** (a
@@ -1443,7 +1449,7 @@ unexpected programming exceptions are always-stop and are not swallowed.
 | Member blocked by policy/path-safety under `CONTINUE` | `BLOCKED` result; partial output removed; later members continue |
 | First member blocked, remaining members extractable, under `STOP` | Run completes; `BLOCKED` + later `EXTRACTED` recorded; no exception at the blocked member; the call ends as `on_blocked` says |
 | Corrupt member under `CONTINUE` | Partial output removed; `FAILED` result; later members continue |
-| Default `STOP` member failure (e.g. `CorruptionError`) | Original error propagates immediately; failing partial file removed; earlier outputs remain (from a ZIP read from a pipe, less the files that could still be links: `format-zip`) |
+| Member failure (e.g. `CorruptionError`) under `STOP` | Original error propagates immediately; failing partial file removed; earlier outputs remain (from a ZIP read from a pipe, less the files that could still be links: `format-zip`) |
 | Filesystem `OSError` while writing under `CONTINUE` | Partial output removed; `FAILED` result; extraction proceeds |
 | A member under a non-directory this run extracted (file `d`, then `d/f` or directory `d/y`) | Per-member `ExtractionError` naming `d`, not a raw `OSError`, under every `OverwritePolicy` |
 | A member under a non-directory already in `dest` before the run (`d/f` over the caller's file `d`) | `d` meets `OverwritePolicy` as an explicit `d/` entry would (see the overwrite requirement); under `ERROR` a per-member `ExtractionError`, not a raw `OSError` |
@@ -1924,7 +1930,9 @@ rewritten name then collides and is renamed).
 ### Requirement: Abort-on-event opt-in for extraction
 
 `extract_all()` SHALL accept `abort_on: Collection[AbortOn] = ()`,
-halting the whole extraction the first time a named event occurs.
+halting the whole extraction the first time a named event occurs. `abort_on=` is
+deprecated in 0.6.0 and removed in 0.7.0 ("One problem setting"); `on_problem="stop"`
+covers `BLOCKED_MEMBER`, and the two name events have no `on_problem` value.
 
 ```python
 class AbortOn(StrEnum):

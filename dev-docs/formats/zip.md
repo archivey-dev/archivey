@@ -742,12 +742,12 @@ ordinary archive can reach:
   sizes, so under `STRICT` it raises `DiagnosticRaisedError` there. Matching it would
   mean rebuilding the guard's per-member bound (the next local header, or the
   directory's start) in the pass, for a crafted-only shape (DR-5a).
-- Under `on_error="stop"`, a member whose data fails as the pass stages it stops the
+- Under `on_problem="stop"`, a member whose data fails as the pass stages it stops the
   run, though the directory may then not list or select it. A refusal of the local
-  header's name by the universal checks or the name policy stops the run the same way
-  only under `abort_on` (`blocked_member` for a refusal, `name_sanitized` for a
-  rewrite). `on_error="stop"` alone does not stop on it: the refusal blocks the member,
-  as a refusal at placement does, and the run goes on, as from a file.
+  header's name by the universal checks or the name policy stops the run the same way.
+  Under the other values the refusal blocks the member, as a refusal at placement
+  does, and the run goes on, as from a file. The deprecated
+  `abort_on={"name_sanitized"}` stops it on a rewrite.
 - A member refused on its local header's name and accepted on the directory's (a
   crafted pair of names, or a `filter` that renames an unsafe name such as
   `../evil.txt`) fails at placement, its data not staged, where the file read writes it.
@@ -758,7 +758,7 @@ ordinary archive can reach:
 - The bomb limits count what the pass stages while it is staged, so a member staged and
   then not placed, a member the `filter` drops included, can still stop a run under
   `max_entries` or `max_extracted_bytes` that the file read completes.
-- A run stopped before placement (`abort_on`, `on_error="stop"`, a limit, a `STRICT`
+- A run stopped before placement (`on_problem="stop"`, `abort_on`, a limit, a `STRICT`
   refusal at the directory) leaves nothing of its own in the destination, where the
   file read keeps every member it wrote before the stop, links made.
 - A bit-3 codec member whose data is damaged can fail with another error than from a

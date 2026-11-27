@@ -228,8 +228,8 @@ end-of-run sweep and not a refusal of `a/../x` targets.
 - **Results and progress.** The earlier member's result is revised in place, as a
   `REPLACE` collision revises one to `OVERWRITTEN`. A progress report already sent for
   that member is not sent again; the tallies of the next report (`members_extracted`,
-  `members_blocked`) follow the revision. The revision is a policy block, so it never
-  stops the run under `OnError.STOP`, and `AbortOn.BLOCKED_MEMBER` ends the run on it.
+  `members_blocked`) follow the revision. The revision is a policy block, so
+  `on_problem="stop"` ends the run on it, and `"finish"` raises it at the end.
 
 *Cost.* The walk costs one `lstat` per component, about what the creation check's
 `resolve()` already costs, so a `node_modules`-shaped tree stays linear in link count.
@@ -314,8 +314,8 @@ bytes. The outcome is the same on every platform. ADR
   `RENAME` writes `photo (1).jpg`, and a `REPLACE` revises the clobbered member's
   result to `OVERWRITTEN` (`_mark_overwritten`) so the merge is visible.
   `ExtractionReport.results` is the only record.
-  `abort_on={AbortOn.NAME_COLLISION}` makes any collision fatal;
-  `abort_on={AbortOn.NAME_SANITIZED}` refuses any rewritten name.
+  The deprecated `abort_on={AbortOn.NAME_COLLISION}` makes any collision fatal, and
+  `abort_on={AbortOn.NAME_SANITIZED}` refuses any rewritten name, until 0.7.0.
 - A name the filter accepted but the filesystem refuses at write (`EILSEQ` on APFS,
   `ENAMETOOLONG`, Windows `winerror` 123 and 206) is translated to a typed
   `ExtractionError` naming the member (`_typed_os_error` in `internal/extraction.py`).
