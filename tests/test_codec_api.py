@@ -23,26 +23,23 @@ from archivey import (
     ArchiveyUsageError,
     ContainerFormat,
     CorruptionError,
-    DetectionConfidence,
     DiagnosticCode,
     FormatDetectionError,
     FormatPolicy,
-    FormatSupport,
     MemberType,
     PackageNotInstalledError,
-    PluginStream,
     ResourceLimitError,
     StreamFormat,
     TruncatedError,
     UnsupportedFeatureError,
-    Verification,
     detect_format,
     format_availability,
-    list_supported_formats,
     open_archive,
     open_stream,
 )
 from archivey.config import DecoderLimits
+from archivey.core import list_supported_formats
+from archivey.detection import DetectionConfidence
 from archivey.exceptions import ArchiveyError
 from archivey.formats import (
     CodecCall,
@@ -59,6 +56,7 @@ from archivey.formats import (
 )
 from archivey.internal.excluded_libraries import EXCLUDED_REASON
 from archivey.internal.format_adapter import registration_scope
+from archivey.types import FormatSupport, PluginStream, Verification
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_format_api import _compressed_archive, _compressed_plugin
 from tests.test_format_api_sequential import (

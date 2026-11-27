@@ -67,8 +67,8 @@ What each call returns, and the errors you're most likely to meet. The
 - **`open_stream(source)`** returns a file object with the decompressed contents. On a
   `.tar.gz` you get the TAR's bytes. A ZIP, 7z, RAR, ISO or plain TAR raises
   `FormatDetectionError`. [Single compressed files](opening.md#single-compressed-files)
-- **`detect_format(source)`** returns a [`FormatInfo`][archivey.FormatInfo] with the `format`
-  and how sure archivey is about it. A file in no format archivey reads raises
+- **`detect_format(source)`** returns a [`FormatInfo`][archivey.detection.FormatInfo] with the
+  `format` and how sure archivey is about it. A file in no format archivey reads raises
   `FormatDetectionError`. [Format](opening.md#format)
 
 `open_archive(source, streaming=True)` reads the archive once, from start to end. Its reader has
@@ -128,7 +128,7 @@ with archivey.open_archive("download.zip") as archive:
         overwrite="error",  # an existing file fails the member
         on_error="stop",    # the first failed member raises
         on_blocked="raise", # a refused member raises once the rest are done
-        limits=archivey.ExtractionLimits(
+        limits=archivey.config.ExtractionLimits(
             max_extracted_bytes=2 * 2**30,  # 2 GiB written in total
             max_entries=262_144,            # files, folders and links created
         ),

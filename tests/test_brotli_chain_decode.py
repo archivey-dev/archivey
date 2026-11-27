@@ -20,14 +20,9 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ArchiveFormat,
-    ArchiveyConfig,
-    DetectionConfidence,
-    FormatDetectionError,
-    ProcessIsolation,
-    detect_format,
-)
+from archivey import ArchiveFormat, ArchiveyConfig, FormatDetectionError, detect_format
+from archivey.config import ProcessIsolation
+from archivey.detection import DetectionConfidence
 from archivey.detection_cost import (
     BALANCED_BUDGET,
     FAST_BUDGET,

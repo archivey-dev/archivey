@@ -153,7 +153,7 @@ in. `requests` counts the requests so far, and `request_start` and `request_end`
 the current one asks for:
 
 ```python
-def show(progress: archivey.SourceProgress) -> None:
+def show(progress: archivey.types.SourceProgress) -> None:
     if progress.request_done:
         print(f"request {progress.requests}: {progress.request_received} bytes")
 

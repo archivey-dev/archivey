@@ -417,8 +417,9 @@ config = archivey.ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.STR
 With `DiagnosticPolicy.STRICT`, the diagnostics that say the archive itself is unusual, such as a
 name that displays as a different one, raise `DiagnosticRaisedError` from the call that found them.
 The ones about your own arguments, such as an unused password, and a few others, such as an empty
-archive, are only recorded as before. The [reference][archivey.ARCHIVE_INTEGRITY_CODES] lists which
-codes raise. `DiagnosticPolicy.PEDANTIC` raises on every code, including codes a later release adds.
+archive, are only recorded as before. The [reference][archivey.diagnostics.ARCHIVE_INTEGRITY_CODES]
+lists which codes raise. `DiagnosticPolicy.PEDANTIC` raises on every code, including codes a later
+release adds.
 
 ```python
 config = archivey.ArchiveyConfig(
@@ -431,6 +432,6 @@ config = archivey.ArchiveyConfig(
 A policy is two sets of codes. A code in `ignore` is no longer logged, passed to the callback or
 kept, but `counts` still counts it. A code in `raise_on` raises. Every other code is recorded as
 before. To change a preset, build a policy from the same set: `STRICT` is
-`DiagnosticPolicy(raise_on=archivey.ARCHIVE_INTEGRITY_CODES)`, so
-`raise_on=archivey.ARCHIVE_INTEGRITY_CODES - {archivey.DiagnosticCode.ARCHIVE_TRAILING_DATA}` is
-`STRICT` without that one code. The [reference][archivey.DiagnosticCode] lists every code.
+`DiagnosticPolicy(raise_on=archivey.diagnostics.ARCHIVE_INTEGRITY_CODES)`, so
+`raise_on=archivey.diagnostics.ARCHIVE_INTEGRITY_CODES - {archivey.DiagnosticCode.ARCHIVE_TRAILING_DATA}`
+is `STRICT` without that one code. The [reference][archivey.DiagnosticCode] lists every code.

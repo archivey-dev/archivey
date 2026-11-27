@@ -19,15 +19,10 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
-    BackendUse,
-    CompressionAlgorithm,
     ContainerFormat,
     CorruptionError,
-    DecoderLimits,
     DiagnosticCode,
     FormatPolicy,
-    OptionalLibrary,
-    ProcessIsolation,
     ResourceLimitError,
     StreamFormat,
     TruncatedError,
@@ -36,12 +31,14 @@ from archivey import (
     open_archive,
     open_stream,
 )
+from archivey.config import DecoderLimits, ProcessIsolation
 from archivey.formats import register_format
 from archivey.internal.format_adapter import registration_scope
 from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.streams.codecs import deps, lzo_decoder
 from archivey.internal.streams.codecs.decoder_child import POOL
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, ISOLATED
+from archivey.types import BackendUse, CompressionAlgorithm, OptionalLibrary
 from tests.lzop_build import make_lzop
 from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO

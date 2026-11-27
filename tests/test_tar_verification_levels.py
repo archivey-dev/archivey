@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, Verification, open_archive
-from archivey.types import ArchiveMember
+from archivey import ArchiveyConfig, open_archive
+from archivey.types import ArchiveMember, Verification
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_audit_tar_streams import _TRAILER, _gnu_sparse, _member
 

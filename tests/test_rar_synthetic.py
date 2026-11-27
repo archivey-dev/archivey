@@ -21,7 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, DecoderLimits, SpoolLimits, open_archive
+from archivey import ArchiveyConfig, open_archive
+from archivey.config import DecoderLimits, SpoolLimits
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,

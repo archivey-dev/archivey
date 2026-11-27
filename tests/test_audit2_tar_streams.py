@@ -19,13 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    AcceleratorMode,
-    ArchiveFormat,
-    ArchiveyConfig,
-    ExtractionPolicy,
-    open_archive,
-)
+from archivey import ArchiveFormat, ArchiveyConfig, ExtractionPolicy, open_archive
+from archivey.config import AcceleratorMode
 from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
 from archivey.exceptions import (
     ArchiveyError,

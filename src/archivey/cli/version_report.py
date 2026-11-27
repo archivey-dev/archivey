@@ -35,16 +35,18 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     ContainerFormat,
-    FormatAvailability,
     FormatPolicy,
+    StreamFormat,
+    format_availability,
+)
+from archivey.cli.format import format_format_label
+from archivey.core import list_known_formats
+from archivey.types import (
+    FormatAvailability,
     FormatSupport,
     MissingComponent,
     OptionalLibrary,
-    StreamFormat,
-    format_availability,
-    list_known_formats,
 )
-from archivey.cli.format import format_format_label
 
 _WIDTH = 79
 _LEVELS = (FormatSupport.FULL, FormatSupport.PARTIAL, FormatSupport.NONE)

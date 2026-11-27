@@ -20,23 +20,22 @@ from archivey import (
     ArchiveyConfig,
     ContainerFormat,
     CorruptionError,
-    DecoderLimits,
     EncryptionError,
-    ListingLimits,
     PackageNotInstalledError,
     ResourceLimitError,
     StreamFormat,
     TruncatedError,
     UnsupportedFeatureError,
-    Verification,
     detect_format,
     open_archive,
 )
+from archivey.config import DecoderLimits, ListingLimits
 from archivey.diagnostics import DiagnosticCode
 from archivey.formats import SequentialReader
 from archivey.internal.backends import makeself_reader
 from archivey.internal.backends.makeself_reader import MakeselfReader
 from archivey.internal.streams import crypto
+from archivey.types import Verification
 from tests.conftest import requires_zstd
 from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
@@ -769,7 +768,7 @@ def test_a_digest_over_ciphertext_does_not_check_the_decrypted_files() -> None:
 def test_a_later_walk_reuses_the_provider_answer() -> None:
     asked: list[int] = []
 
-    def provider(request: archivey.PasswordRequest) -> bytes | None:
+    def provider(request: archivey.config.PasswordRequest) -> bytes | None:
         asked.append(request.attempt)
         return b"secret" if len(asked) == 1 else None
 

@@ -18,15 +18,14 @@ import archivey
 from archivey import (
     ArchiveFormat,
     CorruptionError,
-    HashAlgorithm,
     MemberType,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
-    Verification,
     detect_format,
     open_archive,
 )
+from archivey.types import HashAlgorithm, Verification
 from tests.conftest import requires_zstd
 from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
@@ -403,7 +402,7 @@ def test_sanitize_names_cannot_move_a_data_member_into_debian(
         pytest.raises(CorruptionError, match="DEBIAN/"),
         open_archive(io.BytesIO(_deb(data=data))) as reader,
     ):
-        reader.extract_all(tmp_path, filter=archivey.sanitize_names)
+        reader.extract_all(tmp_path, filter=archivey.paths.sanitize_names)
     assert sorted(p.name for p in (tmp_path / "DEBIAN").iterdir()) == [
         "control",
         "md5sums",
@@ -888,9 +887,9 @@ def test_symlink_rechecks_count_against_max_members(
     against max_members, so a crafted data tar stops at the limit, in about a second
     at the default, rather than running for minutes."""
     raw = _deb(data=_redirected(links, links))
-    limits = archivey.ListingLimits()
+    limits = archivey.config.ListingLimits()
     if max_members is not None:
-        limits = archivey.ListingLimits(max_members=max_members)
+        limits = archivey.config.ListingLimits(max_members=max_members)
     config = archivey.ArchiveyConfig(listing_limits=limits)
     with (
         pytest.raises(
@@ -922,7 +921,7 @@ def _long_routes(width: int, links: int) -> list[tuple[str, bytes | None]]:
 def test_steps_inside_followed_targets_count_against_max_members(pipe: bool) -> None:
     """Without the charge, the first resolution of each symlink was free, and an
     11 KB package listed for 49 s."""
-    limits = archivey.ListingLimits(max_members=2_000)
+    limits = archivey.config.ListingLimits(max_members=2_000)
     config = archivey.ArchiveyConfig(listing_limits=limits)
     with (
         pytest.raises(
@@ -965,7 +964,7 @@ def test_symlinks_that_follow_short_ones_stay_within_max_members() -> None:
 
 def test_symlink_rechecks_within_max_members_list_the_package() -> None:
     raw = _deb(data=_redirected(4, 4))
-    limits = archivey.ListingLimits(max_members=300)
+    limits = archivey.config.ListingLimits(max_members=300)
     with open_archive(
         io.BytesIO(raw), config=archivey.ArchiveyConfig(listing_limits=limits)
     ) as reader:
@@ -1054,7 +1053,7 @@ def test_held_control_files_count_against_max_metadata_bytes() -> None:
     raw = _deb()
 
     def config(limit: int | None) -> archivey.ArchiveyConfig:
-        limits = archivey.ListingLimits(max_metadata_bytes=limit)
+        limits = archivey.config.ListingLimits(max_metadata_bytes=limit)
         return archivey.ArchiveyConfig(listing_limits=limits)
 
     with (
@@ -1084,14 +1083,14 @@ def test_the_md5sums_map_is_charged_for_each_entry() -> None:
     count = 20_000
     sums = b"".join(b"%032x  usr/f%d\n" % (i, i) for i in range(count))
     raw = _deb(control=[("./control", CONTROL), ("./md5sums", sums)])
-    limits = archivey.ListingLimits(max_metadata_bytes=2 * len(sums))
+    limits = archivey.config.ListingLimits(max_metadata_bytes=2 * len(sums))
     config = archivey.ArchiveyConfig(listing_limits=limits)
     with (
         pytest.raises(ResourceLimitError, match="md5sums entries"),
         open_archive(io.BytesIO(raw), config=config) as reader,
     ):
         reader.members()
-    limits = archivey.ListingLimits(max_metadata_bytes=5 * len(sums))
+    limits = archivey.config.ListingLimits(max_metadata_bytes=5 * len(sums))
     config = archivey.ArchiveyConfig(listing_limits=limits)
     with open_archive(io.BytesIO(raw), config=config) as reader:
         assert reader.read("usr/a") == b"alpha"
@@ -1109,7 +1108,7 @@ def test_md5sums_names_are_charged_at_their_str_width(tail: bytes) -> None:
         b"%032x  usr/%s%d%s\n" % (i, b"a" * 1000, i, tail) for i in range(2000)
     )
     raw = _deb(control=[("./control", CONTROL), ("./md5sums", sums)])
-    limits = archivey.ListingLimits(max_metadata_bytes=int(2.5 * len(sums)))
+    limits = archivey.config.ListingLimits(max_metadata_bytes=int(2.5 * len(sums)))
     config = archivey.ArchiveyConfig(listing_limits=limits)
     with (
         pytest.raises(ResourceLimitError, match="md5sums entries"),
@@ -1132,7 +1131,7 @@ def test_reads_out_of_order_charge_the_control_files_once() -> None:
 
     entries = sum(len(name) + _MD5_ENTRY for name in FILES)  # ASCII names
     held = 4 + len(CONTROL) + len(_md5sums(FILES)) + entries
-    limits = archivey.ListingLimits(max_metadata_bytes=listed + held)
+    limits = archivey.config.ListingLimits(max_metadata_bytes=listed + held)
     config = archivey.ArchiveyConfig(listing_limits=limits)
     with open_archive(io.BytesIO(raw), config=config) as reader:
         files = [m.name for m in reader.members() if m.type is MemberType.FILE]

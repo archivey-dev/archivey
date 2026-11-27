@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ExtractionPolicy, FilterRejectionError
+from archivey import ExtractionPolicy
+from archivey.exceptions import FilterRejectionError
 from archivey.internal.filters import (
     SYMLINK_ESCAPES,
     SYMLINK_LOOPS,

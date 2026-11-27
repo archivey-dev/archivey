@@ -16,7 +16,6 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey import ExtractionStatus
 from archivey.cli.exit_codes import EXIT_OK
 from archivey.cli.main import main
 from archivey.diagnostics import (
@@ -24,6 +23,7 @@ from archivey.diagnostics import (
     MemberNameControlsContext,
     SymlinkTargetContext,
 )
+from archivey.types import ExtractionStatus
 from tests.conftest import requires_binary
 from tests.extract_util import open_and_extract
 from tests.test_link_target_cap import _sevenzip_with_link
@@ -204,7 +204,7 @@ def test_member_under_an_earlier_file_member_names_the_file(
     by_name = {r.member.name.rstrip("/"): r for r in report.results}
     failed = by_name[child[0]]
     assert failed.status is ExtractionStatus.FAILED
-    assert isinstance(failed.error, archivey.ExtractionError)
+    assert isinstance(failed.error, archivey.exceptions.ExtractionError)
     assert "'d'" in str(failed.error)
     assert (tmp_path / "out" / "d").read_bytes() == b"x"
     assert by_name["e"].status is ExtractionStatus.EXTRACTED
@@ -222,7 +222,9 @@ def test_member_under_a_preexisting_file_meets_the_overwrite_policy(
     out.mkdir()
     (out / "d").write_bytes(b"mine")
 
-    with pytest.raises(archivey.ExtractionError, match="Destination already exists"):
+    with pytest.raises(
+        archivey.exceptions.ExtractionError, match="Destination already exists"
+    ):
         open_and_extract(archive, out)
     assert (out / "d").read_bytes() == b"mine"
 

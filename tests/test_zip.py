@@ -24,11 +24,9 @@ from archivey import (
     ArchiveFormat,
     ArchiveMember,
     ArchiveyConfig,
-    CompressionAlgorithm,
     DiagnosticCode,
     DiagnosticPolicy,
     ExtractionPolicy,
-    ExtractionStatus,
     MemberType,
     open_archive,
 )
@@ -44,7 +42,12 @@ from archivey.exceptions import (
 )
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.reader_state import LifecycleState
-from archivey.types import CreateSystem, HashAlgorithm
+from archivey.types import (
+    CompressionAlgorithm,
+    CreateSystem,
+    ExtractionStatus,
+    HashAlgorithm,
+)
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import NonSeekableBytesIO
@@ -370,8 +373,8 @@ def test_encryption_header_larger_than_declared_size_is_corruption(
 @pytest.mark.usefixtures("zip_general_path")
 def test_archive_close_defers_teardown_past_an_in_flight_member_read() -> None:
     """Closing beside a member stream's read that is inside the archive's source
-    returns at once; the read finishes on the open handle, then raises the
-    closed-file error instead of returning its bytes, and the archive is torn down when it is
+    returns at once; the read finishes on the open handle, then raises the closed-file
+    error instead of returning its bytes, and the archive is torn down when it is
     out (the last call out)."""
     import threading
 

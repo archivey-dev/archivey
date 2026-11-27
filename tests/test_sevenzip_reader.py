@@ -17,7 +17,7 @@ from typing import BinaryIO
 
 import pytest
 
-from archivey import ExtractionStatus, open_archive
+from archivey import open_archive
 from archivey.config import (
     AcceleratorMode,
     ArchiveyConfig,
@@ -47,7 +47,13 @@ from archivey.internal.backends.sevenzip_reader import (
 from archivey.internal.config import DEFAULT_STREAM_CONFIG
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_CHUNK_BYTES
 from archivey.internal.streams import codecs, crypto
-from archivey.types import CompressionAlgorithm, CreateSystem, HashAlgorithm, MemberType
+from archivey.types import (
+    CompressionAlgorithm,
+    CreateSystem,
+    ExtractionStatus,
+    HashAlgorithm,
+    MemberType,
+)
 from tests.conftest import (
     ReadSizeSpy,
     requires,

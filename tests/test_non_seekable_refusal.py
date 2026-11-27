@@ -24,13 +24,12 @@ from archivey import (
     ArchiveyConfig,
     DiagnosticCode,
     DiagnosticPolicy,
-    DiagnosticRaisedError,
-    FormatSupport,
     PackageNotInstalledError,
-    StreamNotSeekableError,
     format_availability,
     open_archive,
 )
+from archivey.exceptions import DiagnosticRaisedError, StreamNotSeekableError
+from archivey.types import FormatSupport
 from tests.streams_util import NonSeekableBytesIO
 
 # Trailing index or offset-addressed: no forward-only pass exists for these.

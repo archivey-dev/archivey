@@ -14,11 +14,10 @@ import pytest
 from archivey import (
     ArchiveyConfig,
     ArchiveyUsageError,
-    ExtractionLimits,
-    ListingLimits,
     ResourceLimitError,
     open_archive,
 )
+from archivey.config import ExtractionLimits, ListingLimits
 from archivey.internal.listing_limits import (
     ListingLimitTracker,
     member_metadata_bytes,

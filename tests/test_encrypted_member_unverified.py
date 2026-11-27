@@ -14,13 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ArchiveyConfig,
-    DecoderLimits,
-    DiagnosticPolicy,
-    PasswordRequest,
-    open_archive,
-)
+from archivey import ArchiveyConfig, DiagnosticPolicy, open_archive
+from archivey.config import DecoderLimits, PasswordRequest
 from archivey.diagnostics import (
     ARCHIVE_INTEGRITY_CODES,
     DiagnosticCode,

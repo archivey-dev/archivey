@@ -18,16 +18,9 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ArchiveyError,
-    EncryptionError,
-    ExtractionStatus,
-    MemberType,
-    OnError,
-    open_archive,
-)
+from archivey import ArchiveyError, EncryptionError, MemberType, open_archive
 from archivey.internal.hashing import crc32_digest
-from archivey.types import HashAlgorithm
+from archivey.types import ExtractionStatus, HashAlgorithm, OnError
 from tests.sample_archives import (
     CORPUS,
     CorpusEntry,

@@ -22,12 +22,11 @@ from typing import Any, ClassVar
 
 import pytest
 
-from archivey import SourceProgress
 from archivey.cli import sources
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.extract_cmd import UrlName, _archive_stem
 from archivey.cli.main import main
-from archivey.types import ArchiveFormat
+from archivey.types import ArchiveFormat, SourceProgress
 
 # --- fixtures -------------------------------------------------------------------------
 
@@ -1237,7 +1236,7 @@ def test_http_a_416_after_the_object_shrank_is_a_changed_object(
     http_base: str,
     reporting: None,
 ) -> None:
-    from archivey import SourceChangedError
+    from archivey.exceptions import SourceChangedError
 
     data = bytes(range(256)) * 1024
     _Handler.files["/big.bin"] = data
@@ -1255,7 +1254,7 @@ def test_http_a_416_naming_the_same_size_is_refused_not_a_change(
     http_base: str,
     reporting: None,
 ) -> None:
-    from archivey import SourceChangedError
+    from archivey.exceptions import SourceChangedError
 
     _Handler.files["/big.bin"] = bytes(range(256)) * 1024
     _Handler.status_override[0] = (416, "bytes */262144")
@@ -1304,7 +1303,7 @@ def test_http_a_whole_answer_of_another_size_is_a_changed_object(
 ) -> None:
     # A server that ignores ranges answers a read from byte 0 with the whole object;
     # a Content-Length other than the size read at open is another object.
-    from archivey import SourceChangedError
+    from archivey.exceptions import SourceChangedError
 
     _Handler.files["/small.bin"] = b"a" * 85
     src = _range_source(f"{http_base}/small.bin")
@@ -1320,7 +1319,7 @@ def test_http_a_whole_answer_of_another_size_is_a_changed_object(
 def test_http_a_206_naming_another_size_is_a_changed_object(
     http_base: str, reporting: None
 ) -> None:
-    from archivey import SourceChangedError
+    from archivey.exceptions import SourceChangedError
 
     _Handler.files["/big.bin"] = bytes(range(256)) * 1024
     _Handler.total_206[0] = 999_999

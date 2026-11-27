@@ -1110,13 +1110,15 @@ class _Hand:
         return bytes(self.data + cd + end)
 
 
-def _listing(data: bytes, *, pipe: bool) -> archivey.MemberListReport:
+def _listing(data: bytes, *, pipe: bool) -> archivey.diagnostics.MemberListReport:
     source = _pipe(data) if pipe else io.BytesIO(data)
     with archivey.open_archive(source, pipe=pipe) as reader:
         return reader.members_report()
 
 
-def _unlisted(report: archivey.MemberListReport) -> list[UnlistedDataContext]:
+def _unlisted(
+    report: archivey.diagnostics.MemberListReport,
+) -> list[UnlistedDataContext]:
     out = []
     for d in report.diagnostics.retained:
         if d.code is DiagnosticCode.ARCHIVE_UNLISTED_DATA:

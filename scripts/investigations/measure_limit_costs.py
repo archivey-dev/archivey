@@ -135,9 +135,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    listing = archivey.ListingLimits()
-    decoder = archivey.DecoderLimits()
-    extraction = archivey.ExtractionLimits()
+    listing = archivey.config.ListingLimits()
+    decoder = archivey.config.DecoderLimits()
+    extraction = archivey.config.ExtractionLimits()
     rows: list[tuple[str, str, str]] = []
 
     with tempfile.TemporaryDirectory() as tmp_name:
@@ -207,7 +207,7 @@ def main() -> None:
         with archivey.open_archive(path) as archive:
             seconds = time_call(
                 lambda: archive.extract_all(
-                    out, limits=archivey.ExtractionLimits.UNLIMITED
+                    out, limits=archivey.config.ExtractionLimits.UNLIMITED
                 )
             )
         per = seconds / size

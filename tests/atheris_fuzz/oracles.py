@@ -51,15 +51,13 @@ from pathlib import Path
 from typing import Any
 
 from archivey import (
-    AcceleratorMode,
     ArchiveyConfig,
     ArchiveyError,
     ContainerFormat,
-    DecoderLimits,
-    ListingLimits,
     detect_format,
     open_archive,
 )
+from archivey.config import AcceleratorMode, DecoderLimits, ListingLimits
 from archivey.detection_cost import BALANCED_BUDGET
 from archivey.diagnostics import DiagnosticPolicy
 from archivey.types import ExtractionPolicyStr

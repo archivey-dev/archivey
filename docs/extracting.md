@@ -69,7 +69,7 @@ with archivey.open_archive("download.zip") as archive:
         on_blocked="raise",  # whether a refused member raises at the end
         abort_on=[],         # events that stop the whole extraction at once
         on_progress=None,    # called as files are written
-        limits=archivey.ExtractionLimits(max_extracted_bytes=2 * 2**30),  # how much it may write
+        limits=archivey.config.ExtractionLimits(max_extracted_bytes=2 * 2**30),  # how much it may write
         dry_run=False,       # run it without keeping anything
     )
 ```
@@ -257,12 +257,12 @@ A `filter` sees each member before these checks run, so it can rename one they w
 exception: there the checks also run on each member's name as it arrives, before its data is kept,
 so a member they refuse fails even if the filter renames it. Device files are refused whatever
 the filter does, and a link pointing outside is refused unless the filter also changes its target.
-`archivey.sanitize_names` is a ready-made filter for this, passed as `filter=` to `extract_all`. It
-drops a leading `/` or drive letter, resolves or drops `..`, removes those reordering characters,
-and adds `_` to names Windows reserves, such as `CON`. In a symlink's target it makes only the
-character and reserved-name fixes, and it leaves a hard link's target unchanged. It does not
-rewrite a `\`, a control character or bytes that are not UTF-8, which `STRICT` refuses: extract
-with `policy="standard"` to have those written under a portable spelling.
+`archivey.paths.sanitize_names` is a ready-made filter for this, passed as `filter=` to
+`extract_all`. It drops a leading `/` or drive letter, resolves or drops `..`, removes those
+reordering characters, and adds `_` to names Windows reserves, such as `CON`. In a symlink's target
+it makes only the character and reserved-name fixes, and it leaves a hard link's target unchanged.
+It does not rewrite a `\`, a control character or bytes that are not UTF-8, which `STRICT` refuses:
+extract with `policy="standard"` to have those written under a portable spelling.
 
 A hard link gets the contents of the file it points to in the archive, whatever happens to that
 file's name. If a filter renamed that file, the link points to the new name. If the file was left
@@ -279,11 +279,11 @@ archive stored it in `result.member`. That shows what was refused:
 with archivey.open_archive("download.zip") as archive:
     try:
         report = archive.extract_all("out/")
-    except archivey.FilterRejectionError as e:
+    except archivey.exceptions.FilterRejectionError as e:
         report = e.report
         assert report is not None  # always set on the end-of-call error
         for result in report:
-            if result.status is archivey.ExtractionStatus.BLOCKED:
+            if result.status is archivey.types.ExtractionStatus.BLOCKED:
                 print(result.member.name, result.error)
 ```
 
@@ -358,9 +358,10 @@ expands more than 800 times. When the archive records both a member's size and i
 size, a member that would expand too much is refused before any of it is written. Other members,
 and the whole archive, are checked as data is written. The expansion check ignores outputs under
 5 MiB, or under 256 MiB for a whole archive read from a pipe. To extract something bigger, pass
-higher `limits`, or `archivey.ExtractionLimits.UNLIMITED` to turn the size and entry limits off.
-The expansion limit is `DecoderLimits.max_ratio`, set when you open the archive, because it holds
-reads too: `config=archivey.ArchiveyConfig(decoder_limits=archivey.DecoderLimits(max_ratio=None))`
+higher `limits`, or `archivey.config.ExtractionLimits.UNLIMITED` to turn the size and entry limits
+off. The expansion limit is `DecoderLimits.max_ratio`, set when you open the archive, because it
+holds reads too:
+`config=archivey.ArchiveyConfig(decoder_limits=archivey.config.DecoderLimits(max_ratio=None))`
 turns it off.
 
 ??? note "Why ignore small outputs?"

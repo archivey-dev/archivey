@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import BinaryIO, TextIO, cast
 
-from archivey import ArchiveReader, ExtractionProgress
+from archivey import ArchiveReader
 from archivey.cli.common import open_for_cli, outer_format_for
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK
 from archivey.cli.filters import MemberSelection
@@ -33,7 +33,7 @@ from archivey.exceptions import (
     ReadError,
     UnsupportedFeatureError,
 )
-from archivey.types import ArchiveMember, MemberType
+from archivey.types import ArchiveMember, ExtractionProgress, MemberType
 
 # Codes saying a digest went unchecked: the bytes were read but nothing confirmed them,
 # so the run is not a clean verification. Archive-level digests count too, such as

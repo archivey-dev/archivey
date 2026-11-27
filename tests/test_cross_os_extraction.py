@@ -26,14 +26,8 @@ from typing import cast
 
 import pytest
 
-from archivey import (
-    ArchiveyConfig,
-    DecoderLimits,
-    ExtractionPolicy,
-    ExtractionStatus,
-    OnError,
-    OverwritePolicy,
-)
+from archivey import ArchiveyConfig, ExtractionPolicy
+from archivey.config import DecoderLimits
 from archivey.exceptions import (
     ExtractionError,
     FilterRejectionError,
@@ -44,7 +38,13 @@ from archivey.internal import extraction, long_paths, placements as placements_m
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.filters import apply_name_policy
 from archivey.internal.link_watch import LinkWatch
-from archivey.types import ArchiveMember, MemberType
+from archivey.types import (
+    ArchiveMember,
+    ExtractionStatus,
+    MemberType,
+    OnError,
+    OverwritePolicy,
+)
 from tests.extract_util import lock_directories_at_once, open_and_extract
 
 _PORTABLE = pytest.mark.parametrize(

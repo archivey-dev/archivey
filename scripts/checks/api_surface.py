@@ -53,6 +53,14 @@ HEADER = (
 #: reports it as added.
 PUBLIC_MODULES = (
     "archivey",
+    "archivey.core",
+    "archivey.reader",
+    "archivey.types",
+    "archivey.detection",
+    "archivey.config",
+    "archivey.cost",
+    "archivey.exceptions",
+    "archivey.format_policy",
     "archivey.detection_cost",
     "archivey.diagnostics",
     "archivey.paths",
@@ -68,7 +76,7 @@ PUBLIC_MODULES = (
 #: to callers, so ``tests/test_api_surface.py`` pins the set.
 OPEN_ENUMS = frozenset(
     {
-        "archivey.CompressionAlgorithm",
+        "archivey.types.CompressionAlgorithm",
         "archivey.DiagnosticCode",
     }
 )
@@ -82,11 +90,11 @@ OPEN_ENUMS = frozenset(
 #: callers.
 EXPERIMENTAL = (
     "archivey.formats",
-    "archivey.PluginContainer",
-    "archivey.PluginStream",
+    "archivey.types.PluginContainer",
+    "archivey.types.PluginStream",
     "archivey.FormatPolicy.replace",
-    "archivey.FormatInfo.from_plugin",
-    "archivey.Verification",
+    "archivey.detection.FormatInfo.from_plugin",
+    "archivey.types.Verification",
     "archivey.ArchiveStream.verified",
     "archivey.ArchiveStream.verifiable",
     "archivey.ArchiveStream.verify",
@@ -94,9 +102,9 @@ EXPERIMENTAL = (
     "archivey.ArchiveMember.verifiable",
     "archivey.ForwardArchiveReader.verify_all",
     "archivey.ArchiveReader.verify_all",
-    "archivey.VerifyReport",
-    "archivey.BackendUse",
-    "archivey.BackendKindStr",
+    "archivey.diagnostics.VerifyReport",
+    "archivey.types.BackendUse",
+    "archivey.types.BackendKindStr",
     "archivey.ForwardArchiveReader.backends_used",
     "archivey.ArchiveReader.backends_used",
 )

@@ -24,12 +24,8 @@ from typing import Any
 
 import pytest
 
-from archivey import (
-    ArchiveyConfig,
-    ListingLimits,
-    MemberType,
-    open_archive,
-)
+from archivey import ArchiveyConfig, MemberType, open_archive
+from archivey.config import ListingLimits
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,

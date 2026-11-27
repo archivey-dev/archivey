@@ -23,14 +23,10 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     ArchiveyUsageError,
-    CompressionAlgorithm,
-    CompressionMethod,
-    DecoderLimits,
-    ListingLimits,
     MemberType,
     open_archive,
 )
-from archivey.config import REWIND_REDECODE_WARN_BYTES
+from archivey.config import REWIND_REDECODE_WARN_BYTES, DecoderLimits, ListingLimits
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.diagnostics import (
     ArchiveEofContext,
@@ -50,6 +46,7 @@ from archivey.internal.backends.tar_parser import DATA_READ_STEP, TarWalker
 from archivey.internal.backends.tar_reader import _WALK_BUFFER
 from archivey.internal.streams.archive_stream import MemberStreamParts
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
+from archivey.types import CompressionAlgorithm, CompressionMethod
 from tests import tar_build
 from tests.conftest import CPYTHON, requires_zstd, zstd_backend
 from tests.corruption_util import (
@@ -4118,8 +4115,8 @@ def test_hardlink_resolves_to_an_earlier_member_only(
     ``tar(1)`` links to what it already wrote. So ``h -> t`` with ``t`` only later has
     no target, and ``hu -> u`` is the first ``u``, not the later one. Random access
     and a streaming pass agree."""
-    from archivey import ExtractionStatus, OnError
     from archivey.exceptions import LinkTargetNotFoundError
+    from archivey.types import ExtractionStatus, OnError
 
     data = _tar_hardlink_then_target()
     with open_archive(io.BytesIO(data), streaming=streaming) as reader:

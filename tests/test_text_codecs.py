@@ -16,7 +16,6 @@ from archivey import (
     ArchiveFormat,
     ContainerFormat,
     CorruptionError,
-    DetectionConfidence,
     DiagnosticCode,
     FormatDetectionError,
     StreamFormat,
@@ -25,6 +24,7 @@ from archivey import (
     open_archive,
     open_stream,
 )
+from archivey.detection import DetectionConfidence
 from archivey.internal.streams.codecs import text_codecs
 from archivey.internal.streams.codecs.text_codecs import (
     _MAX_LINE,

@@ -13,14 +13,9 @@ import pickle
 
 import pytest
 
-from archivey import (
-    ArchiveFormat,
-    OptionalLibrary,
-    PackageNotInstalledError,
-    open_archive,
-)
+from archivey import ArchiveFormat, PackageNotInstalledError, open_archive
 from archivey.internal.registry import format_availability
-from archivey.types import MissingComponent
+from archivey.types import MissingComponent, OptionalLibrary
 from tests.source_trees import ROOT, SOURCE_TREES, source_files
 
 # ``spawn_for_stdout``'s refusal for a program that was found but could not start:

@@ -2,7 +2,8 @@
 
 Implementation companions to :mod:`archivey.detection_cost`: detectors write into
 :class:`MutableDetectionCostReceipt` and freeze it into the public
-:class:`~archivey.detection_cost.DetectionCostReceipt` on the :class:`~archivey.FormatInfo`.
+:class:`~archivey.detection_cost.DetectionCostReceipt` on the
+:class:`~archivey.detection.FormatInfo`.
 """
 
 from __future__ import annotations

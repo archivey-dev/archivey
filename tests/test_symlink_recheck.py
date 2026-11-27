@@ -21,12 +21,9 @@ from typing import cast
 import pytest
 
 import archivey
-from archivey import (
-    ExtractionLimits,
-    ExtractionStatus,
-    FilterRejectionError,
-    ResourceLimitError,
-)
+from archivey import ResourceLimitError
+from archivey.config import ExtractionLimits
+from archivey.exceptions import FilterRejectionError
 from archivey.internal import extraction, filters, link_watch
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.bomb_tracker import BombTracker
@@ -35,7 +32,7 @@ from archivey.internal.extraction import (
     _RunState,
     _symlink_problem,
 )
-from archivey.types import ArchiveMember, MemberType
+from archivey.types import ArchiveMember, ExtractionStatus, MemberType
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
 
@@ -84,7 +81,7 @@ def _extract(
     *,
     streaming: bool,
     **kwargs: object,
-) -> tuple[Path, dict[str, archivey.ExtractionResult]]:
+) -> tuple[Path, dict[str, archivey.types.ExtractionResult]]:
     (tmp_path / "secret").write_text("OUTSIDE")
     archive = tmp_path / "a.tar"
     _build_tar(archive, entries)
@@ -92,13 +89,13 @@ def _extract(
     kwargs.setdefault("on_error", "continue")
     with archivey.open_archive(archive, streaming=streaming) as reader:
         report = reader.extract_all(dest, **{"on_blocked": "skip", **kwargs})
-    by_name: dict[str, archivey.ExtractionResult] = {}
+    by_name: dict[str, archivey.types.ExtractionResult] = {}
     for result in report.results:
         by_name[result.member.name.rstrip("/")] = result
     return dest, by_name
 
 
-def _assert_blocked_as_escape(result: archivey.ExtractionResult) -> None:
+def _assert_blocked_as_escape(result: archivey.types.ExtractionResult) -> None:
     assert result.status is ExtractionStatus.BLOCKED
     assert result.path is None
     assert isinstance(result.error, FilterRejectionError)
@@ -148,7 +145,7 @@ def test_the_link_is_gone_before_the_next_member_is_handled(
     seen: list[tuple[str, list[str]]] = []
     dest = tmp_path / "out"
 
-    def probe(progress: archivey.ExtractionProgress) -> None:
+    def probe(progress: archivey.types.ExtractionProgress) -> None:
         seen.append((progress.member.name, _escaping_links(dest)))
 
     _extract(
@@ -164,7 +161,7 @@ def test_the_link_is_gone_before_the_next_member_is_handled(
 
 @pytest.mark.parametrize("streaming", [False, True])
 def test_progress_tallies_follow_the_revision(tmp_path: Path, streaming: bool) -> None:
-    reports: list[archivey.ExtractionProgress] = []
+    reports: list[archivey.types.ExtractionProgress] = []
     _extract(
         tmp_path,
         [("l", "sym", "a/../secret"), ("a", "sym", ".")],

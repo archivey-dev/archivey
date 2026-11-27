@@ -13,21 +13,20 @@ from archivey import (
     ArchiveyConfig,
     ContainerFormat,
     CorruptionError,
-    DecoderLimits,
     FormatDetectionError,
     FormatPolicy,
     PackageNotInstalledError,
-    ProcessIsolation,
     ResourceLimitError,
-    ResourceUnavailableError,
     StreamFormat,
     TruncatedError,
-    Verification,
     detect_format,
     open_archive,
 )
+from archivey.config import DecoderLimits, ProcessIsolation
 from archivey.detection_cost import TierSkip, TierSkipReason
+from archivey.exceptions import ResourceUnavailableError
 from archivey.internal.streams.codecs import bzip3_codec
+from archivey.types import Verification
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO
 
@@ -440,7 +439,8 @@ def test_the_package_is_imported_here_only_under_none() -> None:
 
     script = (
         "import sys, archivey\n"
-        "from archivey import ArchiveyConfig, ProcessIsolation, open_archive\n"
+        "from archivey import ArchiveyConfig, open_archive\n"
+        "from archivey.config import ProcessIsolation\n"
         "for iso in (ProcessIsolation.KNOWN_CRASHES, ProcessIsolation.NONE):\n"
         "    with open_archive(sys.argv[1], config=ArchiveyConfig("
         "process_isolation=iso)) as a:\n"

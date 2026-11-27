@@ -21,10 +21,10 @@ from archivey import (
     ArchiveMember,
     ArchiveyConfig,
     CorruptionError,
-    SpoolLimits,
     TruncatedError,
     open_archive,
 )
+from archivey.config import SpoolLimits
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,

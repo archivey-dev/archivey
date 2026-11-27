@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ExtractionStatus, open_archive
+from archivey import open_archive
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy, SymlinkTargetContext
 from archivey.exceptions import (
@@ -36,7 +36,7 @@ from archivey.exceptions import (
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.streams import codecs as codecs_module, crypto as crypto_module
 from archivey.reader import ArchiveReader
-from archivey.types import MemberType, OnError
+from archivey.types import ExtractionStatus, MemberType, OnError
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import (
     is_corruption_not_truncation,

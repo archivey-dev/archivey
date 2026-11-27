@@ -36,7 +36,7 @@ with archivey.open_archive("dataset.tar.gz") as archive:
         abort_on=["blocked_member"],
     )
 
-extracted = [r for r in report if r.status is archivey.ExtractionStatus.EXTRACTED]
+extracted = [r for r in report if r.status is archivey.types.ExtractionStatus.EXTRACTED]
 print(len(extracted), "members extracted")
 ```
 
@@ -58,12 +58,12 @@ for names, comments and link targets, or when a compressed tar expands more than
 import archivey
 
 config = archivey.ArchiveyConfig(
-    listing_limits=archivey.ListingLimits.UNLIMITED,
-    decoder_limits=archivey.DecoderLimits(max_ratio=None),
+    listing_limits=archivey.config.ListingLimits.UNLIMITED,
+    decoder_limits=archivey.config.DecoderLimits(max_ratio=None),
 )
 
 with archivey.open_archive("dataset.tar.gz", config=config) as archive:
-    archive.extract_all("data/", limits=archivey.ExtractionLimits.UNLIMITED)
+    archive.extract_all("data/", limits=archivey.config.ExtractionLimits.UNLIMITED)
 ```
 
 `ExtractionLimits.UNLIMITED` turns off the byte and entry caps of extraction,
@@ -188,12 +188,12 @@ import hashlib
 import archivey
 
 CONFIG = archivey.ArchiveyConfig(
-    listing_limits=archivey.ListingLimits(
+    listing_limits=archivey.config.ListingLimits(
         max_members=10_000,
         max_metadata_bytes=4 * 2**20,
     ),
-    decoder_limits=archivey.DecoderLimits(max_decoder_memory=256 * 2**20),
-    process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
+    decoder_limits=archivey.config.DecoderLimits(max_decoder_memory=256 * 2**20),
+    process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS,
     diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
 )
 MAX_TOTAL_BYTES = 1 * 2**30
@@ -263,12 +263,12 @@ import zipfile
 import archivey
 
 CONFIG = archivey.ArchiveyConfig(
-    listing_limits=archivey.ListingLimits(
+    listing_limits=archivey.config.ListingLimits(
         max_members=10_000,
         max_metadata_bytes=4 * 2**20,
     ),
-    decoder_limits=archivey.DecoderLimits(max_decoder_memory=256 * 2**20),
-    process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
+    decoder_limits=archivey.config.DecoderLimits(max_decoder_memory=256 * 2**20),
+    process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS,
     diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
 )
 MAX_TOTAL_BYTES = 1 * 2**30
@@ -296,11 +296,11 @@ def check_upload(path):
         return "encrypted archives are not accepted"
     except archivey.CorruptionError:
         return "the archive is damaged"
-    except archivey.ResourceUnavailableError:
+    except archivey.exceptions.ResourceUnavailableError:
         return "the server is short of memory; try again later"
     except archivey.ResourceLimitError:
         return "the archive is too large"
-    except archivey.DiagnosticRaisedError as e:
+    except archivey.exceptions.DiagnosticRaisedError as e:
         return f"the archive looks unusual ({e.diagnostic.code.value})"
     except archivey.UnsupportedFeatureError:
         return "the archive uses a feature that is not supported"
@@ -352,12 +352,12 @@ import zipfile
 import archivey
 
 CONFIG = archivey.ArchiveyConfig(
-    listing_limits=archivey.ListingLimits(
+    listing_limits=archivey.config.ListingLimits(
         max_members=10_000,
         max_metadata_bytes=4 * 2**20,
     ),
-    decoder_limits=archivey.DecoderLimits(max_decoder_memory=256 * 2**20),
-    process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
+    decoder_limits=archivey.config.DecoderLimits(max_decoder_memory=256 * 2**20),
+    process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS,
     diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
 )
 
@@ -398,12 +398,12 @@ import tempfile
 import archivey
 
 CONFIG = archivey.ArchiveyConfig(
-    listing_limits=archivey.ListingLimits(
+    listing_limits=archivey.config.ListingLimits(
         max_members=10_000,
         max_metadata_bytes=4 * 2**20,
     ),
-    decoder_limits=archivey.DecoderLimits(max_decoder_memory=256 * 2**20),
-    process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
+    decoder_limits=archivey.config.DecoderLimits(max_decoder_memory=256 * 2**20),
+    process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS,
     diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
 )
 
@@ -412,7 +412,7 @@ with archivey.open_archive("upload.zip", config=CONFIG) as archive:
     report = archive.extract_all(
         dest,
         abort_on=["blocked_member", "name_collision"],
-        limits=archivey.ExtractionLimits(
+        limits=archivey.config.ExtractionLimits(
             max_extracted_bytes=500 * 2**20,
             max_entries=10_000,
         ),
@@ -444,12 +444,12 @@ import zipfile
 import archivey
 
 CONFIG = archivey.ArchiveyConfig(
-    listing_limits=archivey.ListingLimits(
+    listing_limits=archivey.config.ListingLimits(
         max_members=10_000,
         max_metadata_bytes=4 * 2**20,
     ),
-    decoder_limits=archivey.DecoderLimits(max_decoder_memory=256 * 2**20),
-    process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
+    decoder_limits=archivey.config.DecoderLimits(max_decoder_memory=256 * 2**20),
+    process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS,
     diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
     always_probe_content=True,
 )
@@ -519,16 +519,16 @@ import zipfile
 import archivey
 
 CONFIG = archivey.ArchiveyConfig(
-    listing_limits=archivey.ListingLimits(
+    listing_limits=archivey.config.ListingLimits(
         max_members=10_000,
         max_metadata_bytes=4 * 2**20,
     ),
-    decoder_limits=archivey.DecoderLimits(
+    decoder_limits=archivey.config.DecoderLimits(
         max_decoder_memory=256 * 2**20,
         # All levels of one upload together.
         max_nest_decoded_bytes=100 * 2**20,
     ),
-    process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
+    process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS,
     diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
     always_probe_content=True,
 )
@@ -588,7 +588,7 @@ you can fix that set in the config, and check after each upload that nothing out
 import zipfile
 
 import archivey
-from archivey import OptionalLibrary as L
+from archivey.types import OptionalLibrary as L
 
 PINNED = archivey.ArchiveyConfig(
     formats=archivey.FormatPolicy(
@@ -600,7 +600,7 @@ PINNED = archivey.ArchiveyConfig(
     ),
     # The one RAR program to run. PATH isn't searched.
     unrar_path="/usr/bin/unrar",
-    process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
+    process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS,
 )
 ALLOWED = {"archivey", "cryptography", "backports.zstd", "compression.zstd", "unrar"}
 

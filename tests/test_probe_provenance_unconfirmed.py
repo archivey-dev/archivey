@@ -19,13 +19,12 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
-    DecoderLimits,
-    DetectionConfidence,
     DiagnosticPolicy,
-    ProcessIsolation,
     detect_format,
     open_archive,
 )
+from archivey.config import DecoderLimits, ProcessIsolation
+from archivey.detection import DetectionConfidence
 from archivey.detection_cost import BALANCED_BUDGET
 from archivey.diagnostics import Diagnostic, DiagnosticCode
 from archivey.exceptions import (

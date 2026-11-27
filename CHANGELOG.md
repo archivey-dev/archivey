@@ -51,6 +51,18 @@ line. How to write the entry: see
   reads the whole index before its first member, so `members_report_if_available()`
   gives the same answer inside the loop as before it.
 
+### Deprecated
+
+- The package root keeps 30 names: `open_archive`, `open_stream`, `detect_format`,
+  `format_availability`, the reader, member, format, policy and report types, and the
+  errors callers catch most. The other 67 come from the submodule that defines them,
+  such as `archivey.config.DecoderLimits`, `archivey.types.OverwritePolicy` and
+  `archivey.exceptions.ReadError`; the [API page](docs/api.md) heads each entry with
+  its full name. `archivey.<name>` still works for those 67 in 0.6 with a
+  `DeprecationWarning` that names the new import, and 0.7.0 removes it.
+  `sanitize_names` moved to `archivey.paths`. The experimental `PluginContainer` and
+  `PluginStream` left the root at once and come from `archivey.types`.
+
 ## [0.5.1] - 2026-11-20
 
 A patch release with fixes for reading archives from a URL.

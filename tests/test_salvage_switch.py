@@ -17,15 +17,10 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ARCHIVE_INTEGRITY_CODES,
-    ArchiveyConfig,
-    DiagnosticCode,
-    DiagnosticPolicy,
-    SalvageLimits,
-    open_archive,
-)
+from archivey import ArchiveyConfig, DiagnosticCode, DiagnosticPolicy, open_archive
+from archivey.config import SalvageLimits
 from archivey.diagnostics import (
+    ARCHIVE_INTEGRITY_CODES,
     RegionSkippedContext,
     SalvageScanContext,
     SalvageUnavailableContext,

@@ -20,11 +20,11 @@ from archivey import (
     ArchiveyConfig,
     DiagnosticCode,
     DiagnosticPolicy,
-    Verification,
     open_archive,
     open_stream,
 )
 from archivey.exceptions import ArchiveyUsageError, CorruptionError, EncryptionError
+from archivey.types import Verification
 
 _DATA = b"verify me\n" * 20000
 

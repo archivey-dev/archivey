@@ -18,7 +18,7 @@ stream can declare a 4 GiB block, and a decoder that believed it would buffer th
 before decoding a byte. A size over the bound is not a block here, so the compressed
 input held for one block never exceeds about 8 MiB, and each block decodes into an
 8 MiB buffer whatever its header says. Both numbers are the format's, not the
-archive's, so there is nothing for :class:`~archivey.DecoderLimits` to cap.
+archive's, so there is nothing for :class:`~archivey.config.DecoderLimits` to cap.
 """
 
 from __future__ import annotations

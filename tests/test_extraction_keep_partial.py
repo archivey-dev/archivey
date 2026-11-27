@@ -18,15 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ArchiveyConfig,
-    DecoderLimits,
-    ExtractionPolicy,
-    ExtractionStatus,
-    OnError,
-    OverwritePolicy,
-    open_archive,
-)
+from archivey import ArchiveyConfig, ExtractionPolicy, open_archive
+from archivey.config import DecoderLimits
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -34,6 +27,7 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.terminal import display_path
+from archivey.types import ExtractionStatus, OnError, OverwritePolicy
 from tests.conftest import case_sensitive
 from tests.extract_util import open_and_extract
 from tests.streams_util import NonSeekableBytesIO

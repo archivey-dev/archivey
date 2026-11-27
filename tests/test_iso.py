@@ -18,8 +18,6 @@ import pytest
 
 from archivey import (
     ArchiveFormat,
-    CompressionAlgorithm,
-    CompressionMethod,
     DiagnosticCode,
     MemberType,
     detect_format,
@@ -46,7 +44,7 @@ from archivey.internal.streams.streamtools import (
     DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     SharedView,
 )
-from archivey.types import FormatSupport
+from archivey.types import CompressionAlgorithm, CompressionMethod, FormatSupport
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import (

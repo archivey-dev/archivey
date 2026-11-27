@@ -8,15 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ArchiveFormat,
-    FormatAvailability,
-    FormatSupport,
-    MissingComponent,
-    OptionalLibrary,
-    format_availability,
-    list_known_formats,
-)
+from archivey import ArchiveFormat, format_availability
 from archivey.cli import version_report
 from archivey.cli.exit_codes import EXIT_OK
 from archivey.cli.main import main
@@ -26,6 +18,13 @@ from archivey.cli.version_report import (
     detect_installer,
     install_command,
     unimportable_packages,
+)
+from archivey.core import list_known_formats
+from archivey.types import (
+    FormatAvailability,
+    FormatSupport,
+    MissingComponent,
+    OptionalLibrary,
 )
 
 

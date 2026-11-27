@@ -23,13 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    AcceleratorMode,
-    ArchiveyConfig,
-    DecoderLimits,
-    DiagnosticPolicy,
-    open_archive,
-)
+from archivey import ArchiveyConfig, DiagnosticPolicy, open_archive
+from archivey.config import AcceleratorMode, DecoderLimits
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode
 from archivey.exceptions import CorruptionError, DiagnosticRaisedError, TruncatedError
 from archivey.internal.streams.codecs.base import _SKIPPABLE_FRAME
@@ -333,7 +328,7 @@ def test_a_second_lzma_stream_is_checked_against_the_dictionary_cap(
     tmp_path: Path,
 ) -> None:
     """A second Alone stream is refused over ``max_decoder_memory`` like the first."""
-    from archivey import DecoderLimits
+    from archivey.config import DecoderLimits
     from archivey.exceptions import ResourceLimitError
 
     first = lzma.compress(b"first", format=lzma.FORMAT_ALONE)

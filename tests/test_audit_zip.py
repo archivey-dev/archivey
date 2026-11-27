@@ -229,7 +229,7 @@ def test_no_decoder_child_under_zipcrypto_is_not_a_noted_limit(
     )
     monkeypatch.setattr(sys, "executable", str(tmp_path / "no-such-python"))
     config = archivey.ArchiveyConfig(
-        process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS
+        process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS
     )
     with (
         archivey.open_archive(

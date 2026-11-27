@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import MemberPass, open_archive
+from archivey import open_archive
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
 from archivey.cli.filters import MemberSelection
 from archivey.cli.main import main
@@ -18,6 +18,7 @@ from archivey.exceptions import ReadError
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.member_pass import MemberPassImpl
 from archivey.paths import match_glob
+from archivey.reader import MemberPass
 from archivey.types import ArchiveMember
 from tests.test_extraction_damaged_listing import _rar_cut
 

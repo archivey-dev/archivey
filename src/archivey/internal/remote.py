@@ -17,9 +17,9 @@ volume of a set, all drawing on one :class:`WindowPool`) and wraps it in an
 as any other seekable source.
 
 A change of the object that a fetch catches stays caught (design D7): the
-:class:`RangeSource` raises :class:`~archivey.SourceChangedError` on every later read,
-and :func:`source_change` gives the error that ends the operation, so a handler that
-takes the first one for damage to the archive cannot turn it into a result.
+:class:`RangeSource` raises :class:`~archivey.exceptions.SourceChangedError` on every
+later read, and :func:`source_change` gives the error that ends the operation, so a
+handler that takes the first one for damage to the archive cannot turn it into a result.
 
 This module imports nothing from fsspec at import time. :func:`is_open_file` looks for
 ``fsspec.core`` in ``sys.modules``: a caller who has not imported fsspec cannot hold an
@@ -681,8 +681,8 @@ class RangeSource(io.RawIOBase):
     ``close()`` drops this source's windows and closes nothing of the caller's.
 
     Once a fetch has seen the object change, every later read raises
-    :class:`~archivey.SourceChangedError` again, a read a window still holds too
-    (:attr:`change`).
+    :class:`~archivey.exceptions.SourceChangedError` again, a read a window still holds
+    too (:attr:`change`).
     """
 
     def __init__(
@@ -823,14 +823,15 @@ class RangeSource(io.RawIOBase):
 
         A response shorter than the range has seen an object shorter than the size read
         at open: it was cut or replaced since (design D7, tier 3), so this raises
-        :class:`~archivey.SourceChangedError` rather than hand on bytes of another
-        object. Over HTTP an answer that names the object's size (a ``206`` or ``416``
-        in ``Content-Range``, a whole answer in ``Content-Length``) is also checked
-        against the size at open, so a longer replacement raises it too. A replacement
-        of the same length returns the full range and is not detected without a pinned
-        version (not implemented yet), nor is a longer one on a file system whose
-        answers name no size; ``SOURCE_CHANGE_UNDETECTABLE`` says so at open.
-        The change is kept (:attr:`change`): this source raises it again from then on.
+        :class:`~archivey.exceptions.SourceChangedError` rather than hand on bytes of
+        another object. Over HTTP an answer that names the object's size (a ``206`` or
+        ``416`` in ``Content-Range``, a whole answer in ``Content-Length``) is also
+        checked against the size at open, so a longer replacement raises it too. A
+        replacement of the same length returns the full range and is not detected
+        without a pinned version (not implemented yet), nor is a longer one on a file
+        system whose answers name no size; ``SOURCE_CHANGE_UNDETECTABLE`` says so at
+        open. The change is kept (:attr:`change`): this source raises it again from then
+        on.
         """
         return self.fetch_window(start, end, start, end)[1]
 
@@ -882,9 +883,10 @@ class RangeSource(io.RawIOBase):
         came before it and goes on from ``read_at``, so the first value, where the bytes
         start, moves there. The planner's read-ahead, before the read or after it, does
         not spend the request budget. A ``206`` that names a size other than the one
-        read at open has seen another object (:class:`~archivey.SourceChangedError`),
-        and so has a ``200`` whose ``Content-Length`` differs from it, or a ``416``:
-        every request lies inside the size read at open.
+        read at open has seen another object
+        (:class:`~archivey.exceptions.SourceChangedError`), and so has a ``200`` whose
+        ``Content-Length`` differs from it, or a ``416``: every request lies inside the
+        size read at open.
         """
         bounded = self._bounded_cat
         progress, base = self.progress, self.progress_base

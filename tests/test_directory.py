@@ -618,7 +618,7 @@ def test_tree_deeper_than_recursion_limit_lists(tmp_path: Path) -> None:
 
 
 def test_extract_all_writes_members(simple_dir: Path, tmp_path: Path) -> None:
-    from archivey import ExtractionStatus
+    from archivey.types import ExtractionStatus
 
     dest = tmp_path.parent / f"{tmp_path.name}-out"
     with open_archive(simple_dir) as reader:
@@ -1358,7 +1358,7 @@ def test_extracting_into_the_root_is_refused(tmp_path: Path, streaming: bool) ->
     # The walk reads the live tree, so a destination inside the root would be read back
     # as members (and, streaming, nest until the path is too long). ``cp -r`` refuses
     # the same request.
-    from archivey import ExtractionError
+    from archivey.exceptions import ExtractionError
 
     (tmp_path / "a").write_bytes(b"x")
     dest = tmp_path / "out"

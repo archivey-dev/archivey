@@ -19,12 +19,14 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, ListingLimits, MemberType, OnError, open_archive
+from archivey import ArchiveyConfig, MemberType, open_archive
+from archivey.config import ListingLimits
 from archivey.diagnostics import (
     DiagnosticCode,
     DiagnosticPolicy,
 )
 from archivey.exceptions import CorruptionError, ResourceLimitError
+from archivey.types import OnError
 from tests.conftest import requires_binary
 from tests.test_audit2_cross_format import _rar4_blocks, _rar5_blocks
 

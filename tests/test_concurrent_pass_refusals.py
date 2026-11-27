@@ -26,13 +26,13 @@ import pytest
 from archivey import (
     ArchiveyConfig,
     ArchiveyUsageError,
-    ListingLimits,
-    ReadError,
     ResourceLimitError,
     TruncatedError,
     open_archive,
 )
+from archivey.config import ListingLimits
 from archivey.diagnostics import DiagnosticCode
+from archivey.exceptions import ReadError
 from archivey.internal import base_reader
 from archivey.internal.reader_state import PassKind, ReaderState
 from archivey.reader import ArchiveReader

@@ -241,7 +241,7 @@ def stream_config_from_archivey(
 
 
 def methods_off(exclude: Iterable[object]) -> frozenset[CompressionAlgorithm]:
-    """The :class:`~archivey.CompressionAlgorithm` entries of a ``FormatPolicy``'s
+    """The :class:`~archivey.types.CompressionAlgorithm` entries of a ``FormatPolicy``'s
     ``exclude``."""
     return frozenset(e for e in exclude if isinstance(e, CompressionAlgorithm))
 

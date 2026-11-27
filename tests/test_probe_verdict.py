@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from archivey import DetectionConfidence
+from archivey.detection import DetectionConfidence
 from archivey.internal.probe_verdict import is_match
 
 

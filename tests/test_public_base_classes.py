@@ -12,7 +12,8 @@ import zipfile
 
 import pytest
 
-from archivey import ArchiveStream, MemberPass, open_archive, open_stream
+from archivey import ArchiveStream, open_archive, open_stream
+from archivey.reader import MemberPass
 
 
 def test_archive_stream_cannot_be_built_directly() -> None:

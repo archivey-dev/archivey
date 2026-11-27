@@ -50,13 +50,8 @@ from typing import Any
 
 import pytest
 
-from archivey import (
-    ARCHIVE_INTEGRITY_CODES,
-    ArchiveyConfig,
-    DiagnosticCode,
-    DiagnosticPolicy,
-    open_archive,
-)
+from archivey import ArchiveyConfig, DiagnosticCode, DiagnosticPolicy, open_archive
+from archivey.diagnostics import ARCHIVE_INTEGRITY_CODES
 from archivey.exceptions import ArchiveyError
 from archivey.types import ExtractionPolicy, OverwritePolicy
 

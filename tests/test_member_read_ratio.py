@@ -18,15 +18,13 @@ from typing import BinaryIO, cast
 import pytest
 
 from archivey import (
-    AcceleratorMode,
     ArchiveMember,
     ArchiveyConfig,
-    DecoderLimits,
-    ExtractionLimits,
     ResourceLimitError,
     TruncatedError,
     open_archive,
 )
+from archivey.config import AcceleratorMode, DecoderLimits, ExtractionLimits
 from archivey.internal import bomb_tracker
 from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,

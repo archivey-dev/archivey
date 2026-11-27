@@ -22,13 +22,13 @@ import zlib
 import pytest
 
 import archivey
-from archivey import Verification
 from archivey.exceptions import CorruptionError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import checked_spans
 from archivey.internal.streams.checked_spans import CheckedSpans
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.decompressor_stream import DecompressorStream
+from archivey.types import Verification
 from tests.conftest import requires, requires_binary
 from tests.streams_util import NonSeekableBytesIO, open_mode
 

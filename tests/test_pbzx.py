@@ -20,13 +20,13 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     ContainerFormat,
-    DecoderLimits,
     DiagnosticPolicy,
     StreamFormat,
     detect_format,
     open_archive,
     open_stream,
 )
+from archivey.config import DecoderLimits
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     CorruptionError,

@@ -19,21 +19,23 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ArchiveFormat,
-    FormatSupport,
-    StreamCapability,
+from archivey import ArchiveFormat, format_availability, open_archive
+from archivey.core import list_known_formats, list_supported_formats
+from archivey.cost import StreamCapability
+from archivey.exceptions import (
+    PackageNotInstalledError,
     StreamNotSeekableError,
-    format_availability,
-    list_known_formats,
-    list_supported_formats,
-    open_archive,
+    UnsupportedFeatureError,
 )
-from archivey.exceptions import PackageNotInstalledError, UnsupportedFeatureError
 from archivey.internal.base_reader import ReadBackend
 from archivey.internal.registry import BackendRegistry, get_registry
 from archivey.internal.streams import codecs as codecs_module
-from archivey.types import ContainerFormat, MagicSignature, MissingComponent
+from archivey.types import (
+    ContainerFormat,
+    FormatSupport,
+    MagicSignature,
+    MissingComponent,
+)
 from tests.sample_archives import (
     CORPUS,
     FORMAT_KEYS,

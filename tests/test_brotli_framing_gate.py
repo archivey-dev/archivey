@@ -10,13 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ArchiveFormat,
-    ArchiveyConfig,
-    DetectionConfidence,
-    detect_format,
-    open_archive,
-)
+from archivey import ArchiveFormat, ArchiveyConfig, detect_format, open_archive
+from archivey.detection import DetectionConfidence
 from archivey.diagnostics import Diagnostic, DiagnosticCode
 from archivey.exceptions import (
     CorruptionError,

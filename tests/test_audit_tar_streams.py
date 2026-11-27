@@ -20,21 +20,19 @@ from pathlib import Path
 import pytest
 
 from archivey import (
-    AcceleratorMode,
     ArchiveFormat,
     ArchiveyConfig,
     ContainerFormat,
-    DecoderLimits,
     DiagnosticPolicy,
-    DiagnosticRaisedError,
-    ListingLimits,
     StreamFormat,
     open_archive,
 )
+from archivey.config import AcceleratorMode, DecoderLimits, ListingLimits
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    DiagnosticRaisedError,
     ResourceLimitError,
     UnsupportedFeatureError,
 )

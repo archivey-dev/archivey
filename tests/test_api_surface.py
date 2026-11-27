@@ -46,10 +46,11 @@ def test_surface_covers_the_promised_parts() -> None:
     kinds = {line.split(" ", 1)[0] for line in lines}
     assert {"function", "class", "field", "value", "cli-verb", "cli-option"} <= kinds
     assert "cli-exit EXIT_USAGE = 2" in lines
-    assert "open-enum archivey.CompressionAlgorithm" in lines
+    assert "open-enum archivey.types.CompressionAlgorithm" in lines
     assert "open-enum archivey.DiagnosticCode" in lines
     assert any(
-        line.startswith("item archivey.ARCHIVE_INTEGRITY_CODES ") for line in lines
+        line.startswith("item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES ")
+        for line in lines
     )
 
 
@@ -61,7 +62,7 @@ _OLD = [
     "enum archivey.MemberType",
     "value archivey.MemberType.FILE = 'file'",
     "code-literal archivey.diagnostics.DiagnosticCodeStr 'a'",
-    "constant archivey.ARCHIVE_INTEGRITY_CODES: frozenset",
+    "constant archivey.diagnostics.ARCHIVE_INTEGRITY_CODES: frozenset",
     "function archivey.open_archive(path: str) -> ArchiveReader",
 ]
 
@@ -93,7 +94,7 @@ def test_new_value_in_a_closed_enum_needs_a_minor() -> None:
 
 
 def test_new_strict_code_needs_a_minor() -> None:
-    line = "item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.A"
+    line = "item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.A"
     assert _classify([*_OLD, line]) == ([f"+ {line}"], [])
 
 
@@ -116,11 +117,11 @@ def test_experimental_names_are_pinned() -> None:
     # A change to these never needs a minor. Adding one takes away a promise to callers.
     assert api_surface.EXPERIMENTAL == (
         "archivey.formats",
-        "archivey.PluginContainer",
-        "archivey.PluginStream",
+        "archivey.types.PluginContainer",
+        "archivey.types.PluginStream",
         "archivey.FormatPolicy.replace",
-        "archivey.FormatInfo.from_plugin",
-        "archivey.Verification",
+        "archivey.detection.FormatInfo.from_plugin",
+        "archivey.types.Verification",
         "archivey.ArchiveStream.verified",
         "archivey.ArchiveStream.verifiable",
         "archivey.ArchiveStream.verify",
@@ -128,9 +129,9 @@ def test_experimental_names_are_pinned() -> None:
         "archivey.ArchiveMember.verifiable",
         "archivey.ForwardArchiveReader.verify_all",
         "archivey.ArchiveReader.verify_all",
-        "archivey.VerifyReport",
-        "archivey.BackendUse",
-        "archivey.BackendKindStr",
+        "archivey.diagnostics.VerifyReport",
+        "archivey.types.BackendUse",
+        "archivey.types.BackendKindStr",
         "archivey.ForwardArchiveReader.backends_used",
         "archivey.ArchiveReader.backends_used",
     )
@@ -156,7 +157,7 @@ def test_a_change_to_an_experimental_name_fits_a_patch() -> None:
         *_OLD,
         "module archivey.formats",
         "function archivey.formats.register_format(handler: type, *, x: int) -> None",
-        "class archivey.PluginContainer(StrEnum)",
+        "class archivey.types.PluginContainer(StrEnum)",
     ]
     minor, patch = api_surface.classify(old, new)
     assert minor == []
@@ -186,8 +187,8 @@ def test_open_enums_are_pinned() -> None:
     # A patch release may add values to these. Adding one is a promise to callers.
     lines = api_surface.parse(api_surface.SURFACE_FILE.read_text(encoding="utf-8"))
     assert sorted(line for line in lines if line.startswith("open-enum ")) == [
-        "open-enum archivey.CompressionAlgorithm",
         "open-enum archivey.DiagnosticCode",
+        "open-enum archivey.types.CompressionAlgorithm",
     ]
     # An entry that renders no line (a re-exported name, a typo) would do nothing.
     for name in api_surface.OPEN_ENUMS:

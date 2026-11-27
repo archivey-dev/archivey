@@ -17,27 +17,26 @@ from pathlib import Path
 import pytest
 
 from archivey import (
-    DEFAULT_ARCHIVEY_CONFIG,
     ArchiveFormat,
     ArchiveMember,
     ArchiveyConfig,
     ArchiveyUsageError,
     ContainerFormat,
-    DetectionConfidence,
     DiagnosticCode,
     FormatDetectionError,
     FormatPolicy,
     MemberType,
-    OptionalLibrary,
     PackageNotInstalledError,
     StreamFormat,
-    StreamNotSeekableError,
     UnsupportedFeatureError,
     detect_format,
     open_archive,
     open_stream,
 )
+from archivey.config import DEFAULT_ARCHIVEY_CONFIG
+from archivey.detection import DetectionConfidence
 from archivey.detection_cost import TierSkipReason
+from archivey.exceptions import StreamNotSeekableError
 from archivey.formats import (
     FormatHandler,
     IndexedFormatHandler,
@@ -54,6 +53,7 @@ from archivey.formats import (
 )
 from archivey.internal.detection import probe_config
 from archivey.internal.format_adapter import REPLACEABLE_CONTAINERS, registration_scope
+from archivey.types import OptionalLibrary
 from tests.test_codec_api import TAR_TOY, TOY, ToyHandler, ToyStream, toy_compress
 from tests.test_format_api import _ENTRIES, _MAGIC, _plugin_with, build_toya
 from tests.test_format_api_sequential import (

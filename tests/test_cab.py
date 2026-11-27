@@ -14,28 +14,26 @@ import pytest
 
 import archivey
 from archivey import (
-    AccessCost,
     ArchiveFormat,
     ArchiveyConfig,
     ArchiveyError,
-    CompressionAlgorithm,
     CorruptionError,
-    DecoderLimits,
     DiagnosticCode,
     DiagnosticPolicy,
-    ExtractionStatus,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
-    Verification,
     detect_format,
     open_archive,
 )
+from archivey.config import DecoderLimits
+from archivey.cost import AccessCost
 from archivey.diagnostics import UnexpectedNameDuplicateContext
 from archivey.exceptions import DiagnosticRaisedError
 from archivey.internal.backends import cab_reader
 from archivey.internal.streams.codecs import deps, lzx_decoder
 from archivey.internal.streams.codecs.lzx_decoder import LzxDecoder
+from archivey.types import CompressionAlgorithm, ExtractionStatus, Verification
 from tests.cab_util import (
     FRAME,
     BitWriter,
@@ -680,7 +678,7 @@ def test_kept_block_tables_are_weighed_against_max_metadata_bytes() -> None:
     raw = _shared_blocks(4, 100)
     weight = cab_reader._BLOCK_WEIGHT * 100
     config = archivey.ArchiveyConfig(
-        listing_limits=archivey.ListingLimits(max_metadata_bytes=3 * weight)
+        listing_limits=archivey.config.ListingLimits(max_metadata_bytes=3 * weight)
     )
     with open_archive(io.BytesIO(raw), config=config) as reader:
         members = reader.members()
@@ -1380,7 +1378,7 @@ def test_the_order_replay_goes_on_from_where_a_member_ends(
 
 
 def test_format_is_listed() -> None:
-    assert ArchiveFormat.CAB in archivey.list_supported_formats()
+    assert ArchiveFormat.CAB in archivey.core.list_supported_formats()
 
 
 @pytest.mark.parametrize("method", ["none", "mszip", "lzx"])

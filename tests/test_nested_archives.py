@@ -54,13 +54,8 @@ from typing import BinaryIO
 import pytest
 
 import archivey
-from archivey import (
-    AcceleratorMode,
-    ArchiveReader,
-    ArchiveStream,
-    ArchiveyConfig,
-    DecoderLimits,
-)
+from archivey import ArchiveReader, ArchiveStream, ArchiveyConfig
+from archivey.config import AcceleratorMode, DecoderLimits
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,

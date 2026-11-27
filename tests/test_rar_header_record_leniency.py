@@ -18,15 +18,9 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ArchiveyConfig,
-    DiagnosticCode,
-    DiagnosticPolicy,
-    DiagnosticRaisedError,
-    open_archive,
-)
+from archivey import ArchiveyConfig, DiagnosticCode, DiagnosticPolicy, open_archive
 from archivey.diagnostics import MemberHeaderRecordContext
-from archivey.exceptions import TruncatedError
+from archivey.exceptions import DiagnosticRaisedError, TruncatedError
 from archivey.internal.backends import rar_unrar
 from archivey.internal.backends.rar_parser import (
     _MAX_DAMAGED_SERVICE_HEADERS,

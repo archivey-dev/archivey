@@ -22,13 +22,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    AcceleratorMode,
-    ArchiveyConfig,
-    SourceProgress,
-    open_archive,
-    open_stream,
-)
+from archivey import ArchiveyConfig, open_archive, open_stream
+from archivey.config import AcceleratorMode
 from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.codecs import rapidgzip_child, rapidgzip_worker
@@ -39,6 +34,7 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
 )
 from archivey.internal.streams.streamtools import SharedView, SlicingStream
 from archivey.internal.streams.streamtools.slice import file_region
+from archivey.types import SourceProgress
 
 _DATA = random.Random(3).randbytes(300_000) + bytes(300_000)
 

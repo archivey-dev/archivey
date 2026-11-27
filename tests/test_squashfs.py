@@ -21,22 +21,22 @@ from archivey import (
     ArchiveyConfig,
     CorruptionError,
     FormatPolicy,
-    ListingLimits,
     MemberType,
-    OptionalLibrary,
     PackageNotInstalledError,
     ResourceLimitError,
-    StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
     detect_format,
     open_archive,
 )
+from archivey.config import ListingLimits
+from archivey.exceptions import StreamNotSeekableError
 from archivey.internal.backends import squashfs_reader
 from archivey.internal.backends.squashfs_reader import SquashfsReader
 from archivey.internal.excluded_libraries import EXCLUDED_REASON
 from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.streams.codecs import deps, lzo_decoder as archivey_lzo
+from archivey.types import OptionalLibrary
 from tests.memory_util import traced_peak
 
 SQUASHFS = archivey.ArchiveFormat.SQUASHFS
@@ -69,7 +69,7 @@ _COMPRESS_UTILS = pytest.mark.skipif(
     importlib.util.find_spec("compress_utils") is None, reason="needs compress-utils"
 )
 _ZSTD = archivey.format_availability(archivey.ArchiveFormat.ZST).support is not (
-    archivey.FormatSupport.NONE
+    archivey.types.FormatSupport.NONE
 )
 IMAGES = [
     "gzip",

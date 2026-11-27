@@ -26,13 +26,8 @@ from typing import Any
 
 import pytest
 
-from archivey import (
-    ArchiveFormat,
-    ArchiveyConfig,
-    ExtractionReport,
-    PasswordInput,
-    open_archive,
-)
+from archivey import ArchiveFormat, ArchiveyConfig, ExtractionReport, open_archive
+from archivey.config import PasswordInput
 from tests.streams_util import open_mode
 
 

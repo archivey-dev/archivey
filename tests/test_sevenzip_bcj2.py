@@ -977,7 +977,8 @@ def test_bcj2_folder_dictionaries_count_together_against_the_decoder_cap(
     """Design D6: the unit of the LZMA dictionary guard is the folder, not the branch."""
     import lzma
 
-    from archivey import ArchiveyConfig, DecoderLimits
+    from archivey import ArchiveyConfig
+    from archivey.config import DecoderLimits
     from archivey.exceptions import ResourceLimitError
 
     archive = tmp_path / "forced.7z"
@@ -1010,7 +1011,7 @@ def test_bcj2_folder_dictionaries_count_together_against_the_decoder_cap(
 
 def test_ppmd_branches_count_toward_the_folder_sum() -> None:
     """D6 covers PPMd too: three branches that each fit, together over the cap."""
-    from archivey import DecoderLimits
+    from archivey.config import DecoderLimits
     from archivey.exceptions import ResourceLimitError
     from archivey.internal.backends.sevenzip_aes import SevenZipKeyCache
     from archivey.internal.backends.sevenzip_pipeline import open_folder_pipeline

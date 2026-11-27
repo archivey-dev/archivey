@@ -67,7 +67,8 @@ _OPEN_ARCHIVE_TYPING_SAMPLE = """\
 from typing import assert_type
 
 import archivey
-from archivey import ArchiveReader, ForwardArchiveReader, MemberPass
+from archivey import ArchiveReader, ForwardArchiveReader
+from archivey.reader import MemberPass
 
 
 def check(flag: bool) -> None:
@@ -208,17 +209,9 @@ def test_type_checker_refuses_random_access_on_a_streaming_reader(
 _STRING_SPELLING_TYPING_SAMPLE = """\
 from typing import assert_type
 
-from archivey import (
-    AcceleratorMode,
-    ArchiveFormat,
-    ArchiveyConfig,
-    ContainerFormat,
-    PluginContainer,
-    PluginStream,
-    ProcessIsolation,
-    RarDecompressor,
-    StreamFormat,
-)
+from archivey import ArchiveFormat, ArchiveyConfig, ContainerFormat, StreamFormat
+from archivey.config import AcceleratorMode, ProcessIsolation, RarDecompressor
+from archivey.types import PluginContainer, PluginStream
 from archivey.detection_cost import DetectionBudget
 
 
@@ -445,9 +438,9 @@ def test_public_class_type_hints_resolve(cls: type) -> None:
 @pytest.mark.parametrize(
     "value",
     [
-        archivey.OverwritePolicy.SKIP,
-        archivey.DetectionConfidence.CERTAIN,
-        archivey.FormatSupport.FULL,
+        archivey.types.OverwritePolicy.SKIP,
+        archivey.detection.DetectionConfidence.CERTAIN,
+        archivey.types.FormatSupport.FULL,
     ],
     ids=lambda v: type(v).__name__,
 )
@@ -468,7 +461,11 @@ def test_pinning_leaves_the_internal_objects_shared() -> None:
 
 @pytest.mark.parametrize(
     "cls",
-    [archivey.OverwritePolicy, archivey.ExtractionResult, archivey.FormatInfo],
+    [
+        archivey.types.OverwritePolicy,
+        archivey.types.ExtractionResult,
+        archivey.detection.FormatInfo,
+    ],
     ids=lambda c: c.__name__,
 )
 def test_moved_classes_keep_their_source(cls: type) -> None:

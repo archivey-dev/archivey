@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from archivey import ProcessIsolation
+from archivey.config import ProcessIsolation
 from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams.codecs import Codec, bzip2_blocks, open_codec_stream

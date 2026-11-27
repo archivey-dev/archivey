@@ -21,6 +21,8 @@ carries the same compatibility promise as ``archivey.__all__``.
   inside one folder and ``**`` matches any depth. archivey's own CLI matches this way.
 - :func:`match_tar_glob` — a ``members=`` predicate from ``tar``-style patterns, where
   ``*`` also matches ``/`` and a folder's name selects everything in it.
+- :func:`sanitize_names` — a ``filter=`` callable that rewrites the member names
+  extraction would refuse, so the members are written instead.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from pathlib import PurePath
 from typing import TYPE_CHECKING
 
 from archivey.exceptions import _UsageValueError
+from archivey.internal.filters import sanitize_names
 from archivey.internal.overrides import override
 
 if TYPE_CHECKING:
@@ -38,7 +41,7 @@ if TYPE_CHECKING:
 
     from archivey.types import ArchiveMember
 
-__all__ = ["match_glob", "match_tar_glob", "numbered_name"]
+__all__ = ["match_glob", "match_tar_glob", "numbered_name", "sanitize_names"]
 
 
 def numbered_name(name: str, n: int, *, is_dir: bool) -> str:

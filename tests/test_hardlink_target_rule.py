@@ -21,21 +21,21 @@ from typing import Any
 
 import pytest
 
-from archivey import (
-    ExtractionPolicy,
-    ExtractionResult,
-    ExtractionStatus,
-    OnError,
-    open_archive,
-    sanitize_names,
-)
+from archivey import ExtractionPolicy, open_archive
 from archivey.exceptions import (
     ExtractionError,
     FilterRejectionError,
     LinkTargetNotFoundError,
 )
 from archivey.internal.filters import check_universal
-from archivey.types import ArchiveMember, MemberType
+from archivey.paths import sanitize_names
+from archivey.types import (
+    ArchiveMember,
+    ExtractionResult,
+    ExtractionStatus,
+    MemberType,
+    OnError,
+)
 
 _REFUSED = "Hardlink target was refused"
 _MODES = pytest.mark.parametrize("streaming", [False, True], ids=["random", "stream"])

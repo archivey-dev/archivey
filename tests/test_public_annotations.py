@@ -11,7 +11,8 @@ from collections.abc import Callable, Iterator
 import pytest
 
 import archivey
-from archivey import ExtractionReport, MemberListReport
+from archivey import ExtractionReport
+from archivey.diagnostics import MemberListReport
 
 
 def _annotated() -> Iterator[tuple[str, Callable[..., object] | type]]:

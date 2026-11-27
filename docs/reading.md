@@ -218,7 +218,7 @@ URL around each range request ([Remote archives](remote.md#watching-the-requests
 ```python
 import archivey
 
-def show(progress: archivey.SourceProgress) -> None:
+def show(progress: archivey.types.SourceProgress) -> None:
     if progress.nest_level == 0 and progress.size:
         print(f"{progress.position / progress.size:.0%} of {progress.name}")
 
@@ -260,8 +260,8 @@ accelerator off:
 
 ```python
 config = archivey.ArchiveyConfig(
-    use_rapidgzip=archivey.AcceleratorMode.OFF,
-    use_indexed_bzip2=archivey.AcceleratorMode.OFF,
+    use_rapidgzip=archivey.config.AcceleratorMode.OFF,
+    use_indexed_bzip2=archivey.config.AcceleratorMode.OFF,
 )
 with archivey.open_archive("data.zip", config=config) as archive:
     ...

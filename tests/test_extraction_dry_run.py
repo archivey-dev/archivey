@@ -24,22 +24,14 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey import (
-    AbortOn,
-    ExtractionError,
-    ExtractionLimits,
-    ExtractionPolicy,
-    ExtractionStatus,
-    NameCollisionError,
-    OnError,
-    OverwritePolicy,
-    ResourceLimitError,
-    open_archive,
-)
+from archivey import ExtractionPolicy, ResourceLimitError, open_archive
 from archivey.cli.exit_codes import EXIT_OK, EXIT_POLICY
 from archivey.cli.main import main
+from archivey.config import ExtractionLimits
+from archivey.exceptions import ExtractionError, NameCollisionError
 from archivey.internal import dry_run as dry_run_module
 from archivey.terminal import display_path
+from archivey.types import AbortOn, ExtractionStatus, OnError, OverwritePolicy
 from tests.conftest import CPYTHON
 from tests.create_adversarial import adversarial_archives
 from tests.extract_util import lock_directories_at_once, open_and_extract

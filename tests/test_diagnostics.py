@@ -16,20 +16,16 @@ from pathlib import Path
 import pytest
 
 from archivey import (
-    ARCHIVE_INTEGRITY_CODES,
-    AbortOn,
     ArchiveMember,
     ArchiveyConfig,
     Diagnostic,
     DiagnosticCode,
     DiagnosticPolicy,
-    DiagnosticRaisedError,
-    ExtractionStatus,
-    OnError,
     detect_format,
     open_archive,
 )
 from archivey.diagnostics import (
+    ARCHIVE_INTEGRITY_CODES,
     DiagnosticSummary,
     MemberTimestampContext,
     NameNormalizationContext,
@@ -37,10 +33,11 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import (
     ArchiveyUsageError,
+    DiagnosticRaisedError,
     FilterRejectionError,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector, EmitLog
-from archivey.types import ArchiveFormat, MemberType
+from archivey.types import AbortOn, ArchiveFormat, ExtractionStatus, MemberType, OnError
 from tests.extract_util import open_and_extract
 from tests.scandir_util import patch_dir_entry_stat
 

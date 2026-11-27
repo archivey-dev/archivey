@@ -24,11 +24,10 @@ import archivey
 from archivey import (
     ArchiveyConfig,
     ArchiveyUsageError,
-    DecoderLimits,
-    ListingLimits,
     ResourceLimitError,
     UnsupportedFeatureError,
 )
+from archivey.config import DecoderLimits, ListingLimits
 from archivey.internal.nesting import MAX_NESTED_DEPTH, NestAccount, NestDraws
 from tests.conftest import requires_binary
 
@@ -883,7 +882,7 @@ def test_a_reader_a_password_provider_opens_does_not_join_the_nest(
 
 def test_extraction_limits_stay_per_call(tmp_path) -> None:
     data = _stored_zip({"a": b"x" * 1000, "b": b"y" * 1000})
-    limits = archivey.ExtractionLimits(max_extracted_bytes=1500)
+    limits = archivey.config.ExtractionLimits(max_extracted_bytes=1500)
     with archivey.open_archive(io.BytesIO(data)) as parent:
         with pytest.raises(ResourceLimitError):
             parent.extract_all(tmp_path / "p", limits=limits)
@@ -892,7 +891,7 @@ def test_extraction_limits_stay_per_call(tmp_path) -> None:
             pytest.raises(ResourceLimitError),
         ):
             child.extract_all(tmp_path / "c", limits=limits)
-        ok = archivey.ExtractionLimits(max_extracted_bytes=2000)
+        ok = archivey.config.ExtractionLimits(max_extracted_bytes=2000)
         with archivey.open_archive(io.BytesIO(data), parent=parent) as child:
             child.extract_all(tmp_path / "c2", limits=ok)
 

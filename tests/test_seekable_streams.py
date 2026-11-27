@@ -1483,13 +1483,8 @@ def test_a_degraded_seek_index_reaches_the_readers_collector(
     that search; the read then reports it as trailing data too.
     """
 
-    from archivey import (
-        ARCHIVE_INTEGRITY_CODES,
-        ArchiveyConfig,
-        DiagnosticPolicy,
-        open_archive,
-    )
-    from archivey.diagnostics import DiagnosticCode
+    from archivey import ArchiveyConfig, DiagnosticPolicy, open_archive
+    from archivey.diagnostics import ARCHIVE_INTEGRITY_CODES, DiagnosticCode
     from archivey.exceptions import DiagnosticRaisedError
     from archivey.internal.streams.decompressor_stream import TRAILING_DATA_SEARCH
 
@@ -1675,8 +1670,8 @@ def test_a_planned_index_report_raises_from_the_deferred_seek(wrapper: str) -> N
     The report must still come from this seek, with the position moved, and nothing
     may be left behind to raise from a later read or seek.
     """
-    from archivey import ARCHIVE_INTEGRITY_CODES, DiagnosticPolicy
-    from archivey.diagnostics import DiagnosticCode
+    from archivey import DiagnosticPolicy
+    from archivey.diagnostics import ARCHIVE_INTEGRITY_CODES, DiagnosticCode
     from archivey.exceptions import DiagnosticRaisedError
     from archivey.internal.diagnostics_collector import DiagnosticCollector
     from archivey.internal.hashing import crc32_digest

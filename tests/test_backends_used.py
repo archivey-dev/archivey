@@ -18,7 +18,6 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
-    BackendUse,
     ContainerFormat,
     FormatPolicy,
     StreamFormat,
@@ -31,6 +30,7 @@ from archivey.internal.external import unar
 from archivey.internal.format_adapter import registration_scope
 from archivey.internal.resource_usage import ResourceUsageRecorder, handler_name
 from archivey.internal.streams.codecs import Codec, open_codec_stream
+from archivey.types import BackendUse
 from tests.conftest import requires, requires_zstd
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_format_policy import StdlibZipPlugin

@@ -41,10 +41,10 @@ from archivey import (
     ArchiveyError,
     ArchiveyUsageError,
     DiagnosticPolicy,
-    StreamNotSeekableError,
     open_archive,
     open_stream,
 )
+from archivey.exceptions import StreamNotSeekableError
 from archivey.types import HashAlgorithm, MemberType
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.sample_archives import (
@@ -894,11 +894,12 @@ def test_rewind_policy_escalates_on_every_qualifying_seek(tmp_path: Path) -> Non
     not a guard. Deduplication is a presentation concern for the report; escalation is
     control flow for a caller who explicitly asked to be stopped.
     """
-    from archivey import ArchiveyConfig, DiagnosticRaisedError
+    from archivey import ArchiveyConfig
     from archivey.diagnostics import (
         DiagnosticCode,
         DiagnosticPolicy,
     )
+    from archivey.exceptions import DiagnosticRaisedError
 
     config = ArchiveyConfig(
         diagnostic_policy=DiagnosticPolicy(
@@ -998,8 +999,8 @@ def test_trailing_data_is_reported(tail: bytes, tail_id: str, tmp_path: Path) ->
     The concatenated case is deliberate: two tars really are two archives and the reader
     listed only the first.
     """
-    from archivey import DiagnosticRaisedError
     from archivey.diagnostics import DiagnosticCode
+    from archivey.exceptions import DiagnosticRaisedError
 
     path = tmp_path / f"{tail_id}.tar"
     path.write_bytes(_one_member_tar() + tail)

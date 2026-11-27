@@ -14,20 +14,18 @@ import pytest
 import archivey
 from archivey import (
     ArchiveFormat,
-    CompressionAlgorithm,
     CorruptionError,
     DiagnosticCode,
-    HashAlgorithm,
     MemberType,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
-    Verification,
     detect_format,
     open_archive,
 )
 from archivey.config import AcceleratorMode
 from archivey.diagnostics import MemberTimestampContext, UnknownMemberTypeContext
+from archivey.types import CompressionAlgorithm, HashAlgorithm, Verification
 from tests.conftest import requires
 from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
@@ -51,7 +49,9 @@ def _open(raw: bytes, **kwargs: object) -> archivey.ArchiveReader:
 
 
 def _limits(**kwargs: int) -> archivey.ArchiveyConfig:
-    return archivey.ArchiveyConfig(listing_limits=archivey.ListingLimits(**kwargs))
+    return archivey.ArchiveyConfig(
+        listing_limits=archivey.config.ListingLimits(**kwargs)
+    )
 
 
 # --- archives bsdtar wrote --------------------------------------------------------
@@ -812,7 +812,7 @@ def test_a_file_without_data_is_empty() -> None:
 
 
 def test_a_pipe_is_refused() -> None:
-    with pytest.raises(archivey.StreamNotSeekableError):
+    with pytest.raises(archivey.exceptions.StreamNotSeekableError):
         open_archive(NonSeekableBytesIO(write_xar(TREE)), format=ArchiveFormat.XAR)
 
 

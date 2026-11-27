@@ -23,7 +23,7 @@ from typing import Any, BinaryIO
 
 import pytest
 
-from archivey import ExtractionStatus, OverwritePolicy, open_archive
+from archivey import open_archive
 from archivey.config import ArchiveyConfig
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -46,7 +46,13 @@ from archivey.internal.windows_reparse import (
     parse_reparse_data,
     reparse_payload_length,
 )
-from archivey.types import ArchiveMember, MemberType, OnError
+from archivey.types import (
+    ArchiveMember,
+    ExtractionStatus,
+    MemberType,
+    OnError,
+    OverwritePolicy,
+)
 from tests.conftest import requires_binary
 from tests.extract_util import open_and_extract
 from tests.memory_util import traced_peak

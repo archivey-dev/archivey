@@ -20,7 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, RarDecompressor, open_archive
+from archivey import ArchiveyConfig, open_archive
+from archivey.config import RarDecompressor
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.backends import rar_reader
 from archivey.internal.external import cli, unar

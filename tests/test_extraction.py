@@ -30,18 +30,8 @@ from typing import cast
 
 import pytest
 
-from archivey import (
-    AbortOn,
-    ArchiveyConfig,
-    DecoderLimits,
-    ExtractionLimits,
-    ExtractionPolicy,
-    ExtractionResult,
-    ExtractionStatus,
-    OnError,
-    OverwritePolicy,
-    open_archive,
-)
+from archivey import ArchiveyConfig, ExtractionPolicy, open_archive
+from archivey.config import DecoderLimits, ExtractionLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
@@ -69,7 +59,17 @@ from archivey.internal.filters import (
 )
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.streams.archive_stream import MemberStreamParts
-from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
+from archivey.types import (
+    AbortOn,
+    ArchiveFormat,
+    ArchiveInfo,
+    ArchiveMember,
+    ExtractionResult,
+    ExtractionStatus,
+    MemberType,
+    OnError,
+    OverwritePolicy,
+)
 from tests.conftest import binary_refusal, case_sensitive
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.extract_util import open_and_extract

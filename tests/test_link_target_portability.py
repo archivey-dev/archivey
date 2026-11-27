@@ -33,14 +33,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ArchiveyConfig,
-    ExtractionPolicy,
-    ExtractionStatus,
-    OnError,
-    open_archive,
-    sanitize_names,
-)
+from archivey import ArchiveyConfig, ExtractionPolicy, open_archive
 from archivey.exceptions import FilterRejectionError
 from archivey.internal.windows_reparse import (
     FILE_ATTRIBUTE_REPARSE_POINT,
@@ -48,7 +41,8 @@ from archivey.internal.windows_reparse import (
     IO_REPARSE_TAG_SYMLINK,
     normalize_windows_link_target,
 )
-from archivey.types import ArchiveMember, MemberType
+from archivey.paths import sanitize_names
+from archivey.types import ArchiveMember, ExtractionStatus, MemberType, OnError
 from tests.test_audit_rar_iso_dir import (
     _fixture,
     _rar5_build,

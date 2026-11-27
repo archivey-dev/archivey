@@ -15,10 +15,10 @@ import random
 
 import pytest
 
-from archivey import Verification, open_archive
+from archivey import open_archive
 from archivey.exceptions import CorruptionError
 from archivey.internal.streams.verification import SpanningCheckError
-from archivey.types import ArchiveMember
+from archivey.types import ArchiveMember, Verification
 from tests.conftest import requires
 from tests.test_audit_sevenzip import (
     _AES,

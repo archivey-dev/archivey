@@ -418,10 +418,10 @@ class PackageNotInstalledError(ArchiveyError):
 
     missing: tuple[MissingComponent, ...]
     """The packages and programs this raise is about, a
-    :class:`~archivey.MissingComponent` each: the type
-    :attr:`FormatAvailability.missing <archivey.FormatAvailability.missing>` is made of,
-    though a refusal can name a component no availability query reports, such as a
-    program a member read needs or a package a plugin imports for some files only.
+    :class:`~archivey.types.MissingComponent` each: the type
+    :attr:`FormatAvailability.missing <archivey.types.FormatAvailability.missing>` is
+    made of, though a refusal can name a component no availability query reports, such
+    as a program a member read needs or a package a plugin imports for some files only.
     Usually one. When there are more, each is an alternative the message names,
     and any one of them lets the read go ahead: a stored, encrypted RAR member reads
     with a RARLAB program or with ``cryptography``. Empty only when a program was found
@@ -590,3 +590,30 @@ def exception_detail(exc: BaseException, *, with_type: bool = False) -> str:
     if not text:
         return name
     return f"{name}: {text}" if with_type else text
+
+
+#: The public names of this module. The most used of them are also re-exported at
+#: the package root (see archivey.__all__).
+__all__ = [
+    "ArchiveyError",
+    "ArchiveyUsageError",
+    "CorruptionError",
+    "DiagnosticRaisedError",
+    "EncryptionError",
+    "ExtractionError",
+    "FilterRejectionError",
+    "FormatDetectionError",
+    "LinkTargetNotFoundError",
+    "LinkTargetNotFoundReason",
+    "NameCollisionError",
+    "NameRewrittenError",
+    "OpenError",
+    "PackageNotInstalledError",
+    "ReadError",
+    "ResourceLimitError",
+    "ResourceUnavailableError",
+    "SourceChangedError",
+    "StreamNotSeekableError",
+    "TruncatedError",
+    "UnsupportedFeatureError",
+]

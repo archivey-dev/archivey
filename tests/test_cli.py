@@ -16,15 +16,7 @@ from typing import NoReturn
 
 import pytest
 
-from archivey import (
-    ExtractionProgress,
-    ExtractionReport,
-    ExtractionResult,
-    ExtractionStatus,
-    MemberPass,
-    OverwritePolicy,
-    open_archive,
-)
+from archivey import ExtractionReport, open_archive
 from archivey.cli import test_cmd
 from archivey.cli.exit_codes import (
     EXIT_BROKEN_PIPE,
@@ -41,7 +33,15 @@ from archivey.cli.progress import ProgressCallback
 from archivey.diagnostics import DiagnosticSummary
 from archivey.exceptions import ArchiveyError, TruncatedError
 from archivey.internal.member_pass import MemberPassImpl
-from archivey.types import ArchiveMember, MemberType
+from archivey.reader import MemberPass
+from archivey.types import (
+    ArchiveMember,
+    ExtractionProgress,
+    ExtractionResult,
+    ExtractionStatus,
+    MemberType,
+    OverwritePolicy,
+)
 from tests.conftest import case_sensitive, requires_binary
 
 
@@ -685,7 +685,7 @@ def test_info_detects_once(
     """``info`` prints the detection the open ran instead of detecting again."""
     from typing import Any
 
-    from archivey import FormatInfo
+    from archivey.detection import FormatInfo
     from archivey.internal import detection
 
     calls = 0

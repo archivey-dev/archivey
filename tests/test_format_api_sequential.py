@@ -36,11 +36,7 @@ from archivey import (
     ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
-    DecoderLimits,
-    DetectionConfidence,
     MemberType,
-    PluginContainer,
-    PluginStream,
     ResourceLimitError,
     StreamFormat,
     TruncatedError,
@@ -48,7 +44,9 @@ from archivey import (
     format_availability,
     open_archive,
 )
+from archivey.config import DecoderLimits
 from archivey.cost import AccessCost, ListingCost, StreamCapability
+from archivey.detection import DetectionConfidence
 from archivey.diagnostics import DiagnosticCode, MemberTimestampContext
 from archivey.formats import (
     ForwardStream,
@@ -65,6 +63,7 @@ from archivey.internal.format_adapter import registration_scope
 from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.measurement import enable_measurement
 from archivey.internal.streams.streamtools import ReadAheadStream
+from archivey.types import PluginContainer, PluginStream
 from tests.streams_util import (
     CountingBytesIO,
     NonSeekableBytesIO,
@@ -208,12 +207,14 @@ def test_random_access_from_a_file(toys: ArchiveFormat, tmp_path: Path) -> None:
         assert reader.read("b.bin") == _DATA["b.bin"]
         with reader.open("docs/a.txt") as stream:
             assert stream.read() == b"alpha\n"
-            assert stream.verified is archivey.Verification.CHECKSUM
+            assert stream.verified is archivey.types.Verification.CHECKSUM
         assert reader.read("link") == b"alpha\n"
         member = reader.get("docs/a.txt")
         assert member is not None
         assert member.hashes == {
-            archivey.HashAlgorithm.CRC32: zlib.crc32(b"alpha\n").to_bytes(4, "big")
+            archivey.types.HashAlgorithm.CRC32: zlib.crc32(b"alpha\n").to_bytes(
+                4, "big"
+            )
         }
         cost = reader.info.cost
         assert cost.listing_cost is ListingCost.REQUIRES_SCANNING
@@ -289,7 +290,7 @@ def test_detection_and_availability(toys: ArchiveFormat, tmp_path: Path) -> None
 
 
 def test_random_access_needs_a_seekable_source(toys: ArchiveFormat) -> None:
-    with pytest.raises(archivey.StreamNotSeekableError):
+    with pytest.raises(archivey.exceptions.StreamNotSeekableError):
         open_archive(NonSeekableBytesIO(build_toys(_ENTRIES)), format="toys")
 
 
@@ -663,7 +664,7 @@ def test_a_listing_stopped_by_a_limit_walks_again(
 ) -> None:
     """A second listing starts a new walk from the start, and stops the same way."""
     config = archivey.ArchiveyConfig(
-        listing_limits=archivey.ListingLimits(max_members=3)
+        listing_limits=archivey.config.ListingLimits(max_members=3)
     )
     path = _write(tmp_path, build_toys(_ENTRIES))
     messages = []
@@ -701,7 +702,9 @@ _HOLDING_ENTRIES: list[tuple[str, MemberType, bytes]] = [
 def _holding_listing(
     fmt: ArchiveFormat, path: Path, **limits: int
 ) -> list[ArchiveMember]:
-    config = archivey.ArchiveyConfig(listing_limits=archivey.ListingLimits(**limits))
+    config = archivey.ArchiveyConfig(
+        listing_limits=archivey.config.ListingLimits(**limits)
+    )
     with open_archive(path, format=fmt, config=config) as reader:
         return reader.members()
 
@@ -803,7 +806,7 @@ def test_a_walk_charge_counts_with_the_members(
     with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
         _holding_listing(fmt, path, max_metadata_bytes=weight + 99)
     config = archivey.ArchiveyConfig(
-        listing_limits=archivey.ListingLimits(max_metadata_bytes=weight + 100)
+        listing_limits=archivey.config.ListingLimits(max_metadata_bytes=weight + 100)
     )
     with open_archive(path, format=fmt, config=config) as reader:
         reader.members()
@@ -1124,7 +1127,7 @@ def test_random_access_inside_a_compression_stream(
         assert reader.read("b.bin") == _DATA["b.bin"]
         with reader.open("docs/a.txt") as stream:
             assert stream.read() == b"alpha\n"
-            assert stream.verified is archivey.Verification.CHECKSUM
+            assert stream.verified is archivey.types.Verification.CHECKSUM
         info = reader.info
         assert info.is_solid
         assert info.cost.listing_cost is ListingCost.REQUIRES_DECOMPRESSION
@@ -1197,7 +1200,7 @@ def test_extract_past_a_listing_limit_writes_the_members_before_it(
     if mode == "gzip":
         data = _gz(data)
     config = archivey.ArchiveyConfig(
-        listing_limits=archivey.ListingLimits(max_members=3)
+        listing_limits=archivey.config.ListingLimits(max_members=3)
     )
     source = (
         NonSeekableBytesIO(data)
@@ -1432,7 +1435,7 @@ def test_decompress_part_way_random_access(
         assert reader.read("empty") == b""
         with reader.open("b.bin") as member_stream:
             assert member_stream.read() == _DATA["b.bin"]
-            assert member_stream.verified is archivey.Verification.CHECKSUM
+            assert member_stream.verified is archivey.types.Verification.CHECKSUM
         assert reader.info.is_solid
         assert reader.info.cost.access_cost is AccessCost.SOLID
 
@@ -1998,7 +2001,7 @@ def test_decoded_random_access(decoded: _DecodedFixture, tmp_path: Path) -> None
         assert reader_type.walks == 3
         with reader.open("b.bin") as stream:
             assert stream.read() == _DECODED_DATA["b.bin"]
-            assert stream.verified is archivey.Verification.CHECKSUM
+            assert stream.verified is archivey.types.Verification.CHECKSUM
         # In order from there, the walk carries on.
         assert reader.read("c.bin") == _DECODED_DATA["c.bin"]
         assert reader.read("empty") == b""
@@ -2073,7 +2076,7 @@ def test_a_walk_started_over_for_data_does_not_count_held_members(
     with registration_scope():
         fmt = _variant(_HoldingDecodedReader, ToysContainer.HOLDING_DECODED)
         path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
-        limits = archivey.ListingLimits(max_members=len(_DECODED_ENTRIES))
+        limits = archivey.config.ListingLimits(max_members=len(_DECODED_ENTRIES))
         config = archivey.ArchiveyConfig(listing_limits=limits)
         with open_archive(path, format=fmt, config=config) as reader:
             assert reader.members()[:2] == [
@@ -2108,7 +2111,7 @@ def test_a_walk_started_over_for_data_charges_nothing(tmp_path: Path) -> None:
     with registration_scope():
         fmt, path, weight = _charging_decoded(tmp_path)
         _ChargingDecodedReader.walks = 0
-        limits = archivey.ListingLimits(max_metadata_bytes=weight + 100)
+        limits = archivey.config.ListingLimits(max_metadata_bytes=weight + 100)
         config = archivey.ArchiveyConfig(listing_limits=limits)
         with open_archive(path, format=fmt, config=config) as reader:
             reader.members()
@@ -2298,11 +2301,11 @@ def test_decoded_checked_data_counts_as_checksum(
     path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
     with open_archive(path, format=fmt) as reader, reader.open("b.bin") as stream:
         stream.read()
-        assert stream.verified is archivey.Verification.LENGTH
+        assert stream.verified is archivey.types.Verification.LENGTH
     reader_type.checked = True
     with open_archive(path, format=fmt) as reader, reader.open("b.bin") as stream:
         stream.read()
-        assert stream.verified is archivey.Verification.CHECKSUM
+        assert stream.verified is archivey.types.Verification.CHECKSUM
 
 
 def test_decoded_data_and_data_length_is_a_plugin_bug(
@@ -2618,7 +2621,9 @@ def test_a_held_report_raises_from_a_listing_that_reaches_its_member(
     path = _write(tmp_path, build_toys(_ENTRIES))
     with (
         open_archive(path, format=fmt, config=_RAISE_ON_DATES) as reader,
-        pytest.raises(archivey.DiagnosticRaisedError, match="bad date for late"),
+        pytest.raises(
+            archivey.exceptions.DiagnosticRaisedError, match="bad date for late"
+        ),
     ):
         reader.members()
 

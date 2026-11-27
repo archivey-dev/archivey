@@ -15,7 +15,8 @@ from typing import Any
 import pytest
 
 import archivey
-from archivey import PasswordRequest, open_archive
+from archivey import open_archive
+from archivey.config import PasswordRequest
 from archivey.exceptions import ArchiveyUsageError, EncryptionError
 from archivey.internal.backends.sevenzip_reader import SevenZipReader
 from archivey.internal.measurement import enable_measurement

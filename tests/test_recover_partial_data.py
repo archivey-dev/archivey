@@ -21,9 +21,10 @@ from typing import Any
 
 import pytest
 
-from archivey import ArchiveyConfig, PartialDataRecovery, Verification, open_archive
-from archivey.config import PartialDataRecoveryStr
+from archivey import ArchiveyConfig, open_archive
+from archivey.config import PartialDataRecovery, PartialDataRecoveryStr
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, CorruptionError
+from archivey.types import Verification
 from tests.streams_util import NonSeekableBytesIO
 
 _OFF = ArchiveyConfig(recover_partial_data=PartialDataRecovery.OFF)
@@ -167,7 +168,7 @@ def test_the_accelerator_fallback_keeps_the_setting(monkeypatch: Any) -> None:
     damage, after the stream was opened: it still does no second decode when the
     setting is off."""
     pytest.importorskip("rapidgzip")
-    from archivey import AcceleratorMode
+    from archivey.config import AcceleratorMode
     from archivey.internal.streams.decompressor_stream import DecompressorStream
 
     built: list[DecompressorStream] = []
@@ -488,7 +489,7 @@ def test_a_deferred_check_is_reported_when_found(n: int) -> None:
 def test_a_limit_is_never_deferred(how: str, level: PartialDataRecovery) -> None:
     """A limit stops the read that crosses it at every level: at ALL only a verdict
     on the data waits for the next read."""
-    from archivey import DecoderLimits
+    from archivey.config import DecoderLimits
     from archivey.exceptions import ResourceLimitError
 
     buf = io.BytesIO()

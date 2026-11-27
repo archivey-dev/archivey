@@ -41,7 +41,7 @@ import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
-from archivey import ExtractionLimits
+from archivey.config import ExtractionLimits
 from benchmarks.fixtures import FixtureSet, materialize_fixtures
 from benchmarks.harness import (
     _py7zr_available,

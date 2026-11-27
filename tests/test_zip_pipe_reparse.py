@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey import ExtractionStatus
 from archivey.config import ListingLimits
 from archivey.diagnostics import DiagnosticCode
 from archivey.internal.backends.zip_forward_reader import _MAX_REPARSE_PREFIX
@@ -27,7 +26,7 @@ from archivey.internal.windows_reparse import (
     IO_REPARSE_TAG_MOUNT_POINT,
     IO_REPARSE_TAG_SYMLINK,
 )
-from archivey.types import ArchiveMember, MemberType
+from archivey.types import ArchiveMember, ExtractionStatus, MemberType
 from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO, open_mode
 from tests.test_windows_reparse import _reparse_buffer

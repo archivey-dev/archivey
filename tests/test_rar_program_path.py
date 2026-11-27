@@ -17,13 +17,13 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     ArchiveyUsageError,
-    FormatSupport,
     PackageNotInstalledError,
     format_availability,
     open_archive,
 )
 from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.external import unar
+from archivey.types import FormatSupport
 from tests.test_unar_probe import GOOD_UNAR_EXTRACT, _stand_in
 
 # Non-solid, with compressed members, so a named read spawns unrar.

@@ -18,14 +18,14 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ExtractionStatus, OnError, open_archive
+from archivey import open_archive
 from archivey.exceptions import LinkTargetNotFoundError
 from archivey.internal.naming import (
     link_target_name_keys,
     normalize_hardlink_target,
     resolve_link_target_name,
 )
-from archivey.types import MemberType
+from archivey.types import ExtractionStatus, MemberType, OnError
 from tests.conftest import requires_binary
 from tests.test_audit_rar_iso_dir import (
     _fixture,

@@ -19,7 +19,6 @@ import pytest
 import archivey
 from archivey import (
     CorruptionError,
-    DetectionConfidence,
     MemberType,
     ResourceLimitError,
     TruncatedError,
@@ -27,6 +26,7 @@ from archivey import (
     detect_format,
     open_archive,
 )
+from archivey.detection import DetectionConfidence
 from archivey.diagnostics import DiagnosticCode, SpecialFileDataContext
 from archivey.formats import SequentialReader
 from archivey.internal.backends.cpio_reader import (
@@ -134,7 +134,7 @@ def test_list_and_read(name: str) -> None:
         if variant == "crc":
             with reader.open("dir/blocks.bin") as stream:
                 stream.read()
-                assert stream.verified is archivey.Verification.CHECKSUM
+                assert stream.verified is archivey.types.Verification.CHECKSUM
 
 
 @pytest.mark.parametrize("name", ARCHIVES)
@@ -276,7 +276,7 @@ def test_the_binary_probe_answers_with_a_verdict() -> None:
     """The probe knows yes from no, so it answers a match or no."""
     probe = CpioHandler.probe
     assert probe is not None
-    assert probe(_binary(b"hello")) is archivey.DetectionConfidence.PROBABLE
+    assert probe(_binary(b"hello")) is archivey.detection.DetectionConfidence.PROBABLE
     assert probe(b"\xc7\x71" + b"\0" * 30) is DetectionConfidence.REJECTED
     assert probe(b"not a cpio archive at all") is DetectionConfidence.REJECTED
 
@@ -520,7 +520,7 @@ def test_too_many_held_links(tmp_path: Path) -> None:
     links = [(f"l{i}".encode(), _FILE, 7, 6, b"") for i in range(5)]
     data = _newc(*links, (b"data", _FILE, 7, 6, b"x"))
     config = archivey.ArchiveyConfig(
-        listing_limits=archivey.ListingLimits(max_members=2)
+        listing_limits=archivey.config.ListingLimits(max_members=2)
     )
     with (
         pytest.raises(ResourceLimitError, match="waiting for their data"),
@@ -537,7 +537,7 @@ def test_held_links_count_with_the_members_listed_before_them(tmp_path: Path) ->
     links = [(f"l{i}".encode(), _FILE, 7, 3, b"") for i in range(2)]
     data = _without_trailer(_newc(*files, *links))
     config = archivey.ArchiveyConfig(
-        listing_limits=archivey.ListingLimits(max_members=4)
+        listing_limits=archivey.config.ListingLimits(max_members=4)
     )
     with (
         pytest.raises(
@@ -559,7 +559,7 @@ def test_held_link_names_count_toward_max_metadata_bytes(tmp_path: Path) -> None
     links = [(b"%02d" % i + b"a" * 1000, _FILE, 7, 30, b"") for i in range(20)]
     data = _without_trailer(_newc(*links))
     config = archivey.ArchiveyConfig(
-        listing_limits=archivey.ListingLimits(max_metadata_bytes=10_000)
+        listing_limits=archivey.config.ListingLimits(max_metadata_bytes=10_000)
     )
     with (
         pytest.raises(ResourceLimitError, match="max_metadata_bytes=10000"),
@@ -578,7 +578,7 @@ def test_held_link_names_count_with_the_members_listed_before_them(
     links = [(b"%d" % i + b"l" * 749, _FILE, 7, 3, b"") for i in range(2)]
     data = _without_trailer(_newc(*files, *links))
     config = archivey.ArchiveyConfig(
-        listing_limits=archivey.ListingLimits(max_metadata_bytes=10_000)
+        listing_limits=archivey.config.ListingLimits(max_metadata_bytes=10_000)
     )
     with (
         pytest.raises(
@@ -611,11 +611,11 @@ def test_a_held_link_is_counted_once(tmp_path: Path) -> None:
         members = reader.members()
     weight = sum(member_metadata_bytes(m) for m in members)
     assert len(members) == 4
-    exact = archivey.ListingLimits(max_members=4, max_metadata_bytes=weight)
+    exact = archivey.config.ListingLimits(max_members=4, max_metadata_bytes=weight)
     config = archivey.ArchiveyConfig(listing_limits=exact)
     with open_archive(path, config=config) as reader:
         assert [m.name for m in reader.members()] == ["data", "l0", "l1", "l2"]
-    under = archivey.ListingLimits(max_members=4, max_metadata_bytes=weight - 1)
+    under = archivey.config.ListingLimits(max_members=4, max_metadata_bytes=weight - 1)
     config = archivey.ArchiveyConfig(listing_limits=under)
     with pytest.raises(ResourceLimitError), open_archive(path, config=config) as reader:
         reader.members()
@@ -635,7 +635,7 @@ def test_a_held_link_keeps_its_stored_name(tmp_path: Path) -> None:
     assert counts[DiagnosticCode.MEMBER_NAME_NORMALIZED] == 1
     strict = archivey.ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.STRICT)
     with (
-        pytest.raises(archivey.DiagnosticRaisedError),
+        pytest.raises(archivey.exceptions.DiagnosticRaisedError),
         open_archive(path, config=strict) as reader,
     ):
         reader.members()
@@ -704,9 +704,15 @@ def test_the_cost_follows_the_compression_layer(compressed: bool) -> None:
     with open_archive(io.BytesIO(gzip.compress(data) if compressed else data)) as r:
         cost = r.info.cost
     assert (cost.listing_cost, cost.access_cost) == (
-        (archivey.ListingCost.REQUIRES_DECOMPRESSION, archivey.AccessCost.SOLID)
+        (
+            archivey.cost.ListingCost.REQUIRES_DECOMPRESSION,
+            archivey.cost.AccessCost.SOLID,
+        )
         if compressed
-        else (archivey.ListingCost.REQUIRES_SCANNING, archivey.AccessCost.DIRECT)
+        else (
+            archivey.cost.ListingCost.REQUIRES_SCANNING,
+            archivey.cost.AccessCost.DIRECT,
+        )
     )
 
 
@@ -881,7 +887,7 @@ def _spanning_levels(data: bytes, *, streaming: bool) -> tuple[list, list]:
 
 
 _SPANNED = _newc((b"a", _FILE, 1, 1, b"first " * 400), (b"b", _FILE, 2, 1, b"x" * 9))
-_V = archivey.Verification
+_V = archivey.types.Verification
 
 
 def test_a_compressed_cpio_file_lists_at_the_codec_checksum_ceiling() -> None:

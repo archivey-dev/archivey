@@ -22,8 +22,8 @@ from typing import Any
 import pytest
 
 import archivey
-from archivey import ExtractionStatus
 from archivey.cli.main import main
+from archivey.types import ExtractionStatus
 from tests.conftest import requires_unrar_cli
 from tests.extract_util import open_and_extract
 
@@ -486,7 +486,7 @@ def test_hardlink_to_a_replaced_source_does_not_get_the_replacements_content(
     if streaming:
         # The source's bytes streamed past and its path now holds `A`: out of reach.
         assert link.status is ExtractionStatus.FAILED
-        assert isinstance(link.error, archivey.ExtractionError)
+        assert isinstance(link.error, archivey.exceptions.ExtractionError)
     else:
         # The second pass re-reads the source, as it does for an excluded one.
         assert link.status is ExtractionStatus.EXTRACTED
@@ -680,7 +680,7 @@ def test_a_directory_source_is_not_extracted_into_itself(
     class _Runaway(Exception):
         pass
 
-    def on_progress(progress: archivey.ExtractionProgress) -> None:
+    def on_progress(progress: archivey.types.ExtractionProgress) -> None:
         # The source has four entries; a streaming pass reading its own output would
         # otherwise run until the path is too long (tens of seconds).
         names.append(progress.member.name)

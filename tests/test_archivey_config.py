@@ -10,13 +10,12 @@ from typing import Optional
 import pytest
 
 import archivey
-from archivey import (
+from archivey import ArchiveyConfig, open_archive
+from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
     AcceleratorMode,
-    ArchiveyConfig,
     ExtractionLimits,
     ListingLimits,
-    open_archive,
 )
 from archivey.exceptions import ResourceLimitError
 from archivey.internal.arg_checks import check_limit_fields
@@ -38,7 +37,7 @@ def test_config_types_are_frozen() -> None:
 
 
 def test_default_config_is_module_constant() -> None:
-    assert DEFAULT_ARCHIVEY_CONFIG is archivey.DEFAULT_ARCHIVEY_CONFIG
+    assert DEFAULT_ARCHIVEY_CONFIG is archivey.config.DEFAULT_ARCHIVEY_CONFIG
     assert DEFAULT_ARCHIVEY_CONFIG.use_rapidgzip is AcceleratorMode.AUTO
     assert DEFAULT_ARCHIVEY_CONFIG.extraction_limits == ExtractionLimits()
     assert DEFAULT_ARCHIVEY_CONFIG.listing_limits == ListingLimits()
@@ -231,18 +230,19 @@ def test_public_api_exports_config_types() -> None:
         "SalvageLimits",
         "AcceleratorMode",
         "DEFAULT_ARCHIVEY_CONFIG",
-        "ResourceLimitError",
     ):
-        assert name in archivey.__all__
-        assert hasattr(archivey, name)
+        assert name in archivey.config.__all__
+        assert hasattr(archivey.config, name)
+    assert "ArchiveyConfig" in archivey.__all__
+    assert "ResourceLimitError" in archivey.__all__
 
 
 def test_config_is_hashable() -> None:
     """A frozen config advertises hashability; a nested ``MappingProxyType`` broke it."""
-    assert hash(archivey.DEFAULT_ARCHIVEY_CONFIG) == hash(ArchiveyConfig())
+    assert hash(archivey.config.DEFAULT_ARCHIVEY_CONFIG) == hash(ArchiveyConfig())
     strict = ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.STRICT)
     assert strict != ArchiveyConfig()
-    assert len({strict, ArchiveyConfig(), archivey.DEFAULT_ARCHIVEY_CONFIG}) == 2
+    assert len({strict, ArchiveyConfig(), archivey.config.DEFAULT_ARCHIVEY_CONFIG}) == 2
 
 
 def test_glob_concatenation_flag_is_deprecated_and_warns_only_when_set() -> None:

@@ -60,11 +60,11 @@ UNRESOLVED_OK = {
     # Members the page shows in a list or not at all, so they get no heading anchor.
     "archivey.ArchiveFormat.DIRECTORY",
     "archivey.ArchiveyError.__str__",
-    "archivey.DecoderLimits.UNLIMITED",
+    "archivey.config.DecoderLimits.UNLIMITED",
     "archivey.Diagnostic.to_dict",
-    "archivey.ExtractionLimits.UNLIMITED",
-    "archivey.ListingLimits.UNLIMITED",
-    "archivey.SpoolLimits.UNLIMITED",
+    "archivey.config.ExtractionLimits.UNLIMITED",
+    "archivey.config.ListingLimits.UNLIMITED",
+    "archivey.config.SpoolLimits.UNLIMITED",
     # Standard library: the site has no inventory for Python's own docs.
     "OSError",
     "ValueError",

@@ -25,17 +25,11 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    AcceleratorMode,
-    ArchiveStream,
-    ArchiveyConfig,
-    ArchiveyUsageError,
-    StreamNotSeekableError,
-    list_known_formats,
-    open_archive,
-)
+from archivey import ArchiveStream, ArchiveyConfig, ArchiveyUsageError, open_archive
+from archivey.config import AcceleratorMode
+from archivey.core import list_known_formats
 from archivey.cost import StreamCapability
-from archivey.exceptions import TruncatedError
+from archivey.exceptions import StreamNotSeekableError, TruncatedError
 from archivey.types import (
     ArchiveFormat,
     CompressionAlgorithm,

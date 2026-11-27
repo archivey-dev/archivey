@@ -33,13 +33,7 @@ from typing import (
 )
 
 import archivey
-from archivey import (
-    AbortOn,
-    ArchiveyConfig,
-    ExtractionPolicy,
-    FormatDetectionError,
-    OverwritePolicy,
-)
+from archivey import ArchiveyConfig, ExtractionPolicy, FormatDetectionError
 from archivey.cli import sources
 from archivey.cli.cat_cmd import run_cat
 from archivey.cli.choices import cli_choices
@@ -64,6 +58,7 @@ from archivey.cli.test_cmd import run_test
 from archivey.cli.version_report import print_version_report
 from archivey.exceptions import ArchiveyError
 from archivey.terminal import display_path, quoted
+from archivey.types import AbortOn, OverwritePolicy
 
 if TYPE_CHECKING:
     from _typeshed import SupportsWrite

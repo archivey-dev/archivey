@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ExtractionStatus, open_archive
+from archivey import open_archive
 from archivey.config import ArchiveyConfig, ListingLimits, PasswordRequest
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -37,7 +37,7 @@ from archivey.exceptions import (
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.measurement import enable_measurement
 from archivey.reader import ArchiveReader
-from archivey.types import ArchiveMember, MemberType
+from archivey.types import ArchiveMember, ExtractionStatus, MemberType
 from tests.conftest import complete_listing, requires
 
 _FIXTURES = Path(__file__).parent / "fixtures"

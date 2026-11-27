@@ -19,20 +19,14 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    DiagnosticCode,
-    ExtractionPolicy,
-    ExtractionStatus,
-    OnError,
-    OverwritePolicy,
-    open_archive,
-)
+from archivey import DiagnosticCode, ExtractionPolicy, open_archive
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     FilterRejectionError,
     TruncatedError,
 )
+from archivey.types import ExtractionStatus, OnError, OverwritePolicy
 from tests.conftest import requires
 from tests.extract_util import open_and_extract
 from tests.memory_util import traced_peak

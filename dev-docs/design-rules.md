@@ -933,7 +933,14 @@ ships and the rule becomes semver's major-version rule.
 **Rulings.** `detection_cost` stays in its module: "minimizes root exports, these are
 too niche for root" (2026-09-25). The CLI escaping helpers became a public submodule not
 re-exported at the root (2026-09-24). `dry_run=` is public (2026-10-01, PR 531).
-`MemberStreams` was demoted (PR 479).
+`MemberStreams` was demoted (PR 479). The root keeps 30 names and the other 67 left it
+for their submodules in 0.6.0, with a deprecation release for the old spelling
+(2026-11-27): the entry functions, the reader, member, format, policy and report types,
+and the nine errors the docs catch most (`ArchiveyError`, `ArchiveyUsageError`,
+`FormatDetectionError`, `CorruptionError`, `TruncatedError`, `EncryptionError`,
+`ResourceLimitError`, `UnsupportedFeatureError`, `PackageNotInstalledError`). Chosen
+over keeping only the two base errors at the root (23 names) and over keeping all 21
+(43 names). `tests/test_root_tiers.py` pins the list.
 
 ### DR-14. One obvious way, and one mechanism per job
 

@@ -29,8 +29,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import DEFAULT_ARCHIVEY_CONFIG, detect_format, open_archive
-from archivey.config import ArchiveyConfig
+from archivey import detect_format, open_archive
+from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig
 from archivey.detection_cost import (
     BALANCED_BUDGET,
     FAST_BUDGET,
