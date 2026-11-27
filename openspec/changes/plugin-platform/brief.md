@@ -2,7 +2,7 @@
 
 **Status:** Plan only, written to circulate and be refined. The maintainer agreed the
 direction and ten decisions on 2026-11-24 and revised three of them on 2026-11-26
-(design.md §Decisions, R1 to R13). R9 retires the 2026-10-28 rule that left a turned-off
+(design.md §Decisions, R1 to R16). R9 retires the 2026-10-28 rule that left a turned-off
 plugin format out of detection. No spec deltas yet: each implementation PR brings the
 deltas for its step. No code until the maintainer has read this plan. It replaces
 `openspec/changes/plugin-api`, whose interface it keeps and whose registration, naming
@@ -39,7 +39,8 @@ anyone else's.
   change that has landed (archived 2026-11-25).
 - Five packages under `packages/`, released with core: `archivey-disk-images`,
   `archivey-dmg`, `archivey-package-formats`, `archivey-legacy-formats`, and
-  `archivey-compressors` for the seven stream formats that leave core (R11).
+  `archivey-compressors` for six of the seven stream formats that leave core
+  (R11; `.Z` joins the legacy package).
 
 **After it lands:** `pip install archivey` is the lean core, `archivey[recommended]`
 reads every format as today, and a format from outside the repo is installed with pip
