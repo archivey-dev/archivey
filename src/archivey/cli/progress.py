@@ -3,8 +3,8 @@
 One :class:`ProgressCallback` per command shows one line on stderr. It takes two kinds
 of event:
 
-- :class:`~archivey.types.ExtractionProgress` from ``test`` and ``extract``: output
-  bytes against the selected members' total.
+- :class:`~archivey.types.ExtractionProgress` from ``test`` and ``extract``: output bytes
+  against the selected members' total.
 - :class:`~archivey.types.SourceProgress` from ``ArchiveyConfig.on_source_read``
   (:meth:`ProgressCallback.source_read`), for every verb: how far the archive's own file
   has been read. Before the first member (and in ``list``, ``info`` and ``cat``) it is

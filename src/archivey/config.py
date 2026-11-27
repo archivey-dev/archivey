@@ -3,8 +3,8 @@
 A caller builds one :class:`ArchiveyConfig` and passes it as ``config=`` to the
 functions that open, detect or report on archives: :func:`~archivey.open_archive`,
 :func:`~archivey.open_stream`, :func:`~archivey.detect_format`,
-:func:`~archivey.format_availability` and :func:`~archivey.core.list_supported_formats`.
-Its fields are grouped into the limit classes here (:class:`ExtractionLimits`,
+:func:`~archivey.format_availability` and :func:`~archivey.core.list_supported_formats`. Its
+fields are grouped into the limit classes here (:class:`ExtractionLimits`,
 :class:`ListingLimits`, :class:`DecoderLimits`, :class:`SpoolLimits`,
 :class:`SalvageLimits`), the enums that pick an accelerator, an external program, or
 which decoders run in a child process (:class:`AcceleratorMode`,
@@ -144,8 +144,7 @@ class ProcessIsolation(Enum):
     between processes on top of that, at the copying cost ``NATIVE_DECODERS`` gives for
     single streams. Where no child process can be started, a PPMd member or a ``.bz3``
     file raises :class:`~archivey.exceptions.ResourceUnavailableError` and rapidgzip
-    under ``AUTO`` falls back
-    to the standard library."""
+    under ``AUTO`` falls back to the standard library."""
     NATIVE_DECODERS = "native_decoders"
     """Every native decoder runs in a child process: zlib, bz2, lzma, zstd, lz4, brotli,
     inflate64, pyppmd, libbzip3, rapidgzip and compress-utils, including the trial
@@ -164,8 +163,7 @@ class ProcessIsolation(Enum):
     KiB member read from it, with the copying of larger members on top. An idle process
     holds about 9 MB. Where no child process can be started (a frozen application,
     archivey imported from a zip, a refused spawn), opening a decoder raises
-    :class:`~archivey.exceptions.ResourceUnavailableError`; nothing is decoded in the
-    caller's
+    :class:`~archivey.exceptions.ResourceUnavailableError`; nothing is decoded in the caller's
     process."""
     NONE = "none"
     """No child process at all: every decoder runs in the caller's process.
@@ -1073,15 +1071,14 @@ class ArchiveyConfig:
     a path that names one part of a multi-volume set (``x.part1.rar``, ``x.7z.001``,
     ``x.r00``, or a self-extracting stub beside ``x.exe.001``) together with the other
     parts in the same directory, whichever part it names. A part found that way that is
-    a symbolic link is refused with :class:`~archivey.exceptions.OpenError`, as it is
-    found; swapping a part for a link after that is not caught. Set this to ``False`` to
-    read a path as the one file it names: no other file is opened, and a numbered part
-    is not reported as a set with parts missing. ``x.7z.001`` is read alone, so the 7z
-    reader refuses what it finds; ``x.zip.001`` is refused by its name as a ZIP split
-    segment. To read a set then, pass its volumes as a list. That suits a directory
-    other users can write to, where a planted part (a hard link to a file the caller can
-    read and they cannot, which looks like any file) would end up inside an extracted
-    member.
+    a symbolic link is refused with :class:`~archivey.exceptions.OpenError`, as it is found;
+    swapping a part for a link after that is not caught. Set this to ``False`` to read
+    a path as the one file it names: no other file is opened, and a numbered part is not
+    reported as a set with parts missing. ``x.7z.001`` is read alone, so the 7z reader
+    refuses what it finds; ``x.zip.001`` is refused by its name as a ZIP split segment.
+    To read a set then, pass its volumes as a list. That suits a directory other users
+    can write to, where a planted part (a hard link to a file the caller can read and
+    they cannot, which looks like any file) would end up inside an extracted member.
 
     An ``fsspec.core.OpenFile`` is never searched, whatever this says: pass a remote
     set as a list of ``OpenFile`` objects. With this ``True`` a lone remote
@@ -1177,11 +1174,11 @@ class ArchiveyConfig:
     between are merged, so ``requests`` may skip numbers. Every reader reports to the
     callback in its own config. A reader opened with ``parent=`` (an archive inside a
     member, which uses the parent's config unless given one) reports with
-    :attr:`SourceProgress.nest_level <archivey.types.SourceProgress.nest_level>` one
-    more than its parent's. Each reader reports the bytes it reads from its own source
-    (for a nested reader, the member it was opened on), at its own level. A member
-    stream passed without ``parent=`` is a file of its own, at level 0. To tell apart
-    nested archives open at the same time, give each its own callback, such as
+    :attr:`SourceProgress.nest_level <archivey.types.SourceProgress.nest_level>` one more than
+    its parent's. Each reader reports the bytes it reads from its own source (for a
+    nested reader, the member it was opened on), at its own level. A member stream
+    passed without ``parent=`` is a file of its own, at level 0. To tell apart nested
+    archives open at the same time, give each its own callback, such as
     ``dataclasses.replace(config, on_source_read=functools.partial(on_read, name))``. A
     split set found beside a stub, and the track files of a ``.cue`` sheet, report as
     the file they stand in for. Bytes that an external program (``unrar``) or the RAR

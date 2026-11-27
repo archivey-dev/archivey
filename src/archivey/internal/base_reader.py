@@ -5826,15 +5826,16 @@ class BaseArchiveReader(ArchiveReader):
         """Close the reader.
 
         Marks the reader closed and returns, in both modes. It never waits for a call
-        running on another thread and never refuses, and a callback of the reader's own
-        call may call it to cancel that call. From here on every call on the reader
-        raises ``ArchiveyUsageError``; a call already running stops at its next
-        checkpoint (the end of a ``read()``, a chunk of a pass's member read, a batch of
-        a listing, the next member of a pass, the return of an ``extract_all()``
+        running on another thread and never refuses, and a callback of the reader's
+        own call may call it to cancel that call. From here on every call on the
+        reader raises ``ArchiveyUsageError``; a call already running stops at its next
+        checkpoint (the end of a ``read()``, a chunk of a pass's member read, a batch of a
+        listing, the next member of a pass, the return of an ``extract_all()``
         progress callback, before a member is moved into place) with the same error.
-        Still-open member streams are closed, as ``tarfile.TarFile.close()`` closes its
-        own: a stream's next call raises ``ValueError``. A ``stream_members()`` pass
-        suspended at a yield is wound down; one that is running winds itself down.
+        Still-open member streams are closed, as ``tarfile.TarFile.close()`` closes
+        its own: a stream's next call raises ``ValueError``.
+        A ``stream_members()`` pass suspended at a yield is wound down; one that is
+        running winds itself down.
 
         Nothing physical happens beside a running call, member-stream calls (a
         ``read()`` on another thread) included: the streams' inner closes, the pass

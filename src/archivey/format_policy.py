@@ -104,8 +104,8 @@ def _coerce_entries(
 
     Members only, not their string spellings: ``"zip"`` would name a container and
     ``"gz"`` a compression, so a string cannot say which half of the format it is.
-    ``methods`` admits :class:`~archivey.types.CompressionAlgorithm` members
-    (``exclude=`` only).
+    ``methods`` admits :class:`~archivey.types.CompressionAlgorithm` members (``exclude=``
+    only).
     """
     kinds = (
         "ContainerFormat, PluginContainer, StreamFormat, PluginStream and "
@@ -318,8 +318,8 @@ class FormatPolicy:
     that decodes, wherever it runs, so they hold for every member too: under
     ``plugins=False`` no plugin codec decodes anything in the call, and an excluded
     package decodes nothing.
-    A :class:`~archivey.types.CompressionAlgorithm` in ``exclude`` turns that decoder
-    off: it refuses every member compressed with that method, in every archive the call
+    A :class:`~archivey.types.CompressionAlgorithm` in ``exclude`` turns that decoder off:
+    it refuses every member compressed with that method, in every archive the call
     opens, and a file compressed with it as a whole. ``LZMA2`` turns xz off too, as
     every xz stream holds LZMA2 data.
 
@@ -413,8 +413,7 @@ class FormatPolicy:
     plugins: bool
     """Whether registered plugin formats and plugin codecs may run in this call. Use
     ``False`` with ``exclude``; under ``only``, a file in a plugin format opens only
-    when its container (or its :class:`~archivey.types.PluginStream`, for a codec) is
-    listed.
+    when its container (or its :class:`~archivey.types.PluginStream`, for a codec) is listed.
 
     ``False`` turns a plugin codec off everywhere in the call: as the compression of
     the file opened, and inside an archive, when a reader (a ``replace=`` plugin, for
@@ -441,16 +440,16 @@ class FormatPolicy:
     false. The plugin gets what any indexed plugin gets, a seekable source from the
     start of the archive, so a multi-volume set and an archive behind a
     self-extracting stub are refused with :class:`~archivey.UnsupportedFeatureError`,
-    a source that cannot seek with :class:`~archivey.exceptions.StreamNotSeekableError`,
-    and a raw CD sector image detected as ISO (only the built-in reader strips its
-    sectors). The format's own ``ArchiveyConfig`` options reach the plugin through
+    a source that cannot seek with :class:`~archivey.exceptions.StreamNotSeekableError`, and a
+    raw CD sector image detected as ISO (only the built-in reader strips its sectors). The
+    format's own ``ArchiveyConfig`` options reach the plugin through
     ``ReaderContext.config``."""
 
     exclude_libraries: frozenset[OptionalLibrary]
     """Optional packages that read as not installed in this call.
 
-    Each entry is an :class:`~archivey.types.OptionalLibrary` member or its value, such
-    as ``"pyppmd"``; any other name is refused when the policy is built. An excluded
+    Each entry is an :class:`~archivey.types.OptionalLibrary` member or its value, such as
+    ``"pyppmd"``; any other name is refused when the policy is built. An excluded
     package decodes nothing in the call, inside an archive as for a whole file, and
     one that archivey imports on first use (``brotli``, ``pyppmd``, ``inflate64``,
     ``rapidgzip``) is not imported for it. What happens is what happens when the
@@ -471,16 +470,16 @@ class FormatPolicy:
     """The optional packages the call may decode with, or ``None`` for all of them.
 
     The allowlist form of :attr:`exclude_libraries`, as ``only`` is of ``exclude``:
-    every :class:`~archivey.types.OptionalLibrary` it does not list reads as not
-    installed in this call, with the same effects, including on a package a later
-    archivey release adds. ``only_libraries=set()`` runs with no optional package; on
-    Python 3.14 that also turns off the standard library's ``compression.zstd``, which
-    is listed as one. Both may be set, as long as no package is in both.
+    every :class:`~archivey.types.OptionalLibrary` it does not list reads as not installed in
+    this call, with the same effects, including on a package a later archivey release
+    adds. ``only_libraries=set()`` runs with no optional package; on Python 3.14 that
+    also turns off the standard library's ``compression.zstd``, which is listed as one.
+    Both may be set,
+    as long as no package is in both.
 
     It covers archivey's own optional packages. A plugin's own modules are not
-    :class:`~archivey.types.OptionalLibrary` members, so it leaves them alone:
-    ``plugins=`` turns plugins off. Zstandard runs on ``compression.zstd`` where the
-    interpreter has
+    :class:`~archivey.types.OptionalLibrary` members, so it leaves them alone: ``plugins=``
+    turns plugins off. Zstandard runs on ``compression.zstd`` where the interpreter has
     it and ``backports.zstd`` otherwise, so list both to keep zstd everywhere."""
 
     _libraries_off: frozenset[OptionalLibrary] = field(
@@ -594,8 +593,8 @@ class FormatPolicy:
 
         ``False`` when :attr:`exclude_libraries` lists the package ``module`` is or is
         part of (``lz4.block`` is part of ``lz4``), or :attr:`only_libraries` does not
-        list it. A name that is not an :class:`~archivey.types.OptionalLibrary`, such as
-        a plugin's own module or ``zlib``, is always allowed. ``module`` is the exact
+        list it. A name that is not an :class:`~archivey.types.OptionalLibrary`, such as a
+        plugin's own module or ``zlib``, is always allowed. ``module`` is the exact
         import name and is case-sensitive (``"LZ4"`` is not ``lz4``); a non-string raises
         ``ArchiveyUsageError``. A plugin reader that
         imports an optional package outside its ``requires`` asks this before it imports

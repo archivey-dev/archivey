@@ -47,8 +47,8 @@ class MemberStreams(Flag):
     those booleans map to at the entry point, and what every backend receives. It is
     importable from :mod:`archivey.types` for backends and tests, not re-exported from
     ``archivey`` and not on the API page. It is **not** carried on
-    :class:`~archivey.cost.CostReceipt` or in diagnostics, and no public reader
-    attribute exposes it.
+    :class:`~archivey.cost.CostReceipt` or in diagnostics, and no public reader attribute
+    exposes it.
 
     Default (no bits set — ``MemberStreams(0)``) is the cheap contract:
 
@@ -58,11 +58,12 @@ class MemberStreams(Flag):
     ``CONCURRENT``
         Multiple overlapping ``open()`` calls are allowed. First-touch member
         materialization is coordinated (one build; waiters share the snapshot).
-        ``close()`` does not wait for calls in flight: they raise ``ArchiveyUsageError``
-        at their next checkpoint. Callers still synchronize any *shared* stream objects
-        they hand around. A pass (``__iter__``, ``stream_members``, ``extract_all``,
-        ``verify_all``) has the reader to itself, as without the flag. Does **not**
-        remove solid open-order cost — see :class:`~archivey.cost.AccessCost`.
+        ``close()`` does not wait for calls in flight: they raise
+        ``ArchiveyUsageError`` at their next checkpoint. Callers still synchronize
+        any *shared* stream objects they hand around. A pass (``__iter__``,
+        ``stream_members``, ``extract_all``, ``verify_all``) has the reader to
+        itself, as without the flag.
+        Does **not** remove solid open-order cost — see :class:`~archivey.cost.AccessCost`.
 
     ``SEEKABLE``
         Member streams from random ``open()`` support ``seek()``. Without this
@@ -315,8 +316,7 @@ class ArchiveFormat:
 
     stream: StreamFormat | PluginStream
     """The compression around the archive, such as ``GZIP`` for a ``.tar.gz``, or
-    ``UNCOMPRESSED``, or a member of a :class:`~archivey.types.PluginStream` subclass
-    for a
+    ``UNCOMPRESSED``, or a member of a :class:`~archivey.types.PluginStream` subclass for a
     compression format a plugin adds."""
 
     if TYPE_CHECKING:
@@ -626,8 +626,8 @@ class BackendUse:
 class MissingComponent:
     """A package, extra, or external tool required for a format (or a codec inside it).
 
-    Appears on :class:`~archivey.types.FormatAvailability` when something is absent, and
-    as the ``requirement`` on internal codec/backend descriptors. Defined in this leaf
+    Appears on :class:`~archivey.types.FormatAvailability` when something is absent, and as
+    the ``requirement`` on internal codec/backend descriptors. Defined in this leaf
     module (not the registry) so codec descriptors can reference it without a
     registry ↔ codecs import cycle.
     """
@@ -661,9 +661,9 @@ class MissingComponent:
 
         Every raise site builds its message here so the advice a caller gets when a
         *read* fails cannot drift from the ``install_hint`` that listing and
-        :class:`~archivey.types.FormatAvailability` report. The two used to be
-        independent strings, and the extras consolidation updated the hints while every
-        ``raise`` kept advertising extras that no longer exist.
+        :class:`~archivey.types.FormatAvailability` report. The two used to be independent
+        strings, and the extras consolidation updated the hints while every ``raise``
+        kept advertising extras that no longer exist.
 
         ``note`` appends a sentence for cases where the bare hint would mislead (e.g.
         a backport that is pointless on a Python version shipping the module).
@@ -1305,8 +1305,8 @@ class MemberExtra(dict[str, object]):
 class ArchiveInfoExtra(dict[str, object]):
     """Archive-level format-specific metadata on :class:`~archivey.ArchiveInfo`.
 
-    Same shape as :class:`~archivey.types.MemberExtra` over a separate key set — do not
-    merge the two bags.
+    Same shape as :class:`~archivey.types.MemberExtra` over a separate key set — do not merge
+    the two bags.
 
     Known keys:
 
@@ -1633,8 +1633,8 @@ class ArchiveMember:
     extra: MemberExtra = field(default_factory=MemberExtra, compare=False)
     """Format-specific extra fields (e.g. ``extra["is_junction"]``). Excluded from equality.
 
-    Known keys and their value types are :class:`~archivey.types.MemberExtra`. Unknown
-    keys (third-party or future) stay legal and read as ``object``. The ``EXTRA_*``
+    Known keys and their value types are :class:`~archivey.types.MemberExtra`. Unknown keys
+    (third-party or future) stay legal and read as ``object``. The ``EXTRA_*``
     constants on this module remain the names for the keys they cover.
     """
 
@@ -2036,8 +2036,7 @@ class ArchiveInfo:
     """Format-specific archive-level metadata, keyed by namespaced strings (mirrors
     ``ArchiveMember.extra``). For example the ISO backend records the auto-selected
     namespace as ``extra["iso.namespace"]``. Excluded from ``__eq__``. Known keys
-    and their value types are :class:`~archivey.types.ArchiveInfoExtra`; unknown keys
-    stay legal
+    and their value types are :class:`~archivey.types.ArchiveInfoExtra`; unknown keys stay legal
     and read as ``object``."""
 
 
@@ -2055,9 +2054,9 @@ class ArchiveInfo:
 #
 # ``MemberSelectorArg`` — which members to extract: an iterable of names / ArchiveMembers
 # (read once, so a generator works), a predicate, or ``None`` (= all).
-# ``archivey.reader.MemberSelector`` is the same alias, under its public name; internal
-# modules annotate with this one. The iterable form is normalized to a predicate by the
-# shared ``normalize_member_selector`` helper (also used by ``stream_members``).
+# ``archivey.reader.MemberSelector`` is the same alias, under its public name; internal modules
+# annotate with this one. The iterable form is normalized to a predicate by the shared
+# ``normalize_member_selector`` helper (also used by ``stream_members``).
 MemberSelectorArg = (
     Iterable["str | ArchiveMember"] | Callable[[ArchiveMember], bool] | None
 )
@@ -2205,8 +2204,8 @@ class OnBlocked(StrEnum):
 
     RAISE = "raise"
     """The default. Once every member has been processed, the call raises
-    :class:`~archivey.exceptions.FilterRejectionError` instead of returning the report.
-    The exception carries the full report as its ``report`` attribute, and its message
+    :class:`~archivey.exceptions.FilterRejectionError` instead of returning the report. The
+    exception carries the full report as its ``report`` attribute, and its message
     names the first refused member. As GNU tar does: it extracts what it can, and
     then exits with an error."""
     SKIP = "skip"
@@ -2245,14 +2244,13 @@ class AbortOn(StrEnum):
     :class:`~archivey.exceptions.FilterRejectionError` that refused it."""
     NAME_COLLISION = "name_collision"
     """Two members of the archive would be written to the same path. Raises
-    :class:`~archivey.exceptions.NameCollisionError` before ``overwrite`` is applied, so
-    even with ``OverwritePolicy.RENAME`` the second member is not written. Not checked
-    under
+    :class:`~archivey.exceptions.NameCollisionError` before ``overwrite`` is applied, so even
+    with ``OverwritePolicy.RENAME`` the second member is not written. Not checked under
     ``ExtractionPolicy.TRUSTED``."""
     NAME_SANITIZED = "name_sanitized"
     """A name is rewritten to its portable spelling, or an absolute name is extracted
-    inside the destination. Raises :class:`~archivey.exceptions.NameRewrittenError`.
-    Under ``ExtractionPolicy.STRICT`` an absolute name is refused instead, so
+    inside the destination. Raises :class:`~archivey.exceptions.NameRewrittenError`. Under
+    ``ExtractionPolicy.STRICT`` an absolute name is refused instead, so
     ``BLOCKED_MEMBER`` is the one that catches it. No policy implies this: it is for
     callers who refuse any name on disk that differs from the archive's, such as
     mirroring tools. To list rewrites without stopping, read

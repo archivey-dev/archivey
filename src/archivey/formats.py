@@ -615,8 +615,8 @@ class ForwardStream:
         package the policy turns off (``exclude_libraries`` or ``only_libraries``)
         reads as missing. ``only`` and the
         format entries of ``exclude`` do not apply, since they check only the file the
-        call opens. A :class:`~archivey.types.CompressionAlgorithm` in ``exclude`` does:
-        a format whose method it lists (``StreamFormat.XZ`` under
+        call opens. A :class:`~archivey.types.CompressionAlgorithm` in ``exclude`` does: a
+        format whose method it lists (``StreamFormat.XZ`` under
         ``exclude={CompressionAlgorithm.XZ}``) raises ``UnsupportedFeatureError``.
 
         Raises ``ValueError`` for a format that is not a compression stream
@@ -969,9 +969,9 @@ class ReaderContext:
         hold, and under
         ``plugins=False`` a plugin format or codec raises ``UnsupportedFeatureError``,
         and so does a format whose compression decodes with a
-        :class:`~archivey.types.CompressionAlgorithm` ``exclude`` lists. ``only`` and
-        the format entries of ``exclude`` check only the file the call opens, and a
-        method entry holds for the inner reader's members too. A format that needs a
+        :class:`~archivey.types.CompressionAlgorithm` ``exclude`` lists. ``only`` and the
+        format entries of ``exclude`` check only the file the call opens, and a method
+        entry holds for the inner reader's members too. A format that needs a
         seekable source (7z, or RAR without RARLAB ``unrar`` 7.00 or later) raises
         ``UnsupportedFeatureError``, and so does an
         archive nested more than 8 deep (an inner reader calling ``open_nested`` in
@@ -1117,8 +1117,8 @@ class ReaderContext:
         raises ``PackageNotInstalledError``.
         ``only`` and the format entries of ``exclude`` do not apply: they check only the
         file the call opens, so a member stored with ``StreamFormat.XZ`` decodes under
-        ``exclude={StreamFormat.XZ}``. A :class:`~archivey.types.CompressionAlgorithm`
-        in ``exclude`` does apply: ``exclude={CompressionAlgorithm.XZ}`` refuses that
+        ``exclude={StreamFormat.XZ}``. A :class:`~archivey.types.CompressionAlgorithm` in
+        ``exclude`` does apply: ``exclude={CompressionAlgorithm.XZ}`` refuses that
         call, for ``CompressionAlgorithm.XZ`` or ``StreamFormat.XZ``, with
         ``UnsupportedFeatureError`` before the codec runs.
 
@@ -1307,8 +1307,8 @@ class FormatHandler(ABC):
 
     It answers with a verdict: :attr:`DetectionConfidence.REJECTED
     <archivey.detection.DetectionConfidence.REJECTED>` when the bytes are not the format,
-    :attr:`DetectionConfidence.GUESS <archivey.detection.DetectionConfidence.GUESS>` for
-    a weak match, :attr:`DetectionConfidence.PROBABLE
+    :attr:`DetectionConfidence.GUESS <archivey.detection.DetectionConfidence.GUESS>` for a
+    weak match, :attr:`DetectionConfidence.PROBABLE
     <archivey.detection.DetectionConfidence.PROBABLE>` for a match. A probe that only tells
     yes from no answers ``PROBABLE`` or ``REJECTED``. archivey reports the verdict as
     the detection's confidence, and reports a ``GUESS`` as ``PROBABLE`` when the

@@ -373,8 +373,8 @@ def test_encryption_header_larger_than_declared_size_is_corruption(
 @pytest.mark.usefixtures("zip_general_path")
 def test_archive_close_defers_teardown_past_an_in_flight_member_read() -> None:
     """Closing beside a member stream's read that is inside the archive's source
-    returns at once; the read finishes on the open handle, then raises the closed-file
-    error instead of returning its bytes, and the archive is torn down when it is
+    returns at once; the read finishes on the open handle, then raises the
+    closed-file error instead of returning its bytes, and the archive is torn down when it is
     out (the last call out)."""
     import threading
 

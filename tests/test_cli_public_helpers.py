@@ -95,7 +95,12 @@ def test_numbered_name_spells_a_rename(
 def test_paths_is_public_and_not_re_exported() -> None:
     import archivey.paths
 
-    assert archivey.paths.__all__ == ["match_glob", "match_tar_glob", "numbered_name"]
+    assert archivey.paths.__all__ == [
+        "match_glob",
+        "match_tar_glob",
+        "numbered_name",
+        "sanitize_names",
+    ]
     assert "numbered_name" not in archivey.__all__
     assert not hasattr(archivey, "numbered_name")
 

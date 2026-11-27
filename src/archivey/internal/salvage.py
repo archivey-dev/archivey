@@ -9,8 +9,8 @@ there, and walks on. This module owns the parts that do not depend on the format
   from the opener to the reader the opener builds, as :mod:`~archivey.internal.nesting`
   carries ``parent=``, so no backend's ``open_read`` takes another argument.
 - :class:`SalvageState`, one per reader: whether the reader salvages, its
-  :class:`~archivey.config.SalvageLimits`, the search budget and the position each
-  layer's search has reached, and the ``ARCHIVE_REGION_SKIPPED`` records with their cap.
+  :class:`~archivey.config.SalvageLimits`, the search budget and the position each layer's
+  search has reached, and the ``ARCHIVE_REGION_SKIPPED`` records with their cap.
 - :func:`search_forward`, the search itself. A format gives it a
   :class:`HeaderSearch`: a ``find_header(window, start, stop)`` function that is pure
   on bytes and examines only candidate starts before ``stop``, the step between

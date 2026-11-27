@@ -503,8 +503,8 @@ def open_archive(
     ``config`` supplies library tuning knobs (accelerator modes, the diagnostic
     policy, default extraction limits, and listing resource limits via
     ``listing_limits``). ``None`` selects the module default
-    :data:`~archivey.config.DEFAULT_ARCHIVEY_CONFIG`. A config holds settings only, so
-    one config can serve every call.
+    :data:`~archivey.config.DEFAULT_ARCHIVEY_CONFIG`. A config holds settings only, so one
+    config can serve every call.
 
     ``parent`` is the reader this archive was read from, when the caller found it
     inside another archive: open or closed, a reader ``open_archive`` returned. The new
@@ -525,9 +525,9 @@ def open_archive(
     unchanged, and the listing still ends in the error that ends it without salvage. A
     found member's header passed its checks, but nothing proves it belongs to this
     archive, so do not use ``salvage=True`` to decide what an archive holds or whether
-    it is safe. :class:`~archivey.config.SalvageLimits` (``config.salvage_limits``) caps
-    the search. Salvage needs a seekable source, so ``streaming=True`` is refused. A
-    format without a salvage search, or whose search cannot run on a nested archive read
+    it is safe. :class:`~archivey.config.SalvageLimits` (``config.salvage_limits``) caps the
+    search. Salvage needs a seekable source, so ``streaming=True`` is refused. A format
+    without a salvage search, or whose search cannot run on a nested archive read
     forward only, is read as without it and records ``SALVAGE_UNAVAILABLE``. An archive
     archivey opens inside another one (a ``.deb``'s ``data.tar``) salvages when the
     outer one does; one opened with ``parent=`` salvages when that call says so.
@@ -625,9 +625,9 @@ def open_archive(
         PackageNotInstalledError: The format needs an optional package that is not
             installed, such as a plugin's own package.
         ResourceLimitError: The archive exceeds a limit that is checked at open, such as
-            :class:`~archivey.config.ListingLimits` ``max_members`` while a ZIP, 7z, RAR
-            or ISO index is parsed, or :class:`~archivey.config.DecoderLimits` for data
-            the open decodes.
+            :class:`~archivey.config.ListingLimits` ``max_members`` while a ZIP, 7z, RAR or ISO
+            index is parsed, or :class:`~archivey.config.DecoderLimits` for data the open
+            decodes.
         DiagnosticRaisedError: A diagnostic that the :class:`~archivey.DiagnosticPolicy`
             in the config raises on, recorded while the archive is detected or opened.
         ArchiveyUsageError: One argument has a type or value the call cannot use (then
@@ -1506,8 +1506,8 @@ def open_stream(
             an archive container (ZIP, 7z, RAR, ISO, an uncompressed tar).
         StreamNotSeekableError: ``seekable=True`` and the source cannot seek.
         ResourceLimitError: The stream asks a decoder for more memory than
-            :class:`~archivey.config.DecoderLimits` allows, raised by the read of the
-            returned stream that starts the decoder; or it decodes past
+            :class:`~archivey.config.DecoderLimits` allows, raised by the read of the returned
+            stream that starts the decoder; or it decodes past
             ``DecoderLimits.max_ratio`` of the compressed bytes, raised by the read or
             seek that crosses it, as a member read of the same bytes through
             :func:`open_archive` is.

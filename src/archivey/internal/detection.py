@@ -1088,12 +1088,12 @@ def _resolve_single_file_or_tar(
     (e.g. ``TAR_GZ``), or ``(<plugin container>, <stream>)``, reported as ``PROBABLE`` /
     ``content_probe`` (the inner test is structural, weaker than an exact magic). A
     container probe's ``GUESS`` the extension does not raise is no hit: it stays the
-    compressor it surely is. An inner-container upgrade is corroboration for a probe hit
-    — two independent signals had to hold — so ``corroborated`` is set. Otherwise a
-    matching extension (same stream format) is the corroborating signal. ``peek_more``
-    gives the probe a bounded, non-consuming view of the source to decode from;
-    ``view_arrived`` says it is a view that returns what has arrived
-    (:class:`_BoundedPeekReader`).
+    compressor it surely is.
+    An inner-container upgrade is corroboration for a probe hit — two independent signals
+    had to hold — so ``corroborated`` is set. Otherwise a matching extension (same stream
+    format) is the corroborating signal. ``peek_more`` gives the probe a bounded,
+    non-consuming view of the source to decode from; ``view_arrived`` says it is a
+    view that returns what has arrived (:class:`_BoundedPeekReader`).
     """
     named = None
     if ext_match is not None and ext_match[0].stream is fmt.stream:

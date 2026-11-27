@@ -696,9 +696,8 @@ class ForwardArchiveReader(ABC):
                 stream from :meth:`~ArchiveReader.open` is still open. On a closed
                 reader it raises at the call; otherwise the pass raises it at its
                 first ``next()``.
-            ResourceLimitError: The listing exceeds
-            :class:`~archivey.config.ListingLimits`. CorruptionError: Damage to the
-            archive's structure stops the pass from
+            ResourceLimitError: The listing exceeds :class:`~archivey.config.ListingLimits`.
+            CorruptionError: Damage to the archive's structure stops the pass from
                 finding the next member.
             DiagnosticRaisedError: A diagnostic that the
                 :class:`~archivey.DiagnosticPolicy` in the config raises on, recorded
@@ -717,10 +716,9 @@ class ForwardArchiveReader(ABC):
     def verify_all(self) -> VerifyReport:
         """Read every member's data to run its checks; report what failed.
 
-        Returns a :class:`~archivey.diagnostics.VerifyReport`. Its ``ok`` is ``True``
-        only when every check passed: no member failed, and nothing stopped the walk
-        through the archive. ``report.raise_for_failure()`` raises the first problem
-        instead.
+        Returns a :class:`~archivey.diagnostics.VerifyReport`. Its ``ok`` is ``True`` only when
+        every check passed: no member failed, and nothing stopped the walk through the
+        archive. ``report.raise_for_failure()`` raises the first problem instead.
 
         Each member is read as :meth:`ArchiveStream.verify` reads one, with
         ``verifiable`` as the target, and a member that fails does not stop the call:
@@ -767,9 +765,8 @@ class ForwardArchiveReader(ABC):
                 the call runs; another pass or call is running; a member stream from
                 :meth:`~ArchiveReader.open` is still open; or it is a streaming reader
                 whose one pass has already started.
-            ResourceLimitError: The listing exceeds
-            :class:`~archivey.config.ListingLimits`. DiagnosticRaisedError: A diagnostic
-            that the
+            ResourceLimitError: The listing exceeds :class:`~archivey.config.ListingLimits`.
+            DiagnosticRaisedError: A diagnostic that the
                 :class:`~archivey.DiagnosticPolicy` in the config raises on.
         """
         ...
@@ -817,11 +814,10 @@ class ForwardArchiveReader(ABC):
 
         A member refused by a safety check is never written, and the rest still
         extract. Under ``on_blocked="raise"`` (the default) the call then raises
-        :class:`~archivey.exceptions.FilterRejectionError`, whose ``report`` attribute
-        is the full report; under ``on_blocked="skip"`` it returns the report, with the
-        member as ``BLOCKED``. ``abort_on=["blocked_member"]`` raises at the first
-        refusal instead, before the rest are extracted (see
-        :class:`~archivey.types.OnBlocked`).
+        :class:`~archivey.exceptions.FilterRejectionError`, whose ``report`` attribute is the full
+        report; under ``on_blocked="skip"`` it returns the report, with the member as
+        ``BLOCKED``. ``abort_on=["blocked_member"]`` raises at the first refusal
+        instead, before the rest are extracted (see :class:`~archivey.types.OnBlocked`).
 
         Raises:
             FilterRejectionError: Under ``on_blocked="raise"`` (the default), a
@@ -833,8 +829,8 @@ class ForwardArchiveReader(ABC):
                 be written, such as a file already at its destination under
                 ``overwrite="error"``. Its subclasses
                 :class:`~archivey.exceptions.NameCollisionError` and
-                :class:`~archivey.exceptions.NameRewrittenError` are raised for the
-                events ``abort_on`` names, whatever ``on_error`` says.
+                :class:`~archivey.exceptions.NameRewrittenError` are raised for the events
+                ``abort_on`` names, whatever ``on_error`` says.
             ReadError: Under ``on_error="stop"``, a member's data could not be read: a
                 :class:`~archivey.CorruptionError` for damage, an
                 :class:`~archivey.EncryptionError` for a missing or wrong password, a
@@ -843,8 +839,8 @@ class ForwardArchiveReader(ABC):
                 :class:`~archivey.config.ExtractionLimits`: a total stops the extraction
                 whatever ``on_error`` says, and a single member over ``max_ratio`` fails
                 on its own, under ``on_error``. A member that asks a decoder for more
-                memory than :class:`~archivey.config.DecoderLimits` allows fails on its
-                own too.
+                memory than :class:`~archivey.config.DecoderLimits` allows fails on its own
+                too.
             DiagnosticRaisedError: A diagnostic that the
                 :class:`~archivey.DiagnosticPolicy` in the config raises on, whatever
                 ``on_error`` says.
@@ -914,9 +910,8 @@ class ArchiveReader(ForwardArchiveReader):
             CorruptionError: The archive is damaged partway through its member list
                 (:meth:`~ForwardArchiveReader.members_report` returns the members found
                 before the damage instead).
-            ResourceLimitError: The listing exceeds
-            :class:`~archivey.config.ListingLimits`. DiagnosticRaisedError: A diagnostic
-            that the
+            ResourceLimitError: The listing exceeds :class:`~archivey.config.ListingLimits`.
+            DiagnosticRaisedError: A diagnostic that the
                 :class:`~archivey.DiagnosticPolicy` in the config raises on, recorded
                 while the archive is listed.
             ArchiveyUsageError: The reader is closed or streaming.
@@ -939,9 +934,8 @@ class ArchiveReader(ForwardArchiveReader):
                 ``str``.
             CorruptionError: The scan finds the member list damaged, as :meth:`members`
                 raises it.
-            ResourceLimitError: The listing exceeds
-            :class:`~archivey.config.ListingLimits`. DiagnosticRaisedError: A diagnostic
-            that the
+            ResourceLimitError: The listing exceeds :class:`~archivey.config.ListingLimits`.
+            DiagnosticRaisedError: A diagnostic that the
                 :class:`~archivey.DiagnosticPolicy` in the config raises on, recorded
                 while the archive is listed.
         """
@@ -982,11 +976,11 @@ class ArchiveReader(ForwardArchiveReader):
             PackageNotInstalledError: Decoding the member needs an optional package that
                 is not installed.
             ResourceLimitError: The member asks a decoder for more memory than
-                :class:`~archivey.config.DecoderLimits` allows, or a scan for the name
-                exceeds :class:`~archivey.config.ListingLimits`; or, from a read of the
-                returned stream, the member decodes past
-                :attr:`~archivey.config.DecoderLimits.max_ratio` of its compressed size,
-                or this reader's member reads together pass it of the archive's size.
+                :class:`~archivey.config.DecoderLimits` allows, or a scan for the name exceeds
+                :class:`~archivey.config.ListingLimits`; or, from a read of the returned
+                stream, the member decodes past
+                :attr:`~archivey.config.DecoderLimits.max_ratio` of its compressed size, or
+                this reader's member reads together pass it of the archive's size.
             DiagnosticRaisedError: A diagnostic that the
                 :class:`~archivey.DiagnosticPolicy` in the config raises on.
         """
