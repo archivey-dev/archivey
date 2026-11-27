@@ -27,7 +27,7 @@ from tests.extract_util import open_and_extract
 def test_config_types_are_frozen() -> None:
     cfg = ArchiveyConfig()
     with pytest.raises(dataclasses.FrozenInstanceError):
-        cfg.rar_allow_glob_member_concatenation = True  # type: ignore[misc]
+        cfg.read_link_targets = False  # type: ignore[misc]
     limits = ExtractionLimits()
     with pytest.raises(dataclasses.FrozenInstanceError):
         limits.max_entries = 1  # type: ignore[misc]
@@ -245,28 +245,10 @@ def test_config_is_hashable() -> None:
     assert len({strict, ArchiveyConfig(), archivey.config.DEFAULT_ARCHIVEY_CONFIG}) == 2
 
 
-def test_glob_concatenation_flag_is_deprecated_and_warns_only_when_set() -> None:
-    import warnings
-
-    with pytest.warns(DeprecationWarning, match="rar_allow_glob_member_concatenation"):
-        archivey.ArchiveyConfig(rar_allow_glob_member_concatenation=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        archivey.ArchiveyConfig()
-        archivey.ArchiveyConfig(rar_allow_glob_member_concatenation=False)
-
-
-def test_glob_concatenation_flag_warns_once_not_again_from_archiveys_own_copy() -> None:
-    """``open_stream`` copies the caller's config (``always_probe_content=True``);
-    that copy must not warn again from inside the library."""
-    import gzip
-    import warnings
-
-    with pytest.warns(DeprecationWarning):
-        cfg = archivey.ArchiveyConfig(rar_allow_glob_member_concatenation=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        with archivey.open_stream(
-            io.BytesIO(gzip.compress(b"hello")), config=cfg
-        ) as stream:
-            assert stream.read() == b"hello"
+def test_the_glob_concatenation_flag_is_gone() -> None:
+    """Deprecated with no effect in 0.4.0, removed in 0.6.0."""
+    assert "rar_allow_glob_member_concatenation" not in {
+        f.name for f in dataclasses.fields(ArchiveyConfig)
+    }
+    with pytest.raises(TypeError, match="rar_allow_glob_member_concatenation"):
+        ArchiveyConfig(rar_allow_glob_member_concatenation=True)  # type: ignore[call-arg]

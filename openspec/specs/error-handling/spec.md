@@ -594,7 +594,7 @@ The raw exceptions the contract already permits SHALL continue to escape unchang
 `ValueError` for I/O on a closed stream, and `OSError`. Every public boolean flag SHALL
 be a `bool`, refused otherwise with an `ArchiveyUsageError` that is also a `TypeError`,
 before anything is read: `ArchiveyConfig`'s switches
-(`rar_allow_glob_member_concatenation`, `read_link_targets` and the rest), and the call
+(`read_link_targets`, `always_probe_content` and the rest), and the call
 flags `open_archive(streaming=, seekable_members=, concurrent_operations=)`,
 `open_stream(seekable=)`, `detect_format(follow_stub_volumes=)`,
 `format_availability(check_programs=)`, `extract_all(dry_run=)`,
@@ -624,7 +624,7 @@ otherwise open the current directory as a directory archive or extract into it.
 | `ArchiveyConfig(listing_limits="x")` then listing | `ArchiveyUsageError` at construction, not `AttributeError` mid-listing |
 | `ArchiveyConfig(max_retained_diagnostic_references="x")` | `ArchiveyUsageError` at construction |
 | `ArchiveyConfig(on_diagnostic=0)` | `ArchiveyUsageError` at construction, not when the first diagnostic fires |
-| `ArchiveyConfig(rar_allow_glob_member_concatenation="false")` | `ArchiveyUsageError` at construction |
+| `ArchiveyConfig(read_link_targets="false")` | `ArchiveyUsageError` at construction |
 | `open_archive(src, streaming="false")`, `open_stream(src, seekable=0)` | `ArchiveyUsageError` that is also a `TypeError`, naming the flag, before the source is read |
 | `ListingLimits(max_members="x")` | `ArchiveyUsageError` at construction, not `TypeError` mid-listing |
 | `DecoderLimits(max_ratio=float("nan"))` | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |

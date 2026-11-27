@@ -1368,7 +1368,6 @@ class ArchiveyConfig:
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
     process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
     zip_unflagged_fallback_encoding: str = "cp437"
-    rar_allow_glob_member_concatenation: bool = False
     read_link_targets: bool = True
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
@@ -2303,20 +2302,14 @@ reporting work SHALL be done beyond checking that it is unset.
 - **THEN** the call into archivey that read raises that exception, also under
   `extract_all(on_error="continue")`
 
-### Requirement: Deprecate the RAR glob concatenation switch
+### Requirement: The RAR glob concatenation switch is gone
 
-`ArchiveyConfig.rar_allow_glob_member_concatenation` SHALL stay a `bool` field that
-defaults to `False`, and SHALL change no read: no RAR read refuses a member for a name
-whose mask selects other members. A caller constructing a config with the field set to
-`True` SHALL get a `DeprecationWarning` naming the field; the copies archivey makes of
-that config for itself SHALL NOT warn again. The field SHALL be removed in a later
-minor release.
+`ArchiveyConfig` SHALL have no `rar_allow_glob_member_concatenation` field: it changed
+no read since 0.4.0, which deprecated it, and 0.6.0 removes it. No RAR read refuses a
+member for a name whose mask selects other members.
 
-#### Scenario: deprecated field matrix
+#### Scenario: removed field
 
 | Case | Expected |
 | --- | --- |
-| `ArchiveyConfig()` | No warning |
-| `ArchiveyConfig(rar_allow_glob_member_concatenation=True)` | `DeprecationWarning` naming the field; reads are the same as with `False` |
-| `open_stream(src, config=cfg)` with `cfg` built with the field `True` | No second warning from archivey's own copy |
-| `ArchiveyConfig(rar_allow_glob_member_concatenation="false")` | `ArchiveyUsageError` at construction, as before |
+| `ArchiveyConfig(rar_allow_glob_member_concatenation=True)` | `TypeError` naming the field |

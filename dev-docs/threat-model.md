@@ -992,7 +992,6 @@ stream before the member; that is the cost `AccessCost.SOLID` announces, not a n
 
 **Residual.** None from names. A listing whose walk stopped at a damaged header may miss
 headers `unrar` finds past it, so such an archive reads no member in place by name.
-`rar_allow_glob_member_concatenation` is deprecated and does nothing.
 
 **Tests.** `tests/test_rar_unrar_names.py::test_only_a_plain_name_selects_its_member_alone`,
 `::test_every_rar5_member_reads_its_own_bytes`,

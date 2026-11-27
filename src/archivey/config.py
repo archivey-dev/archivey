@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import os
 import pathlib
-import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from enum import Enum
@@ -41,7 +40,6 @@ from archivey.internal.arg_checks import (
     check_limit,
     check_limit_fields,
 )
-from archivey.internal.config_copy import copying_config
 from archivey.internal.enum_args import coerce_enum
 from archivey.terminal import quoted
 from archivey.types import ArchiveMember, OnSourceRead, OptionalLibrary
@@ -995,15 +993,6 @@ class ArchiveyConfig:
     whose bytes are valid UTF-8 is still decoded as UTF-8.
     """
 
-    rar_allow_glob_member_concatenation: bool = False
-    """Deprecated, and has no effect: setting it ``True`` warns.
-
-    ``unrar`` reads a member from a temporary RAR file that holds it under a placeholder
-    name, or from the original archive only when the member's name selects it alone. No
-    read decodes other members because of a member's name, so there is nothing left for
-    this flag to allow. It will be removed in a future release.
-    """
-
     rar_decompressor: RarDecompressor = RarDecompressor.AUTO
     """Which external program decompresses RAR member data. See :class:`RarDecompressor`.
 
@@ -1217,7 +1206,6 @@ class ArchiveyConfig:
             use_indexed_bzip2: AcceleratorMode | AcceleratorModeStr = ...,
             process_isolation: ProcessIsolation | ProcessIsolationStr = ...,
             zip_unflagged_fallback_encoding: str = ...,
-            rar_allow_glob_member_concatenation: bool = ...,
             rar_decompressor: RarDecompressor | RarDecompressorStr = ...,
             read_link_targets: bool = ...,
             extraction_limits: ExtractionLimits = ...,
@@ -1260,18 +1248,6 @@ class ArchiveyConfig:
         _check_policy_fields(self)
         _convert_detection_budget(self)
         _check_guard_switches(self)
-        # Archivey's own copies of a caller's config (``copy_config_quietly``) pass
-        # the field on as if it were set again; only the caller's construction warns.
-        # The warning stays in this method so that ``stacklevel=3`` names the caller's
-        # line: one level is this method, the next is the dataclass ``__init__``.
-        if self.rar_allow_glob_member_concatenation and not copying_config():
-            warnings.warn(
-                "ArchiveyConfig.rar_allow_glob_member_concatenation is deprecated and "
-                "has no effect: no RAR read decodes other members because of a "
-                "member's name any more. It will be removed in a future release.",
-                DeprecationWarning,
-                stacklevel=3,
-            )
         _check_scalar_fields(self)
         _convert_enum_fields(self)
         _convert_program_paths(self)
@@ -1329,7 +1305,6 @@ def _check_guard_switches(config: ArchiveyConfig) -> None:
     A string such as ``"false"`` is truthy, so it would silently turn a refusal off.
     """
     for field_name in (
-        "rar_allow_glob_member_concatenation",
         "read_link_targets",
         "always_probe_content",
         "discover_volumes",

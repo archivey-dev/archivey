@@ -78,6 +78,11 @@ line. How to write the entry: see
   `ExtractionResult.rewrites` lists every rewritten name. `archivey extract --abort-on`
   is deprecated the same way. 0.7.0 removes them.
 
+### Removed
+
+- **Breaking:** `ArchiveyConfig.rar_allow_glob_member_concatenation`, deprecated with no
+  effect in 0.4.0. Passing it raises `TypeError`; drop the argument.
+
 ## [0.5.1] - 2026-11-20
 
 A patch release with fixes for reading archives from a URL.
