@@ -400,6 +400,12 @@ else never run on them ([Configuration](opening.md#configuration)). It narrows w
 not how long it runs: a 7z member's BCJ2 filter and ZipCrypto still decode in Python, so a time
 bound still needs a worker you can stop.
 
+`ArchiveyConfig.UNTRUSTED` starts from that policy and adds the rest of the settings for
+uploads: `DiagnosticPolicy.STRICT`, every native decoder in a child process, lower listing,
+decoder and extraction limits, and rapidgzip off. The
+[upload recipes](recipes.md#list-hash-and-test-an-upload) start from it and say what each
+setting does.
+
 If you know which formats you accept, a [`FormatPolicy`](opening.md#configuration) with an
 `only=` list refuses the rest before any reader runs on them, including formats a later archivey
 release adds and plugin formats that another library registers. An `exclude=` list refuses only

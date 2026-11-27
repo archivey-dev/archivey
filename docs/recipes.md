@@ -187,15 +187,7 @@ import hashlib
 
 import archivey
 
-CONFIG = archivey.ArchiveyConfig(
-    listing_limits=archivey.config.ListingLimits(
-        max_members=10_000,
-        max_metadata_bytes=4 * 2**20,
-    ),
-    decoder_limits=archivey.config.DecoderLimits(max_decoder_memory=256 * 2**20),
-    process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS,
-    diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
-)
+CONFIG = archivey.ArchiveyConfig.UNTRUSTED
 MAX_TOTAL_BYTES = 1 * 2**30
 
 
@@ -229,12 +221,17 @@ Reading each member to its end also tests it: where the format stores a checksum
 reaches the end raises if the data is damaged. No password is given, so an encrypted member raises
 `EncryptionError`.
 
-Each setting in `CONFIG` does one job:
+`ArchiveyConfig.UNTRUSTED` holds the settings for files you didn't make. Each one does one job:
 
-- `listing_limits` caps how many members the archive may list, how much text their names,
-  comments and link targets may take, and how much a listing may decode before you read anything.
-- `decoder_limits` caps the memory the archive can ask a decoder for. Lower it to what one upload
-  may use on your server.
+- `formats=FormatPolicy.COMMON` opens only the formats people commonly upload, so the code that
+  runs on an upload is the code most used and tested.
+- `listing_limits` caps how many members the archive may list (10,000), how much text their names,
+  comments and link targets may take (4 MiB), and how much a listing may decode before you read
+  anything.
+- `decoder_limits` caps the memory the archive can ask a decoder for (256 MiB, enough for every
+  7-Zip preset) and the password-hashing work it can ask for (2^24 rounds). Lower them to what one
+  upload may use on your server.
+- `extraction_limits` caps what one `extract_all` writes: 500 MiB and 10,000 entries.
 - `ProcessIsolation.NATIVE_DECODERS` runs every native decoder, such as zlib, bz2 and lzma, in a
   child process, so a crash in one raises `CorruptionError` for that member instead of ending your
   server. AES decryption and checksums still run in your process. Reading a large stream is about
@@ -245,6 +242,11 @@ Each setting in `CONFIG` does one job:
   as a name that displays as a different one, bytes after the end of the archive, or a TAR that ends
   without its end marker
   ([Raising or quieting a diagnostic](errors-and-diagnostics.md#raising-or-quieting-a-diagnostic)).
+- `use_rapidgzip="off"` decodes gzip and bzip2 with the standard library, so the result does not
+  depend on the machine ([The same result everywhere](reading.md#the-same-result-everywhere)).
+
+To change one of them, start from the preset:
+`dataclasses.replace(archivey.ArchiveyConfig.UNTRUSTED, decoder_limits=...)`.
 
 `max_extracted_bytes` and `max_entries` cover only what `extract_all` writes, so a loop that reads
 member data keeps its own count of bytes. `max_ratio` holds the reads too, so a member that expands
@@ -262,15 +264,7 @@ import zipfile
 
 import archivey
 
-CONFIG = archivey.ArchiveyConfig(
-    listing_limits=archivey.config.ListingLimits(
-        max_members=10_000,
-        max_metadata_bytes=4 * 2**20,
-    ),
-    decoder_limits=archivey.config.DecoderLimits(max_decoder_memory=256 * 2**20),
-    process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS,
-    diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
-)
+CONFIG = archivey.ArchiveyConfig.UNTRUSTED
 MAX_TOTAL_BYTES = 1 * 2**30
 
 
@@ -351,15 +345,7 @@ import zipfile
 
 import archivey
 
-CONFIG = archivey.ArchiveyConfig(
-    listing_limits=archivey.config.ListingLimits(
-        max_members=10_000,
-        max_metadata_bytes=4 * 2**20,
-    ),
-    decoder_limits=archivey.config.DecoderLimits(max_decoder_memory=256 * 2**20),
-    process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS,
-    diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
-)
+CONFIG = archivey.ArchiveyConfig.UNTRUSTED
 
 
 def list_upload(path):
@@ -402,19 +388,7 @@ from pathlib import Path
 
 import archivey
 
-CONFIG = archivey.ArchiveyConfig(
-    listing_limits=archivey.config.ListingLimits(
-        max_members=10_000,
-        max_metadata_bytes=4 * 2**20,
-    ),
-    decoder_limits=archivey.config.DecoderLimits(max_decoder_memory=256 * 2**20),
-    process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS,
-    diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
-)
-LIMITS = archivey.config.ExtractionLimits(
-    max_extracted_bytes=500 * 2**20,
-    max_entries=10_000,
-)
+CONFIG = archivey.ArchiveyConfig.UNTRUSTED
 
 
 def extract_upload(upload, dest):
@@ -423,7 +397,7 @@ def extract_upload(upload, dest):
     staging = Path(tempfile.mkdtemp(prefix=".upload-", dir=dest.parent))
     try:
         with archivey.open_archive(upload, config=CONFIG) as archive:
-            report = archive.extract_all(staging, on_problem="stop", limits=LIMITS)
+            report = archive.extract_all(staging, on_problem="stop")
         staging.rename(dest)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
@@ -450,21 +424,15 @@ archive. `detect_format` tells whether a member is one, when it's given the whol
 `always_probe_content=True` in `CONFIG` makes it also try decoding the start of the member:
 
 ```python
+import dataclasses
 import io
 import tempfile
 import zipfile
 
 import archivey
 
-CONFIG = archivey.ArchiveyConfig(
-    listing_limits=archivey.config.ListingLimits(
-        max_members=10_000,
-        max_metadata_bytes=4 * 2**20,
-    ),
-    decoder_limits=archivey.config.DecoderLimits(max_decoder_memory=256 * 2**20),
-    process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS,
-    diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
-    always_probe_content=True,
+CONFIG = dataclasses.replace(
+    archivey.ArchiveyConfig.UNTRUSTED, always_probe_content=True
 )
 MAX_TOTAL_BYTES = 1 * 2**30
 
@@ -525,24 +493,21 @@ count against the upload's totals together: its members, its ratio, and the deco
 for one upload:
 
 ```python
+import dataclasses
 import io
 import tempfile
 import zipfile
 
 import archivey
 
-CONFIG = archivey.ArchiveyConfig(
-    listing_limits=archivey.config.ListingLimits(
-        max_members=10_000,
-        max_metadata_bytes=4 * 2**20,
-    ),
-    decoder_limits=archivey.config.DecoderLimits(
-        max_decoder_memory=256 * 2**20,
+UNTRUSTED = archivey.ArchiveyConfig.UNTRUSTED
+CONFIG = dataclasses.replace(
+    UNTRUSTED,
+    decoder_limits=dataclasses.replace(
+        UNTRUSTED.decoder_limits,
         # All levels of one upload together.
         max_nest_decoded_bytes=100 * 2**20,
     ),
-    process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS,
-    diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
     always_probe_content=True,
 )
 # Archives up to 2 levels inside the upload are scanned. A third level is refused.

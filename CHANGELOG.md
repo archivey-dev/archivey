@@ -18,6 +18,10 @@ line. How to write the entry: see
 - `open_archive(salvage=True)` opts into salvage mode, capped by the new `SalvageLimits`
   (`ArchiveyConfig.salvage_limits`). No format has a salvage search yet, so every format
   reads as before and records `SALVAGE_UNAVAILABLE`.
+- `ArchiveyConfig.UNTRUSTED`, the settings for files you didn't make, such as uploads:
+  `FormatPolicy.COMMON`, `DiagnosticPolicy.STRICT`, `NATIVE_DECODERS`, lower listing,
+  decoder and extraction limits, and rapidgzip off. Adjust it with
+  `dataclasses.replace()`; the upload recipes start from it.
 
 ### Changed
 

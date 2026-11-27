@@ -1364,6 +1364,7 @@ class ProcessIsolation(Enum):
 
 @dataclass(frozen=True)
 class ArchiveyConfig:
+    UNTRUSTED: ClassVar["ArchiveyConfig"]
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode | None = None  # deprecated in 0.6.0
     process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
@@ -1460,6 +1461,14 @@ gate raises `ArchiveyUsageError`, and a re-entrant call that gets as far as emit
 diagnostic of its own raises `ArchiveyUsageError` from the collector; other readers OK.
 Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 (`diagnostics` / `reader-concurrency`).
+
+`ArchiveyConfig.UNTRUSTED` SHALL be the default config with these fields changed, and
+no others: `formats=FormatPolicy.COMMON`, `diagnostic_policy=DiagnosticPolicy.STRICT`,
+`process_isolation=NATIVE_DECODERS`, `ListingLimits(max_members=10_000,
+max_metadata_bytes=4 MiB)`, `DecoderLimits(max_decoder_memory=256 MiB,
+max_key_derivation_rounds=2**24)`, `ExtractionLimits(max_extracted_bytes=500 MiB,
+max_entries=10_000)` and `use_rapidgzip=OFF`. A caller adjusts it with
+`dataclasses.replace`, which SHALL NOT warn.
 
 #### Scenario: config matrix
 

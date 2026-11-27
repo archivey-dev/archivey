@@ -937,7 +937,18 @@ class ArchiveyConfig:
 
     Per-call operationals (``format``, ``streaming``, ``password``, extraction's
     ``members``/``filter``/``policy``/…) stay keyword arguments — not fields here.
+
+    ``ArchiveyConfig.UNTRUSTED`` is for files you did not make, such as uploads. It
+    opens only ``FormatPolicy.COMMON``, raises on damage (``DiagnosticPolicy.STRICT``),
+    runs every native decoder in a child process (``NATIVE_DECODERS``), and lowers the
+    limits: 10,000 members and 4 MiB of metadata per listing, 256 MiB of decoder memory
+    (enough for every 7-Zip preset), 2**24 key-derivation rounds, and 500 MiB and
+    10,000 entries per extraction. It turns rapidgzip off, so the result does not
+    depend on the machine. Every other field keeps its default. Adjust it with
+    ``dataclasses.replace(ArchiveyConfig.UNTRUSTED, ...)``.
     """
+
+    UNTRUSTED: ClassVar[ArchiveyConfig]
 
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     """Whether to use the ``rapidgzip`` accelerator for gzip, zlib, raw deflate and
@@ -1204,7 +1215,7 @@ class ArchiveyConfig:
         def __init__(
             self,
             use_rapidgzip: AcceleratorMode | AcceleratorModeStr = ...,
-            use_indexed_bzip2: AcceleratorMode | AcceleratorModeStr | None = ...,
+            use_indexed_bzip2: AcceleratorMode | None | AcceleratorModeStr = ...,
             process_isolation: ProcessIsolation | ProcessIsolationStr = ...,
             zip_unflagged_fallback_encoding: str = ...,
             rar_decompressor: RarDecompressor | RarDecompressorStr = ...,
@@ -1506,6 +1517,20 @@ def _coerce_program_path(field_name: str, value: object) -> str | None:
 
 
 DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig()
+
+ArchiveyConfig.UNTRUSTED = ArchiveyConfig(
+    formats=FormatPolicy.COMMON,
+    diagnostic_policy=DiagnosticPolicy.STRICT,
+    process_isolation=ProcessIsolation.NATIVE_DECODERS,
+    listing_limits=ListingLimits(max_members=10_000, max_metadata_bytes=4 * 2**20),
+    decoder_limits=DecoderLimits(
+        max_decoder_memory=256 * 2**20, max_key_derivation_rounds=2**24
+    ),
+    extraction_limits=ExtractionLimits(
+        max_extracted_bytes=500 * 2**20, max_entries=10_000
+    ),
+    use_rapidgzip=AcceleratorMode.OFF,
+)
 """The configuration used when a call is given no ``config=``: ``ArchiveyConfig()``."""
 
 
