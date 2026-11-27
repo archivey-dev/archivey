@@ -42,7 +42,7 @@ from archivey.internal.arg_checks import (
     check_limit,
     check_limit_fields,
 )
-from archivey.internal.config_copy import copying_config
+from archivey.internal.config_copy import CallbackFromCall, copying_config
 from archivey.internal.enum_args import coerce_enum
 from archivey.terminal import quoted
 from archivey.types import ArchiveMember, OnSourceRead, OptionalLibrary
@@ -1336,10 +1336,13 @@ class ArchiveyConfig:
                 DeprecationWarning,
                 stacklevel=3,
             )
+        # A callback a call passed as a keyword travels in archivey's copies of the
+        # config wrapped, so a later copy of those does not warn either.
         callbacks = [
             name
             for name in ("on_diagnostic", "on_source_read")
             if getattr(self, name) is not None
+            and not isinstance(getattr(self, name), CallbackFromCall)
         ]
         if callbacks and not copying_config():
             spelled = ", ".join(f"{name}=" for name in callbacks)

@@ -7,7 +7,7 @@ makes with :func:`copy_config_quietly` runs that hook again; the hook asks
 
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
@@ -46,6 +46,25 @@ def copy_config_quietly(config: ArchiveyConfig, **changes: Any) -> ArchiveyConfi
         return replace(config, **changes)
 
 
+class CallbackFromCall:
+    """A callback a call passed as a keyword (``open_archive(on_source_read=)``),
+    carried in archivey's copy of the config.
+
+    The copy reaches code that may copy it again, such as a plugin reader running
+    ``dataclasses.replace(context.config, ...)``. ``ArchiveyConfig.__post_init__``
+    warns only for a callback the caller put in the deprecated field itself, and this
+    wrapper is how it tells the two apart.
+    """
+
+    __slots__ = ("function",)
+
+    def __init__(self, function: Callable[..., None]) -> None:
+        self.function = function
+
+    def __call__(self, *args: Any) -> None:
+        self.function(*args)
+
+
 def config_with_callbacks(
     config: ArchiveyConfig,
     *,
@@ -62,11 +81,15 @@ def config_with_callbacks(
     fields because every reader, stream and collector already reads them there; the
     caller's object is never changed.
     """
-    if on_diagnostic is None:
+    if on_diagnostic is not None:
+        on_diagnostic = CallbackFromCall(on_diagnostic)
+    else:
         on_diagnostic = config.on_diagnostic
         if on_diagnostic is None and inherit_from is not None:
             on_diagnostic = inherit_from.on_diagnostic
-    if on_source_read is None:
+    if on_source_read is not None:
+        on_source_read = CallbackFromCall(on_source_read)
+    else:
         on_source_read = config.on_source_read
         if on_source_read is None and inherit_from is not None:
             on_source_read = inherit_from.on_source_read

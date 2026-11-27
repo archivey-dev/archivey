@@ -8,6 +8,7 @@ import lzma
 import os
 import zipfile
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -217,3 +218,22 @@ def test_a_callback_that_cannot_be_called_is_refused(
     }[call]
     with pytest.raises(ArchiveyUsageError, match=rf"{call}\({keyword}=…\)"):
         function(path, **{keyword: "not a function"})
+
+
+def test_a_copy_of_the_readers_config_does_not_warn_after_a_keyword_open(
+    tmp_path: Path, recwarn: pytest.WarningsRecorder
+) -> None:
+    import dataclasses
+
+    seen: list[SourceProgress] = []
+    diagnostics: list[Diagnostic] = []
+    with open_archive(
+        _empty_zip(tmp_path),
+        on_source_read=seen.append,
+        on_diagnostic=diagnostics.append,
+    ) as reader:
+        # The config a plugin reader gets as ``ReaderContext.config``.
+        carried = cast("Any", reader)._config
+        copy = dataclasses.replace(carried, source_read_step=4096)
+    assert not [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
+    assert copy.on_source_read is carried.on_source_read
