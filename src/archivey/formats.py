@@ -78,7 +78,14 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, TruncatedError
 from archivey.internal.arg_checks import check_bool
-from archivey.internal.filters import collision_key, extracted_segments
+from archivey.internal.filters import (
+    collision_key,
+    extracted_segments,
+    extracted_top_key,
+    extracted_top_segment,
+    is_rooted,
+    strip_absolute_root,
+)
 from archivey.internal.listing_limits import str_retained_bytes
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.overrides import override
@@ -131,9 +138,13 @@ __all__ = [
     "buffered_stream",
     "collision_key",
     "extracted_segments",
+    "extracted_top_key",
+    "extracted_top_segment",
+    "is_rooted",
     "register_codec",
     "register_format",
     "str_retained_bytes",
+    "strip_absolute_root",
     "unix_member_type",
 ]
 
@@ -982,6 +993,24 @@ class ReaderContext:
                 "ReaderContext.open_nested() is not available for this reader"
             )
         return self._open_nested(cast(BinaryIO, data), format)
+
+    def read_nested(self, span: MemberSpan) -> tuple[bytes, MemberSpan]:
+        """Read the data of ``span``, a span :meth:`open_nested` yielded, whole, as a
+        ``.deb`` reader reads its ``control`` file to fill the archive info.
+
+        Returns the bytes and the same span with its data served from them, to yield
+        in place of ``span``. The inner reader counted the bytes toward
+        ``max_decoded_bytes`` as it decoded them, and the returned span's data does
+        not count them again, as a stream of the same bytes would. Charge what the
+        walk keeps of them with :meth:`charge_metadata` before the call, since the
+        call reads them all. A span with no data gives ``b""``.
+
+        Call it before yielding ``span``, on data nothing has read yet. A span that
+        :meth:`open_nested` did not yield raises ``ArchiveyUsageError``.
+        """
+        from archivey.internal.format_adapter import read_nested
+
+        return read_nested(span)
 
     def normalize_name(self, name: str, member_type: MemberType) -> str:
         """The name archivey gives a member: ``./a//b`` becomes ``a/b``, and a

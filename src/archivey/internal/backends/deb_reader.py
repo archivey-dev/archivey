@@ -32,8 +32,9 @@ from __future__ import annotations
 
 import io
 import re
+import typing
 from collections.abc import Iterator
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import (
     CorruptionError,
@@ -49,17 +50,13 @@ from archivey.formats import (
     ReaderContext,
     SequentialFormatHandler,
     SequentialReader,
-)
-from archivey.internal.dependency_index import DependencyIndex, IndexNode
-from archivey.internal.filters import (
     collision_key,
     extracted_top_key,
     extracted_top_segment,
     is_rooted,
     strip_absolute_root,
 )
-from archivey.internal.format_adapter import HeldInnerData
-from archivey.internal.overrides import override
+from archivey.internal.dependency_index import DependencyIndex, IndexNode
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -70,6 +67,13 @@ from archivey.types import (
     MemberType,
     StreamFormat,
 )
+
+# ``typing.override`` (Python 3.12) where there is one. A format written outside
+# archivey carries the same lines, so the module imports no internal name for it.
+if TYPE_CHECKING:
+    from typing_extensions import override
+else:
+    override = getattr(typing, "override", lambda method: method)
 
 AR_MAGIC = b"!<arch>\n"
 HEADER_SIZE = 60
@@ -609,12 +613,11 @@ class DebReader(SequentialReader):
                         link_target=member.link_target,
                     )
             if member.type is MemberType.FILE and inner in ("control", "md5sums"):
-                held = self._hold(span, inner)
+                held, span = self._hold(span, inner)
                 if inner == "control":
                     self._read_control(held)
                 else:
                     self._read_md5sums(held)
-                span = span._replace(data=HeldInnerData(held))
             yield span
 
     def _data(self, data: BinaryIO, fmt: ArchiveFormat) -> Iterator[MemberSpan]:
@@ -733,11 +736,12 @@ class DebReader(SequentialReader):
             member_name=name,
         )
 
-    def _hold(self, span: MemberSpan, name: str) -> bytes:
-        """A control file's bytes, read whole, against ``max_metadata_bytes``."""
+    def _hold(self, span: MemberSpan, name: str) -> tuple[bytes, MemberSpan]:
+        """A control file's bytes, read whole, against ``max_metadata_bytes``, and its
+        span with the data served from them."""
         # ``name`` is "control" or "md5sums", never a name from elsewhere.
         self._count(span.member.size or 0, f"control file {name}")
-        return span.data.read() if span.data is not None else b""
+        return self._context.read_nested(span)
 
     def _count(self, size: int, what: str) -> None:
         """Charge ``size`` more held bytes to the listing, refusing before they are

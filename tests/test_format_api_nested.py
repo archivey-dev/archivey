@@ -1064,3 +1064,82 @@ def test_open_member_of_a_member_from_no_inner_archive_is_refused() -> None:
             pytest.raises(ArchiveyUsageError, match="open_nested"),
         ):
             reader.read("plain")
+
+
+class ReadingBoxesContainer(PluginContainer):
+    READING_BOXES = "reading-boxes"
+
+
+class ReadingBoxesReader(BoxesReader):
+    """BOXES, but the walk reads each inner file whole, as a ``.deb`` reads its
+    ``control``, and yields it again from those bytes. ``plain`` yields them in a
+    ``BytesIO`` instead of through ``ReaderContext.read_nested``."""
+
+    plain = False
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        for span in super().walk(stream):
+            if span.data is None:
+                yield span
+            elif self.plain:
+                yield span._replace(data=io.BytesIO(span.data.read()))
+            else:
+                data, span = self._context.read_nested(span)
+                assert data == b"x" * 50_000
+                yield span
+
+
+class ReadingBoxesHandler(BoxesHandler):
+    format = ArchiveFormat(
+        ReadingBoxesContainer.READING_BOXES, StreamFormat.UNCOMPRESSED
+    )
+    magic = ()
+
+    def open_sequential(self, context: ReaderContext) -> BoxesReader:
+        return ReadingBoxesReader(context)
+
+
+@pytest.mark.parametrize("plain", [False, True], ids=["read_nested", "BytesIO"])
+def test_inner_data_read_whole_counts_toward_the_listing_once(
+    monkeypatch: pytest.MonkeyPatch, plain: bool
+) -> None:
+    """The inner tar.xz decodes 50 kB of file data. Reading it whole in the walk and
+    yielding it again does not count it a second time against ``max_decoded_bytes``;
+    the same bytes in a ``BytesIO`` do, as any decoded data the walk yields."""
+    monkeypatch.setattr(ReadingBoxesReader, "plain", plain)
+    data = _boxes((b"X", _tar([("big", b"x" * 50_000)], xz=True)))
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_decoded_bytes=80_000))
+    with registration_scope():
+        register_format(ReadingBoxesHandler)
+        with open_archive(
+            io.BytesIO(data), format=ReadingBoxesHandler.format, config=config
+        ) as reader:
+            if plain:
+                with pytest.raises(ResourceLimitError, match="max_decoded_bytes"):
+                    reader.members()
+                return
+            assert [m.name for m in reader.members()] == ["0/big"]
+            assert reader.read("0/big") == b"x" * 50_000
+
+
+@pytest.mark.usefixtures("boxes")
+def test_read_nested_refuses_a_span_open_nested_did_not_yield() -> None:
+    seen: list[BaseException] = []
+
+    def walk(self: BoxesReader, stream: ForwardStream) -> Iterator[MemberSpan]:
+        span = MemberSpan(
+            ArchiveMember(name="a", type=MemberType.FILE, size=1),
+            data=io.BytesIO(b"a"),
+        )
+        with pytest.raises(ArchiveyUsageError, match="open_nested") as raised:
+            self._context.read_nested(span)
+        seen.append(raised.value)
+        stream.read_exact(5)
+        return
+        yield
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(BoxesReader, "walk", walk)
+        with open_archive(io.BytesIO(_boxes()), format=BoxesHandler.format) as reader:
+            assert reader.members() == []
+    assert len(seen) == 1
