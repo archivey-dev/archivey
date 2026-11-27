@@ -28,10 +28,11 @@ import hashlib
 import io
 import re
 import struct
+import typing
 import zlib
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 from xml.parsers import expat
 
 from archivey.diagnostics import (
@@ -55,9 +56,8 @@ from archivey.formats import (
     ReaderArchiveInfo,
     ReaderContext,
     ReaderSource,
+    str_retained_bytes,
 )
-from archivey.internal.listing_limits import str_retained_bytes
-from archivey.internal.overrides import override
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -68,6 +68,13 @@ from archivey.types import (
     MemberType,
     StreamFormat,
 )
+
+# ``typing.override`` (Python 3.12) where there is one. A format written outside
+# archivey carries the same lines, so the module imports no internal name for it.
+if TYPE_CHECKING:
+    from typing_extensions import override
+else:
+    override = getattr(typing, "override", lambda method: method)
 
 MAGIC = b"xar!"
 _HEADER = struct.Struct(">4sHHQQI")
@@ -739,9 +746,11 @@ class XarReader(IndexedReader[_Location]):
         # A member's data is exactly one stream: libarchive fails on anything after
         # its end, so a byte there (a second zlib stream, junk, zeros) is refused,
         # as in a ZIP member, not reported as trailing data.
-        decompress_coder = self._context._decompress_coder
-        assert decompress_coder is not None  # set by the adapter
-        return MemberData(decompress_coder(view, stream_format, data.size))
+        return MemberData(
+            self._context.decompress(
+                view, stream_format, size=data.size, one_stream=True
+            )
+        )
 
     @override
     def archive_info(self) -> ReaderArchiveInfo:

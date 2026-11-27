@@ -78,6 +78,7 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, TruncatedError
 from archivey.internal.arg_checks import check_bool
+from archivey.internal.listing_limits import str_retained_bytes
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.overrides import override
 from archivey.internal.password import PasswordConfirmVerdict
@@ -129,6 +130,7 @@ __all__ = [
     "buffered_stream",
     "register_codec",
     "register_format",
+    "str_retained_bytes",
     "unix_member_type",
 ]
 
@@ -712,16 +714,6 @@ class ReaderContext:
     # (each run, each slice), so a close() stops it within one of them. Internal,
     # set by the adapter; not for plugins.
     _checkpoint: Callable[[], None] | None = None
-    # ``_decompress_coder(data, stream_format, size)`` decodes ``data``, a container
-    # coder's whole data in ``stream_format``, as ``decompress`` does, except that a
-    # byte after the end raises ``CorruptionError`` (as for a ZIP member) instead of
-    # being reported as trailing data, and bzip2 and LZMA Alone end at their first
-    # stream, as a ZIP or 7z member's bzip2 does. Continuations the codec's data
-    # defines for a member (further xz streams and their padding, zstd and LZ4
-    # frames) still read. Internal, set by the adapter; not for plugins.
-    _decompress_coder: (
-        Callable[[BinaryIO, StreamFormat, int | None], BinaryIO] | None
-    ) = None
     # What the reader draws decoded bytes from on its nest's account, for a built-in
     # reader that decodes past members itself (CAB's folder skip). Internal, set by
     # the adapter; not for plugins.
@@ -756,6 +748,7 @@ class ReaderContext:
                 CompressionAlgorithm | StreamFormat | PluginStream,
                 int | None,
                 bytes | None,
+                bool,
             ],
             BinaryIO,
         ],
@@ -1087,6 +1080,7 @@ class ReaderContext:
         *,
         size: int | None = None,
         properties: bytes | None = None,
+        one_stream: bool = False,
     ) -> BinaryIO:
         """Decode one member's compressed bytes with archivey's own decoders.
 
@@ -1131,10 +1125,19 @@ class ReaderContext:
         and bytes after that end are reported as ``ARCHIVE_TRAILING_DATA``, as for a
         file of that format; under ``DiagnosticPolicy.STRICT`` that report raises.
 
+        ``one_stream=True`` says ``data`` is one stream of a stream format and nothing
+        else, as a XAR member's data is: bytes after the end raise ``CorruptionError``,
+        as for a method, and ``BZIP2`` and ``LZMA_ALONE`` end at their first stream, so
+        a second one is such bytes. Continuations the format itself defines (further
+        xz streams and their padding, zstd and LZ4 frames) still read. It takes
+        ``ZLIB``, ``BZIP2``, ``XZ``, ``LZMA_ALONE``, ``ZSTD``, ``LZ4`` and ``BROTLI``;
+        any other stream format raises ``UnsupportedFeatureError``. For a method it
+        changes nothing.
+
         ``size`` is the decoded length when the format stores it. Raw LZMA1 may have
         no end marker and needs it then.
         """
-        return self._decompress(data, method, size, properties)
+        return self._decompress(data, method, size, properties, one_stream)
 
 
 class FormatReader(ABC):

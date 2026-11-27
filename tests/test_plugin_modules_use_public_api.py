@@ -27,6 +27,7 @@ PUBLIC_ONLY_MODULES = (
     "archivey.internal.backends.ar_reader",
     "archivey.internal.backends.cpio_reader",
     "archivey.internal.backends.rpm_reader",
+    "archivey.internal.backends.xar_reader",
 )
 
 

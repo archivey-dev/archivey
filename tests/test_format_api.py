@@ -1187,6 +1187,8 @@ def _compressed_plugin(
     method: CompressionAlgorithm | StreamFormat,
     properties: bytes | None = None,
     translated: list[Exception] | None = None,
+    *,
+    one_stream: bool = False,
 ) -> type[IndexedFormatHandler]:
     """A TOYA plugin whose one member is stored compressed with ``method``; the
     member's data runs to the end of the file."""
@@ -1202,6 +1204,7 @@ def _compressed_plugin(
                     method,
                     size=member.size,
                     properties=properties,
+                    one_stream=one_stream,
                 )
             )
 
@@ -1513,6 +1516,54 @@ def test_decompress_stream_format_reads_as_its_files_do(
     register_format(_compressed_plugin(StreamFormat.BZIP2))
     with open_archive(_compressed_archive(tmp_path, stored)) as reader:
         assert reader.read("m.bin") == _PLAIN
+
+
+@pytest.mark.parametrize("method", [StreamFormat.ZLIB, StreamFormat.XZ])
+def test_one_stream_refuses_data_after_the_end(
+    clean_registry: None, tmp_path: Path, method: StreamFormat
+) -> None:
+    """``one_stream=True``: the data is the stream and nothing else, as a XAR member's
+    is, so a byte after its end is damage, refused as after a ZIP member."""
+    register_format(_compressed_plugin(method, one_stream=True))
+    path = _compressed_archive(tmp_path, _stream(method, _PLAIN) + b"junk")
+    with open_archive(path) as reader, pytest.raises(CorruptionError):
+        reader.read("m.bin")
+
+
+@pytest.mark.parametrize("method", [StreamFormat.BZIP2, StreamFormat.LZMA_ALONE])
+def test_one_stream_ends_at_the_first_bzip2_or_lzma_stream(
+    clean_registry: None, tmp_path: Path, method: StreamFormat
+) -> None:
+    """Under ``one_stream=True`` a second stream is data after the end: a ``.bz2``
+    file reads on into it, a member's data does not."""
+    half = len(_PLAIN) // 2
+    stored = _stream(method, _PLAIN[:half]) + _stream(method, _PLAIN[half:])
+    register_format(_compressed_plugin(method, one_stream=True))
+    with (
+        open_archive(_compressed_archive(tmp_path, stored)) as reader,
+        pytest.raises(CorruptionError),
+    ):
+        reader.read("m.bin")
+
+
+def test_one_stream_reads_a_whole_stream(clean_registry: None, tmp_path: Path) -> None:
+    register_format(_compressed_plugin(StreamFormat.ZLIB, one_stream=True))
+    path = _compressed_archive(tmp_path, _stream(StreamFormat.ZLIB, _PLAIN))
+    with open_archive(path) as reader:
+        assert reader.read("m.bin") == _PLAIN
+        assert not reader.diagnostics.counts
+
+
+def test_one_stream_refuses_gzip(clean_registry: None, tmp_path: Path) -> None:
+    """gzip's decoders skip what follows its last member, so they cannot keep the
+    promise: refused before any byte is decoded, not read leniently."""
+    register_format(_compressed_plugin(StreamFormat.GZIP, one_stream=True))
+    path = _compressed_archive(tmp_path, _stream(StreamFormat.GZIP, _PLAIN) + b"junk")
+    with (
+        open_archive(path) as reader,
+        pytest.raises(archivey.UnsupportedFeatureError, match="one_stream"),
+    ):
+        reader.read("m.bin")
 
 
 @pytest.mark.parametrize(
