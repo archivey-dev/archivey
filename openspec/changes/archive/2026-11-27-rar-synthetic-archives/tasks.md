@@ -1,3 +1,9 @@
+> **Archived 2026-11-27.** Implemented and shipped in 0.4.0
+> (`internal/backends/rar_synthetic.py`, `tests/test_rar_synthetic.py`,
+> `dev-docs/formats/rar.md` §2.3 and §6), with the recommended D1-D4; the boxes below were
+> not ticked when it landed. The spec deltas were checked against `main` before the
+> archive: no requirement they modify or remove had changed since they were written.
+
 ## 1. Decisions
 
 - [ ] 1.1 Maintainer decides D1-D4 (`design.md` §"Decisions for the maintainer"); record the rulings in `design.md` and `dev-docs/formats/rar.md` §6

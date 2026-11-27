@@ -64,7 +64,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS`, `MEMBER_LOCAL_CRC_USED`, `MEMBER_LOCAL_OFFSET_SHIFTED` | `LocalHeaderContext`: `kind="local_header"`, `archive_name`, `member_name`, `member_id`, `field` (`"name"`, `"method"`, `"crc32"` and `"offset"` in that order), `local_raw_name_base64` (the local header's name bytes, `field="name"` only), `local_method` and `central_method` (`field="method"` only), `local_crc32` (`field="crc32"` only), `local_offset` and `central_offset` (`field="offset"` only: where the header is and where the directory's position puts it, both absolute positions in the file) |
 | `ARCHIVE_OFFSET_WRAPPED` | `OffsetWrapContext`: `kind="offset_wrap"`, `archive_name`, `format`, `member_name`, `member_id` (empty and `None` for the directory), `record` ∈ `{"local_header","central_directory"}`, `stored_offset`, `corrected_offset` |
 | `MEMBER_SIZE_WRAPPED` | `SizeWrapContext`: `kind="size_wrap"`, `archive_name`, `format`, `member_name`, `member_id`, `stored_compressed_size`, `compressed_size`, `stored_size`, `size` (`None` when only a read can tell) |
-| `MEMBER_TYPE_UNKNOWN` | `UnknownMemberTypeContext`: `kind="unknown_member_type"`, `archive_name`, `member_name`, `member_id`, `stored_type` (the TAR typeflag byte as a one-character string, the byte read as Latin-1; for a RAR5 redirect, the type number in decimal), `size` (the member's `size`; `None` for an `OTHER` member) |
+| `MEMBER_TYPE_UNKNOWN` | `UnknownMemberTypeContext`: `kind="unknown_member_type"`, `archive_name`, `member_name`, `member_id`, `stored_type` (the format's own spelling of the type: for TAR the typeflag byte as a one-character string, the byte read as Latin-1; for a RAR5 redirect, the type number in decimal; for a plugin format, the value its reader reports), `size` (the member's `size`; `None` for an `OTHER` member) |
 | `MEMBER_NAME_DUPLICATE` | `NameDuplicateContext`: `kind="name_duplicate"`, `archive_name`, `member_name`, `member_id`, `earlier_member_id` (the latest earlier member under the name, or under it with or without a final `/`), `earlier_type` and `member_type` (`MemberType` values). Emitted at listing, in every format, when a current member has the name of an earlier current one and the two are not both directories. Names are compared as the listing presents them: a ZIP read from a pipe compares the central directory's names, once it has read the directory |
 | `MEMBER_NAME_DUPLICATE_UNEXPECTED` | `UnexpectedNameDuplicateContext`: `kind="name_duplicate_unexpected"`, `archive_name`, `member_name`, `member_id`, `format` (the format whose layout has no way to repeat a name, `"cab"`). Emitted at listing by a format with no append, update or file versions, when a member has the name, normalized, of an earlier one; the same member also reports `MEMBER_NAME_DUPLICATE`. CAB emits it; another format with no way to repeat a name may adopt it |
 | `MEMBER_READERS_DISAGREE` | `ReaderDisagreementContext`: `kind="reader_disagreement"`, `archive_name`, `member_name`, `member_id`, `shape` (`"file_named_as_directory"`, `"link_name_on_file"` (the header's field or a PAX `linkpath` on a regular file), `"star_prefix"` or `"gnu_prefix_bytes"` for a TAR header; `"hardlink_to_symlink"` in every format with hard links; `"nul_in_name"` in every format; `"directory_attribute_without_slash"` for a ZIP entry; `"file_only_in_joliet"`, `"file_only_in_iso9660"` or `"file_only_in_udf"` for a file an ISO image's Joliet, plain ISO 9660 or UDF tree holds and its listed tree does not, with `member_name` its path in that tree and `member_id` `None`) |
@@ -840,3 +840,49 @@ format-neutral, for every walk that lists a member from a damaged header the sam
 | `extract_all()` under the default policy | Every member written, the damaged one under its stored name; one `MEMBER_HEADER_DAMAGED`; then `CorruptionError` |
 | A damaged header the walk cannot resume past | No `MEMBER_HEADER_DAMAGED`; `CorruptionError` after the members before it |
 | TAR with one damaged, confirmed member header, read the damaged member | One `MEMBER_HEADER_DAMAGED`; its bytes, which nothing but the confirmed size checks |
+
+### Requirement: Report a disk image structure the read worked around
+
+The system SHALL report `ARCHIVE_STRUCTURE_INCONSISTENT` when a disk image's structures
+are damaged or disagree with each other in a way the read works around, with
+`ArchiveStructureContext`: `kind="archive_structure"`, `archive_name`, `format`
+(`"dmg"`), `structure` and `offset`. `structure` SHALL be one of `"code_signature"` (a
+UDIF code signature outside the file or overlapping another structure, ignored),
+`"gpt_primary"` (the primary GPT fails its checks and the backup is read),
+`"partition_map"` (neither GPT copy, or the Apple partition map, can be used, and the
+run tables' ranges are read), `"partition_name"` (a map type or run table name says
+another filesystem than the partition holds; the filesystem decides),
+`"partition_start"` (the map and a run table place a partition at different sectors;
+the map's range is read), `"member_type"` (an HFS+ file's mode and Finder type
+disagree on whether it is a symlink, reported on the member, or an APFS directory
+entry's type disagrees with its inode's mode; the mode decides), `"apfs_checkpoint"`
+(the newest APFS checkpoint is incomplete, and an older one is looked for),
+`"link_count"` (an APFS file's hard-link records disagree with its inode's link count;
+the directory records decide what is listed), `"key_entry"` (a password key entry of an
+encrypted image that archivey cannot use, skipped because another entry is usable) or
+`"folder_thread"` (HFS+ folders whose thread record is missing, unreadable or names
+another parent or name than the folder record; reported once per volume, the folder
+records decide the paths). The
+code SHALL be in `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` raises on it.
+
+A DMG image that holds, beside the volumes it lists, a partition with contents archivey
+does not read (an HFS volume, an APFS container it refuses, or no known filesystem), or
+an APFS volume it refuses (encrypted or sealed), SHALL report `ARCHIVE_UNLISTED_DATA`
+with `UnlistedDataContext`: `format="dmg"`, `member_name` the partition's name (the
+volume's name for a refused APFS volume), `member_id=None`, `offset` the partition's
+disk offset and `compressed_size` its length. A partition whose type holds no files
+(free space, the map itself, an EFI or Apple boot partition) SHALL not be reported.
+
+#### Scenario: DMG structure reports
+
+| Case | Expected |
+| --- | --- |
+| A GPT whose primary header fails its CRC | `structure="gpt_primary"`; the backup's partitions are read |
+| A GPT whose entries leave the disk in both copies | `structure="partition_map"`; the run tables' ranges are read |
+| An APM entry typed `Apple_APFS` holding HFS+ | `structure="partition_name"`; the volume is read |
+| A Finder symlink with a regular-file mode | `structure="member_type"` on the member; it lists as a file |
+| An HFS volume (an HFS wrapper) beside an HFS+ one | `ARCHIVE_UNLISTED_DATA` naming that partition; the HFS+ volume is listed |
+| An encrypted APFS volume beside a readable one | `ARCHIVE_UNLISTED_DATA` naming the encrypted volume; the other is listed |
+| A newest APFS checkpoint with a missing checkpoint-map block | `structure="apfs_checkpoint"`; the older complete checkpoint is read |
+| An APFS hard-linked file with one sibling-link record for two links | `structure="link_count"`; both names are listed |
+| `DiagnosticPolicy.STRICT` and any of the above | The read raises |

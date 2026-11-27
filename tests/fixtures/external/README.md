@@ -303,10 +303,10 @@ The crate's comment on `reduce_zero_reduced.bin` gives the commands that made th
 
 Disk images that `hdiutil` on macOS 26.7.1 wrote (`macos-version.txt`). The content is
 our own test files, so there is no licence question. Most were made with
-`openspec/changes/dmg-reader/resources/make-dmg-fixtures.sh` from one tree (design §9.1
-of `openspec/changes/dmg-reader/`): an absolute and a relative symlink, a hard link, a
-decmpfs-compressed file (type 8, LZVN in the resource fork), a non-ASCII name and an
-extended attribute.
+`openspec/changes/archive/2026-11-27-dmg-reader/resources/make-dmg-fixtures.sh` from one
+tree (design §9.1 of `openspec/changes/archive/2026-11-27-dmg-reader/`): an absolute and
+a relative symlink, a hard link, a decmpfs-compressed file (type 8, LZVN in the resource
+fork), a non-ASCII name and an extended attribute.
 
 - `hfs-UDZO.dmg` (zlib), `hfs-UDBZ.dmg` (bzip2), `hfs-ULFO.dmg` (LZFSE),
   `hfs-ULMO.dmg` (xz), `hfs-UDRO.dmg` (raw): that tree on an HFS+ volume named

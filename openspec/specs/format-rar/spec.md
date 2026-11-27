@@ -115,17 +115,15 @@ caller's `encoding=` would have given a different name, the system SHALL emit
 set to the caller's encoding, as ZIP does; the Unicode flag declares UTF-8, so a flagged
 name emits none. The system MUST NOT decode an 8-bit name as UTF-16LE. `raw_name` SHALL be the
 stored bytes in every case, and RAR SHALL NOT emit `ENCODING_ARGUMENT_UNUSED`. How a
-name with no UTF-16 field is decoded SHALL NOT change which member a read returns: its
-`unrar` mask is built from the stored name, not from the decoded text. A RAR 1.5-4
+name is decoded SHALL NOT change which member a read returns: a read gives `unrar` the
+member through a synthetic archive under a placeholder name, or the stored name itself
+only when it is plain (`Keep the original archive for a large plainly named member of a
+path source`), never a mask built from the decoded text. A RAR 1.5-4
 UTF-16 field SHALL decode with `surrogatepass`: a surrogate without its partner stays in
 `name` as that code unit, and a valid pair decodes as one character. Extraction writes
-such a name by `safe-extraction` "Lone surrogates in a member name". `unrar` matches the
-field unit by unit (a valid pair is two units). On POSIX, where the mask goes out as
-UTF-8 bytes that cannot carry a surrogate unit, a read through `unrar` SHALL send each
-unit as `?` in the mask, and SHALL refuse with `UnsupportedFeatureError` naming `unar`
-when a unit is in a directory component. On Windows the mask SHALL carry a valid pair's
-units as they are, and a lone unit SHALL be refused naming `unar`, as it is in a RAR5
-name.
+such a name by `safe-extraction` "Lone surrogates in a member name". A name with a lone
+surrogate is not plain, so the member reads through a synthetic archive like any other
+name that is not plain.
 
 #### Scenario: RAR name decoding matrix
 
@@ -139,7 +137,7 @@ name.
 | RAR5 name with `encoding=` passed | Unchanged; no `ENCODING_ARGUMENT_UNUSED` |
 | Any 8-bit name | `raw_name` is the stored bytes |
 | UTF-16 field holds a lone surrogate (`hi` U+D800) | `name == "hi\ud800"`; `raw_name` is the 8-bit field; the member reads |
-| RAR5 `a\xffq.txt` and `a\xfeq.txt` | Two members, `a\udcffq.txt` and `a\udcfeq.txt`; each reads its own bytes through `unrar`, which reads both names as `a` |
+| RAR5 `a\xffq.txt` and `a\xfeq.txt` | Two members, `a\udcffq.txt` and `a\udcfeq.txt`; each reads its own bytes through `unrar` |
 | 8-bit `b\x81.txt` and `b\x8d.txt` written on Unix | `b\udc81.txt` and `b\udc8d.txt` |
 
 ### Requirement: Decode RAR 1.5-4 comments in the order names use
@@ -447,9 +445,7 @@ optimization being the other strategy this capability declares.
 A non-path stream source SHALL NOT be copied to disk at open. Both stream shapes —
 a single stream and an ordered set of stream volumes — SHALL defer the copy to the
 first member read that `unrar` has to serve, and a caller that only lists SHALL
-write nothing. An `open()` the reader refuses before spawning `unrar` — a name it
-cannot address through an include mask, or one whose mask would pull in earlier
-members — is not such a read and SHALL write nothing either. Listing SHALL be served from the source the caller supplied; for a
+write nothing. Listing SHALL be served from the source the caller supplied; for a
 volume set the reader SHALL read each volume as its own bounded view over that
 source rather than reopening or copying it.
 
@@ -509,23 +505,6 @@ desynchronize sizes).
 | Stream source, `open()` refused before any spawn | Nothing is written; the refusal raises without materializing |
 | Path source | `ar.cost.notes` has no disk-copy caveat (under `unrar`); the spool limit never refuses it |
 | Prefixed path source under `unar`, copy over `SpoolLimits.max_bytes` | `ar.cost.notes` says a compressed read will be refused; the read raises `ResourceLimitError` naming `rar_decompressor='unrar'`; no temp file |
-
-### Requirement: Support benchmark-gated small-member optimization
-
-The reader SHALL allow an optional small-member optimization only when
-benchmarks justify it. The optimization MAY build a temporary single-file RAR
-containing the requested member and invoke `unrar` on that smaller archive when
-the member is below a benchmark-derived threshold. Output MUST be byte-identical
-to the direct `unrar` path. This optimization is **deferred**: the initial
-native RAR reader MUST NOT implement it.
-
-#### Scenario: small-member optimization matrix
-
-| Case | Expected |
-| --- | --- |
-| Initial native RAR reader | Extract-hack / temp single-file RAR path is not used |
-| Future enablement after benchmarks | Bytes match direct `unrar`; measured overhead is lower |
-| Benchmark does not justify the threshold | Optimization is not used |
 
 ### Requirement: Report RAR cost and version-specific metadata
 
@@ -709,12 +688,14 @@ compression-info versions 0 and 1 and RAR 1.5-4 `UNP_VER` 13 to 29; outside them
 member reads whatever version it declares, as in `unrar`. A later compressed member of
 the same solid stream (by the members' solid flags) SHALL raise `UnsupportedFeatureError`
 naming the unknown member, in the same way and with either decompressor, since decoding it
-means decoding that member first. With `unrar`, in an archive whose main header has the
-solid bit, every later member that `unrar` would decode SHALL raise it too, a later solid
-stream included: archivey addresses a member through an include mask, and with one
-`unrar` decodes the archive from its start. That message SHALL say so, and SHALL NOT
-say the archive needs the unknown member decoded. With `unar`, which reads a later stream
-on its own, a member of a later stream SHALL be read.
+means decoding that member first. A member of a later solid stream read through a
+synthetic archive, which starts at that member's own stream, SHALL be read. When `unrar`
+reads the original archive through an include mask instead (a large plainly named member
+of a path source, or a member no synthetic archive can hold), in an archive whose main
+header has the solid bit, every later member SHALL raise it too, a later solid stream
+included: with a mask, `unrar` decodes the archive from its start. That message SHALL say
+so, and SHALL NOT say the archive needs the unknown member decoded. With `unar`, which
+reads a later stream on its own, a member of a later stream SHALL be read.
 
 #### Scenario: unsupported variant matrix
 
@@ -728,7 +709,7 @@ on its own, a member of a later stream SHALL be read.
 | Compressed RAR 1.5-4 member with `UNP_VER` below 13 or above 29 | Listing succeeds; read raises `UnsupportedFeatureError` |
 | Stored member declaring an unknown version | Reads normally |
 | Solid archive, compressed member after one with an unknown version, same solid stream | Read raises `UnsupportedFeatureError` naming that member, with either decompressor |
-| Solid archive, member of a later solid stream after one with an unknown version | `unrar`: read raises `UnsupportedFeatureError` naming that member and the include mask; `unar`: reads normally |
+| Solid archive, member of a later solid stream after one with an unknown version | `unrar` through a synthetic archive and `unar`: reads normally; `unrar` on the original archive through a mask: `UnsupportedFeatureError` naming that member and the include mask |
 
 ### Requirement: Support multi-volume RAR sets
 
@@ -1098,124 +1079,6 @@ byte is read both as comment data and as a header.
 - **AND** one further `MEMBER_HEADER_RECORD_SKIPPED` SHALL report how many were not
   described individually
 
-### Requirement: Return a named member's own bytes when its mask selects others
-
-`unrar p` with an include mask emits every payload member the mask selects, in archive
-order and with no headers between them. The system SHALL build the mask from the name as
-`unrar` reads it from the header, SHALL compute which members that mask selects the way
-`unrar` 7 does, and SHALL return only the target's bytes: it SHALL skip the unpacked size
-of the selected members before the target and SHALL stop at the target's size. This
-covers members with the same name, names `unrar` reads as the same text, a mask that
-names a directory prefix of another member, and a RAR5 name that is not valid UTF-8,
-which `unrar` reads only up to its first invalid byte.
-
-The system MUST NOT return another member's bytes for a member. When the selection is not
-known, the system SHALL raise `UnsupportedFeatureError` naming
-`rar_decompressor='unar'` before `unrar` is spawned and before a stream source is
-copied. That is the case when `unrar` reads the name as empty or as a path with no name,
-when the name `unrar` reads cannot be passed back to it in argv, when the mask would not
-select the target, and when an earlier member's name cannot be read the way `unrar`
-reads it on this host. A stored name that contains a NUL SHALL be refused the same way.
-
-A mask with no `*` or `?` that selects earlier members costs `unrar` the same decode of
-those members as a glob, and SHALL be refused like one by default (`Refuse a member name
-whose mask also selects earlier members`); with `rar_allow_glob_member_concatenation`, or
-when `auto` reads it with `unar`, the read SHALL return the target's own bytes as above.
-
-#### Scenario: shared mask matrix
-
-| Case | Expected |
-| --- | --- |
-| Two or three members with the same name, solid or not, with `rar_allow_glob_member_concatenation` | Each read returns its own bytes |
-| The same names, default config, `rar_decompressor='unrar'` | The first reads; a later one is refused like a glob name |
-| RAR5 `ab\xffcd.txt` after members `unrar` reads as `ab`, with the flag | Its own bytes; the earlier ones are skipped |
-| RAR5 name `\xff` beside a sibling named U+FFFD, no stored digest | `UnsupportedFeatureError`; never the sibling's bytes |
-| A name `unrar` reads as empty (`\xc0\x80x`) | `UnsupportedFeatureError` |
-| Earlier 8-bit RAR 1.5-4 name and no UTF-8 locale for `unrar` | A later member's read raises `UnsupportedFeatureError` |
-
-### Requirement: Refuse a member name whose mask also selects earlier members
-
-A RAR member's stored name may contain `*` or `?`. Because `unrar` is addressed by an
-include mask, such a name can match other members, and `unrar` decompresses every match
-and emits them concatenated ahead of the target. A name with no `*` or `?` does the same
-when its mask selects other members: a duplicate name, or two names `unrar` reads as the
-same text.
-
-When the mask built from a member's stored name, glob or not, also selects **earlier**
-payload members holding data, the system SHALL raise `UnsupportedFeatureError` rather
-than read the member.
-The error SHALL name the configuration flag that allows the read. On a non-solid
-archive it SHALL also name the number of bytes of earlier matching members that
-`unrar` would decompress first. On a solid archive those members are already inside
-the solid prefix the read pays, so the error SHALL NOT describe that count as an
-avoidable extra decode.
-
-`ArchiveyConfig.rar_allow_glob_member_concatenation` SHALL default to `False`. When set
-to `True` the read SHALL proceed and return the member's own bytes, skipping the earlier
-matches as before. The flag SHALL govern only whether the read is attempted; it SHALL
-NOT change what a successful read returns.
-
-A name whose mask selects **no** earlier member SHALL be unaffected and SHALL read
-without the flag; so is the first of several members with the same name. The flag keeps
-its name for a non-glob name: it governs every mask that selects earlier members. On
-POSIX a RAR 1.5-4 UTF-16 name sends each surrogate unit as `?` (`Decode RAR member
-names`), and that mask falls under this requirement like a stored glob.
-
-A call site that builds no include mask SHALL be unaffected, whatever the member names
-are. In particular a solid `stream_members()` pass uses one unnamed `unrar p` pipe
-demultiplexed by size, so it SHALL read glob-named members without the flag.
-
-The refusal exists because names like this are almost always constructed. On a
-non-solid archive the extra decode is also unbounded and unreported: it is not
-covered by `ExtractionLimits`, which do not reach `open()` / `read()`. On a solid
-archive `AccessCost.SOLID` already advertises the prefix; the names are still
-refused.
-
-#### Scenario: glob member matrix
-
-| Case | Expected |
-| --- | --- |
-| `a*.txt` with an earlier `subdir/aY.txt` match, default config, non-solid | `UnsupportedFeatureError` naming the byte count and the flag |
-| The same member on a solid archive, default config | `UnsupportedFeatureError` naming the flag, not an avoidable extra decode |
-| The same read with `rar_allow_glob_member_concatenation=True` | The member's own bytes, earlier matches skipped |
-| `only*.dat`, whose mask matches nothing else, default config | Reads normally; no refusal |
-| Solid `stream_members()` over glob-named members, default config | All members read; no mask is built |
-| A name with no `*` or `?` shared with an earlier member, default config, `rar_decompressor='unrar'` | `UnsupportedFeatureError` naming the flag (and, non-solid, the byte count) |
-| The same read with the flag | The member's own bytes |
-| A name with no `*` or `?` that selects nothing earlier | Not refused |
-| POSIX: `hi` U+D800 `.txt` after `hiX.txt`, default config | `UnsupportedFeatureError` naming the flag; with the flag, the member's own bytes |
-
-### Requirement: Under auto, read a member unrar cannot name with unar
-
-`unar` selects members by index, so a name `unrar` cannot be given, or a name whose
-mask also selects earlier members, glob or not, costs it nothing. When
-`ArchiveyConfig.rar_decompressor` is `auto` and resolved to `unrar`, a read that the
-two requirements above would refuse SHALL instead be served by `unar -i <index>`, when
-all of these hold: an accepted `unar` is installed (the same check `auto` uses), the
-read needs no password (see "A spawn gets a password only when the read needs one";
-`unar` takes it on its command line), the source
-is a file with nothing before the RAR (`unar` would otherwise need its own copy: a
-prefix has no open-time cost note under `unrar`, and a stream source would be copied a
-second time against the same `SpoolLimits` budget; a file is linked into `unar`'s
-private directory, copied only where the system allows no link), and `unar` itself would not refuse the member
-or the archive (`Read RAR member data with unar`). Otherwise the `unrar` refusal SHALL be
-raised unchanged. The dictionary memory check SHALL use `unar`'s rule for that read.
-Every other member SHALL still be read with `unrar`. With `rar_decompressor='unrar'`
-the refusals SHALL stand.
-
-#### Scenario: auto routes unnameable members to unar
-
-| Case | Expected |
-| --- | --- |
-| `a*.txt` with an earlier `subdir/aY.txt`, non-solid, `auto`, accepted `unar` installed | The member's own bytes, read with `unar`; other members read with `unrar` |
-| `d*/x.txt` (glob in a directory component), `auto`, accepted `unar` installed | The member's own bytes, read with `unar` |
-| A duplicate name after an earlier entry with data, non-solid, `auto`, accepted `unar` installed | The member's own bytes, read with `unar` |
-| The same reads with no accepted `unar` | The `unrar` refusals, unchanged |
-| The same reads with `rar_decompressor='unrar'` | The `unrar` refusals, unchanged |
-| RAR5 solid archive with data after a directory (`unar` refuses it) | The `unrar` refusal, unchanged |
-| A read that needs a password, or a stream source, or a prefix before the RAR | The `unrar` refusal, unchanged; nothing is written to disk |
-| A plaintext member of a non-solid archive whose last member is encrypted | Read with `unar`, which gets no password |
-
 ### Requirement: A spawn gets a password only when the read needs one
 
 An `unrar` or `unar` process started to read one member SHALL receive a password only
@@ -1318,7 +1181,7 @@ most `rar` writes, SHALL be `None` and SHALL NOT be weighed or decoded.
 | `rar_decompressor="auto"`, only a `unar` that passes the RAR5 check | `unar` is spawned |
 | Only a `unar` that fails the RAR5 check (`tests/test_unar_probe.py`), `auto` or `"unar"` | `auto`: as with neither present; `"unar"`: `PackageNotInstalledError` saying what the check saw |
 | `rar_decompressor="auto"`, neither present | `PackageNotInstalledError` names RARLAB `unrar` or `rar` |
-| `unar` selected, member name contains `*` | Read by index; no `rar_allow_glob_member_concatenation` needed |
+| `unar` selected, member name contains `*` | Read by index |
 | `unar` selected, encrypted RAR5 member, right password | Read correctly; the password is passed with `-p` |
 | `unar` selected, encrypted RAR5 member, wrong password | `EncryptionError` |
 | `unar` selected, encrypted RAR 2.x-4.x member, compressed or split | `UnsupportedFeatureError` naming the RAR 2.x-4.x reason |
@@ -1347,9 +1210,9 @@ program that will run, so under `rar_decompressor="auto"` it is the rule of the 
 
 - `unar`: the largest dictionary declared in the member's solid stream, up to and
   including the member.
-- `unrar`, nonsolid: for the member and for every earlier member its include mask also
-  selects, the smaller of that member's declared dictionary and its unpacked size; the
-  largest of these.
+- `unrar`, nonsolid: the smaller of the member's declared dictionary and its unpacked
+  size. A synthetic archive holds the member alone, and a read on the original archive
+  uses a mask that selects the member alone (a plain name).
 - `unrar`, solid: the smaller of the largest dictionary declared up to and including the
   member and the unpacked size of those members. "Solid" here is the MAIN header's solid
   flag, which is what `unrar` decides by; a member's own solid flag does not.
@@ -1373,7 +1236,6 @@ SHALL give the declared size when the count is smaller.
 | `unrar`, a nonsolid member declaring 4 GiB and 3 GiB unpacked, default cap | `ResourceLimitError` naming 3 GiB and the declared 4 GiB; `unrar` not spawned |
 | `unrar`, a solid member behind a member declaring 4 GiB and 3 GiB unpacked | `ResourceLimitError`, for a named read and in a `stream_members()` pass |
 | `unrar`, a stored solid member behind a member declaring 4 GiB and 3 GiB unpacked | `ResourceLimitError` naming the earlier member; `unar` counts it 0 |
-| `unrar` with `rar_allow_glob_member_concatenation`, a duplicate name whose earlier entry declares 4 GiB and 3 GiB unpacked | `ResourceLimitError` when the later, small entry is read |
 | `rar_decompressor="auto"` | The count of the program `auto` picked |
 
 ### Requirement: A RAR file cut inside a header SHALL list the members before the cut
@@ -1832,3 +1694,153 @@ first read.
 | Hard link, symlink, directory | As in the seekable pass |
 | Quick-open record | Not read |
 | `members()`, `open()`, a second pass | Raise as for any streaming reader |
+
+### Requirement: Read RAR member data through a synthetic archive
+
+When `unrar` serves a member read, the system SHALL give `unrar` a single-volume
+synthetic RAR file instead of the original archive, unless
+`Keep the original archive for a large plainly named member of a path source` applies.
+The file SHALL hold the RAR signature, a MAIN header made by archivey, the FILE header
+and packed data of each member the read needs in archive order, and an ENDARC header
+made by archivey.
+
+#### Scenario: members a read needs
+
+| Read | Members in the synthetic file |
+| --- | --- |
+| A member of a nonsolid archive | The member |
+| A member of a solid archive | Every header with packed data from the last member at or before it whose own solid flag is clear, up to the member |
+| A member split across volumes | One member: the parts' data joined in order |
+| Solid archive written with `rar -s<N>`, a member in a later group | Only that group's members up to it |
+| Solid archive, its first member | The first member only; `unrar` exits after it |
+
+#### Scenario: synthetic reads match the original
+
+| Case | Expected |
+| --- | --- |
+| Compressed member, RAR 1.5-4 or RAR5, plain or `-p` | Bytes equal `unrar p` on the original |
+| Same, `-hp` | Bytes equal; the synthetic file has plain headers and the data is still encrypted |
+| Member split across three volumes, plain, `-p` or `-hp` | Bytes equal the source file |
+| History row of `rar -ver` | Its own bytes |
+| Member name with `*`, `?`, `\`, a NUL or invalid UTF-8 | Read; the name never reaches `unrar` |
+
+### Requirement: Build synthetic FILE headers from the archive's own headers
+
+Each FILE header in a synthetic file SHALL be the archive's stored header, decrypted
+when the archive's headers are encrypted. The system SHALL change only the name (to
+`m<i>`, its position in the file), the RAR 1.5-4 Unicode-name flag, the split flags and
+packed size of a joined member, and the header size and CRC that follow. Before writing
+a header the system SHALL check its CRC against the listing, and SHALL raise
+`CorruptionError` without spawning `unrar` when they differ.
+
+#### Scenario: header matrix
+
+| Case | Expected |
+| --- | --- |
+| Any member | Every decode field (method, dictionary, solid flag, sizes, CRC, extra records, salt) as stored |
+| Joined split member | The last part's header, split flags cleared, packed size = sum of the parts |
+| MAIN header | Solid flag only when the file holds more than one member; never header encryption |
+| Stored header changed on disk after `open()` | `CorruptionError`; no spawn |
+
+### Requirement: Run unrar on a synthetic file with a placeholder mask
+
+The system SHALL run `unrar p -inul -cfg- -ver (-p | -p-) [-n./m<k>] -- <file>` on a
+synthetic file. The mask SHALL be present only when the file holds more than one member
+and only the target is wanted. The password SHALL be written to stdin.
+
+#### Scenario: argv matrix
+
+| Case | Expected |
+| --- | --- |
+| One-member synthetic file | No `-n` |
+| Solid chain | `-n./m<k>` for the target only |
+| Any synthetic read | `-ver` present |
+
+### Requirement: Bound and remove synthetic files
+
+The bytes of a synthetic file SHALL count against `SpoolLimits.max_bytes` for every
+source. A copy over the limit SHALL raise `ResourceLimitError` before any byte is
+written and before `unrar` is spawned. The file SHALL have mode 0600, SHALL be reused
+when a seekable member stream respawns `unrar`, and SHALL be removed when the member
+stream or the reader closes. A synthetic read SHALL NOT copy a stream source whole.
+
+#### Scenario: copy matrix
+
+| Case | Expected |
+| --- | --- |
+| Stream source, one compressed member read | Only that member's header and packed bytes are written to disk |
+| Copy over `SpoolLimits.max_bytes` | `ResourceLimitError` naming the field; no temp file; no spawn |
+| `seekable_members=True`, backward seek | `unrar` runs again on the same file; nothing is copied again |
+| Member stream closed | The file is removed |
+
+### Requirement: Keep one growing synthetic file per solid stream
+
+For a solid archive the reader SHALL keep one synthetic file per solid stream for its
+lifetime. A read past the last member in the file SHALL append the missing members and a
+new ENDARC; a read of a member already in the file SHALL copy nothing. Every byte of the
+stream SHALL be copied at most once per reader while the streams read fit
+`SpoolLimits.max_bytes` together. When a copy does not fit and removing the files of
+other streams that no member stream holds would make room, the reader SHALL remove them,
+least recently read first, until it fits, and give back their bytes. When removing them
+all would not make room, it SHALL remove none and refuse or fall back. A later read of a
+removed stream copies it again.
+
+#### Scenario: solid stream file matrix
+
+| Case | Expected |
+| --- | --- |
+| `open()` of members 1, 2, … n of one solid stream in order | Total bytes written = the packed bytes up to member n, once |
+| `open()` of member 5 after member 50 | Nothing written; `unrar` decodes from the stream start, at most to member 50 |
+| Members in two `rar -s<N>` groups | Two files, one per group |
+| Last members of three groups read in turn, limit fits the largest group alone | Each read succeeds; the earlier group's file is removed first |
+| A copy over the limit even with every idle file removed | Refused or falls back; no file is removed |
+| The same, while a member stream of the first group is open | The second read raises `ResourceLimitError` |
+
+### Requirement: Keep the original archive for a large plainly named member of a path source
+
+For an archive opened from a path, the system SHALL keep the `-n` include-mask read of
+the original archive when the packed bytes a synthetic file would hold exceed an
+implementation threshold (initially 64 MiB) and the member's name is plain. Every other
+`unrar` read SHALL use a synthetic file. A read of the original SHALL select exactly one
+member.
+
+#### Scenario: plain names
+
+| Case | Plain |
+| --- | --- |
+| Every name in the archive decodes cleanly (valid UTF-8 for RAR5, ASCII for an 8-bit RAR 1.5-4 name, no lone surrogate in a RAR 1.5-4 Unicode name) and has no NUL, `:`, leading `/`, `\` in a RAR5 name (a RAR 1.5-4 `\` is a separator and reads as `/`), or empty, `.` or `..` component; the target has no `*` or `?` and no component ending in `.`, and is ASCII unless `unrar` reads a non-ASCII mask back as the same text (Windows, or a UTF-8 locale on POSIX); no other name equals it or starts with it plus `/`, compared without case and after NFC; on Windows the target is also NFC, and has no directory when any name in the archive has a directory that is not printable ASCII | Yes |
+| Any name in the archive that fails the archive-wide part | No, for every member |
+| Target named `a*.txt` or `notes.` | No |
+| Target named `café.txt` | Yes on Windows and under a UTF-8 locale; No on POSIX with none |
+| Target named `café.txt` in NFD | No on Windows, which compares its NFC form; as `café.txt` elsewhere |
+| Targets `é.bin` in NFC and in NFD | No for both |
+| Target named `dé/x.txt` | No on Windows, which compares the directory part with `CompareStringW`; as `café.txt` elsewhere |
+| Target `ab/x.txt` next to `a`U+00AD`b/x.txt` | No on Windows for both; Yes elsewhere |
+
+#### Scenario: route matrix
+
+| Case | Expected |
+| --- | --- |
+| Path source, 2 KB member | Synthetic file |
+| Path source, 500 MiB member with a plain name | Original archive, `-n./<name>` |
+| Path source, 500 MiB member named `a*.txt` | Synthetic file within the spool limit |
+| Path source, 2 GiB member named `a*.txt`, default spool limit | `ResourceLimitError` naming `SpoolLimits.max_bytes` |
+| Stream source, any size | Synthetic file |
+
+### Requirement: Batch a pass over a nonsolid archive into one unrar run
+
+In a `stream_members()` pass over a nonsolid archive, the system SHALL put compressed
+members into synthetic files of several members, run one `unrar p` without a mask per
+file, and split the output by unpacked size. A batch SHALL hold only regular files with
+a stored digest that need the same password, within an implementation size (initially
+64 MiB packed) and the spool limit. After a failure in a batch, its later members SHALL
+be read one at a time.
+
+#### Scenario: batch matrix
+
+| Case | Expected |
+| --- | --- |
+| `extract_all()` on a nonsolid archive of 4,000 small members | Few `unrar` runs, not 4,000 |
+| A member with no stored digest | Its own synthetic file, outside any batch |
+| A damaged member inside a batch | Its error is raised for it; the later members of the batch read one at a time |
+| Members with different passwords | Different batches |

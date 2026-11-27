@@ -1,3 +1,11 @@
+> **Archived 2026-11-27.** The API, makeself, ARJ and DMG users have landed (2.3:
+> `dmg_reader.py` returns `NeedsPassword` from `open`). Most 1.6b cases have tests in
+> `tests/test_format_api_passwords.py`, `tests/test_arj.py` and `tests/test_makeself.py`;
+> the cases with no test found are tracked internally: an interleaved nested-member
+> reopen while another thread waits on the provider, a request reached below listing
+> finalization, two overlapping requests on one shared handle, and a late makeself
+> rewalk that reuses the saved winner.
+
 ## 1. API (one PR, maintainer merges: public names)
 
 - [x] 1.1 `FormatHandler.supports_password`; `register_builtin_format` reads it instead
@@ -35,4 +43,4 @@
 - [x] 2.1 makeself: yield `NeedsPassword` + `charge_key_derivation`; mark payload
   members `is_encrypted`; drop `ReaderContext._passwords`
 - [x] 2.2 ARJ: decrypt garbled members (`INCONCLUSIVE` + `full_check` on the CRC-32)
-- [ ] 2.3 DMG spec §6B: return `NeedsPassword` from the handler's `open`
+- [x] 2.3 DMG spec §6B: return `NeedsPassword` from the handler's `open`

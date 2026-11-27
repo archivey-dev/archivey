@@ -1,3 +1,14 @@
+> **Archived 2026-11-27**, superseded by `plugin-platform` (its task 5.8): the archive
+> moves this change's surviving requirements (the reader contract, `hold()`,
+> `data_on_demand`, inner-stream detection, `register_codec`) into `openspec/specs/`
+> so `plugin-platform` edits them there. Left open on purpose:
+> 2b (TAR onto `walk()`) was optional ("it may stay internal") and TAR stays in core under
+> `plugin-platform`; 2.3's pycdlib check no longer applies, since ISO is read by the native
+> reader; 3b.6 is a note of what the LZ4 block and LZO paths still do. Of 4.2, the
+> `format-iso` corrections are already in the main spec, and the `diagnostics` wording
+> for `stored_type` was made in the archiving pull request; the rest of 4.2 is these
+> deltas.
+
 **Stability (maintainer, 2026-10-31).** The interface is now *experimental*, not
 provisional: any release, a patch included, may change or remove `archivey.formats`,
 `PluginContainer`, `PluginStream`, `FormatPolicy.replace` and `FormatInfo.from_plugin`
