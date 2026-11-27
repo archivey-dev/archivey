@@ -84,7 +84,12 @@ follows, and every path step of resolving earlier targets again, SHALL count aga
 `ListingLimits.max_members`, and `ResourceLimitError` naming `max_members` SHALL be
 raised when they cross it. It SHALL raise `CorruptionError` in the same way for a
 control-tar member, or hard link target, whose `DEBIAN/`-prefixed path, read the same
-way but not folded, does not have exactly `DEBIAN` as its first segment. `dpkg-deb -R`
+way but not folded, does not have exactly `DEBIAN` as its first segment, for a
+control-tar member under a control-tar symlink, and for a control-tar symlink at the
+path of a directory or of another symlink. The reader names these borders with
+`ReaderContext.open_nested(under="DEBIAN/")` for the control tar and
+`open_nested(keep_out=("DEBIAN/",))` for the data tar (`format-plugins`, "A reader
+names the borders between the trees it joins"). `dpkg-deb -R`
 refuses these packages: it will not unpack the control tar into a `DEBIAN` path that the
 data tar made, and GNU tar refuses a `..` name. Reading `\` as a separator, dropping a
 drive root and folding the data side are stricter than `dpkg-deb -R`, so that no
@@ -113,6 +118,7 @@ the control file and `md5sums`, held whole, SHALL together count against
 | A data symlink `a/b/x -> ../DEBIAN`, then a hard link `q/h` to it | `CorruptionError` naming `q/h` |
 | A data symlink `s -> .`, a hard link `h` to it, then `h/DEBIAN/postinst` | `CorruptionError` naming `h/DEBIAN/postinst` |
 | A data symlink `y -> a/b`, then a directory `y/` or a symlink `y` (or a directory `y/`, or `y/f`, then a symlink `y`) | `CorruptionError` naming the later of the two |
+| A control symlink `s -> .`, then `s/control` | `CorruptionError` naming `DEBIAN/s/control` |
 | 600 data symlinks through `a0/a1/.../a599`, then `a0 -> .`, ..., `a599 -> .` | `ResourceLimitError` naming `max_members` at the default limits |
 | 40 data symlinks each 2,000 segments deep and back, then 200 short symlinks that follow all 40 | `ResourceLimitError` naming `max_members` at the default limits |
 | A data tar holding `usr\..\DEBIAN/postinst`, `C:/DEBIAN/control`, `DEBIAN./postinst`, `DEBIAN /postinst` or `debian/postinst` | `CorruptionError`, stricter than `dpkg-deb -R` |

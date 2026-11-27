@@ -242,6 +242,12 @@ class LinkTree:
             nodes.append(parent.children.get(key) if parent is not None else None)
         return nodes
 
+    @property
+    def has_zones(self) -> bool:
+        """Whether any folder is kept out. Without one no resolution can refuse
+        anything, so none is made (and none is charged to the budget)."""
+        return bool(self._zones)
+
     def in_zone(self, folded: list[str]) -> bool:
         """Whether the folded path ``folded`` is in, or is, a kept-out folder."""
         return any(folded[: len(zone)] == zone for zone in self._zones)
@@ -328,6 +334,11 @@ class LinkTree:
         symlink's target lands in a kept-out folder: this one's, or an earlier one's that
         this one redirects. The caller refuses a symlink where the tree holds a
         directory or a symlink first."""
+        if not self._zones:
+            if where:
+                link = _Link(where[:-1], target)
+                self._parent(where).children.setdefault(where[-1], _Node()).link = link
+            return False
         if not where:
             return self.in_zone(self.resolve(target, follow_last=True))
         node = self._parent(where).children.setdefault(where[-1], _Node())
@@ -462,8 +473,12 @@ class Borders:
         member = span.member
         tree = self._tree
         where, crossed = tree.locate(member.name)
-        if self._in_zone(member.name) or tree.in_zone(
-            tree.resolve(member.name, follow_last=False) if crossed else where
+        zones = tree.has_zones
+        if zones and (
+            self._in_zone(member.name)
+            or tree.in_zone(
+                tree.resolve(member.name, follow_last=False) if crossed else where
+            )
         ):
             raise CorruptionError(
                 f"{self._what} has a member that extracts into {self._zone_names}, "
@@ -479,7 +494,8 @@ class Borders:
                 member_name=member.name,
             )
         if (
-            member.type is MemberType.HARDLINK
+            zones
+            and member.type is MemberType.HARDLINK
             and member.link_target
             and (
                 self._in_zone(member.link_target)
@@ -504,9 +520,9 @@ class Borders:
         if text is not None:
             if tree.is_directory(where) or tree.has_symlink(where):
                 raise self._shared_path(member.name)
-            if tree.lands_in_zone_lexically(where, text) or tree.add_symlink(
-                where, text
-            ):
+            if (
+                zones and tree.lands_in_zone_lexically(where, text)
+            ) or tree.add_symlink(where, text):
                 raise CorruptionError(
                     f"{self._what} has a symlink to a path in {self._zone_names}, a "
                     "folder kept apart from it"

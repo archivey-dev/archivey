@@ -1896,8 +1896,8 @@ def read_nested(span: MemberSpan) -> tuple[bytes, MemberSpan]:
         return b"", span._replace(data=_HeldInnerData(b""))
     if not isinstance(data, _NestedData):
         raise ArchiveyUsageError(
-            "ReaderContext.read_nested() takes a span that open_nested() yielded, "
-            "with its data unread"
+            "ReaderContext.read_nested() takes a span with the data open_nested() "
+            "gave it"
         )
     held = data.read()
     return held, span._replace(data=_HeldInnerData(held))

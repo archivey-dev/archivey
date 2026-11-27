@@ -1032,8 +1032,9 @@ class ReaderContext:
         walk keeps of them with :meth:`charge_metadata` before the call, since the
         call reads them all. A span with no data gives ``b""``.
 
-        Call it before yielding ``span``, on data nothing has read yet. A span that
-        :meth:`open_nested` did not yield raises ``ArchiveyUsageError``.
+        Call it before yielding ``span``, on its data as :meth:`open_nested` gave it,
+        before anything reads it: what was read already is not returned. A span whose
+        data :meth:`open_nested` did not make raises ``ArchiveyUsageError``.
         """
         from archivey.internal.format_adapter import read_nested
 
