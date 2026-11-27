@@ -53,7 +53,7 @@ import io
 import struct
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Generator, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
@@ -78,14 +78,7 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, TruncatedError
 from archivey.internal.arg_checks import check_bool
-from archivey.internal.filters import (
-    collision_key,
-    extracted_segments,
-    extracted_top_key,
-    extracted_top_segment,
-    is_rooted,
-    strip_absolute_root,
-)
+from archivey.internal.filters import collision_key, extracted_segments
 from archivey.internal.listing_limits import str_retained_bytes
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.overrides import override
@@ -138,13 +131,9 @@ __all__ = [
     "buffered_stream",
     "collision_key",
     "extracted_segments",
-    "extracted_top_key",
-    "extracted_top_segment",
-    "is_rooted",
     "register_codec",
     "register_format",
     "str_retained_bytes",
-    "strip_absolute_root",
     "unix_member_type",
 ]
 
@@ -932,7 +921,12 @@ class ReaderContext:
         self._charge_key_derivation(rounds)
 
     def open_nested(
-        self, data: BinaryIO | io.RawIOBase, format: ArchiveFormat
+        self,
+        data: BinaryIO | io.RawIOBase,
+        format: ArchiveFormat,
+        *,
+        under: str | None = None,
+        keep_out: Iterable[str] = (),
     ) -> Iterator[MemberSpan]:
         """Read ``data``, an archive stored inside this one, as members of this one.
 
@@ -971,6 +965,28 @@ class ReaderContext:
         on in the same inner archive, so a pass over the members in order reads each
         inner archive once.
 
+        A reader that joins several trees into one listing names the borders between
+        them, which extraction cannot know, and archivey checks each inner member
+        against them before the span is yielded, raising ``CorruptionError`` for one
+        that crosses a border:
+
+        - ``under="Payload/"`` lists the inner members under that folder: archivey
+          renames each one (``.`` becomes the folder itself) and a hard link's
+          ``link_target`` with it, and refuses one whose name or hard-link target
+          extracts outside the folder under any policy or filter (``Payload/../Bom``).
+        - ``keep_out=("DEBIAN/",)`` names folders of the listing no inner member may
+          reach: by its name under any spelling extraction or a filesystem makes one
+          with the folder (``debian/x``, ``usr\\..\\DEBIAN/x``, ``DEBIAN./x``), by a
+          hard link, or through the inner archive's own symlinks (``d -> .`` then
+          ``d/DEBIAN/control``, or a symlink whose target lands there).
+
+        With either, a member under a symlink of the inner archive is refused, and so
+        is a symlink at the path of a directory or of another symlink: where such a
+        member lands depends on the members a caller extracts. Following the inner
+        archive's symlinks costs one step per path segment against
+        ``ListingLimits.max_members``. Folders are relative to the listing's root, and
+        a rooted one or one with ``..`` raises ``ArchiveyUsageError``.
+
         The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
         format is read by its replacement, ``exclude_libraries`` and ``only_libraries``
         hold, and under
@@ -992,7 +1008,21 @@ class ReaderContext:
             raise ArchiveyUsageError(
                 "ReaderContext.open_nested() is not available for this reader"
             )
-        return self._open_nested(cast(BinaryIO, data), format)
+        from archivey.internal.nested_borders import Borders, bordered
+
+        # Borders are checked after ``format``: a wrong one is a plugin bug, raised as
+        # it is.
+        spans = self._open_nested(cast(BinaryIO, data), format)
+        try:
+            borders = Borders(
+                format, under, keep_out, self._config.listing_limits.max_members
+            )
+        except BaseException:
+            close = getattr(spans, "close", None)
+            if close is not None:
+                close()
+            raise
+        return bordered(spans, borders) if borders.active else spans
 
     def read_nested(self, span: MemberSpan) -> tuple[bytes, MemberSpan]:
         """Read the data of ``span``, a span :meth:`open_nested` yielded, whole, as a

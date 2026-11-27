@@ -1143,3 +1143,182 @@ def test_read_nested_refuses_a_span_open_nested_did_not_yield() -> None:
         with open_archive(io.BytesIO(_boxes()), format=BoxesHandler.format) as reader:
             assert reader.members() == []
     assert len(seen) == 1
+
+
+class BorderBoxesContainer(PluginContainer):
+    BORDER_BOXES = "border-boxes"
+
+
+class BorderBoxesReader(BoxesReader):
+    """BOXES whose walk passes ``under`` and ``keep_out`` to ``open_nested`` and
+    leaves the names as archivey gives them."""
+
+    under: str | None = None
+    keep_out: tuple[str, ...] = ()
+
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        if stream.read_exact(5) != b"BOXES":
+            raise CorruptionError("not BOXES")
+        while True:
+            size = int(stream.read_exact(8))
+            if not size:
+                return
+            kind = _KINDS[stream.read_exact(1)]
+            yield from self._context.open_nested(
+                stream.take(size), kind, under=self.under, keep_out=self.keep_out
+            )
+
+
+class BorderBoxesHandler(BoxesHandler):
+    format = ArchiveFormat(BorderBoxesContainer.BORDER_BOXES, StreamFormat.UNCOMPRESSED)
+    magic = ()
+
+    def open_sequential(self, context: ReaderContext) -> BoxesReader:
+        return BorderBoxesReader(context)
+
+
+def _links_tar(members: list[tuple[str, str, str]]) -> bytes:
+    """A tar of ``(name, kind, text)``: kind ``f`` a file holding ``text``, ``d`` a
+    directory, ``s`` a symlink to ``text``, ``h`` a hard link to ``text``."""
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w", format=tarfile.GNU_FORMAT) as tar:
+        for name, kind, text in members:
+            info = tarfile.TarInfo(name)
+            if kind == "f":
+                info.size = len(text)
+                tar.addfile(info, io.BytesIO(text.encode()))
+                continue
+            info.type = {
+                "d": tarfile.DIRTYPE,
+                "s": tarfile.SYMTYPE,
+                "h": tarfile.LNKTYPE,
+            }[kind]
+            info.linkname = text
+            tar.addfile(info)
+    return out.getvalue()
+
+
+@pytest.fixture
+def border_boxes(monkeypatch: pytest.MonkeyPatch) -> Iterator[pytest.MonkeyPatch]:
+    with registration_scope():
+        register_format(BorderBoxesHandler)
+        yield monkeypatch
+
+
+def _border_listing(
+    patch: pytest.MonkeyPatch,
+    members: list[tuple[str, str, str]],
+    *,
+    under: str | None = None,
+    keep_out: tuple[str, ...] = (),
+) -> list[tuple[str, str | None]]:
+    patch.setattr(BorderBoxesReader, "under", under)
+    patch.setattr(BorderBoxesReader, "keep_out", keep_out)
+    data = _boxes((b"T", _links_tar(members)))
+    with open_archive(io.BytesIO(data), format=BorderBoxesHandler.format) as reader:
+        return [(m.name, m.link_target) for m in reader.members()]
+
+
+def test_under_lists_the_inner_members_in_the_folder(
+    border_boxes: pytest.MonkeyPatch,
+) -> None:
+    listed = _border_listing(
+        border_boxes,
+        [(".", "d", ""), ("a", "f", "a"), ("h", "h", "a"), ("l", "s", "a")],
+        under="Payload/",
+    )
+    assert listed == [
+        ("Payload/", None),
+        ("Payload/a", None),
+        ("Payload/h", "Payload/a"),
+        ("Payload/l", "a"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("members", "what"),
+    [
+        ([("../Bom", "f", "x")], "a member outside Payload/"),
+        ([("a\\..\\..\\Bom", "f", "x")], "a member outside Payload/"),
+        ([("a", "f", "x"), ("h", "h", "../Bom")], "a hard link to a path outside"),
+        # Spelled otherwise, the folder is another one on a case-sensitive system.
+        ([("../payload/x", "f", "x")], "a member outside Payload/"),
+        # The gap a check of names alone leaves: through the payload's own symlink.
+        ([("l", "s", ".."), ("l/Bom", "f", "x")], "under a symlink it made"),
+        ([("d", "d", ""), ("d", "s", "..")], "symlink at the path of a directory"),
+    ],
+    ids=["dotdot", "backslashes", "hard-link", "case", "through-symlink", "shared"],
+)
+def test_under_refuses_a_member_that_leaves_the_folder(
+    border_boxes: pytest.MonkeyPatch, members: list[tuple[str, str, str]], what: str
+) -> None:
+    with pytest.raises(CorruptionError, match=what):
+        _border_listing(border_boxes, members, under="Payload/")
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        [("DEBIAN/control", "f", "x")],
+        [("debian/control", "f", "x")],
+        [("usr\\..\\DEBIAN/x", "f", "x")],
+        [("d", "s", "."), ("d/DEBIAN/control", "f", "x")],
+        [("l", "s", "DEBIAN")],
+        [("usr/l", "s", "../DEBIAN/control")],
+        [("x", "s", "y/DEBIAN/control"), ("y", "s", ".")],
+        [("a/b/x", "s", "../DEBIAN"), ("q/h", "h", "a/b/x")],
+        [("h", "h", "DEBIAN/control")],
+    ],
+    ids=[
+        "name",
+        "case",
+        "backslashes",
+        "through-symlink",
+        "symlink",
+        "symlink-dotdot",
+        "later-symlink",
+        "hard-link-to-symlink",
+        "hard-link",
+    ],
+)
+def test_keep_out_refuses_every_way_into_the_folder(
+    border_boxes: pytest.MonkeyPatch, members: list[tuple[str, str, str]]
+) -> None:
+    with pytest.raises(CorruptionError, match="DEBIAN/"):
+        _border_listing(border_boxes, members, keep_out=("DEBIAN/",))
+
+
+def test_keep_out_lists_what_stays_out_as_it_is(
+    border_boxes: pytest.MonkeyPatch,
+) -> None:
+    members = [
+        ("usr/lib/libfoo.so.1", "f", "x"),
+        ("usr/lib/libfoo.so", "s", "libfoo.so.1"),
+        ("usr/share/DEBIAN", "f", "x"),
+    ]
+    assert _border_listing(border_boxes, members, keep_out=("DEBIAN",)) == [
+        ("usr/lib/libfoo.so.1", None),
+        ("usr/lib/libfoo.so", "libfoo.so.1"),
+        ("usr/share/DEBIAN", None),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("under", "keep_out", "match"),
+    [
+        ("/Payload", (), "relative"),
+        ("a/../b", (), "relative"),
+        ("", (), "relative"),
+        (None, ("../x",), "relative"),
+        (None, "DEBIAN/", "not one str"),
+    ],
+    ids=["rooted", "dotdot", "empty", "keep-out-dotdot", "keep-out-str"],
+)
+def test_a_folder_that_names_no_folder_of_the_listing_is_a_usage_error(
+    border_boxes: pytest.MonkeyPatch,
+    under: str | None,
+    keep_out: Any,
+    match: str,
+) -> None:
+    with pytest.raises(ArchiveyUsageError, match=match):
+        _border_listing(border_boxes, [("a", "f", "a")], under=under, keep_out=keep_out)

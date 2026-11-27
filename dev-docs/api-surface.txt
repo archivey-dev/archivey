@@ -1351,7 +1351,8 @@ property archivey.formats.ReaderContext.encoding: str | None
 method archivey.formats.ReaderContext.hold(self, member: ArchiveMember, *, reason: str | None = None) -> None
 method archivey.formats.ReaderContext.link_target_unavailable(self, member: ArchiveMember, *, reason: str, message: str, target_in_archive: bool) -> None
 method archivey.formats.ReaderContext.normalize_name(self, name: str, member_type: MemberType) -> str
-method archivey.formats.ReaderContext.open_nested(self, data: BinaryIO | io.RawIOBase, format: ArchiveFormat) -> Iterator[MemberSpan]
+method archivey.formats.ReaderContext.open_nested(self, data: BinaryIO | io.RawIOBase, format: ArchiveFormat, *, under: str | None = None, keep_out: Iterable[str] = ()) -> Iterator[MemberSpan]
+method archivey.formats.ReaderContext.read_nested(self, span: MemberSpan) -> tuple[bytes, MemberSpan]
 method archivey.formats.ReaderContext.report(self, code: DiagnosticCode, message: str, details: DiagnosticContext, *, member: ArchiveMember | None = None) -> None
 method archivey.formats.ReaderContext.set_dos_time(self, member: ArchiveMember, field: TimeField, stamp: int, *, source: str) -> None
 method archivey.formats.ReaderContext.set_unix_time(self, member: ArchiveMember, field: TimeField, seconds: int, *, nanoseconds: int = 0, source: str) -> None
