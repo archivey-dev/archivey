@@ -12,7 +12,7 @@ A reader written against ``BaseArchiveReader`` (ZIP, TAR, 7z, RAR, single-file a
 directory) still registers when its module is imported; its entry names the module.
 
 Order matters: detection takes the first magic that matches, so deb comes before ar,
-whose magic a ``.deb`` starts with. The order is main's import order of the backends.
+whose magic a ``.deb`` starts with.
 """
 
 from __future__ import annotations

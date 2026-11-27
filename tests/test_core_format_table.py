@@ -47,6 +47,29 @@ _REGISTRATION_CALLS = frozenset(
 )
 
 
+def _uses_a_registration_call(path: Path) -> bool:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    used = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    } | {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+    return bool(used & _REGISTRATION_CALLS - {"register_reader"})
+
+
+def test_no_backend_module_registers_a_handler_itself() -> None:
+    """Every module in ``backends/``, so that a new reader written against
+    ``archivey.formats`` needs its entry in the table: one that called
+    ``register_builtin_format`` itself would fail here."""
+    backends = _module_file("ar_reader").parent
+    assert [
+        path.name
+        for path in sorted(backends.glob("*.py"))
+        if _uses_a_registration_call(path)
+    ] == []
+
+
 @pytest.mark.parametrize("name", _HANDLER_MODULES)
 def test_the_reader_module_does_not_register_itself(name: str) -> None:
     tree = ast.parse(_module_file(name).read_text(encoding="utf-8"))

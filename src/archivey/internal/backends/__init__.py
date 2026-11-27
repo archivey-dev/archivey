@@ -1,4 +1,4 @@
-"""Format backends — one self-registering reader module per archive format.
+"""Format backends: one reader module per archive format, registered from core's table.
 
 Importing this package is required: it registers every format of core's table
 (``internal/format_table.py``), so a bare ``import archivey.internal.backends`` fills
