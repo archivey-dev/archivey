@@ -1400,7 +1400,7 @@ class _PluginAdapter(BaseArchiveReader):
             self._reader_context._fallback_codec(member.raw_name)
             if self._plugin.uses_encoding
             and member.raw_name
-            and not getattr(self._plugin, "_reports_own_name_fallback", False)
+            and not self._plugin._reports_own_name_fallback
             else None
         )
         if codec is not None and not any(

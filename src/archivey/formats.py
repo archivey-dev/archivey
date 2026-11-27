@@ -1351,7 +1351,14 @@ class FormatHandler(ABC):
     uses_encoding: ClassVar[bool] = False
     """Whether the reader applies the caller's fallback encoding (through
     :meth:`ReaderContext.decode_name`). When ``False``, the deprecated
-    ``open_archive(encoding=)`` is reported as unused."""
+    ``open_archive(encoding=)`` is reported as unused. When ``True``, a listed member
+    whose ``raw_name`` is not valid UTF-8 is reported as
+    ``MEMBER_NAME_FALLBACK_ENCODING``, so ``raw_name`` must be the stored bytes and the
+    format must declare no charset for them."""
+
+    # Private: a built-in reader that reports MEMBER_NAME_FALLBACK_ENCODING itself, so
+    # the listing adds no report of its own.
+    _reports_own_name_fallback: ClassVar[bool] = False
 
     supports_password: ClassVar[bool] = False
     """Whether the format can be encrypted, so that its reader may hand archivey a
