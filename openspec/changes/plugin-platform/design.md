@@ -587,13 +587,15 @@ What the ten readers import from `archivey.internal` today, and how each is reso
   ARJ's needle is two bytes (`60 EA`), which 2 MiB of any program holds about 32
   times by chance, and only the header's CRC-32 tells a real archive from them. A
   validator is code, gated like a probe (provider and library policy, §3).
-  Both validators parse a header, so neither meets the bar of R13 and core keeps
-  none. With `archivey-legacy-formats` missing, the hint table lists only needles
-  strong enough to stand alone: LHA's method ids (`-lh5-` and its kin, five bytes at
-  a fixed place in the header) give the refusal with the hint. ARJ's two bytes do
-  not, so an ARJ archive behind a stub is not recognised on a core-only install,
-  unless the caller names the format, which gives the hint. This is a stated
-  exception to "read the same or refused with a hint" (Open Question 12).
+  The validators the readers have today parse a header, and core keeps neither.
+  With `archivey-legacy-formats` missing, core still refuses both stubs with the
+  hint (ruling R16). LHA's method ids (`-lh5-` and its kin, five bytes at a fixed
+  place in the header) are strong enough to stand in the hint table alone. For ARJ
+  the hint carries a check that core runs, as for binary CPIO (R13): after `60 EA`,
+  a header size of 30 to 2600 and the CRC-32 of that many bytes, about ten lines of
+  arithmetic over bytes the scan already holds, with one chance in 2^32 of a false
+  match. The package's validator starts from the same function, published in
+  `archivey.formats`.
 - AES and key-derivation primitives and the password error, used by makeself, DMG, ARJ:
   a small public crypto facade beside `charge_key_derivation` and `NeedsPassword`.
 - Nested-archive helpers (`HeldInnerData`, `DependencyIndex`), used by deb and pkg:
@@ -998,7 +1000,7 @@ What it cannot undo is a published package name, which is why DMG is split now.
 ## Decisions
 
 All ten were put to the maintainer and agreed on 2026-11-24. Decisions 5, 6 and 7 were
-revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R15 below).
+revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R16 below).
 
 1. **Installed plugins load by themselves, behind the guardrails of §3.** This replaces
    the 2026-10-25 rule (explicit `register_format()` only), which the maintainer
@@ -1090,6 +1092,12 @@ and the evidence in front of him (review round A):
   the shared rules, which the 2026-10-30 ruling guards), rewriting Brotli and `.Z`
   onto the simple decoder (`.Z` would lose its restart points), and keeping the two
   in core.
+
+- **R16. Core keeps the ARJ stub check** (§5). An ARJ archive behind a
+  self-extracting stub is refused with the hint on a core-only install: core checks
+  the header size and its CRC-32 at each `60 EA` the scan finds. Rejected: leaving
+  such a file unrecognised without the package, an exception to "read the same or
+  refused with a hint".
 
 - **R13. Core keeps the binary CPIO check** (§4). A hint may carry a small check that
   core runs when the format has no signature strong enough to be data and a wrapper
@@ -1211,7 +1219,3 @@ For the next rounds of this plan. None blocks the start of step 0.
 11. The public names and exact shape of the richer decoder of R15, and the wording
     of its rule that every pass offers the same restart points. Settled by the first
     port that uses it (`.Z`), in step 0.
-12. An ARJ archive behind a self-extracting stub is not recognised without
-    `archivey-legacy-formats` (§5): its needle is too weak to list in the hint table
-    and its validator parses a header. Accepted as an exception, or core keeps the
-    ARJ main-header check. For the maintainer.

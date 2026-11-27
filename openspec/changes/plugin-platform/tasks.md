@@ -195,7 +195,8 @@
 - [ ] 4.8 SFX stub scan declared on the entry (LHA, ARJ): needles, whether the
   parser scans, and a required validator by dotted path, gated like a probe; a 2 MiB
   program with chance `60 EA` bytes is not ARJ; on a core-only install an LHA stub
-  is refused with the hint and an ARJ stub is not recognised (Open Question 12)
+  and an ARJ stub are both refused with the hint, ARJ by core's size and CRC-32
+  check (R16), which the package's validator reuses
 - [ ] 4.9 Crypto facade (makeself, DMG, ARJ)
 - [ ] 4.10 Nested-archive helpers folded into `ReaderContext.open_nested`; the path
   helpers public (deb, pkg)
