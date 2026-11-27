@@ -1590,3 +1590,49 @@ def test_cpio_link_held_before_the_damage_is_flagged(
         ]
     assert "read its header whole before the damage" in message
     assert "data never came with a later link" in message
+    # A held link has no data of its own: no claim about sizes it does not have.
+    assert message.endswith("; the header after it is the damage.")
+    assert "sizes are unchecked" not in message
+
+
+def _overlapping_control_tars(k: int, m: int) -> bytes:
+    """A deb whose damage is followed by ``k`` overlapping ``control.tar`` members
+    that nothing confirms: each holds one ustar member whose data runs to one shared
+    tail of ``m`` empty ustar members, and each ar size stops 7 bytes before the end
+    of the file, so no header after one passes (review round 9, K14)."""
+    import io
+    import tarfile
+
+    def ustar(name: str, size: int) -> bytes:
+        info = tarfile.TarInfo(name)
+        info.size = size
+        return info.tobuf(format=tarfile.USTAR_FORMAT)
+
+    head = _ar_header(b"debian-binary", 4)
+    raw = b"!<arch>\n" + head + b"2.0\n" + bytes(60)
+    start = len(raw)
+    # The tail starts 60 bytes after the last block, so it is a whole number of
+    # 512-byte blocks after each ustar member's data start.
+    tail_at = start + 1024 * k + 60
+    tail = b"".join(ustar(f"./t{j}", 0) for j in range(m)) + bytes(1024)
+    end = tail_at + len(tail)
+    blocks = io.BytesIO()
+    for i in range(k):
+        at = start + 1024 * i
+        data_at = at + 60 + 512
+        blocks.write(_ar_header(b"control.tar", end - (at + 60)))
+        blocks.write(ustar(f"./p{i}", tail_at - data_at) + bytes(452))
+    return raw + blocks.getvalue() + b"J" * 60 + tail + b"J" * 7
+
+
+def test_deb_overlapping_unconfirmed_control_tars_list_once(tmp_path: Path) -> None:
+    """Past the damage, at most one control tar nothing confirms is listed, so
+    control tars inside the data of one already listed do not list the same
+    members again: the listing stays linear in the file, and the pass ends in the
+    first damage."""
+    path = _write(tmp_path, _overlapping_control_tars(20, 20), "a.deb")
+    members, _diagnostics, error = _read(path, salvage=True, format="deb")
+    names = [m[0] for m in members]
+    assert names == ["DEBIAN/p0", *(f"DEBIAN/t{j}" for j in range(20))]
+    assert isinstance(error, CorruptionError)
+    assert error.raw_message.startswith("No ar member header at offset 72")  # type: ignore[attr-defined]

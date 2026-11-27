@@ -267,8 +267,8 @@ Choices made while building PR 3, and where it departs from the decisions above:
   alignment, its long-name and symbol tables (passed over before they are charged
   against `max_metadata_bytes` or read; the search goes on inside them) and the
   dialect the archive info reports; a deb's control tar (its fields, its md5sums, and
-  whether a later control tar is still read). A member that is not listed records no
-  diagnostic.
+  whether a later confirmed control tar is still read; the deb note bounds the
+  unconfirmed ones). A member that is not listed records no diagnostic.
 - **Every member the walk has read is listed at every end of the pass, and each one
   the default does not list is flagged** (Q2): at a trailer, and where the pass ends
   in the damage error with no trailer. CPIO links still held for data are listed as
@@ -298,6 +298,11 @@ Choices made while building PR 3, and where it departs from the decisions above:
   `control.tar*` or `data.tar*` is read as the walk reads one, each inner member
   flagged with the ar header's offset. A found header with another name is passed
   over. Damage to `debian-binary`'s own header is not searched: detection needs it.
+  At most one control tar that nothing confirms is listed, and a confirmed one is
+  still read after it: a later unconfirmed one may lie inside the data of the one
+  listed and list the same members again, so the listing would grow with the square
+  of the package's size (review round 9, K14). Only one data tar is listed (the walk
+  ends there), and a confirmed control tar ends the search for one.
 - **ar** after damage takes a second `//` table (the later one names what follows),
   and a `/123` whose offset is past the table keeps its raw name like a lost table.
 

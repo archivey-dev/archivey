@@ -534,6 +534,11 @@ class DebReader(SequentialReader):
         damage: CorruptionError | None = None
         search_from: int | None = None
         control = False
+        # A control tar past the damage that nothing confirmed has been listed. At
+        # most one is: a later unconfirmed one may sit inside the data of the one
+        # listed, and would list its members again, so the listing would grow with
+        # the square of the layer. A confirmed one is still read after it.
+        stray_control = False
         while True:
             # Whether the search found this header, or the walk walked on to it.
             searched = search_from is not None
@@ -575,7 +580,11 @@ class DebReader(SequentialReader):
                 stream.skip(size)
                 stream.read(size & 1)
                 continue
-            fmt = None if control else _tar_format(name, b"control", _CONTROL_STREAMS)
+            fmt = (
+                None
+                if control or (stray_control and not confirmed)
+                else _tar_format(name, b"control", _CONTROL_STREAMS)
+            )
             if fmt is not None:
                 # Only a control tar the walk counts (``confirmed``) is the package's:
                 # its fields, its md5sums and the end of the search for one. One
@@ -594,6 +603,7 @@ class DebReader(SequentialReader):
                     salvage if damage else None, spans, offset, confirmed, searched
                 )
                 control = control or confirmed
+                stray_control = stray_control or not confirmed
                 if not whole:
                     # The control tar failed after listing members: the search goes
                     # on past its header, for the data tar.

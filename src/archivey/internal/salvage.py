@@ -856,11 +856,17 @@ class WalkSalvage:
             where = "by a header search"
         else:
             where = "by walking on from a member a header search found"
-        how = (
-            "the header after its data passes too"
-            if confirmed
-            else "nothing after it confirms it, so its sizes are unchecked"
-        )
+        if held:
+            # Size 0, read whole by the normal walk: no sizes of its own to check.
+            how = (
+                "the header after it passes too"
+                if confirmed
+                else "the header after it is the damage"
+            )
+        elif confirmed:
+            how = "the header after its data passes too"
+        else:
+            how = "nothing after it confirms it, so its sizes are unchecked"
         self._report_found(
             member,
             SalvageScanContext(

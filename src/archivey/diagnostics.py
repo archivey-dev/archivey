@@ -1414,7 +1414,9 @@ class SalvageScanContext(_JsonSafeContext):
 
     ``confirmed`` is ``True`` when the header after the member's data passes the same
     checks, or is the format's clean end. An unconfirmed member's sizes are checked by
-    nothing, so its data may run into other members' bytes.
+    nothing, so its data may run into other members' bytes. A ``"held_link"`` member
+    has size 0 and no data of its own, and the normal walk read its header whole:
+    ``confirmed`` is ``False`` only because the header after it is the damage.
 
     ``unchecked`` names the fields no check covers. It always holds ``"position"``:
     nothing says the member belongs at this level of the archive, since a header of an
