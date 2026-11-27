@@ -1174,7 +1174,7 @@ APPNOTE puts a member comment under the same bit 11 as its name, and gives the a
 comment no flag. A member comment whose bit 11 is clear or set over a name that is not
 valid UTF-8 (a flag the name's bytes refute), and the archive comment, SHALL decode as an
 unflagged name does: UTF-8 when the bytes are valid UTF-8, else the caller's
-`encoding=`, else `zip_unflagged_fallback_encoding` (default cp437). The `encoding=` and
+`encoding=`, else `ZipOptions.fallback_encoding` (default cp437). The `encoding=` and
 fallback steps SHALL be the ones a name uses. A byte the chosen codec leaves undefined
 SHALL survive as a lone surrogate, as it does in a name. Any other member comment whose
 bit 11 is set SHALL decode as UTF-8, with cp437 for bytes that are not valid UTF-8, and

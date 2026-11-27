@@ -23,7 +23,7 @@ from typing import BinaryIO
 import pytest
 
 from archivey import ArchiveyConfig, DiagnosticPolicy, open_archive
-from archivey.config import RarDecompressor
+from archivey.config import RarDecompressor, RarOptions
 from archivey.exceptions import TruncatedError
 from tests.conftest import binary_refusal, requires_unrar_cli
 
@@ -60,10 +60,12 @@ def _volumes(stem: str) -> list[Path]:
 def _config(decompressor: str, *, strict: bool = False) -> ArchiveyConfig:
     if strict:
         return ArchiveyConfig(
-            rar_decompressor=RarDecompressor(decompressor),
             diagnostic_policy=DiagnosticPolicy.STRICT,
+            format_options=[RarOptions(decompressor=RarDecompressor(decompressor))],
         )
-    return ArchiveyConfig(rar_decompressor=RarDecompressor(decompressor))
+    return ArchiveyConfig(
+        format_options=[RarOptions(decompressor=RarDecompressor(decompressor))]
+    )
 
 
 def _outcomes(

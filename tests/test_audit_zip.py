@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 import archivey
+from archivey.config import ZipOptions
 from archivey.exceptions import (
     ResourceLimitError,
     ResourceUnavailableError,
@@ -208,7 +209,9 @@ def test_idna_unflagged_fallback_keeps_the_cp437_name() -> None:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("café.txt", b"x")  # cp437-encodable: flag bit 11 stays clear
-    config = archivey.ArchiveyConfig(zip_unflagged_fallback_encoding="idna")
+    config = archivey.ArchiveyConfig(
+        format_options=[ZipOptions(fallback_encoding="idna")]
+    )
     with archivey.open_archive(io.BytesIO(buf.getvalue()), config=config) as ar:
         assert [m.name for m in ar.members()] == ["café.txt"]
 

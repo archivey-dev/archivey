@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, open_archive
-from archivey.config import RarDecompressor, SpoolLimits
+from archivey.config import RarDecompressor, RarOptions, SpoolLimits
 from archivey.exceptions import (
     ArchiveyUsageError,
     ResourceLimitError,
@@ -49,8 +49,8 @@ def _unrar_config(max_bytes: int | None) -> ArchiveyConfig:
     """Pinned to unrar, so a test of unrar's staging cannot fall back to unar's
     private directory where ``AUTO`` would reject the installed ``unrar``."""
     return ArchiveyConfig(
-        rar_decompressor=RarDecompressor.UNRAR,
         spool_limits=SpoolLimits(max_bytes=max_bytes),
+        format_options=[RarOptions(decompressor=RarDecompressor.UNRAR)],
     )
 
 
@@ -674,7 +674,9 @@ def test_prefixed_path_over_the_limit_is_refused_under_unar_before_copying(
         assert note.startswith("Reading a member that unar has to read")
         # A stored encrypted member may still need the program, so it is not promised.
         assert "such as stored, unencrypted ones, can still be read" in note
-        with pytest.raises(ResourceLimitError, match="rar_decompressor to 'unrar'"):
+        with pytest.raises(
+            ResourceLimitError, match="RarOptions.decompressor to 'unrar'"
+        ):
             archive.read("zeros.bin")
     assert temp_artifacts == []
 

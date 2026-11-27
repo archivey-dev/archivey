@@ -28,6 +28,7 @@ from archivey.config import (
     ListingLimits,
     PasswordRequest,
     RarDecompressor,
+    RarOptions,
 )
 from archivey.cost import AccessCost
 from archivey.diagnostics import (
@@ -116,7 +117,7 @@ _WILDCARD_FIXTURES = (
 # Under ``AUTO`` a member unrar cannot name goes to an accepted unar when one is
 # installed (``test_auto_reads_with_unar_a_member_unrar_cannot_name``). The refusal
 # tests pin the unrar side, so they choose unrar explicitly.
-_UNRAR_ONLY = ArchiveyConfig(rar_decompressor="unrar")
+_UNRAR_ONLY = ArchiveyConfig(format_options=[RarOptions(decompressor="unrar")])
 _WILDCARD_DIRGLOB_CONTENTS = {
     "aaa/x.txt": b"aaa\n" + _WILDCARD_PAD,
     "dX/x.txt": b"dX\n" + _WILDCARD_PAD,
@@ -2673,7 +2674,9 @@ def test_rar3_compressed_service_comment_is_read(name: str) -> None:
 def test_rar3_compressed_service_comment_without_a_decompressor_is_none() -> None:
     """With no program to decode it, the comment is ``None``, as a compressed
     RAR 1.5-2.x comment is, and the listing is unchanged."""
-    config = ArchiveyConfig(rar_decompressor=RarDecompressor.NONE)
+    config = ArchiveyConfig(
+        format_options=[RarOptions(decompressor=RarDecompressor.NONE)]
+    )
     with open_archive(
         _fixture("comment_compressed__rar4.rar"), config=config
     ) as archive:
@@ -2964,7 +2967,9 @@ def test_rar3_salted_compressed_service_comment_is_not_decoded(
         )
         + end_hdr
     )
-    config = ArchiveyConfig(rar_decompressor=RarDecompressor.UNRAR)
+    config = ArchiveyConfig(
+        format_options=[RarOptions(decompressor=RarDecompressor.UNRAR)]
+    )
     with open_archive(io.BytesIO(blob), config=config) as archive:
         assert archive.info.comment is None
     assert spawned == []
@@ -3973,7 +3978,7 @@ def test_unrar_not_installed_message_names_lookalikes() -> None:
     assert "unrar or rar" in msg
     for name in ("unrar-free", "unar", "7z", "7zz"):
         assert name in msg
-    assert "rar_decompressor" in msg
+    assert "RarOptions.decompressor" in msg
     assert "RAR5 check" in msg and "1.10.8+ds1-10" in msg
 
 

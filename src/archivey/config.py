@@ -16,6 +16,7 @@ This module also holds the password types.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import pathlib
 import warnings
@@ -931,6 +932,98 @@ class SalvageLimits:
 
 
 @dataclass(frozen=True)
+class ZipOptions:
+    """ZIP settings, passed in :attr:`ArchiveyConfig.format_options`."""
+
+    fallback_encoding: str = "cp437"
+    """Encoding for a ZIP member name that is neither flagged nor valid UTF-8.
+
+    A name stored without the UTF-8 flag is tried as UTF-8 first; this encoding is used
+    when those bytes are not valid UTF-8. The default is cp437, as the ZIP specification
+    (APPNOTE) says. Set a local code page (for example ``"cp1252"`` or ``"shift_jis"``)
+    for archives known to come from one. An explicit ``encoding=`` on
+    :func:`~archivey.open_archive` replaces this fallback for that archive; a name
+    whose bytes are valid UTF-8 is still decoded as UTF-8.
+    """
+
+    def __post_init__(self) -> None:
+        check_encoding(
+            self.fallback_encoding,
+            call="ZipOptions(fallback_encoding=…)",
+            allow_none=False,
+        )
+
+
+@dataclass(frozen=True)
+class RarOptions:
+    """RAR settings, passed in :attr:`ArchiveyConfig.format_options`."""
+
+    decompressor: RarDecompressor = RarDecompressor.AUTO
+    """Which external program decompresses RAR member data. See :class:`RarDecompressor`.
+
+    Accepts the member or its name (``"unrar"``, ``"unar"``, ``"auto"``, ``"none"``). The
+    listing does not depend on it, except that the selected program decodes compressed
+    RAR 1.5-4 comments.
+    """
+
+    unrar_path: str | os.PathLike[str] | None = None
+    """The RARLAB ``unrar`` or ``rar`` program to run, as an absolute path, or ``None``
+    to look for ``unrar`` and then ``rar`` on ``PATH``.
+
+    When set, archivey runs that file and no other RARLAB program: ``PATH`` is not
+    searched, so a program put there later cannot be picked up. It is still identified
+    before it first runs, and one that is not RARLAB's, or older than 6.0, is refused as
+    a missing one is. A relative path is refused, since it would depend on the current
+    directory. Stored as a ``str``. :func:`~archivey.format_availability` answers for it
+    when passed the config."""
+
+    unar_path: str | os.PathLike[str] | None = None
+    """The ``unar`` program to run, as an absolute path, or ``None`` to look for
+    ``unar`` on ``PATH``. The same rules as :attr:`unrar_path`: when set, it is the only
+    ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
+
+    if TYPE_CHECKING:
+        # The constructor takes a decompressor's string spelling too; see
+        # ``ArchiveyConfig.__init__`` below for why this exists only for type checkers.
+        def __init__(
+            self,
+            decompressor: RarDecompressor | RarDecompressorStr = ...,
+            unrar_path: str | os.PathLike[str] | None = ...,
+            unar_path: str | os.PathLike[str] | None = ...,
+        ) -> None: ...
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "decompressor",
+            coerce_enum(
+                self.decompressor,
+                RarDecompressor,
+                call="RarOptions()",
+                param="decompressor=",
+            ),
+        )
+        for field_name in ("unrar_path", "unar_path"):
+            object.__setattr__(
+                self,
+                field_name,
+                _coerce_program_path(
+                    f"RarOptions({field_name}=)", getattr(self, field_name)
+                ),
+            )
+
+
+# The deprecated ``ArchiveyConfig`` fields, each with the options class and field that
+# replace it.
+_MOVED_TO_OPTIONS: dict[str, tuple[type, str]] = {
+    "zip_unflagged_fallback_encoding": (ZipOptions, "fallback_encoding"),
+    "rar_decompressor": (RarOptions, "decompressor"),
+    "unrar_path": (RarOptions, "unrar_path"),
+    "unar_path": (RarOptions, "unar_path"),
+}
+
+
+@dataclass(frozen=True)
 class ArchiveyConfig:
     """Library tuning knobs passed as ``config=`` to :func:`open_archive`,
     :func:`open_stream` and :func:`detect_format`.
@@ -994,24 +1087,13 @@ class ArchiveyConfig:
     ``"none"``).
     """
 
-    zip_unflagged_fallback_encoding: str = "cp437"
-    """Encoding for a ZIP member name that is neither flagged nor valid UTF-8.
+    zip_unflagged_fallback_encoding: str | None = None
+    """Deprecated since 0.6.0: pass ``format_options=[ZipOptions(fallback_encoding=...)]``.
+    Setting it warns, and archivey 0.7.0 removes it."""
 
-    A name stored without the UTF-8 flag is tried as UTF-8 first; this encoding is used
-    when those bytes are not valid UTF-8. The default is cp437, as the ZIP specification
-    (APPNOTE) says. Set a local code page (for example ``"cp1252"`` or ``"shift_jis"``)
-    for archives known to come from one. An explicit ``encoding=`` on
-    :func:`~archivey.open_archive` replaces this fallback for that archive; a name
-    whose bytes are valid UTF-8 is still decoded as UTF-8.
-    """
-
-    rar_decompressor: RarDecompressor = RarDecompressor.AUTO
-    """Which external program decompresses RAR member data. See :class:`RarDecompressor`.
-
-    Accepts the member or its name (``"unrar"``, ``"unar"``, ``"auto"``, ``"none"``). The
-    listing does not depend on it, except that the selected program decodes compressed
-    RAR 1.5-4 comments.
-    """
+    rar_decompressor: RarDecompressor | None = None
+    """Deprecated since 0.6.0: pass ``format_options=[RarOptions(decompressor=...)]``.
+    Setting it warns, and archivey 0.7.0 removes it."""
 
     read_link_targets: bool = True
     """Whether the reader reads a symlink's target when the format stores it as member
@@ -1126,20 +1208,12 @@ class ArchiveyConfig:
     """
 
     unrar_path: str | os.PathLike[str] | None = None
-    """The RARLAB ``unrar`` or ``rar`` program to run, as an absolute path, or ``None``
-    to look for ``unrar`` and then ``rar`` on ``PATH``.
-
-    When set, archivey runs that file and no other RARLAB program: ``PATH`` is not
-    searched, so a program put there later cannot be picked up. It is still identified
-    before it first runs, and one that is not RARLAB's, or older than 6.0, is refused as
-    a missing one is. A relative path is refused, since it would depend on the current
-    directory. Stored as a ``str``. :func:`~archivey.format_availability` answers for it
-    when passed the config."""
+    """Deprecated since 0.6.0: pass ``format_options=[RarOptions(unrar_path=...)]``.
+    Setting it warns, and archivey 0.7.0 removes it."""
 
     unar_path: str | os.PathLike[str] | None = None
-    """The ``unar`` program to run, as an absolute path, or ``None`` to look for
-    ``unar`` on ``PATH``. The same rules as :attr:`unrar_path`: when set, it is the only
-    ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
+    """Deprecated since 0.6.0: pass ``format_options=[RarOptions(unar_path=...)]``.
+    Setting it warns, and archivey 0.7.0 removes it."""
 
     recover_partial_data: PartialDataRecovery = PartialDataRecovery.BEFORE_DAMAGE
     """Which bytes a read that meets damage hands back before it raises: a
@@ -1201,6 +1275,14 @@ class ArchiveyConfig:
     """Caps on the search a salvage reader makes past damage
     (``open_archive(salvage=True)``). See :class:`SalvageLimits`."""
 
+    format_options: Sequence[object] = ()
+    """The settings of single formats: one options object per format, such as
+    :class:`ZipOptions` and :class:`RarOptions`, at most one of each class. A format
+    with no object here uses its class's defaults. Stored as a ``tuple``.
+
+    A plugin's format can have an options class of its own, passed here the same way.
+    """
+
     if TYPE_CHECKING:
         # The constructor's input types, wider than the fields for the enum fields and
         # ``detection_budget``: ``__post_init__`` converts a string spelling (or a
@@ -1217,8 +1299,8 @@ class ArchiveyConfig:
             use_rapidgzip: AcceleratorMode | AcceleratorModeStr = ...,
             use_indexed_bzip2: AcceleratorMode | None | AcceleratorModeStr = ...,
             process_isolation: ProcessIsolation | ProcessIsolationStr = ...,
-            zip_unflagged_fallback_encoding: str = ...,
-            rar_decompressor: RarDecompressor | RarDecompressorStr = ...,
+            zip_unflagged_fallback_encoding: str | None = ...,
+            rar_decompressor: RarDecompressor | None | RarDecompressorStr = ...,
             read_link_targets: bool = ...,
             extraction_limits: ExtractionLimits = ...,
             listing_limits: ListingLimits = ...,
@@ -1240,6 +1322,7 @@ class ArchiveyConfig:
             on_source_read: OnSourceRead | None = ...,
             source_read_step: int = ...,
             salvage_limits: SalvageLimits = ...,
+            format_options: Sequence[object] = ...,
         ) -> None: ...
 
     def __post_init__(self) -> None:
@@ -1271,9 +1354,22 @@ class ArchiveyConfig:
                 DeprecationWarning,
                 stacklevel=3,
             )
+        moved = [name for name in _MOVED_TO_OPTIONS if getattr(self, name) is not None]
+        if moved and not copying_config():
+            spelled = ", ".join(
+                f"{name}= -> {_MOVED_TO_OPTIONS[name][0].__name__}"
+                f"({_MOVED_TO_OPTIONS[name][1]}=)"
+                for name in moved
+            )
+            warnings.warn(
+                f"ArchiveyConfig({spelled}) is deprecated: pass the options object in "
+                "format_options=[...]. archivey 0.7.0 removes the old fields.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+        _convert_format_options(self, moved)
         _check_scalar_fields(self)
         _convert_enum_fields(self)
-        _convert_program_paths(self)
         _refuse_unusable_forced_accelerator(self)
 
 
@@ -1350,11 +1446,6 @@ def _check_scalar_fields(config: ArchiveyConfig) -> None:
         field_name="source_read_step",
         allow_none=False,
     )
-    check_encoding(
-        config.zip_unflagged_fallback_encoding,
-        call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",
-        allow_none=False,
-    )
     check_limit(
         config.max_read_through,
         cls="ArchiveyConfig",
@@ -1403,16 +1494,6 @@ def _convert_enum_fields(config: ArchiveyConfig) -> None:
                 param=f"{field_name}=",
             ),
         )
-    object.__setattr__(
-        config,
-        "rar_decompressor",
-        coerce_enum(
-            config.rar_decompressor,
-            RarDecompressor,
-            call="ArchiveyConfig()",
-            param="rar_decompressor=",
-        ),
-    )
     object.__setattr__(
         config,
         "process_isolation",
@@ -1477,42 +1558,70 @@ def _refuse_unusable_forced_accelerator(config: ArchiveyConfig) -> None:
         )
 
 
-def _convert_program_paths(config: ArchiveyConfig) -> None:
-    """Replace ``unrar_path`` and ``unar_path`` with an absolute ``str``, or refuse
-    them (:func:`_coerce_program_path`)."""
-    for field_name in ("unrar_path", "unar_path"):
-        object.__setattr__(
-            config,
-            field_name,
-            _coerce_program_path(field_name, getattr(config, field_name)),
+def _convert_format_options(config: ArchiveyConfig, moved: list[str]) -> None:
+    """Store ``format_options`` as a tuple of options objects, at most one per class,
+    with the deprecated fields named in ``moved`` folded in as their options objects.
+
+    A copy of a config built from the old fields passes them again, beside the objects
+    they made: an object equal to the one they make is that same setting, not a second
+    one."""
+    value = config.format_options
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise _UsageTypeError(
+            "ArchiveyConfig(format_options=) takes a list or tuple of options objects, "
+            f"got {type(value).__name__}."
         )
+    by_class: dict[type, object] = {}
+    for item in value:
+        if not dataclasses.is_dataclass(item) or isinstance(item, type):
+            raise _UsageTypeError(
+                "ArchiveyConfig(format_options=) takes options objects such as "
+                f"ZipOptions or RarOptions, got {type(item).__name__}."
+            )
+        if type(item) in by_class:
+            raise _UsageValueError(
+                f"ArchiveyConfig(format_options=) got two {type(item).__name__} "
+                "objects; pass one."
+            )
+        by_class[type(item)] = item
+    folded: dict[type, dict[str, object]] = {}
+    for name in moved:
+        cls, field_name = _MOVED_TO_OPTIONS[name]
+        folded.setdefault(cls, {})[field_name] = getattr(config, name)
+    for cls, fields in folded.items():
+        made = cls(**fields)
+        given = by_class.get(cls)
+        if given is not None and given != made:
+            old = ", ".join(n for n in moved if _MOVED_TO_OPTIONS[n][0] is cls)
+            raise _UsageValueError(
+                f"ArchiveyConfig() got {old}= beside a {cls.__name__} in "
+                f"format_options=; pass the {cls.__name__} alone."
+            )
+        by_class[cls] = made
+    object.__setattr__(config, "format_options", tuple(by_class.values()))
 
 
-def _coerce_program_path(field_name: str, value: object) -> str | None:
-    """An ``unrar_path=`` / ``unar_path=`` value as an absolute ``str``, or ``None``."""
+def _coerce_program_path(call: str, value: object) -> str | None:
+    """An ``unrar_path=`` / ``unar_path=`` value as an absolute ``str``, or ``None``;
+    ``call`` names the argument in a refusal."""
     if value is None:
         return None
     if isinstance(value, bytes) or not isinstance(value, (str, os.PathLike)):
         raise _UsageTypeError(
-            f"ArchiveyConfig({field_name}=) takes a path as a str or os.PathLike, "
-            f"got {type(value).__name__}."
+            f"{call} takes a path as a str or os.PathLike, got {type(value).__name__}."
         )
     path = os.fspath(value)
     if not isinstance(path, str):
-        raise _UsageTypeError(
-            f"ArchiveyConfig({field_name}=) takes a str path, got a bytes one."
-        )
+        raise _UsageTypeError(f"{call} takes a str path, got a bytes one.")
     # ``PurePath.is_absolute`` needs a drive or share on Windows on every version;
     # ``os.path.isabs`` before 3.13 accepts a root-relative ``/usr/bin/unrar``.
     if not path or not pathlib.PurePath(path).is_absolute():
         raise _UsageValueError(
-            f"ArchiveyConfig({field_name}=) takes an absolute path, got {quoted(path)}: a "
-            "relative one would depend on the current directory."
+            f"{call} takes an absolute path, got {quoted(path)}: a relative one would "
+            "depend on the current directory."
         )
     if "\0" in path:
-        raise _UsageValueError(
-            f"ArchiveyConfig({field_name}=) got a path with a NUL character."
-        )
+        raise _UsageValueError(f"{call} got a path with a NUL character.")
     return path
 
 
@@ -1579,6 +1688,8 @@ __all__ = [
     "PasswordRequest",
     "ProcessIsolation",
     "RarDecompressor",
+    "RarOptions",
     "SalvageLimits",
     "SpoolLimits",
+    "ZipOptions",
 ]

@@ -99,9 +99,7 @@ _RANDOM_READ_SIZE = 64 << 10
 
 CONFIGS = {
     "auto": ArchiveyConfig(),
-    "off": ArchiveyConfig(
-        use_rapidgzip=AcceleratorMode.OFF, use_indexed_bzip2=AcceleratorMode.OFF
-    ),
+    "off": ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF),
 }
 
 

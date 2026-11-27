@@ -15,7 +15,7 @@ from typing import Any, BinaryIO, cast
 import pytest
 
 from archivey import ArchiveyConfig, CorruptionError, open_archive, open_stream
-from archivey.config import SpoolLimits
+from archivey.config import RarOptions, SpoolLimits
 from archivey.internal.read_progress import LOCAL_REPORT_STEP, SourceReadReporter
 from archivey.types import SourceProgress
 from tests.conftest import requires, requires_unrar_cli
@@ -1002,9 +1002,9 @@ def test_a_rar_from_a_pipe_reports_what_the_feeder_thread_read() -> None:
     data = (_RAR_FIXTURES / "encryption_large__rar4.rar").read_bytes()
     seen = _Recorder()
     config = ArchiveyConfig(
-        rar_decompressor="unrar",
         spool_limits=SpoolLimits(max_bytes=40_000),
         on_source_read=seen,
+        format_options=[RarOptions(decompressor="unrar")],
     )
     with (
         open_archive(

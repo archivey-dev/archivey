@@ -154,13 +154,16 @@ compression. Listing and reading uncompressed members need nothing extra. Compre
 decoded by running RARLAB's `unrar` (or `rar`) 6.0 or later, found on `PATH` or, on Windows, in a
 WinRAR installation, or else The Unarchiver's `unar` 1.10 or later
 ([Getting unrar](install.md#getting-unrar)). With neither, reading a compressed member raises
-`PackageNotInstalledError`. `ArchiveyConfig.rar_decompressor` picks the program:
+`PackageNotInstalledError`. `RarOptions.decompressor`, in `ArchiveyConfig.format_options`,
+picks the program:
 
 ```python
-ArchiveyConfig(rar_decompressor="auto")   # default: unrar when found, otherwise unar
-ArchiveyConfig(rar_decompressor="unrar")  # only unrar; unar is never run
-ArchiveyConfig(rar_decompressor="unar")   # only unar
-ArchiveyConfig(rar_decompressor="none")   # run no program
+from archivey.config import RarOptions
+
+RarOptions(decompressor="auto")   # default: unrar when found, otherwise unar
+RarOptions(decompressor="unrar")  # only unrar; unar is never run
+RarOptions(decompressor="unar")   # only unar
+RarOptions(decompressor="none")   # run no program
 ```
 
 - **Supported:** RAR 1.5 to RAR5, solid archives, volume sets (`.part1.rar`, or `.rar` with
@@ -168,8 +171,8 @@ ArchiveyConfig(rar_decompressor="none")   # run no program
   `[recommended]`), and file versions (`rar -ver`).
 - **`unar` exposes the password.** `unar` takes the password on its command line, where other
   users on the same machine can see it. On a shared machine, install `unrar`, or set
-  `rar_decompressor="unrar"`. `unar` also gets some archives wrong, and archivey refuses those
-  reads before running it.
+  `RarOptions(decompressor="unrar")`. `unar` also gets some archives wrong, and archivey refuses
+  those reads before running it.
 - **Solid archives,** where reaching a member decodes every member before it: a
   `stream_members()` pass decodes the archive in one run. Opening members
   out of order decodes the solid stream again from its start each time.

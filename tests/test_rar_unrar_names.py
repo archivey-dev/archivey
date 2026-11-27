@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, open_archive
+from archivey.config import RarOptions
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_reader import RarReader
@@ -34,7 +35,7 @@ from tests.test_audit_rar_iso_dir import (
     _rar5_parse,
 )
 
-_UNRAR_ONLY = ArchiveyConfig(rar_decompressor="unrar")
+_UNRAR_ONLY = ArchiveyConfig(format_options=[RarOptions(decompressor="unrar")])
 
 # RAR5: (stored name, host OS as stored: 0 Windows, 1 Unix).
 _RAR5_NAMES: list[tuple[bytes, int]] = [

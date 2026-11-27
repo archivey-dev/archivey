@@ -590,7 +590,7 @@ class BackendRegistry:
         packages it turns off, which count as absent, and the plugin that reads ``fmt``
         in place of the registered backend (``FormatPolicy._replacement_for``).
         ``config`` is handed to ``missing_programs``, for a setting that names the
-        program to run (``ArchiveyConfig.unrar_path``).
+        program to run (``RarOptions.unrar_path``).
         """
         if replacement is not None:
             # Imported here: the plugin adapter imports this module.
@@ -901,7 +901,7 @@ def format_availability(
     ``rar`` 6.0 or later is on ``PATH``: it still opens and lists, and stored members
     read. To find out, the first call runs each candidate once to read its banner, for
     at most 10 seconds each; the answer is cached per binary.
-    It describes the default ``rar_decompressor`` (``AUTO``).
+    It describes the default ``RarOptions.decompressor`` (``AUTO``).
     ``check_programs=False`` runs no program: missing programs are then not counted,
     and RAR reports as it would with ``unrar`` installed.
 
@@ -910,9 +910,9 @@ def format_availability(
     package that ``exclude_libraries`` lists or ``only_libraries`` leaves out counts as
     absent, listed in ``missing`` with the policy as its ``reason``, and a container in
     ``replace`` is answered for the plugin that reads it, whose ``requires`` count as a
-    registered plugin's do. With ``check_programs=True``, ``config.unrar_path`` changes
-    it too: it picks the ``unrar`` binary to look for. ``unar_path`` and
-    ``rar_decompressor`` do not. Whether the format may open is another question,
+    registered plugin's do. With ``check_programs=True``, ``RarOptions.unrar_path`` in
+    ``config.format_options`` changes it too: it picks the ``unrar`` binary to look
+    for. ``unar_path`` and ``decompressor`` do not. Whether the format may open is another question,
     answered by ``config.formats.allows(fmt)``; a caller needs both.
     """
     # Anything that is not a format is refused here: a StreamFormat, a ContainerFormat

@@ -1,4 +1,4 @@
-"""``ArchiveyConfig(unrar_path=, unar_path=)``: the one RAR program a call may run.
+"""``RarOptions(unrar_path=, unar_path=)``: the one RAR program a call may run.
 
 When a path is set, that binary is the only one tried: ``PATH`` is not searched, and the
 binary is held to the same identification as one found there. Every read, and
@@ -21,6 +21,7 @@ from archivey import (
     format_availability,
     open_archive,
 )
+from archivey.config import RarOptions
 from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.external import unar
 from archivey.types import FormatSupport
@@ -70,16 +71,20 @@ def rarlab_on_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 
 def test_the_default_searches_path() -> None:
-    config = ArchiveyConfig()
-    assert config.unrar_path is None
-    assert config.unar_path is None
+    options = RarOptions()
+    assert options.unrar_path is None
+    assert options.unar_path is None
 
 
 @pytest.mark.parametrize("field", ["unrar_path", "unar_path"])
 def test_a_path_is_stored_as_a_str(field: str, tmp_path: Path) -> None:
-    config = ArchiveyConfig(**{field: tmp_path / "prog"})
-    assert getattr(config, field) == str(tmp_path / "prog")
-    assert hash(config) == hash(ArchiveyConfig(**{field: str(tmp_path / "prog")}))
+    options = RarOptions(**{field: tmp_path / "prog"})
+    assert getattr(options, field) == str(tmp_path / "prog")
+    config = ArchiveyConfig(format_options=[options])
+    same = ArchiveyConfig(
+        format_options=[RarOptions(**{field: str(tmp_path / "prog")})]
+    )
+    assert hash(config) == hash(same)
 
 
 @pytest.mark.parametrize("field", ["unrar_path", "unar_path"])
@@ -99,9 +104,9 @@ def test_a_wrong_path_is_refused(
     field: str, value: object, error: type[Exception], match: str
 ) -> None:
     with pytest.raises(error, match=match) as info:
-        ArchiveyConfig(**{field: value})
+        RarOptions(**{field: value})
     assert isinstance(info.value, ArchiveyUsageError)
-    assert f"{field}=" in str(info.value)
+    assert f"RarOptions({field}=)" in str(info.value)
 
 
 # --- unrar ---------------------------------------------------------------------
@@ -121,7 +126,7 @@ def test_a_missing_pinned_unrar_does_not_fall_back_to_path(
     with pytest.raises(PackageNotInstalledError) as info:
         rar_unrar.find_rarlab_unrar(missing)
     message = str(info.value)
-    assert "ArchiveyConfig.unrar_path" in message
+    assert "RarOptions.unrar_path" in message
     assert "does not look on PATH" in message
     (component,) = info.value.missing
     assert component.name == "unrar"
@@ -152,7 +157,7 @@ def test_a_pinned_unrar_under_the_floor_is_refused(
     with pytest.raises(PackageNotInstalledError, match=r"6\.0 or later") as info:
         rar_unrar.find_rarlab_unrar(str(pinned))
     # Installing another unrar would put it on PATH, which a pin does not search.
-    assert "ArchiveyConfig.unrar_path" in str(info.value)
+    assert "RarOptions.unrar_path" in str(info.value)
     assert "Install" not in str(info.value)
 
 
@@ -161,13 +166,15 @@ def test_availability_answers_for_the_pinned_unrar(
     rarlab_on_path: Path, tmp_path: Path
 ) -> None:
     assert format_availability(ArchiveFormat.RAR).support is FormatSupport.FULL
-    config = ArchiveyConfig(unrar_path=tmp_path / "nowhere" / "unrar")
+    config = ArchiveyConfig(
+        format_options=[RarOptions(unrar_path=tmp_path / "nowhere" / "unrar")]
+    )
     availability = format_availability(ArchiveFormat.RAR, config=config)
     assert availability.support is FormatSupport.PARTIAL
     (component,) = availability.missing
-    assert "ArchiveyConfig.unrar_path" in component.install_hint
+    assert "RarOptions.unrar_path" in component.install_hint
     pinned = _executable(tmp_path / "pinned-unrar")
-    config = ArchiveyConfig(unrar_path=pinned)
+    config = ArchiveyConfig(format_options=[RarOptions(unrar_path=pinned)])
     assert (
         format_availability(ArchiveFormat.RAR, config=config).support
         is FormatSupport.FULL
@@ -188,7 +195,9 @@ def test_a_member_read_runs_the_pinned_unrar(
         raise _Stop
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", record)
-    config = ArchiveyConfig(unrar_path=pinned, rar_decompressor="unrar")
+    config = ArchiveyConfig(
+        format_options=[RarOptions(unrar_path=pinned, decompressor="unrar")]
+    )
     with open_archive(_RAR, config=config) as reader, pytest.raises(_Stop):
         reader.read("canary.txt")
     assert seen == [pinned]
@@ -214,7 +223,7 @@ def test_a_pinned_unar_is_used_off_path(
 
 def _assert_names_the_unar_pin(exc: PackageNotInstalledError) -> None:
     message = str(exc)
-    assert "ArchiveyConfig.unar_path" in message
+    assert "RarOptions.unar_path" in message
     assert "does not look on PATH" in message
     assert "brew install" not in message
 
@@ -249,7 +258,7 @@ def test_a_missing_pinned_unar_does_not_fall_back_to_path(
     assert unar.find_unar(purpose="for a test") == os.path.abspath(binary)
     with pytest.raises(PackageNotInstalledError) as info:
         unar.find_unar(purpose="for a test", program=str(tmp_path / "nope" / "unar"))
-    assert "ArchiveyConfig.unar_path" in str(info.value)
+    assert "RarOptions.unar_path" in str(info.value)
     assert "does not look on PATH" in str(info.value)
 
 

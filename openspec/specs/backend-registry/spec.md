@@ -237,7 +237,7 @@ Support SHALL be computed across the format backend and codecs/tools:
   codec in its method table that needs a package. A test pins the list against that
   table, and ZIP's against its own.
 - RAR counts one optional tool: a RARLAB `unrar` or `rar` 6.0 or later on `PATH`, the
-  program the default `rar_decompressor` (`AUTO`) uses. Without one RAR is PARTIAL and
+  program the default `RarOptions.decompressor` (`AUTO`) uses. Without one RAR is PARTIAL and
   `missing` names `unrar`; it still opens and lists, and stored members read. A usable
   `unar` does not make RAR FULL, because it reads fewer archives than `unrar`. The
   public `format_availability()` finds out by running each candidate once to read its
@@ -247,7 +247,7 @@ Support SHALL be computed across the format backend and codecs/tools:
   `advice` is `reason` when set, otherwise `install_hint`; every report of a missing
   component prints `advice`. `open_archive` and `list_supported_formats()` do not run
   it: a missing tool never makes a format NONE, so they need no answer about tools.
-  `rar_decompressor` does not change the answer. `check_programs=False` runs no
+  `RarOptions.decompressor` does not change the answer. `check_programs=False` runs no
   program and counts no tool, for a caller who wants no external program run.
 - `cryptography`, which only encrypted members need, SHALL NOT lower support.
 - By-design unsupported features such as unknown 7z method IDs SHALL

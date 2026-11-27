@@ -182,7 +182,7 @@ usable RARLAB binary, it SHALL also try `UnRAR.exe`, then `Rar.exe`, in the `Win
 folder under each Program Files folder (`ProgramW6432`, `ProgramFiles`,
 `ProgramFiles(x86)`), identified the same way. It MUST NOT implement a
 fallback matrix to `unrar-free`, `unar`, `bsdtar`, `7z`, or other tools. The one
-alternative is `unar`, used when `ArchiveyConfig.rar_decompressor` selects it, or
+alternative is `unar`, used when `RarOptions.decompressor` selects it, or
 when it is `auto` (the default) and no RARLAB binary is found, provided it passes the
 RAR5 check in `format-rar`. The choice is made once when the
 archive opens; a read is never retried with the other program.
@@ -202,10 +202,10 @@ needs no program: archivey decrypts it with `cryptography` (`format-rar`).
 | Only `unrar-free` / `7z` on `PATH`, default config | `PackageNotInstalledError` naming RARLAB `unrar` or `rar`; they are never used |
 | Only a `unar` 1.10+ that passes the RAR5 check on `PATH`, default config | `unar` is used for compressed member data |
 | Only a `unar` that fails the RAR5 check on `PATH` (Debian and Ubuntu packages before 1.10.8+ds1-10), default config | `PackageNotInstalledError` naming RARLAB `unrar` or `rar`, as with neither present |
-| Only `unar` on `PATH`, `rar_decompressor="unrar"` | `PackageNotInstalledError` naming RARLAB `unrar` or `rar` |
-| `rar_decompressor="unar"`, a `unar` 1.10+ that passes the RAR5 check on `PATH` | `unar` is used for compressed member data; `unrar` is not |
-| `rar_decompressor="auto"`, RARLAB `unrar` and `unar` on `PATH` | `unrar` is used |
-| `rar_decompressor="auto"`, only a `unar` that passes the RAR5 check on `PATH` | `unar` is used |
+| Only `unar` on `PATH`, `RarOptions(decompressor="unrar")` | `PackageNotInstalledError` naming RARLAB `unrar` or `rar` |
+| `RarOptions(decompressor="unar")`, a `unar` 1.10+ that passes the RAR5 check on `PATH` | `unar` is used for compressed member data; `unrar` is not |
+| `RarOptions(decompressor="auto")`, RARLAB `unrar` and `unar` on `PATH` | `unrar` is used |
+| `RarOptions(decompressor="auto")`, only a `unar` that passes the RAR5 check on `PATH` | `unar` is used |
 | Listing without data reads | Succeeds without invoking any external decompressor |
 
 ### Requirement: Optional extras map only to libraries the code uses

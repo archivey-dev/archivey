@@ -343,6 +343,8 @@ UnlockedT = TypeVar("UnlockedT")
 header."""
 
 ResultT = TypeVar("ResultT")
+# A format's options class (``ReaderContext.options``).
+OptionsT = TypeVar("OptionsT")
 """What the plugin call returns once the unit is unlocked: the reader, or a
 :class:`MemberData`."""
 
@@ -802,6 +804,14 @@ class ReaderContext:
         bound it by ``config.listing_limits``; archivey applies those limits to the
         members it is handed in any case."""
         return self._config
+
+    def options(self, cls: type[OptionsT]) -> OptionsT:
+        """The caller's ``cls`` object from ``config.format_options``, or ``cls()``
+        when the caller passed none: a format's own settings, such as
+        :class:`~archivey.config.RarOptions`."""
+        from archivey.internal.config import format_options_of
+
+        return format_options_of(self._config, cls)
 
     def report(
         self,

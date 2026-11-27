@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, open_archive
+from archivey.config import RarOptions
 from archivey.exceptions import (
     ArchiveyError,
     PackageNotInstalledError,
@@ -793,7 +794,7 @@ def test_a_comment_unrar_cannot_start_for_degrades_to_none(
     ``PackageNotInstalledError``. Only the decode spawn fails: the version probe
     (``subprocess.run``, default buffering) still runs."""
     path = _fixture("rar15-comment.rar")
-    config = ArchiveyConfig(rar_decompressor="unrar")
+    config = ArchiveyConfig(format_options=[RarOptions(decompressor="unrar")])
     with open_archive(path, config=config) as archive:
         assert archive.info.comment
     real = subprocess.Popen

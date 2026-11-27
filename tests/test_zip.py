@@ -30,6 +30,7 @@ from archivey import (
     MemberType,
     open_archive,
 )
+from archivey.config import ZipOptions
 from archivey.cost import AccessCost, ListingCost, StreamCapability
 from archivey.diagnostics import NameEncodingContext, raw_name_to_base64
 from archivey.exceptions import (
@@ -2442,7 +2443,7 @@ def test_a_flag_overridden_name_collides_as_a_duplicate(
 
 def test_utf8_inference_names_the_configured_fallback() -> None:
     data = _stored_zip(b"\xc3\xa9txt", utf8_flag=False)
-    cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp1252")
+    cfg = ArchiveyConfig(format_options=[ZipOptions(fallback_encoding="cp1252")])
     with open_archive(io.BytesIO(data), config=cfg) as ar:
         (member,) = ar.members()
     (diag,) = member.diagnostics
@@ -2454,7 +2455,7 @@ def test_explicit_encoding_replaces_the_configured_fallback() -> None:
     # 0xE9 alone is not valid UTF-8: encoding= decodes it, ahead of the config's
     # fallback, and no inference is reported because the caller chose the codec.
     data = _stored_zip(b"caf\xe9.txt", utf8_flag=False)
-    cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp437")
+    cfg = ArchiveyConfig(format_options=[ZipOptions(fallback_encoding="cp437")])
     with open_archive(io.BytesIO(data), config=cfg, encoding="latin-1") as ar:
         (member,) = ar.members()
         counts = ar.diagnostics.counts
@@ -2490,7 +2491,7 @@ def test_invalid_utf8_uses_configurable_legacy_fallback() -> None:
     # sets the fallback so unflagged non-UTF-8 names decode deterministically.
     data = _stored_zip(b"caf\xe9.txt", utf8_flag=False)
     assert zipfile.ZipFile(io.BytesIO(data)).infolist()[0].flag_bits & 0x800 == 0
-    cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp1252")
+    cfg = ArchiveyConfig(format_options=[ZipOptions(fallback_encoding="cp1252")])
     with open_archive(io.BytesIO(data), config=cfg) as ar:
         member = ar.members()[0]
         counts = ar.diagnostics.counts
@@ -2560,7 +2561,7 @@ def test_unflagged_comments_take_the_configured_fallback() -> None:
         _CP1251_ARCHIVE_COMMENT.encode("cp1251"),
         _CP1251_MEMBER_COMMENT.encode("cp1251"),
     )
-    cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp1251")
+    cfg = ArchiveyConfig(format_options=[ZipOptions(fallback_encoding="cp1251")])
     with open_archive(io.BytesIO(data), config=cfg) as ar:
         (member,) = ar.members()
         assert ar.info.comment == _CP1251_ARCHIVE_COMMENT

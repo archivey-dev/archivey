@@ -71,8 +71,10 @@ from archivey.config import (
     DecoderLimits,
     ExtractionLimits,
     ListingLimits,
+    RarOptions,
     SalvageLimits,
     SpoolLimits,
+    ZipOptions,
 )
 from archivey.detection_cost import (
     BALANCED_BUDGET,
@@ -239,12 +241,22 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
         for bad in ("", "unrar", 0, b"/usr/bin/unrar", "/bin/un\0rar"):
             rows.append(
                 _case(
-                    "ArchiveyConfig",
+                    "RarOptions",
                     program_field,
                     bad,
-                    lambda b=bad, f=program_field: ArchiveyConfig(**{f: b}),
+                    lambda b=bad, f=program_field: RarOptions(**{f: b}),
                 )
             )
+    # One options object per class, and only options objects.
+    for bad in ([RarOptions(), RarOptions()], [{"decompressor": "unar"}], "zip", 3):
+        rows.append(
+            _case(
+                "ArchiveyConfig",
+                "format_options",
+                bad,
+                lambda b=bad: ArchiveyConfig(format_options=b),
+            )
+        )
 
     # Object shape of detection_budget=, not preset spellings. ``"balanced"`` is a real
     # DetectionBudgetPreset value, coerced by ``enum_args`` and asserted in
@@ -752,11 +764,11 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
     for bad in ("not-a-codec", "rot13", b"cp437", 0, None):
         rows.append(
             _case(
-                "ArchiveyConfig",
-                "zip_unflagged_fallback_encoding",
+                "ZipOptions",
+                "fallback_encoding",
                 bad,
                 lambda b=bad: _with_config(
-                    archive, out(), zip_unflagged_fallback_encoding=b
+                    archive, out(), format_options=[ZipOptions(fallback_encoding=b)]
                 ),
             )
         )
@@ -907,7 +919,15 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
         "in enum_args"
     ),
     ("ArchiveyConfig", "use_rapidgzip"): "coerced by enum_args, in __post_init__",
-    ("ArchiveyConfig", "rar_decompressor"): "coerced by enum_args, in __post_init__",
+    ("RarOptions", "decompressor"): "coerced by enum_args, in __post_init__",
+    # Deprecated in 0.6.0: each is folded into its options object, whose own checks
+    # are swept above.
+    ("ArchiveyConfig", "rar_decompressor"): "deprecated; RarOptions(decompressor=)",
+    ("ArchiveyConfig", "unrar_path"): "deprecated; RarOptions(unrar_path=)",
+    ("ArchiveyConfig", "unar_path"): "deprecated; RarOptions(unar_path=)",
+    ("ArchiveyConfig", "zip_unflagged_fallback_encoding"): (
+        "deprecated; ZipOptions(fallback_encoding=)"
+    ),
     ("ArchiveyConfig", "process_isolation"): "coerced by enum_args, in __post_init__",
     (
         "ArchiveyConfig",
@@ -940,8 +960,10 @@ def _public_surface() -> list[tuple[str, list[str]]]:
         DetectionBudget,
         ExtractionLimits,
         ListingLimits,
+        RarOptions,
         SalvageLimits,
         SpoolLimits,
+        ZipOptions,
     ):
         surface.append((cls.__name__, [f.name for f in dataclasses.fields(cls)]))
     return surface

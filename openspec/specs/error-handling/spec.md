@@ -569,8 +569,9 @@ The arguments covered:
 | `ArchiveReader.extract_all()`, `ArchiveReader.stream_members()` | `members` |
 | `ArchiveReader.extract_all()` | `filter` |
 | `ArchiveReader.open()` / `.read()` | `member` |
-| `ArchiveyConfig(...)` | `extraction_limits`, `listing_limits`, `diagnostic_policy`, `on_diagnostic`, `zip_unflagged_fallback_encoding`, `max_retained_diagnostic_references`, `detection_budget` (a `DetectionBudget`; a `DetectionBudgetPreset` or its spelling is converted, see below) |
+| `ArchiveyConfig(...)` | `extraction_limits`, `listing_limits`, `diagnostic_policy`, `on_diagnostic`, `format_options`, `max_retained_diagnostic_references`, `detection_budget` (a `DetectionBudget`; a `DetectionBudgetPreset` or its spelling is converted, see below) |
 | `ExtractionLimits(...)`, `ListingLimits(...)` | every guard field |
+| `ZipOptions(...)`, `RarOptions(...)` | `fallback_encoding`, `unrar_path`, `unar_path` |
 | `DetectionBudget(...)` | every field |
 
 `ArchiveyConfig`, the `*Limits` types and `DetectionBudget` SHALL validate their own
@@ -670,7 +671,7 @@ The parameters covered:
 | Entry point | Parameters |
 | --- | --- |
 | `ArchiveReader.extract_all()` | `policy`, `overwrite`, `on_problem`, and the deprecated `on_error`, `on_blocked`, `abort_on` |
-| `ArchiveyConfig(...)` | `use_rapidgzip`, the deprecated `use_indexed_bzip2`, `process_isolation`, `rar_decompressor`, `detection_budget` (a `DetectionBudget` passes through unconverted) |
+| `ArchiveyConfig(...)` | `use_rapidgzip`, the deprecated `use_indexed_bzip2`, `process_isolation`, `RarOptions.decompressor`, `detection_budget` (a `DetectionBudget` passes through unconverted) |
 | `ArchiveFormat(...)` | `container`, `stream` (a plugin's member passes through unconverted) |
 | `DiagnosticPolicy(...)` | `ignore`, `raise_on` |
 

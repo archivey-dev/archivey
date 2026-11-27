@@ -21,7 +21,7 @@ import pytest
 
 from archivey import ArchiveyConfig, DiagnosticCode, DiagnosticPolicy, open_archive
 from archivey.cli.logging_config import cli_logging, cli_opens_members
-from archivey.config import RarDecompressor
+from archivey.config import RarDecompressor, RarOptions
 from archivey.cost import AccessCost
 from archivey.diagnostics import SolidReopenContext
 from archivey.exceptions import CorruptionError, DiagnosticRaisedError
@@ -230,7 +230,9 @@ def test_unar_counts_each_solid_stream_on_its_own(
 ) -> None:
     # Two solid streams: a, b and then c, d. unar decodes only the member's stream.
     caplog.set_level(logging.INFO, logger=_LOGGER)
-    config = ArchiveyConfig(rar_decompressor=RarDecompressor.UNAR)
+    config = ArchiveyConfig(
+        format_options=[RarOptions(decompressor=RarDecompressor.UNAR)]
+    )
     with open_archive(_RAR_GROUPS, config=config) as reader:
         reader.read("b.txt")
         reader.read("c.txt")

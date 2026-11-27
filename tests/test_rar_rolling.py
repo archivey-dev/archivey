@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, open_archive
-from archivey.config import SpoolLimits
+from archivey.config import RarOptions, SpoolLimits
 from archivey.exceptions import (
     ArchiveyError,
     ReadError,
@@ -472,7 +472,8 @@ def unrar_runs(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
 
 def _config(limit: int | None) -> ArchiveyConfig:
     return ArchiveyConfig(
-        rar_decompressor="unrar", spool_limits=SpoolLimits(max_bytes=limit)
+        spool_limits=SpoolLimits(max_bytes=limit),
+        format_options=[RarOptions(decompressor="unrar")],
     )
 
 

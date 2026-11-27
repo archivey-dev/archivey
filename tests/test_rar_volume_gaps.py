@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, open_archive
-from archivey.config import RarDecompressor
+from archivey.config import RarDecompressor, RarOptions
 from archivey.exceptions import TruncatedError, UnsupportedFeatureError
 from tests.conftest import (
     binary_refusal,
@@ -120,7 +120,9 @@ def _config(decompressor: str) -> ArchiveyConfig:
     refusal = binary_refusal(decompressor)
     if refusal is not None:
         pytest.skip(refusal)
-    return ArchiveyConfig(rar_decompressor=RarDecompressor(decompressor))
+    return ArchiveyConfig(
+        format_options=[RarOptions(decompressor=RarDecompressor(decompressor))]
+    )
 
 
 @pytest.mark.parametrize("missing", [0, 2], ids=["first", "middle"])

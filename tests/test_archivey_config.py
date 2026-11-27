@@ -120,7 +120,7 @@ def test_strict_archive_eof_is_gone() -> None:
         ),
         ({"read_link_targets": "yes", "detection_budget": "nope"}, "detection_budget="),
         (
-            {"rar_decompressor": "x", "max_retained_diagnostic_references": -1},
+            {"use_rapidgzip": "x", "max_retained_diagnostic_references": -1},
             "max_retained_diagnostic_references",
         ),
     ],

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -217,6 +217,18 @@ class StreamConfig:
         """Whether the decoder records restart points: on declared seek demand
         (:attr:`seekable`) or when asked for them alone (:attr:`restart_points`)."""
         return self.seekable or self.restart_points
+
+
+OptionsT = TypeVar("OptionsT")
+
+
+def format_options_of(config: ArchiveyConfig, cls: type[OptionsT]) -> OptionsT:
+    """The ``cls`` object in ``config.format_options``, or ``cls()`` when there is
+    none: what a format's reader reads its settings from."""
+    for item in config.format_options:
+        if isinstance(item, cls) and type(item) is cls:
+            return item
+    return cls()
 
 
 def stream_config_from_archivey(

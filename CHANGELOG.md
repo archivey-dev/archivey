@@ -18,6 +18,10 @@ line. How to write the entry: see
 - `open_archive(salvage=True)` opts into salvage mode, capped by the new `SalvageLimits`
   (`ArchiveyConfig.salvage_limits`). No format has a salvage search yet, so every format
   reads as before and records `SALVAGE_UNAVAILABLE`.
+- `ArchiveyConfig(format_options=[...])` holds the settings of single formats, one
+  object per format: `archivey.config.ZipOptions` and `RarOptions` for the built-in
+  ones, and a plugin's format can have its own. A reader asks for its own with
+  `ReaderContext.options(cls)`.
 - `ArchiveyConfig.UNTRUSTED`, the settings for files you didn't make, such as uploads:
   `FormatPolicy.COMMON`, `DiagnosticPolicy.STRICT`, `NATIVE_DECODERS`, lower listing,
   decoder and extraction limits, and rapidgzip off. Adjust it with
@@ -59,6 +63,10 @@ line. How to write the entry: see
   `archivey extract --stop-on-error` now stops at a refused member too.
 - **Breaking:** `ArchiveyConfig.use_rapidgzip` decides bzip2 too, so
   `use_rapidgzip="off"` alone now keeps rapidgzip away from bzip2 as well.
+- **Breaking:** the deprecated `ArchiveyConfig` fields `zip_unflagged_fallback_encoding`,
+  `rar_decompressor`, `unrar_path`, `unar_path` and `use_indexed_bzip2` read back as
+  `None` unless the caller set them. Read the setting from its options object, or from
+  `use_rapidgzip`.
 - A streaming pass over a format with an index (a ZIP, 7z, RAR, ISO, CAB and others)
   reads the whole index before its first member, so `members_report_if_available()`
   gives the same answer inside the loop as before it.
@@ -83,6 +91,10 @@ line. How to write the entry: see
   second member at one path under the default `overwrite="error"`, and
   `ExtractionResult.rewrites` lists every rewritten name. `archivey extract --abort-on`
   is deprecated the same way. 0.7.0 removes them.
+- `ArchiveyConfig(zip_unflagged_fallback_encoding=, rar_decompressor=, unrar_path=,
+  unar_path=)` keep working in 0.6 with a `DeprecationWarning`; pass
+  `format_options=[ZipOptions(fallback_encoding=...), RarOptions(decompressor=...,
+  unrar_path=..., unar_path=...)]` from `archivey.config`. 0.7.0 removes them.
 - `ArchiveyConfig.use_indexed_bzip2` keeps working in 0.6 with a `DeprecationWarning`,
   and decides bzip2 alone while it is set; use `use_rapidgzip`. 0.7.0 removes it.
 

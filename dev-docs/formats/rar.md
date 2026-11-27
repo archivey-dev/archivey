@@ -17,7 +17,7 @@ Registers keep the status — this page states the behaviour and links the row.
 | Stream capability | `FORWARD_ONLY` — of the source, which a pass reads front to back (§2.6). Member streams are a separate question (§5) |
 | Core dependencies | None to list an unencrypted archive. Compressed member data needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (§1), or, by default, `unar` 1.10+ when no RARLAB binary is found (§3). Stored encrypted members need `cryptography` instead |
 | Optional | `[recommended]` (`cryptography`): header decryption, RAR3/RAR4 and RAR5 alike. BLAKE2sp needs nothing — stdlib `hashlib` |
-| Refuses | Non-seekable sources without RARLAB `unrar` 7.00 or later, and a volume set from one (§2.6) · a non-RARLAB `unrar`/`rar` (no fallback to `7z` / `bsdtar` / `unrar-free`; `unar` when no RARLAB binary is found, unless `rar_decompressor="unrar"`) · with `unar`: encrypted RAR 2.x-4.x data and, in a solid archive, compressed members after it in the same solid stream, a non-ASCII password, a header-encrypted RAR5 volume set, RAR5 solid members after an empty entry, RAR 1.5 compression, a prefixed multi-volume set · a RARLAB binary older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a member that can only be read in place in the original archive (a RAR4 member past 4 GiB, a solid chain with unreachable data) when its name is not plain enough to select it alone (§2.3); a large member on a path source whose name is not plain is copied instead, and refused (`ResourceLimitError`) only when that copy is over `SpoolLimits.max_bytes` · a member whose dictionary, as the chosen program allocates it, is over `DecoderLimits.max_decoder_memory` (`ResourceLimitError`, §7) · writing |
+| Refuses | Non-seekable sources without RARLAB `unrar` 7.00 or later, and a volume set from one (§2.6) · a non-RARLAB `unrar`/`rar` (no fallback to `7z` / `bsdtar` / `unrar-free`; `unar` when no RARLAB binary is found, unless `RarOptions(decompressor="unrar")`) · with `unar`: encrypted RAR 2.x-4.x data and, in a solid archive, compressed members after it in the same solid stream, a non-ASCII password, a header-encrypted RAR5 volume set, RAR5 solid members after an empty entry, RAR 1.5 compression, a prefixed multi-volume set · a RARLAB binary older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a member that can only be read in place in the original archive (a RAR4 member past 4 GiB, a solid chain with unreachable data) when its name is not plain enough to select it alone (§2.3); a large member on a path source whose name is not plain is copied instead, and refused (`ResourceLimitError`) only when that copy is over `SpoolLimits.max_bytes` · a member whose dictionary, as the chosen program allocates it, is over `DecoderLimits.max_decoder_memory` (`ResourceLimitError`, §7) · writing |
 
 **Two things a reader might expect and will not find.** Nothing amortizes repeated
 random reads of a solid archive: there is no `unrar x` anywhere in `src/`, so every
@@ -1206,7 +1206,7 @@ the lookalikes that are *not* accepted. A RARLAB binary older than 6.0 (or whose
 exception at the banner probe, once, cached with the probe, naming the floor and the
 version found. Open, listing, and stored reads still succeed: a missing or too-old
 binary is caught when resolving compressed comments, and those stay `None`
-(§2.2). With the default `rar_decompressor="auto"`, `unar` is used instead when no
+(§2.2). With the default `RarOptions(decompressor="auto")`, `unar` is used instead when no
 RARLAB program is found; `7z` and `unrar-free` never are (§3, threat-model C1).
 
 ### 2.4 Extract
@@ -1350,7 +1350,7 @@ unmeasured. Measured across the other candidates
 | **`unrar-free` 0.1.3** | Extract-to-disk only; no stdout at all |
 
 **Update 2026-09-26: `unar` shipped as the second program**
-(`ArchiveyConfig.rar_decompressor="unar"`), at the maintainer's request. The gate is
+(`RarOptions(decompressor="unar")`), at the maintainer's request. The gate is
 wider than the one proposed below: RAR5 solid members after an empty file *or a
 directory*, RAR 1.5 compression, encrypted RAR 2.x-4.x data, non-ASCII passwords and
 header-encrypted RAR5 volume sets are refused before `unar` runs; a prefixed single file
@@ -1358,11 +1358,12 @@ is copied first, from where the RAR starts. That copy is bounded by `SpoolLimits
 stream source's (maintainer decision 2026-09-28): the size is known for a path, so
 `cost.notes` says at open whether it will be refused, and an archive over the limit is
 refused before the temp file exists, with `ResourceLimitError` naming
-`rar_decompressor='unrar'`, which reads a prefixed archive in place. Encrypted RAR5 data is read with the password on `unar`'s argv
-(visible to local users; the maintainer accepted that and asked for it to be
-documented), and `"auto"`, the default since the maintainer chose it on 2026-09-26,
-picks RARLAB `unrar` when installed, `unar` otherwise, once per reader. So the "never a
-probe of `PATH`" line in the reasoning below no longer holds for `unar`. Measurements and the reasons are in
+`RarOptions(decompressor='unrar')`, which reads a prefixed archive in place. Encrypted
+RAR5 data is read with the password on `unar`'s argv (visible to local users; the
+maintainer accepted that and asked for it to be documented), and `"auto"`, the default
+since the maintainer chose it on 2026-09-26, picks RARLAB `unrar` when installed, `unar`
+otherwise, once per reader. So the "never a probe of `PATH`" line in the reasoning below
+no longer holds for `unar`. Measurements and the reasons are in
 [`alternative-rar-decompressors.md`](../investigations/alternative-rar-decompressors.md)
 §2026-09-26 measurements, and the upstream defect in
 [`known-issues.md`](../known-issues.md) §MacPaw `unar`; the process layer is
@@ -1544,7 +1545,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | A 7-Zip SFX stub sitting beside a numbered split (`vol.exe` next to `vol.exe.001` / `vol.7z.001` / `vol.zip.001`) | **archivey** | Opening the stub follows that first volume. The stub is still not a sibling. An old-scheme SFX first volume (`name.exe` + `.r00`) is discovered as volume 1 of that `.rNN` set |
 | A RAR from a pipe or socket needs RARLAB `unrar` 7.00 or later, one volume, and one password for the pass; a RAR5 file copy is refused, and a failed member ends the data of the pass | **archivey** | §2.6: the source is read once, so nothing can be read again; nothing is buffered for you (ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
 | A RAR 1.5-4 name stored only as 8-bit bytes can list in the wrong code page | **format** | The header records none. Archivey guesses strict UTF-8, then cp437 for a DOS or Windows host and windows-1252 otherwise; `encoding=` overrides the guess, as in ZIP. Reading is unaffected (§2.2) |
-| A member whose name is not plain raises `UnsupportedFeatureError` on the `unrar` path, and reads with `rar_decompressor='unar'` | **archivey** | Only when no synthetic archive can hold it: a RAR 1.5-4 member split past 4 GiB with no 64-bit sizes, or a solid chain with data out of reach. The original archive is then read through a mask, which is trusted only for a plain name (§2.3) |
+| A member whose name is not plain raises `UnsupportedFeatureError` on the `unrar` path, and reads with `RarOptions(decompressor='unar')` | **archivey** | Only when no synthetic archive can hold it: a RAR 1.5-4 member split past 4 GiB with no 64-bit sizes, or a solid chain with data out of reach. The original archive is then read through a mask, which is trusted only for a plain name (§2.3) |
 | `unrar` given an archive path in place can open a file other than the one archivey parsed | **library** / **archivey** | Two causes. `unrar` 6.x keeps only a prefix of a long archive path and opens the file that prefix names: on POSIX it cuts at 2047 bytes of the multibyte name (`File::Open`; measured on 6.24), on Windows at 2047 wide units (from the 6.2.12 source, not run). And every version expands `*` and `?` in the archive name, even after `--`, so `rep*.rar` also opens a `rep-a.rar` beside it, or blocks forever on a FIFO of that name. Archivey's answer: on POSIX `unrar` is always started in the archive's directory and given the name alone, so no directory reaches it, and a volume whose name holds `*` or `?` is linked under a fixed name in a private directory (`unrar_needs_staged_name`, `_choose_unrar_volume_paths`). On Windows `unrar` gets the whole path, so a volume path holding a wildcard or longer than 1024 UTF-16 units is staged, and a staged path past what 6.x keeps is refused (§2.2) |
 | Every RAR5 symlink and hard link has no `hashes` entry, where ZIP and 7z have one | **format** | The stored field covers zero bytes, so the only honest answer is no digest (§2.2). RAR3/4 keeps its digest, which is genuine — but note what it covers: the **target string**, not anything the link points at, the same as ZIP's and 7z's (§2.2, §6) |
 | Opening several members of a solid archive at once runs one whole-archive decode **per open**, concurrently | **format** / **archivey** | There are no block boundaries to share (§1), so `concurrent_operations=True` makes overlapping reads correct without making them cheap: measured, three open streams are three live `unrar` processes, each decoding from the start, all reaped on close. `AccessCost.SOLID` is the only signal and it does not scale with the number of open streams. Without the flag the second `open()` is refused with `ArchiveyUsageError` and spawns nothing — the live-stream slot is reserved before the member is opened (#293), where it used to be taken after |
@@ -1668,7 +1669,7 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   another process. The reader checks it before it spawns the program, on a named
   `open()` and on the first read of each member of a solid pass, with
   `check_decoder_memory` and its message. The number counted is what the program that
-  will run allocates, so under `rar_decompressor="auto"` it is the rule of the program
+  will run allocates, so under `RarOptions(decompressor="auto")` it is the rule of the program
   `auto` picked. Maintainer decision (2026-09-30): check it, per program.
 
   Measured on Linux with `rar`/`unrar` 7.00 and `unar` 1.10.1, peak RSS of the child

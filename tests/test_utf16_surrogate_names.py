@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey.config import ArchiveyConfig, RarDecompressor
+from archivey.config import ArchiveyConfig, RarDecompressor, RarOptions
 from archivey.types import ExtractionPolicy, ExtractionStatus
 from tests.conftest import requires, requires_binary, sevenzip_reads_rar
 from tests.extract_util import open_and_extract
@@ -390,7 +390,7 @@ def _compressed_rar4_surrogate(
     return archive, expected
 
 
-_UNRAR = ArchiveyConfig(rar_decompressor=RarDecompressor.UNRAR)
+_UNRAR = ArchiveyConfig(format_options=[RarOptions(decompressor=RarDecompressor.UNRAR)])
 
 
 @requires_binary("unrar")
@@ -426,6 +426,8 @@ def test_unrar_reads_surrogate_names_beside_names_a_mask_would_also_select(
 @requires_binary("unar")
 def test_unar_reads_a_compressed_rar4_surrogate_name(tmp_path: Path) -> None:
     archive, expected = _compressed_rar4_surrogate(tmp_path)
-    config = ArchiveyConfig(rar_decompressor=RarDecompressor.UNAR)
+    config = ArchiveyConfig(
+        format_options=[RarOptions(decompressor=RarDecompressor.UNAR)]
+    )
     with archivey.open_archive(archive, config=config) as reader:
         assert reader.read("hi\ud800.txt") == expected[0]

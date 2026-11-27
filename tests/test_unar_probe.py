@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, open_archive
-from archivey.config import RarDecompressor
+from archivey.config import RarDecompressor, RarOptions
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.backends import rar_reader
 from archivey.internal.external import cli, unar
@@ -232,7 +232,9 @@ def test_auto_treats_a_refused_unar_as_absent(
     chosen."""
     _stand_in(tmp_path, _PATCHED)
     monkeypatch.setenv("PATH", str(tmp_path))
-    auto = ArchiveyConfig(rar_decompressor=RarDecompressor.AUTO)
+    auto = ArchiveyConfig(
+        format_options=[RarOptions(decompressor=RarDecompressor.AUTO)]
+    )
     with open_archive(_COMPRESSED, config=auto) as archive:
         assert rar_reader.AUTO_CHOSE_UNAR_NOTE not in archive.cost.notes
         member = next(m for m in archive.members() if m.is_file)
@@ -245,7 +247,9 @@ def test_auto_uses_a_unar_that_passes(
 ) -> None:
     _stand_in(tmp_path, GOOD_UNAR_EXTRACT)
     monkeypatch.setenv("PATH", str(tmp_path))
-    auto = ArchiveyConfig(rar_decompressor=RarDecompressor.AUTO)
+    auto = ArchiveyConfig(
+        format_options=[RarOptions(decompressor=RarDecompressor.AUTO)]
+    )
     with open_archive(_COMPRESSED, config=auto) as archive:
         assert archive.cost.notes[0] == rar_reader.AUTO_CHOSE_UNAR_NOTE
 
@@ -255,7 +259,9 @@ def test_explicit_unar_names_the_cause(
 ) -> None:
     _stand_in(tmp_path, _PATCHED)
     monkeypatch.setenv("PATH", str(tmp_path))
-    config = ArchiveyConfig(rar_decompressor=RarDecompressor.UNAR)
+    config = ArchiveyConfig(
+        format_options=[RarOptions(decompressor=RarDecompressor.UNAR)]
+    )
     with open_archive(_COMPRESSED, config=config) as archive:
         member = next(m for m in archive.members() if m.is_file)
         with pytest.raises(PackageNotInstalledError, match=_DROPS):

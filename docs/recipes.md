@@ -577,7 +577,7 @@ PINNED = archivey.ArchiveyConfig(
         plugins=False,
     ),
     # The one RAR program to run. PATH isn't searched.
-    unrar_path="/usr/bin/unrar",
+    format_options=[archivey.config.RarOptions(unrar_path="/usr/bin/unrar")],
     process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS,
 )
 ALLOWED = {"archivey", "cryptography", "backports.zstd", "compression.zstd", "unrar"}
@@ -612,8 +612,8 @@ it's read. The error's `missing` lists the package, and that entry's `reason` sa
 it off. A 7z with a PPMd member fails this way, and the archive's other members can still be read.
 zstd is listed as two optional packages, `backports.zstd` before Python 3.14 and the standard
 library's `compression.zstd` from 3.14 on, so the config names both to keep zstd ZIP members and
-`.tar.zst` files readable. `unrar_path=` must be an absolute path, and a program there that isn't
-RARLAB's, or is older than 6.0, is refused as a missing one is. `format_availability(fmt,
+`.tar.zst` files readable. `RarOptions(unrar_path=)` must be an absolute path, and a program there
+that isn't RARLAB's, or is older than 6.0, is refused as a missing one is. `format_availability(fmt,
 config=PINNED)` tells you before any upload arrives which formats this setup can read.
 
 `backends_used` grows as members are read, so check it after the last read. It lists each reader,

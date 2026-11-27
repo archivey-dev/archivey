@@ -24,7 +24,7 @@ from archivey import (
     TruncatedError,
     open_archive,
 )
-from archivey.config import SpoolLimits
+from archivey.config import RarOptions, SpoolLimits
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
@@ -707,7 +707,8 @@ def _text(size: int) -> bytes:
 def _config(limit: int | None = 40_000) -> ArchiveyConfig:
     # A spool limit of 40 000 bytes makes volumes of 20 000: most members split.
     return ArchiveyConfig(
-        rar_decompressor="unrar", spool_limits=SpoolLimits(max_bytes=limit)
+        spool_limits=SpoolLimits(max_bytes=limit),
+        format_options=[RarOptions(decompressor="unrar")],
     )
 
 
@@ -878,7 +879,9 @@ def test_unar_is_refused_from_a_pipe() -> None:
     raw = (_FIXTURES / "basic_solid__.rar").read_bytes()
     with pytest.raises(StreamNotSeekableError, match="RARLAB unrar"):
         open_archive(
-            _pipe(raw), pipe=True, config=ArchiveyConfig(rar_decompressor="unar")
+            _pipe(raw),
+            pipe=True,
+            config=ArchiveyConfig(format_options=[RarOptions(decompressor="unar")]),
         )
 
 
@@ -891,7 +894,9 @@ def test_an_unrar_older_than_7_is_refused_from_a_pipe(
     raw = (_FIXTURES / "basic_solid__.rar").read_bytes()
     with pytest.raises(StreamNotSeekableError, match="7.00 or later"):
         open_archive(
-            _pipe(raw), pipe=True, config=ArchiveyConfig(rar_decompressor="unrar")
+            _pipe(raw),
+            pipe=True,
+            config=ArchiveyConfig(format_options=[RarOptions(decompressor="unrar")]),
         )
 
 

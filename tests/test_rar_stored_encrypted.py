@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, open_archive
-from archivey.config import RarDecompressor
+from archivey.config import RarDecompressor, RarOptions
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     CorruptionError,
@@ -33,8 +33,8 @@ _RAR = Path(__file__).parent / "fixtures" / "rar"
 _RAR5 = _RAR / "encryption_stored_sizes__.rar"
 _RAR4 = _RAR / "encryption_stored_sizes__rar4.rar"
 _SIZES = (0, 7, 16, 3000, 3001)
-_NONE = ArchiveyConfig(rar_decompressor=RarDecompressor.NONE)
-_UNRAR = ArchiveyConfig(rar_decompressor=RarDecompressor.UNRAR)
+_NONE = ArchiveyConfig(format_options=[RarOptions(decompressor=RarDecompressor.NONE)])
+_UNRAR = ArchiveyConfig(format_options=[RarOptions(decompressor=RarDecompressor.UNRAR)])
 
 
 def _payload(size: int) -> bytes:
@@ -177,7 +177,7 @@ def test_without_cryptography_under_none_names_the_package(
     _refuse_processes(monkeypatch)
     monkeypatch.setattr(rar_reader, "_crypto_available", lambda: False)
     with open_archive(_RAR4, config=_NONE, password="password") as archive:
-        assert any("rar_decompressor is 'none'" in n for n in archive.cost.notes)
+        assert any("RarOptions.decompressor is 'none'" in n for n in archive.cost.notes)
         with pytest.raises(PackageNotInstalledError, match="cryptography"):
             archive.read("size_7.bin")
 

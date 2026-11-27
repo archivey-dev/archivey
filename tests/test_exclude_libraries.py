@@ -36,7 +36,7 @@ from archivey import (
     open_archive,
     open_stream,
 )
-from archivey.config import AcceleratorMode, RarDecompressor
+from archivey.config import AcceleratorMode, RarDecompressor, RarOptions
 from archivey.core import list_supported_formats
 from archivey.detection import DetectionConfidence
 from archivey.formats import ReaderContext, ReaderSource
@@ -512,7 +512,9 @@ def test_an_excluded_cryptography_refuses_aes_members(
 @_both_forms
 @requires("cryptography")
 def test_an_excluded_cryptography_refuses_a_stored_rar_member() -> None:
-    config = _excluding(L.CRYPTOGRAPHY, rar_decompressor=RarDecompressor.NONE)
+    config = _excluding(
+        L.CRYPTOGRAPHY, format_options=[RarOptions(decompressor=RarDecompressor.NONE)]
+    )
     path = _RAR_FIXTURES / "encryption_stored__.rar"
     with open_archive(path, password="password", config=config) as reader:
         member = reader.members()[0]

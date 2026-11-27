@@ -142,13 +142,14 @@ method archivey.ArchiveStream.verify(self, *, password_only: bool = False) -> Ve
 method archivey.ArchiveStream.writable(self) -> bool
 method archivey.ArchiveStream.write(self, b: object, /) -> int
 class archivey.ArchiveyConfig()
-init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode | AcceleratorModeStr = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode | None | AcceleratorModeStr = None, process_isolation: ProcessIsolation | ProcessIsolationStr = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_decompressor: RarDecompressor | RarDecompressorStr = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None, recover_partial_data: PartialDataRecovery | PartialDataRecoveryStr = PartialDataRecovery.BEFORE_DAMAGE, on_source_read: OnSourceRead | None = None, source_read_step: int = 1048576, salvage_limits: SalvageLimits = SalvageLimits(...)) -> None
+init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode | AcceleratorModeStr = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode | None | AcceleratorModeStr = None, process_isolation: ProcessIsolation | ProcessIsolationStr = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str | None = None, rar_decompressor: RarDecompressor | None | RarDecompressorStr = None, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None, recover_partial_data: PartialDataRecovery | PartialDataRecoveryStr = PartialDataRecovery.BEFORE_DAMAGE, on_source_read: OnSourceRead | None = None, source_read_step: int = 1048576, salvage_limits: SalvageLimits = SalvageLimits(...), format_options: Sequence[object] = ()) -> None
 field archivey.ArchiveyConfig.always_probe_content: bool = False
 field archivey.ArchiveyConfig.decoder_limits: DecoderLimits = DecoderLimits(...)
 field archivey.ArchiveyConfig.detection_budget: DetectionBudget = DetectionBudget(...)
 field archivey.ArchiveyConfig.diagnostic_policy: DiagnosticPolicy = <factory>
 field archivey.ArchiveyConfig.discover_volumes: bool = True
 field archivey.ArchiveyConfig.extraction_limits: ExtractionLimits = ExtractionLimits(...)
+field archivey.ArchiveyConfig.format_options: Sequence[object] = ()
 field archivey.ArchiveyConfig.formats: FormatPolicy = <factory>
 field archivey.ArchiveyConfig.listing_limits: ListingLimits = ListingLimits(...)
 field archivey.ArchiveyConfig.max_read_through: int = 1048576
@@ -156,7 +157,7 @@ field archivey.ArchiveyConfig.max_retained_diagnostic_references: int = 256
 field archivey.ArchiveyConfig.on_diagnostic: OnDiagnostic | None = None
 field archivey.ArchiveyConfig.on_source_read: OnSourceRead | None = None
 field archivey.ArchiveyConfig.process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
-field archivey.ArchiveyConfig.rar_decompressor: RarDecompressor = RarDecompressor.AUTO
+field archivey.ArchiveyConfig.rar_decompressor: RarDecompressor | None = None
 field archivey.ArchiveyConfig.read_link_targets: bool = True
 field archivey.ArchiveyConfig.recover_partial_data: PartialDataRecovery = PartialDataRecovery.BEFORE_DAMAGE
 field archivey.ArchiveyConfig.salvage_limits: SalvageLimits = SalvageLimits(...)
@@ -166,7 +167,7 @@ field archivey.ArchiveyConfig.unar_path: str | os.PathLike[str] | None = None
 field archivey.ArchiveyConfig.unrar_path: str | os.PathLike[str] | None = None
 field archivey.ArchiveyConfig.use_indexed_bzip2: AcceleratorMode | None = None
 field archivey.ArchiveyConfig.use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
-field archivey.ArchiveyConfig.zip_unflagged_fallback_encoding: str = 'cp437'
+field archivey.ArchiveyConfig.zip_unflagged_fallback_encoding: str | None = None
 attribute archivey.ArchiveyConfig.UNTRUSTED = ArchiveyConfig(...)
 class archivey.ArchiveyError(Exception)
 init archivey.ArchiveyError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
@@ -648,6 +649,11 @@ value archivey.config.RarDecompressor.UNRAR = 'unrar'
 value archivey.config.RarDecompressor.UNAR = 'unar'
 value archivey.config.RarDecompressor.AUTO = 'auto'
 value archivey.config.RarDecompressor.NONE = 'none'
+class archivey.config.RarOptions()
+init archivey.config.RarOptions(decompressor: RarDecompressor | RarDecompressorStr = RarDecompressor.AUTO, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None) -> None
+field archivey.config.RarOptions.decompressor: RarDecompressor = RarDecompressor.AUTO
+field archivey.config.RarOptions.unar_path: str | os.PathLike[str] | None = None
+field archivey.config.RarOptions.unrar_path: str | os.PathLike[str] | None = None
 class archivey.config.SalvageLimits()
 init archivey.config.SalvageLimits(max_search_bytes: int | None = None, max_reported_regions: int = 1000) -> None
 field archivey.config.SalvageLimits.max_reported_regions: int = 1000
@@ -656,6 +662,9 @@ class archivey.config.SpoolLimits()
 init archivey.config.SpoolLimits(max_bytes: int | None = 1073741824) -> None
 field archivey.config.SpoolLimits.max_bytes: int | None = 1073741824
 attribute archivey.config.SpoolLimits.UNLIMITED = SpoolLimits(...)
+class archivey.config.ZipOptions()
+init archivey.config.ZipOptions(fallback_encoding: str = 'cp437') -> None
+field archivey.config.ZipOptions.fallback_encoding: str = 'cp437'
 module archivey.cost
 class archivey.cost.AccessCost(Enum)
 enum archivey.cost.AccessCost
@@ -1409,6 +1418,7 @@ method archivey.formats.ReaderContext.hold(self, member: ArchiveMember, *, reaso
 method archivey.formats.ReaderContext.link_target_unavailable(self, member: ArchiveMember, *, reason: str, message: str, target_in_archive: bool) -> None
 method archivey.formats.ReaderContext.normalize_name(self, name: str, member_type: MemberType) -> str
 method archivey.formats.ReaderContext.open_nested(self, data: BinaryIO | io.RawIOBase, format: ArchiveFormat) -> Iterator[MemberSpan]
+method archivey.formats.ReaderContext.options(self, cls: type[OptionsT]) -> OptionsT
 method archivey.formats.ReaderContext.report(self, code: DiagnosticCode, message: str, details: DiagnosticContext, *, member: ArchiveMember | None = None) -> None
 method archivey.formats.ReaderContext.set_dos_time(self, member: ArchiveMember, field: TimeField, stamp: int, *, source: str) -> None
 method archivey.formats.ReaderContext.set_unix_time(self, member: ArchiveMember, field: TimeField, seconds: int, *, nanoseconds: int = 0, source: str) -> None

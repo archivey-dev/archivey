@@ -243,7 +243,7 @@ _finder = CliToolFinder(
     parse_banner=parse_unar_banner,
     version_floor=UNAR_VERSION_FLOOR,
     install_hint=UNAR_INSTALL_HINT,
-    setting="ArchiveyConfig.unar_path",
+    setting="RarOptions.unar_path",
     # Looked up at call time, so a test can replace the module function.
     verify=lambda path: unar_rar5_probe_failure(path),
 )
@@ -255,7 +255,7 @@ def find_unar(*, purpose: str, program: str | None = None) -> str:
 
     Usable: it identifies itself, and it decodes the RAR5 test archive
     (:func:`unar_rar5_probe_failure`). Each binary pays for both once per process.
-    ``program`` is ``ArchiveyConfig.unar_path``: when set, it is the only binary tried.
+    ``program`` is ``RarOptions.unar_path``: when set, it is the only binary tried.
     """
     return _finder.find(purpose=purpose, program=program)
 

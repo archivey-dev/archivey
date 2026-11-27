@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, open_archive
-from archivey.config import DecoderLimits, ExtractionLimits, SpoolLimits
+from archivey.config import DecoderLimits, ExtractionLimits, RarOptions, SpoolLimits
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
@@ -103,7 +103,9 @@ def _config(
         pytest.skip("needs rar")
     if needs_decompressor and (refusal := binary_refusal(decompressor)) is not None:
         pytest.skip(f"needs a {decompressor} archivey will use: {refusal}")
-    return ArchiveyConfig(rar_decompressor=decompressor, **kwargs)  # type: ignore[arg-type]
+    return ArchiveyConfig(
+        **kwargs, format_options=[RarOptions(decompressor=decompressor)]
+    )  # type: ignore[arg-type]
 
 
 @pytest.fixture

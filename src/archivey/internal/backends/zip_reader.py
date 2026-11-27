@@ -77,7 +77,7 @@ from typing import (
     cast,
 )
 
-from archivey.config import AcceleratorMode, ArchiveyConfig
+from archivey.config import AcceleratorMode, ArchiveyConfig, ZipOptions
 from archivey.cost import (
     AccessCost,
     CostReceipt,
@@ -166,7 +166,11 @@ from archivey.internal.backends.zipcrypto import (
     password_matches_check_byte,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
-from archivey.internal.config import StreamConfig, stream_config_from_archivey
+from archivey.internal.config import (
+    StreamConfig,
+    format_options_of,
+    stream_config_from_archivey,
+)
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.format_provenance import confirm_format, format_confirmed
@@ -2557,7 +2561,7 @@ class ZipReader(BaseArchiveReader):
                 # A codec that refuses the surrogateescape handler outright
                 # (``idna``): fall through to the configured fallback.
                 pass
-        fallback = self._config.zip_unflagged_fallback_encoding
+        fallback = format_options_of(self._config, ZipOptions).fallback_encoding
         if fallback.lower().replace("-", "").replace("_", "") in {
             "cp437",
             "437",
@@ -3094,7 +3098,10 @@ class ZipReader(BaseArchiveReader):
         # caller's encoding= or the configured fallback; for a configured fallback,
         # the cp437 APPNOTE default.
         passed_over = (
-            (self._encoding or self._config.zip_unflagged_fallback_encoding)
+            (
+                self._encoding
+                or format_options_of(self._config, ZipOptions).fallback_encoding
+            )
             if inferred_encoding == "utf-8"
             else "cp437"
         )

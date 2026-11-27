@@ -334,13 +334,13 @@ match inside `UNRAR`) whose parsed major.minor is 6.0 or later. If a decompresso
 required and missing or incompatible, the system SHALL raise `PackageNotInstalledError`
 naming RARLAB `unrar` or `rar`. Archivey MUST NOT use `unrar-free`, `bsdtar`, `7z`, or a
 degraded backend. The spawn SHALL be the `p` (print to stdout) command only. This
-requirement applies when `ArchiveyConfig.rar_decompressor` is `unrar`, or `auto` (the
+requirement applies when `RarOptions.decompressor` is `unrar`, or `auto` (the
 default) with a usable RARLAB binary found; `unar` is covered by `Read RAR member
 data with unar`.
 
-`ArchiveyConfig.unrar_path`, when set, SHALL be the only RARLAB binary tried, in place of
+`RarOptions.unrar_path`, when set, SHALL be the only RARLAB binary tried, in place of
 the `PATH` and WinRAR-folder search, by every read and by `format_availability(config=)`;
-`unar_path` SHALL do the same for `unar`. The pinned binary SHALL pass the same
+`RarOptions.unar_path` SHALL do the same for `unar`. The pinned binary SHALL pass the same
 identification (banner, version floor, and for `unar` the RAR5 check), and a missing or
 refused one SHALL raise `PackageNotInstalledError` that names the setting and SHALL NOT
 fall back to `PATH`. `AUTO` SHALL resolve with the pinned paths. Each SHALL be an absolute
@@ -360,14 +360,14 @@ non-path SHALL be refused at construction.
 | Same, `cryptography` missing, `unrar` present | `unrar` reads it |
 | Same, `cryptography` and `unrar` both missing | `PackageNotInstalledError` names `unrar` and `cryptography` |
 | Stored, encrypted member split across volumes | Read by the program |
-| Compressed member, both missing, and no `unar` (or `rar_decompressor="unrar"`) | `PackageNotInstalledError` names `unrar` or `rar` |
+| Compressed member, both missing, and no `unar` (or `RarOptions(decompressor="unrar")`) | `PackageNotInstalledError` names `unrar` or `rar` |
 | PATH `unrar` is not RARLAB `unrar`, and no usable `rar` | `PackageNotInstalledError` names RARLAB `unrar` or `rar` |
 | RARLAB `unrar` older than 6.0 and no usable `rar`, or a RARLAB banner with no parseable version | `PackageNotInstalledError` names the floor and the version found; refused at identification |
 | RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed member data and encrypted data archivey does not decrypt; spawn is `rar p` |
 | RARLAB `unrar` 6.0+ and RARLAB `rar` both on `PATH` | `unrar` is used |
-| `unrar_path` names a RARLAB 6.0+ binary, another on `PATH` | The pinned one is used |
-| `unrar_path` names a missing file, a usable `unrar` on `PATH` | `PackageNotInstalledError` naming `ArchiveyConfig.unrar_path`; `PATH` is not searched |
-| `unrar_path="unrar"` | `ArchiveyUsageError` (a `ValueError`) at construction |
+| `RarOptions.unrar_path` names a RARLAB 6.0+ binary, another on `PATH` | The pinned one is used |
+| `RarOptions.unrar_path` names a missing file, a usable `unrar` on `PATH` | `PackageNotInstalledError` naming `RarOptions.unrar_path`; `PATH` is not searched |
+| `RarOptions(unrar_path="unrar")` | `ArchiveyUsageError` (a `ValueError`) at construction |
 | Windows, nothing usable on `PATH`, WinRAR 6.0+ in Program Files | WinRAR's `UnRAR.exe` is used |
 | Listing only, both missing | No data dependency is checked |
 | Listing only, both missing, archive has a compressed RAR 1.5-4 comment | The comment is `None`; nothing else depends on a data program |
@@ -504,7 +504,7 @@ desynchronize sizes).
 | `stream_members()` over the same header, solid or not | The stream yielded for the directory delivers what `open()` delivers, sliced from the archive and outside the `unrar p` pipe (it takes no offset there), or raises the same `UnsupportedFeatureError` on its first read |
 | Stream source, `open()` refused before any spawn | Nothing is written; the refusal raises without materializing |
 | Path source | `ar.cost.notes` has no disk-copy caveat (under `unrar`); the spool limit never refuses it |
-| Prefixed path source under `unar`, copy over `SpoolLimits.max_bytes` | `ar.cost.notes` says a compressed read will be refused; the read raises `ResourceLimitError` naming `rar_decompressor='unrar'`; no temp file |
+| Prefixed path source under `unar`, copy over `SpoolLimits.max_bytes` | `ar.cost.notes` says a compressed read will be refused; the read raises `ResourceLimitError` naming `RarOptions(decompressor='unrar')`; no temp file |
 
 ### Requirement: Report RAR cost and version-specific metadata
 
@@ -1101,7 +1101,7 @@ encrypted.
 
 ### Requirement: Read RAR member data with unar
 
-When `ArchiveyConfig.rar_decompressor` is `unar`, or `auto` with no usable RARLAB
+When `RarOptions.decompressor` is `unar`, or `auto` with no usable RARLAB
 `unrar` or `rar` found, the system SHALL read compressed member data by invoking
 `unar` 1.10 or later, identified on `PATH` by its `unar -h` banner with the same probe
 timeout and stat-keyed cache as RARLAB `unrar`. An identified `unar` SHALL also decode a
@@ -1175,18 +1175,18 @@ most `rar` writes, SHALL be `None` and SHALL NOT be weighed or decoded.
 | --- | --- |
 | Default config (`auto`), RARLAB `unrar` present, compressed member | `unrar` is spawned; `unar` is not |
 | Default config (`auto`), only a `unar` that passes the RAR5 check, compressed member | `unar` is spawned; `ar.cost.notes` says why at open |
-| `rar_decompressor="unrar"`, only `unar` present | `PackageNotInstalledError` names RARLAB `unrar` or `rar`; `unar` is not used |
-| `rar_decompressor="unar"`, `unar` missing, `unrar` present | `PackageNotInstalledError` names `unar`; `unrar` is not used |
-| `rar_decompressor="auto"`, RARLAB `unrar` present | `unrar` is spawned; `unar` is not |
-| `rar_decompressor="auto"`, only a `unar` that passes the RAR5 check | `unar` is spawned |
+| `RarOptions(decompressor="unrar")`, only `unar` present | `PackageNotInstalledError` names RARLAB `unrar` or `rar`; `unar` is not used |
+| `RarOptions(decompressor="unar")`, `unar` missing, `unrar` present | `PackageNotInstalledError` names `unar`; `unrar` is not used |
+| `RarOptions(decompressor="auto")`, RARLAB `unrar` present | `unrar` is spawned; `unar` is not |
+| `RarOptions(decompressor="auto")`, only a `unar` that passes the RAR5 check | `unar` is spawned |
 | Only a `unar` that fails the RAR5 check (`tests/test_unar_probe.py`), `auto` or `"unar"` | `auto`: as with neither present; `"unar"`: `PackageNotInstalledError` saying what the check saw |
-| `rar_decompressor="auto"`, neither present | `PackageNotInstalledError` names RARLAB `unrar` or `rar` |
+| `RarOptions(decompressor="auto")`, neither present | `PackageNotInstalledError` names RARLAB `unrar` or `rar` |
 | `unar` selected, member name contains `*` | Read by index |
 | `unar` selected, encrypted RAR5 member, right password | Read correctly; the password is passed with `-p` |
 | `unar` selected, encrypted RAR5 member, wrong password | `EncryptionError` |
 | `unar` selected, encrypted RAR 2.x-4.x member, compressed or split | `UnsupportedFeatureError` naming the RAR 2.x-4.x reason |
 | `unar` selected, stored encrypted RAR 2.9-4 member in one part, `open()` | Decrypted by archivey; `unar` is not spawned |
-| `unar` selected, solid RAR 2.x-4.x pass with an encrypted compressed member | That member and the compressed members after it in its solid stream refused, saying `unar` 1.10 cannot read them and naming `rar_decompressor='unrar'`; the members before it read correctly |
+| `unar` selected, solid RAR 2.x-4.x pass with an encrypted compressed member | That member and the compressed members after it in its solid stream refused, saying `unar` 1.10 cannot read them and naming `RarOptions(decompressor='unrar')`; the members before it read correctly |
 | `unar` selected, solid RAR 2.x-4.x pass with a stored encrypted member in one part, `cryptography` installed | Refused in the pass, though `open()` decrypts it; the members before the first encrypted one are read |
 | `unar` selected, solid RAR5 pass where a member's header stopped before encryption was ruled out, empty run | Not `EncryptionError`: the member's fail-closed flag says nothing about the run |
 | `unar` selected, non-ASCII password | `UnsupportedFeatureError` naming the password reason |
@@ -1205,7 +1205,7 @@ The reader SHALL refuse a member read with `ResourceLimitError` when the diction
 memory the decompressing program would use is over
 `DecoderLimits.max_decoder_memory`. The refusal SHALL come before `unrar` or `unar` is
 spawned and before a stream source is copied to disk. The count SHALL follow the
-program that will run, so under `rar_decompressor="auto"` it is the rule of the program
+program that will run, so under `RarOptions(decompressor="auto")` it is the rule of the program
 `auto` picked:
 
 - `unar`: the largest dictionary declared in the member's solid stream, up to and
@@ -1236,7 +1236,7 @@ SHALL give the declared size when the count is smaller.
 | `unrar`, a nonsolid member declaring 4 GiB and 3 GiB unpacked, default cap | `ResourceLimitError` naming 3 GiB and the declared 4 GiB; `unrar` not spawned |
 | `unrar`, a solid member behind a member declaring 4 GiB and 3 GiB unpacked | `ResourceLimitError`, for a named read and in a `stream_members()` pass |
 | `unrar`, a stored solid member behind a member declaring 4 GiB and 3 GiB unpacked | `ResourceLimitError` naming the earlier member; `unar` counts it 0 |
-| `rar_decompressor="auto"` | The count of the program `auto` picked |
+| `RarOptions(decompressor="auto")` | The count of the program `auto` picked |
 
 ### Requirement: A RAR file cut inside a header SHALL list the members before the cut
 
@@ -1508,7 +1508,7 @@ FILE header damaged unless stated.
 | From a pipe (`pipe=True`), a damaged member whose data and the next header fit in 4 MiB | As from a file: every member, the damaged one flagged |
 | From a pipe, a damaged member larger than 4 MiB | The members before it; `CorruptionError` saying a file would go on past the damage (from a file: every member) |
 | RAR 1.5-4, the last bytes of the third and fifth headers flipped (the fourth is intact) | Six listed, two flagged: the fifth confirms the fourth once its own sizes are confirmed |
-| `rar_decompressor="unar"`, read each member after the damage | Each returns its own bytes (the damaged member takes its `lsar` index, as `lsar` lists it) |
+| `RarOptions(decompressor="unar")`, read each member after the damage | Each returns its own bytes (the damaged member takes its `lsar` index, as `lsar` lists it) |
 | Plain, one byte of the MAIN header flipped | `CorruptionError` at open |
 | Plain two-volume set, volume 1's end block damaged and not taken as one, its last member continues into volume 2 | Full set listing; members read; `CorruptionError` naming volume 1 after them |
 | The same set with volume 2 missing | Volume 1's members listed; `TruncatedError` naming volume 2 and the damaged header |
@@ -1587,7 +1587,7 @@ stream, solid or not, and a solid pass SHALL then keep no source.
 
 ### Requirement: Read RAR without any external program
 
-When `ArchiveyConfig.rar_decompressor` is `none`, the system MUST NOT start `unrar`,
+When `RarOptions.decompressor` is `none`, the system MUST NOT start `unrar`,
 `rar` or `unar` for that reader: not to identify them at open, not to decode a comment,
 and not to read member data. Opening and listing SHALL work as with any other setting,
 including header-encrypted archives given the right password. A stored member that is

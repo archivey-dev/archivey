@@ -41,7 +41,7 @@ or hashes their members, with default limits.
 **Needs:**
 - Bounded memory, disk, CPU and key-derivation work for any input.
 - Errors, never crashes.
-- External programs that can be turned off (`rar_decompressor=RarDecompressor.NONE`).
+- External programs that can be turned off (`RarOptions(decompressor=RarDecompressor.NONE)`).
 **Hurts:** any archive that exhausts memory, kills the process, or runs without bound.
 This is the maintainer's test (design rules, principle 2).
 

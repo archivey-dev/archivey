@@ -1,4 +1,4 @@
-"""``unar`` as the opt-in RAR data program (``ArchiveyConfig.rar_decompressor="unar"``).
+"""``unar`` as the opt-in RAR data program (``RarOptions.decompressor="unar"``).
 
 Three layers, tested separately:
 
@@ -28,7 +28,7 @@ from typing import BinaryIO
 import pytest
 
 from archivey import ArchiveReader, ArchiveyConfig, open_archive
-from archivey.config import RarDecompressor, SpoolLimits
+from archivey.config import RarDecompressor, RarOptions, SpoolLimits
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -47,8 +47,8 @@ from tests.test_unar_probe import GOOD_UNAR_EXTRACT
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
 _CORPUS = Path(__file__).parent / "fixtures" / "corpus" / "rar"
-_UNAR = ArchiveyConfig(rar_decompressor=RarDecompressor.UNAR)
-_UNRAR = ArchiveyConfig(rar_decompressor=RarDecompressor.UNRAR)
+_UNAR = ArchiveyConfig(format_options=[RarOptions(decompressor=RarDecompressor.UNAR)])
+_UNRAR = ArchiveyConfig(format_options=[RarOptions(decompressor=RarDecompressor.UNRAR)])
 _posix_only = pytest.mark.skipif(
     sys.platform == "win32", reason="uses POSIX shell scripts as stand-in binaries"
 )
@@ -356,8 +356,8 @@ def test_prefixed_archive_is_copied_for_unar(tmp_path: Path, name: str) -> None:
 
 def _unar_limited(max_bytes: int) -> ArchiveyConfig:
     return ArchiveyConfig(
-        rar_decompressor=RarDecompressor.UNAR,
         spool_limits=SpoolLimits(max_bytes=max_bytes),
+        format_options=[RarOptions(decompressor=RarDecompressor.UNAR)],
     )
 
 
@@ -551,14 +551,13 @@ def test_selected_unar_missing_does_not_fall_back_to_unrar(
 
 
 def test_config_accepts_the_name() -> None:
-    config = ArchiveyConfig(rar_decompressor="UNAR")  # pyright: ignore[reportArgumentType]
-    assert config.rar_decompressor is RarDecompressor.UNAR
-    config = ArchiveyConfig(rar_decompressor="auto")
-    assert config.rar_decompressor is RarDecompressor.AUTO
-    assert ArchiveyConfig().rar_decompressor is RarDecompressor.AUTO
+    options = RarOptions(decompressor="UNAR")  # pyright: ignore[reportArgumentType]
+    assert options.decompressor is RarDecompressor.UNAR
+    assert RarOptions(decompressor="auto").decompressor is RarDecompressor.AUTO
+    assert RarOptions().decompressor is RarDecompressor.AUTO
 
 
-_AUTO = ArchiveyConfig(rar_decompressor=RarDecompressor.AUTO)
+_AUTO = ArchiveyConfig(format_options=[RarOptions(decompressor=RarDecompressor.AUTO)])
 
 
 def _path_with(tmp_path: Path, *programs: str) -> str:
@@ -956,7 +955,7 @@ def test_refusal_names_the_way_out() -> None:
         pytest.raises(UnsupportedFeatureError) as info,
     ):
         archive.read("secret.txt")
-    assert "rar_decompressor to 'unrar'" in str(info.value)
+    assert "RarOptions.decompressor to 'unrar'" in str(info.value)
 
 
 def test_rar4_member_after_encrypted_data_in_its_solid_stream_is_refused() -> None:
@@ -1049,7 +1048,7 @@ def test_rar4_solid_pass_serves_the_members_before_an_encrypted_one(
         except UnsupportedFeatureError as exc:
             # The error blames unar and names the way out.
             assert "unar 1.10" in str(exc)
-            assert "rar_decompressor to 'unrar'" in str(exc)
+            assert "RarOptions.decompressor to 'unrar'" in str(exc)
             return type(exc)
 
     with open_archive(path, password="password", config=_UNAR) as archive:

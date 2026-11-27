@@ -109,6 +109,8 @@ See [Configuration](opening.md#configuration), [Passwords](opening.md#passwords)
 ::: archivey.config.DecoderLimits
 ::: archivey.config.SpoolLimits
 ::: archivey.config.SalvageLimits
+::: archivey.config.ZipOptions
+::: archivey.config.RarOptions
 ::: archivey.config.AcceleratorMode
 ::: archivey.config.ProcessIsolation
 ::: archivey.config.RarDecompressor

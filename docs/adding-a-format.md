@@ -1007,8 +1007,8 @@ archive behind a prefix (a self-extracting stub or other leading bytes) with
 `UnsupportedFeatureError`, a source that
 cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO,
 since its bytes are not an ISO 9660 image (the built-in reader strips the sectors as it reads). The format's own config options, such as
-`zip_unflagged_fallback_encoding` or `rar_decompressor`, reach the plugin through
-`ReaderContext.config`; honouring them is the plugin's job. `password=` reaches a
+`ZipOptions.fallback_encoding` or `RarOptions.decompressor`, reach the plugin through
+`ReaderContext.options(ZipOptions)`; honouring them is the plugin's job. `password=` reaches a
 replacement that sets `supports_password` and asks for passwords with `NeedsPassword`, as
 any plugin does; `encoding=` reaches it when the plugin sets `uses_encoding`. A missing module in
 `requires` raises `PackageNotInstalledError` naming the plugin, without falling back to

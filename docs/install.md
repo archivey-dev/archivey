@@ -55,7 +55,8 @@ The preferred program is RARLAB's `unrar` (or `rar`), version 6.0 or later. Arch
 finds no usable `unrar`, and then passes an encrypted archive's password on `unar`'s command line,
 where other users on the same machine can see it while it runs. Some `unar` packages in Debian and
 Ubuntu have a bug that drops some files; archivey tests the `unar` it finds and won't use one that
-has it. If you want to choose the program yourself, set `rar_decompressor` in `ArchiveyConfig` to
+has it. If you want to choose the program yourself, pass
+`format_options=[archivey.config.RarOptions(decompressor=...)]` in `ArchiveyConfig`, with
 `"unrar"`, `"unar"`, `"none"` or `"auto"` (the default). With `"unrar"`, archivey never runs `unar`.
 
 ### Getting `unrar`
@@ -81,7 +82,7 @@ You can do the same in the Start menu: search for "environment variables", open 
 variables for your account", select **Path**, click **Edit**, then **New**, and enter the folder.
 Programs that are already running keep their old `PATH`, so open a new terminal, and restart your
 editor if you run archivey from it. You can also skip the `PATH` search and pass the full path as
-`ArchiveyConfig(unrar_path=...)`.
+`ArchiveyConfig(format_options=[RarOptions(unrar_path=...)])`.
 
 On macOS, Homebrew no longer ships `unrar`. You can install it from an unofficial Homebrew tap,
 which builds or downloads RARLAB's program:
@@ -115,9 +116,10 @@ If your program needs to know at run time which formats work with what's install
 supported, partly supported (it opens, but some members need a missing package) or not available,
 and which packages would add the rest. RAR counts as partly supported without RARLAB's `unrar`, even
 when `unar` is installed. To find out, it runs each `unrar` or `rar` on your `PATH` once to read its
-version, whatever `rar_decompressor` says; pass `check_programs=False` to run nothing. `cryptography`
-isn't counted, because only encrypted members need it. Pass the `config=` you open with to count
-the packages its `FormatPolicy(exclude_libraries=)` or `only_libraries=` turns off as missing.
+version, whatever `RarOptions.decompressor` says; pass `check_programs=False` to run nothing.
+`cryptography` isn't counted, because only encrypted members need it. Pass the `config=` you open
+with to count the packages its `FormatPolicy(exclude_libraries=)` or `only_libraries=` turns off as
+missing.
 
 Its `faster_with` lists the packages that would only make reading faster: without compress-utils,
 archivey decodes LZO and Snappy in Python, and without rapidgzip it decodes gzip, zlib, DEFLATE
