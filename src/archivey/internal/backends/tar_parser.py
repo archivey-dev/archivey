@@ -1731,9 +1731,18 @@ class TarWalker:
         header within them. Bytes a forward-only walk has read past and no longer
         keeps are not searched: they read as zeros, which never pass. With a header
         found, the walk's next :meth:`next_entry` parses it as it parses any header.
+
+        A ``start`` past the archive's known end searches nothing: the walk can end
+        there, past a member whose size the archive cuts short, and the shared
+        search takes a start past its end as a bug.
         """
         if not self._seekable or self._rewind_costly:
             self._window().keep_behind(_FORWARD_HOLD)
+        if self._end is not None:
+            # A start built from a size the archive gives (where the walk ended
+            # past a member whose data the archive cuts short) may lie past the
+            # known end: nothing is left to search there.
+            start = min(start, self._end)
         result = search_forward(
             state,
             self._salvage_read,

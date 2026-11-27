@@ -1747,6 +1747,43 @@ def test_a_trusted_member_is_confirmed_only_by_a_header_that_passes_the_checks(
     assert _names_on(path, data) == [*expected, "after.txt"]
 
 
+@pytest.mark.parametrize("path", _PATHS)
+@pytest.mark.parametrize("kind", ["ustar", "v7"])
+def test_a_member_cut_short_after_a_found_one_ends_the_pass_in_its_error(
+    path: str, kind: str
+) -> None:
+    # second.txt's header is damaged, the search finds third.txt, and the walk
+    # reaches big.bin from it, whose data the file cuts 20000 bytes in, as a
+    # truncated download does. The walk past big.bin ends where its size points,
+    # past the archive's end: no search starts there, and the pass ends in the
+    # default walk's error, after what GNU tar --ignore-zeros lists.
+    make = _member if kind == "ustar" else _v7_member
+    data = (
+        make("first.txt", b"1" * 100)
+        + b"\xff" * BLOCKSIZE
+        + b"2" * 100
+        + bytes(BLOCKSIZE - 100)
+        + make("third.txt", b"3" * 100)
+        + make("big.bin", b"B" * 100_000)
+    )
+    data = data[: 4 * BLOCKSIZE + 20_000]
+    expected = ["first.txt", "third.txt", "big.bin"]
+    if path == "stream_members":
+        names: list[str] = []
+        with (
+            open_archive(io.BytesIO(data), salvage=True) as reader,
+            pytest.raises(CorruptionError),
+        ):
+            for member, _ in reader.stream_members():
+                names.append(member.name)
+        assert names == expected
+        return
+    source = {"plain": data, "gzip": gzip.compress(data, 1), "deb": _as_deb(data)}[path]
+    listing = _list(source, salvage=True)
+    assert [n for n in listing.names if not n.startswith("DEBIAN")] == expected
+    assert isinstance(listing.error, CorruptionError)
+
+
 def _pax_record(key: str, value: str) -> bytes:
     body = f" {key}={value}\n"
     length = len(body) + 1
