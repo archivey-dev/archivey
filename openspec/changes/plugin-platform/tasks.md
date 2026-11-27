@@ -267,7 +267,7 @@
 - [x] 5.8 Remove `openspec/changes/plugin-api`, which this change replaces, only
   after its requirements that survive are in `openspec/specs/` (review AG10): the
   reader contract, `hold()`, `data_on_demand`, inner-stream detection and
-  `CodecHandler` exist only in that change's deltas today. Either `plugin-api` is
+  `CodecHandler` existed only in that change's deltas. Either `plugin-api` is
   archived first, or the implementing change of step 2 folds them into its
   `format-plugins` and `compressed-streams` deltas; a dry-run `openspec archive`
   shows it. *Archived first, in PR 1854 (2026-11-27).*
