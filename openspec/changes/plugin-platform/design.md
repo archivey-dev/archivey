@@ -1186,8 +1186,9 @@ and the evidence in front of him (review round A):
   each package's test dependency group in its `pyproject.toml`, which names the
   other packages its tests need (disk-images names the compressors). A package's
   tests run in an environment holding core, the package and that group only, so an
-  edge left out fails the package's own run and cannot be missed. `archivey-speedups` keeps Windows and
-  macOS on its own changes, as the only native code, and DMG keeps its macOS job,
+  edge left out fails the package's own run and cannot be missed.
+  `archivey-speedups` keeps Windows and macOS on its own changes, as the only
+  native code, and DMG keeps its macOS job,
   which compares the reader with `hdiutil`. The full matrix for everything runs
   nightly and before a release. Fuzz targets, limit checks and the type checkers
   are not lightened. A job the rule skips reports success, so the merge queue does
