@@ -38,7 +38,7 @@ src/archivey/
     ├── detection.py     detect_format() and FormatInfo
     ├── registry.py      ArchiveFormat → backend; format_availability()
     ├── reader_state.py  operation ownership, live-stream gate, lifecycle leases
-    ├── backends/        one self-registering reader module per format
+    ├── backends/        one reader module per format (core's table: format_table.py)
     ├── external/        format-agnostic external decompressor programs (unar)
     └── streams/         the codec and stream-plumbing layer
         ├── codecs/      one module per codec, its decoder, and the shared codec base
@@ -138,8 +138,8 @@ Three things about this path are worth knowing before you debug it:
 | Warnings-as-data | `diagnostics.py` (public types) + `internal/diagnostics_collector.py` (emission) |
 | Cost or IO accounting | `cost.py` · `internal/measurement.py` (not public: harness, tests, CLI `--track-io`) · `streams/counting.py` |
 | Concurrency, locking, `MemberStreams` | `internal/reader_state.py` + `streams/streamtools/locked.py`; spec `reader-concurrency` |
-| Format detection or a magic number | `internal/detection.py`, handbook [`topics/detection.md`](topics/detection.md); UDIF `koly` trailer: `backends/udif.py`, handbook [`formats/dmg.md`](formats/dmg.md); prefixed/SFX payloads: `internal/sfx.py` + `<fmt>_detect.py` validators, handbook [`topics/prefixed-archives.md`](topics/prefixed-archives.md) |
-| Adding a backend | `internal/registry.py` + a self-registering module in `backends/` |
+| Format detection or a magic number | `internal/detection.py`, handbook [`topics/detection.md`](topics/detection.md); UDIF `koly` trailer: declared in `internal/format_table.py`, parsed in `backends/udif.py`, handbook [`formats/dmg.md`](formats/dmg.md); prefixed/SFX payloads: `internal/sfx.py` + `<fmt>_detect.py` validators, handbook [`topics/prefixed-archives.md`](topics/prefixed-archives.md) |
+| Adding a backend | a module in `backends/` + its entry in `internal/format_table.py` (`CORE_FORMATS`); `internal/registry.py` |
 | The CLI | `cli/main.py` dispatches; one module per subcommand |
 | Terminal-safe output of hostile text | `terminal.py`; threat-model O9 |
 | Hypothesis inputs that break name handling (Unicode digits, lookalikes, bidi, case folds, surrogates, risky components) | `tests/risky_text.py`; used by `tests/test_property_safety.py` |

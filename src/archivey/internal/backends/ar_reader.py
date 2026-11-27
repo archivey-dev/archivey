@@ -29,19 +29,21 @@ Symbol tables are the linker's index, not files: the walk skips them, and the ar
 info says one was there. A *thin* archive (``!<thin>\\n``) stores only the names of
 files kept outside it and is refused.
 
-The reader is written against ``archivey.formats`` and archivey's public names only,
-as a format added from outside would be; ``register_builtin_format`` and the
-salvage search (``internal.salvage``, which has no plugin hook yet) are the internal
-names it uses (``tests/test_ar.py`` checks). With ``open_archive(salvage=True)`` the
-walk searches past damage for the next header (``_search``). Handbook page:
+The reader is written against ``archivey.formats`` and archivey's public names, as a
+format added from outside would be (``tests/test_plugin_modules_use_public_api.py``
+checks), apart from the salvage search's names (``internal.salvage``, which has no
+plugin hook yet); core's format table registers its handler. With
+``open_archive(salvage=True)`` the walk searches past damage for the next header
+(``_search``). Handbook page:
 ``dev-docs/formats/ar.md``.
 """
 
 from __future__ import annotations
 
 import re
+import typing
 from collections.abc import Iterator
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from archivey.exceptions import (
     CorruptionError,
@@ -57,11 +59,16 @@ from archivey.formats import (
     SequentialFormatHandler,
     SequentialReader,
 )
-from archivey.internal.format_adapter import register_builtin_format
-from archivey.internal.overrides import override
 from archivey.internal.salvage import HeaderSearch, WalkSalvage, walk_salvage
 from archivey.terminal import quoted
 from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
+
+# ``typing.override`` (Python 3.12) where there is one. A format written outside
+# archivey carries the same lines, so the module imports no internal name for it.
+if TYPE_CHECKING:
+    from typing_extensions import override
+else:
+    override = getattr(typing, "override", lambda method: method)
 
 MAGIC = b"!<arch>\n"
 THIN_MAGIC = b"!<thin>\n"
@@ -522,6 +529,3 @@ class ArHandler(SequentialFormatHandler):
     @override
     def open_sequential(self, context: ReaderContext) -> ArReader:
         return ArReader(context)
-
-
-ArReadBackend = register_builtin_format(ArHandler, SUPPORTS_SALVAGE=True)

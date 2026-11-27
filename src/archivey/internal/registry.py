@@ -2,7 +2,8 @@
 :class:`ReadBackend` class that reads it.
 
 Registration is **unconditional**: every known backend — core and optional alike —
-registers when its module is imported. Availability is then derived centrally from the
+is registered when ``archivey.internal.backends`` is imported, from core's format
+table (``internal/format_table.py``). Availability is then derived centrally from the
 optional dependency's module-or-``None`` sentinel, so the registry can report a tri-state,
 compositional :class:`~archivey.FormatSupport` (FULL / PARTIAL / NONE) and produce install-hint
 errors, rather than silently dropping a format whose dependency is absent (see
@@ -10,10 +11,10 @@ errors, rather than silently dropping a format whose dependency is absent (see
 
 Who writes it:
 
-* each module in ``archivey.internal.backends`` registers its backend on import: with
-  :func:`register_reader`, or, for a format written against ``archivey.formats``, with
-  ``format_adapter.register_builtin_format``, which calls :func:`register_reader`
-  itself;
+* ``format_table.register_core_formats`` walks core's table: a module written against
+  ``BaseArchiveReader`` registers its backend with :func:`register_reader` when the
+  table imports it, and for a format written against ``archivey.formats`` the table
+  calls ``format_adapter.register_builtin_format``, which calls :func:`register_reader`;
 * ``format_adapter.register_plugin`` (``archivey.formats.register_format``) registers
   a plugin's backend with :meth:`BackendRegistry.register_plugin_backend`, after them.
 

@@ -36,19 +36,13 @@ def _imported_names(path: Path) -> Iterator[tuple[str, str]]:
 
 
 def assert_only_public_archivey(module_file: str | None) -> None:
-    """Every archivey name the module imports is public, apart from the call that
-    registers it as a built-in format, ``override``, the typing decorator every
-    library source carries (a format from outside would take ``typing.override``),
-    and the salvage search's three names, which have no plugin hook yet."""
+    """Every archivey name the module imports is public, apart from the salvage
+    search's three names, which have no plugin hook yet. Core registers the
+    module's handler from its table (``internal/format_table.py``), and the
+    module carries its own ``override`` shim, as a format from outside would."""
     assert module_file is not None
     for module, name in _imported_names(Path(module_file)):
         if module.split(".")[0] != "archivey":
-            continue
-        if module == "archivey.internal.format_adapter":
-            assert name == "register_builtin_format", name
-            continue
-        if module == "archivey.internal.overrides":
-            assert name == "override", name
             continue
         if module == "archivey.internal.salvage":
             # The salvage search, which plugins get later through a hook of their

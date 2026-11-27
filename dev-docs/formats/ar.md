@@ -10,7 +10,7 @@ format added from outside uses, and is registered as a built-in the way ISO is.
 
 | | |
 | --- | --- |
-| Read | Yes. `internal/backends/ar_reader.py`, an `ArHandler` (`SequentialFormatHandler`) and an `ArReader` (`SequentialReader`), registered with `register_builtin_format` |
+| Read | Yes. `internal/backends/ar_reader.py`, an `ArHandler` (`SequentialFormatHandler`) and an `ArReader` (`SequentialReader`), registered from core's format table |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A file, a stream that can seek, or a pipe (`pipe=True`). Inside any single-file compression stream (`.a.gz`, `.ar.xz`, …), as TAR is |
 | Listing cost | `REQUIRES_SCANNING`, header by header; inside a compression stream, `REQUIRES_DECOMPRESSION`, as a compressed TAR is |
@@ -142,8 +142,8 @@ memory a header can ask for:
 - **Built in, not a separate package.** The maintainer's call (2026-10-28): with
   explicit `register_format()` and no entry-point autoload, a package needs an install
   and a registration call, which breaks one library for every format. The reader still
-  imports only public names (apart from `register_builtin_format` and the `override`
-  decorator), so it stays an example of a format written against `archivey.formats`.
+  imports only public names (core's format table registers its handler), so it stays an
+  example of a format written against `archivey.formats`.
 - **The dialect goes in `extra["ar.dialect"]`, not `format_version`.** A dialect is not
   a version, and TAR, whose dialects (v7, ustar, GNU, PAX) are the nearest precedent,
   reports `format_version=None`.

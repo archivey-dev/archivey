@@ -244,6 +244,9 @@ Choices made while building PR 3, and where it departs from the decisions above:
   its message noting the search limit when that stopped the search). The CPIO and ar
   readers import `HeaderSearch` and `WalkSalvage` from `internal.salvage` until the
   plugin hook (step 11); `tests/public_names.py` allows those two names.
+- **Where the flag is set.** Core registers ar, CPIO and deb from its format table
+  (`internal/format_table.py`, #1853), so `HandlerEntry(salvage=True)` declares
+  `SUPPORTS_SALVAGE` for them, beside the other data a handler cannot declare yet.
 - **Forward-only layers do not search.** The walk moves back to the header the search
   found, which a reader built `streaming=True` over a member's data cannot do. A CPIO
   or ar reader inside another archive (a `.pkg` payload) records

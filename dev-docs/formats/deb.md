@@ -11,7 +11,7 @@ own TAR reader, in the one forward pass.
 
 | | |
 | --- | --- |
-| Read | Yes. `internal/backends/deb_reader.py`, a `DebHandler` (`SequentialFormatHandler`) and a `DebReader` (`SequentialReader`), registered with `register_builtin_format` before ar |
+| Read | Yes. `internal/backends/deb_reader.py`, a `DebHandler` (`SequentialFormatHandler`) and a `DebReader` (`SequentialReader`), registered from core's format table before ar |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A file, a stream that can seek, or a pipe (`pipe=True`) |
 | Listing cost | `REQUIRES_DECOMPRESSION`: listing reads both tars (`is_solid=True`) |

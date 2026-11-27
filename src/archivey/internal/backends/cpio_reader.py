@@ -31,11 +31,12 @@ members to it. The member order is then not quite the archive's. A group whose d
 never arrives (all its links empty, as for an empty file) is yielded at the trailer:
 the first as an empty ``FILE``, the rest as links to it.
 
-The reader is written against ``archivey.formats`` and archivey's public names only,
-as a format added from outside would be; ``register_builtin_format`` and the
-salvage search (``internal.salvage``, which has no plugin hook yet) are the internal
-names it uses (``tests/test_cpio.py`` checks). With ``open_archive(salvage=True)`` the
-walk searches past damage for the next header (``_search``). Handbook page:
+The reader is written against ``archivey.formats`` and archivey's public names, as a
+format added from outside would be (``tests/test_plugin_modules_use_public_api.py``
+checks), apart from the salvage search's names (``internal.salvage``, which has no
+plugin hook yet); core's format table registers its handler. With
+``open_archive(salvage=True)`` the walk searches past damage for the next header
+(``_search``). Handbook page:
 ``dev-docs/formats/cpio.md``.
 """
 
@@ -43,9 +44,11 @@ from __future__ import annotations
 
 import re
 import struct
+import typing
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from archivey.detection import DetectionConfidence
 from archivey.diagnostics import (
@@ -70,11 +73,16 @@ from archivey.formats import (
     SequentialReader,
     unix_member_type,
 )
-from archivey.internal.format_adapter import register_builtin_format
-from archivey.internal.overrides import override
 from archivey.internal.salvage import HeaderSearch, WalkSalvage, walk_salvage
 from archivey.terminal import quoted
 from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
+
+# ``typing.override`` (Python 3.12) where there is one. A format written outside
+# archivey carries the same lines, so the module imports no internal name for it.
+if TYPE_CHECKING:
+    from typing_extensions import override
+else:
+    override = getattr(typing, "override", lambda method: method)
 
 TRAILER = b"TRAILER!!!"
 # A stored name longer than this is damage: no file system takes a path this long, and
@@ -868,6 +876,3 @@ class CpioHandler(SequentialFormatHandler):
     @override
     def open_sequential(self, context: ReaderContext) -> CpioReader:
         return CpioReader(context)
-
-
-CpioReadBackend = register_builtin_format(CpioHandler, SUPPORTS_SALVAGE=True)

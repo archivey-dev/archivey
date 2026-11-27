@@ -66,11 +66,8 @@ if TYPE_CHECKING:
 
 
 from archivey.types import (
-    ArchiveFormat,
     CompressionAlgorithm,
-    MagicSignature,
     StreamFormat,
-    TrailerSignature,
 )
 
 SECTOR = 512
@@ -78,20 +75,12 @@ SECTOR = 512
 # 7-Zip's ``IsKoly``: the four bytes ``koly``, then version 4 and a header size of 512,
 # both big-endian. Version or size other than those is not this format.
 KOLY_SIGNATURE = b"koly" + (4).to_bytes(4, "big") + (512).to_bytes(4, "big")
-_KOLY_SIZE = 512
-MAGIC = (MagicSignature(0, KOLY_SIGNATURE, ArchiveFormat.DMG),)
-TRAILER = (
-    TrailerSignature(
-        _KOLY_SIZE,
-        KOLY_SIGNATURE,
-        ArchiveFormat.DMG,
-        # The first run of a compressed image is one of these streams.
-        preempts=(ArchiveFormat.BZ2, ArchiveFormat.XZ),
-    ),
-)
+# Core's format table (``internal/format_table.py``) declares this block as DMG's
+# trailer, and a test keeps the two equal.
+KOLY_SIZE = 512
 
 _KOLY = struct.Struct(">4sIIIQQQQQII16sII128sQQ120sII128sIQ12s")
-assert _KOLY.size == _KOLY_SIZE
+assert _KOLY.size == KOLY_SIZE
 # The code signature's offset and length, inside what the struct above calls the 120
 # reserved bytes after the XML length (7-Zip ``DmgHandler.cpp`` reads them there).
 _CODE_SIGNATURE = struct.Struct(">QQ")
@@ -191,7 +180,7 @@ class Koly(NamedTuple):
 def parse_koly(raw: bytes, at: int) -> Koly | None:
     """The ``koly`` block in ``raw`` (512 bytes) read at file offset ``at``, or
     ``None`` when its first 12 bytes are not the signature."""
-    if len(raw) < _KOLY_SIZE or raw[: len(KOLY_SIGNATURE)] != KOLY_SIGNATURE:
+    if len(raw) < KOLY_SIZE or raw[: len(KOLY_SIGNATURE)] != KOLY_SIGNATURE:
         return None
     f = _KOLY.unpack(raw)
     signature_offset, signature_length = _CODE_SIGNATURE.unpack_from(
@@ -390,12 +379,12 @@ class UdifImage:
 
     def _find_koly(self, size: int) -> Koly:
         """The ``koly`` block: the last 512 bytes, or, on an old image, the first."""
-        if size >= _KOLY_SIZE:
-            at = size - _KOLY_SIZE
-            koly = parse_koly(self._source.read_exact(at, _KOLY_SIZE), at)
+        if size >= KOLY_SIZE:
+            at = size - KOLY_SIZE
+            koly = parse_koly(self._source.read_exact(at, KOLY_SIZE), at)
             if koly is not None:
                 return koly
-            koly = parse_koly(self._source.read_exact(0, _KOLY_SIZE), 0)
+            koly = parse_koly(self._source.read_exact(0, KOLY_SIZE), 0)
             if koly is not None:
                 return koly
         raise CorruptionError("no UDIF koly block at the end or the start of the file")
@@ -404,7 +393,7 @@ class UdifImage:
         """Refuse a data fork or property list outside the file or overlapping the
         ``koly`` block or each other; check the code signature's range (a diagnostic,
         never a refusal); report the bytes of the file no structure covers."""
-        koly_range = (koly.at, koly.at + _KOLY_SIZE)
+        koly_range = (koly.at, koly.at + KOLY_SIZE)
         fork = (koly.data_fork_offset, koly.data_fork_offset + koly.data_fork_length)
         plist = (koly.xml_offset, koly.xml_offset + koly.xml_length)
         if koly.xml_length > MAX_PLIST:

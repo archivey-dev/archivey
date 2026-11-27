@@ -67,7 +67,6 @@ from archivey.formats import (
     ReaderSource,
 )
 from archivey.internal import kernels
-from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.kernels.python import crc16_arc as crc16
 from archivey.internal.overrides import override
 from archivey.internal.sfx import (
@@ -99,7 +98,6 @@ from archivey.types import (
     CompressionAlgorithm,
     CompressionMethod,
     CreateSystem,
-    MagicSignature,
     MemberType,
 )
 
@@ -1048,7 +1046,7 @@ _SFX_NEEDLES = tuple(ScanNeedle(m.encode("ascii"), 2) for m in _KNOWN_METHODS)
 _WALK_MAX = 8
 
 
-def _validate_header(
+def validate_stub_hit(
     peek_more: Callable[[int], bytes], remaining: int | None
 ) -> HitOutcome:
     """Whether an LHA member header starts at the candidate: its level, layout and sum
@@ -1107,7 +1105,7 @@ def _payload(source: ReaderSource) -> ReaderSource:
     head = source.read_at(0, 7)
     if len(head) < 7 or head[2:7] in _METHOD_BYTES:
         return source
-    scan = scan_reader_source(source, _SFX_NEEDLES, _validate_header)
+    scan = scan_reader_source(source, _SFX_NEEDLES, validate_stub_hit)
     if scan.hit is None:
         if head[:1] == b"\0":
             return source  # an empty archive; listing says it has no members
@@ -1127,13 +1125,3 @@ class LhaHandler(IndexedFormatHandler):
     @override
     def open(self, source: ReaderSource, context: ReaderContext) -> LhaReader:
         return LhaReader(source, context)
-
-
-LhaReadBackend = register_builtin_format(
-    LhaHandler,
-    SFX_MAGIC=tuple(
-        MagicSignature(2, m.encode("ascii"), ArchiveFormat.LHA) for m in _KNOWN_METHODS
-    ),
-    SFX_HIT_VALIDATOR=staticmethod(_validate_header),
-    SFX_PARSER_SCANS=True,
-)

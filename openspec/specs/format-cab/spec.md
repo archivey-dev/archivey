@@ -4,7 +4,7 @@
 
 Microsoft cabinets (Windows updates, drivers, installer payloads, what `makecab` and
 `gcab` write) are read through the unified `ArchiveReader` API. The reader is a built-in
-written against `archivey.formats` and registered with `register_builtin_format`; LZX is
+written against `archivey.formats` and registered from core's format table; LZX is
 decoded by archivey's own decoder, in Python. The format handbook is
 `dev-docs/formats/cab.md`.
 

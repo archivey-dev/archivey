@@ -4,8 +4,8 @@
 
 RPM packages, binary and source, are read through the unified `ArchiveReader` API: their
 files, with the metadata from the package header and the data from the CPIO payload.
-The reader is a built-in written against `archivey.formats` and registered with
-`register_builtin_format`; it lists a package from its header and reads the payload
+The reader is a built-in written against `archivey.formats` and registered from
+core's format table; it lists a package from its header and reads the payload
 only for member data, in one forward pass. The format handbook
 is `dev-docs/formats/rpm.md`.
 
