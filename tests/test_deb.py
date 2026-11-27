@@ -453,6 +453,23 @@ def test_a_control_member_under_a_control_symlink_is_refused() -> None:
     assert caught.value.member_name == "DEBIAN/s/control"
 
 
+def test_a_control_directory_at_a_control_symlinks_path_is_refused() -> None:
+    control = [
+        ("./", None),
+        ("./control", CONTROL),
+        ("./s@symlink", b"x"),
+        ("./s/", None),
+    ]
+    with (
+        pytest.raises(
+            CorruptionError, match="symlink at the path of a directory"
+        ) as caught,
+        open_archive(io.BytesIO(_deb(control=control))) as reader,
+    ):
+        reader.members()
+    assert caught.value.member_name == "DEBIAN/s/"
+
+
 def test_a_control_member_with_dotdot_inside_debian_is_listed() -> None:
     control = [
         ("./", None),
