@@ -1,0 +1,21 @@
+[package]
+name = "archivey-speedups"
+# The package's only version: pyproject.toml reads it (dynamic version).
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Native (Rust) speedups for archivey: faster versions of its pure-Python decoders"
+repository = "https://github.com/archivey-dev/archivey"
+
+[lib]
+name = "_speedups"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module", "abi3-py311"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "unwind"

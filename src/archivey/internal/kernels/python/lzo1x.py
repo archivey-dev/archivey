@@ -1,4 +1,4 @@
-"""LZO1X blocks in Python, as ``archivey_codecs.lzo1x``: the decoder is
+"""LZO1X blocks in Python, as ``archivey_speedups.lzo1x``: the decoder is
 :func:`archivey.internal.streams.codecs.lzo_decoder.lzo1x_decompress_python`."""
 
 from __future__ import annotations

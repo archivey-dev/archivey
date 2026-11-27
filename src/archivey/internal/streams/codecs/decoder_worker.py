@@ -3,7 +3,7 @@
 A native decoder can take the whole process down on hostile input, and no ``try`` can
 catch that. ``ArchiveyConfig.process_isolation`` decides which decoders run in a child
 process instead: pyppmd and rapidgzip by default, every native decoder under
-``NATIVE_DECODERS``, archivey-codecs' decoding kernels included. The child runs this
+``NATIVE_DECODERS``, archivey-speedups' decoding kernels included. The child runs this
 file as a script (``python -P decoder_worker.py``), owns one decoder object at a time,
 and answers one request at a time; the parent keeps all the decoding logic.
 
@@ -43,7 +43,7 @@ Child to parent, one per request (two per ``OPEN``):
   ``is_finished`` and ``can_accept_more_data``, a ``result`` that is not bytes, and the
   lengths (not the bytes) of ``unused_data`` and ``unconsumed_tail``: both are the end
   of input the parent sent, so the parent rebuilds them from its copy. For
-  archivey-codecs it also holds a ``report`` of the kernel's attributes
+  archivey-speedups it also holds a ``report`` of the kernel's attributes
   (:class:`_Codecs`).
 - ``ERR``: payload ``ERROR_SEPARATOR``-joined module, qualified type name, errno (or
   empty) and message, UTF-8. See :func:`error_payload`.
@@ -328,7 +328,7 @@ def _load_ppmd8() -> Callable[..., Any]:
 
 
 class KernelPanic(Exception):
-    """A Rust panic in an archivey-codecs kernel. PyO3 raises ``PanicException``, a
+    """A Rust panic in an archivey-speedups kernel. PyO3 raises ``PanicException``, a
     ``BaseException`` that ``_serve`` would not report, so :class:`_Codecs` raises this
     instead, and the parent rebuilds it as a panic (``kernels.child.ChildPanic``)."""
 
@@ -345,7 +345,7 @@ def _kernel_call(function: Callable[..., Any], args: Any, kwargs: Any) -> Any:
 
 
 class _Codecs:
-    """archivey-codecs' decoding kernels, one kernel object at a time.
+    """archivey-speedups' decoding kernels, one kernel object at a time.
 
     ``build`` makes the object from its dotted name in the package (such as
     ``"lzw.Decompressor"`` or ``"lzx.Decompressor"``); every other ``CALL``
@@ -421,8 +421,8 @@ class _Codecs:
 _MISSING = object()
 
 
-def _load_archivey_codecs() -> Callable[..., Any]:
-    module = importlib.import_module("archivey_codecs")
+def _load_archivey_speedups() -> Callable[..., Any]:
+    module = importlib.import_module("archivey_speedups")
     return lambda: _Codecs(module)
 
 
@@ -440,7 +440,7 @@ LOADERS: dict[str, Callable[[], Callable[..., Any]]] = {
     "snappy": _load_snappy,
     "ppmd7": _load_ppmd7,
     "ppmd8": _load_ppmd8,
-    "archivey_codecs": _load_archivey_codecs,
+    "archivey_speedups": _load_archivey_speedups,
 }
 
 # Codecs whose decoder's ``unused_data`` is not part of the state, because reading it

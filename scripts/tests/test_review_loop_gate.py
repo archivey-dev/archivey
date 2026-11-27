@@ -943,19 +943,13 @@ def test_the_gate_gets_the_tier_and_a_failed_tier_only_makes_it_sonnet() -> None
         assert gone not in text, gone
 
 
-def test_cursor_is_asked_on_a_deep_opus_round_with_the_person_token_only() -> None:
+def test_the_workflow_asks_no_second_model() -> None:
+    # Second models review by hand after Opus approves, all on one head
+    # (dev-docs/review-loop.md "Second-model reviews"). A request posted at each
+    # Opus round reviewed a head still in the Opus loop, and Cursor is out of spend.
     text = WORKFLOW.read_text(encoding="utf-8")
-    cursor = _step("Ask Cursor for a full review")
-    assert "steps.gate.outputs.opus_pass == 'true'" in cursor
-    assert "steps.tier.outputs.tier == 'deep'" in cursor
-    assert "continue-on-error: true" in cursor
-    assert "GH_TOKEN: ${{ secrets.CURSOR_TRIGGER_TOKEN }}" in cursor
-    # No pull request text reaches the step that holds the token.
-    assert "github.event.pull_request" not in cursor
-    # It runs beside the review, so it comes before it.
-    assert text.index("- name: Ask Cursor") < text.index("- name: Claude review")
-    # Only this step gets the token.
-    assert text.count("secrets.CURSOR_TRIGGER_TOKEN") == 1
+    assert "cursoragent" not in text
+    assert "CURSOR_TRIGGER_TOKEN" not in text
 
 
 def test_the_reviewer_may_send_subagents_and_is_told_to_batch() -> None:

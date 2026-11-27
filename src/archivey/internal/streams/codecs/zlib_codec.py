@@ -16,6 +16,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.config import StreamConfig
 from archivey.internal.overrides import override
+from archivey.internal.probe_verdict import ProbeVerdict, probe_verdict
 from archivey.internal.streams.codecs.base import (
     BZIP2_HEADER,
     GZIP_MAGIC,
@@ -707,11 +708,14 @@ class ZlibCodec(_ZlibErrorCodec):
         charge_decode: ProbeChargeDecode | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
         decoder_limits: DecoderLimits = DecoderLimits(),
-    ) -> bool:
+    ) -> ProbeVerdict:
         """Recognize a zlib stream: an RFC 1950 CMF/FLG header (fail-fast) that then decodes."""
-        return _zlib_header_plausible(prefix) and self._decodes_sample(
-            prefix,
-            source_length=source_length,
-            isolation=isolation,
-            decoder_limits=decoder_limits,
+        return probe_verdict(
+            _zlib_header_plausible(prefix)
+            and self._decodes_sample(
+                prefix,
+                source_length=source_length,
+                isolation=isolation,
+                decoder_limits=decoder_limits,
+            )
         )

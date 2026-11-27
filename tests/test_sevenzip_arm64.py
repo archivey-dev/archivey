@@ -1,4 +1,4 @@
-"""The 7z ARM64 branch filter (method ``0x0A``), decoded by archivey-codecs or in Python.
+"""The 7z ARM64 branch filter (method ``0x0A``), decoded by archivey-speedups or in Python.
 
 The oracles are 7-Zip itself (archives it writes, and with ``-m1=Copy`` the filtered
 bytes it stores) and ``_reference``, a word-by-word port of liblzma's ``arm64_code``
@@ -37,11 +37,11 @@ from tests.conftest import requires_binary, sevenzip_lists_arm64
 @pytest.fixture(params=["python", "codecs"])
 def excluded(request: pytest.FixtureRequest) -> frozenset[OptionalLibrary]:
     """The excluded libraries for a run with the Python filter, or with
-    archivey-codecs' kernel (skipped when the package is not installed)."""
+    archivey-speedups' kernel (skipped when the package is not installed)."""
     if request.param == "python":
-        return frozenset({OptionalLibrary.ARCHIVEY_CODECS})
-    if not deps.archivey_codecs.available():
-        pytest.skip("archivey-codecs is not installed")
+        return frozenset({OptionalLibrary.ARCHIVEY_SPEEDUPS})
+    if not deps.archivey_speedups.available():
+        pytest.skip("archivey-speedups is not installed")
     return frozenset()
 
 
@@ -52,7 +52,7 @@ def _decoder(
         FILTER_ARM64, start_offset, excluded=excluded, natives=IN_PROCESS
     )
     assert make_branch is not None
-    python = OptionalLibrary.ARCHIVEY_CODECS in excluded
+    python = OptionalLibrary.ARCHIVEY_SPEEDUPS in excluded
     assert isinstance(make_branch(), (twin.Arm64Decoder, twin.RiscvDecoder)) is python
     return BranchFilterDecoder(make_branch=make_branch, unpack_size=unpack_size)
 

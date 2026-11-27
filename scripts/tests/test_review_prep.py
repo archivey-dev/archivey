@@ -236,7 +236,7 @@ def test_tier_path_lists_name_paths_that_exist() -> None:
         + prep.DEEP_CORE
         + prep.PROCESS_FILES
         + prep.NEW_PARSER_DIRS
-        + (prep.API_SURFACE, prep.CODECS_API)
+        + (prep.API_SURFACE, prep.SPEEDUPS_API)
         + prep.NOT_LIGHT
         + tuple(prep.MAINTAINER_FILES)
     ):
@@ -683,7 +683,7 @@ def test_review_tier_reads_adds_renames_and_texts_from_git(
 def test_a_new_parser_codec_or_kernel_file_is_deep() -> None:
     for new in (
         "src/archivey/internal/backends/cab_reader.py",
-        "packages/archivey-codecs/src/kernels/lzfse.rs",
+        "packages/archivey-speedups/src/kernels/lzfse.rs",
     ):
         t = prep.tier([new, "tests/test_cab.py"], added=[new, "tests/test_cab.py"])
         assert (t.name, t.new_parsers) == ("deep", [new])
@@ -703,12 +703,12 @@ def test_tier_is_deep_on_a_public_api_change() -> None:
     t = prep.tier(["src/archivey/core.py", "dev-docs/api-surface.txt"])
     assert (t.name, t.api_changed) == ("deep", True)
     assert "public API: changed (dev-docs/api-surface.txt)" in prep.tier_report(t)
-    stub = "packages/archivey-codecs/python/archivey_codecs/lzx.pyi"
-    codecs = prep.tier([stub, "packages/archivey-codecs/src/lib.rs"])
+    stub = "packages/archivey-speedups/python/archivey_speedups/lzx.pyi"
+    codecs = prep.tier([stub, "packages/archivey-speedups/src/lib.rs"])
     assert codecs.reasons == [f"public API: {stub}"]
     # The package's Python code alone is not its API.
     assert (
-        prep.tier(["packages/archivey-codecs/python/archivey_codecs/lzx.py"]).name
+        prep.tier(["packages/archivey-speedups/python/archivey_speedups/lzx.py"]).name
         == "standard"
     )
 

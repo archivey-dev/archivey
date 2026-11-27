@@ -506,7 +506,10 @@ bytes, from a file or a pipe.
   then decodes its first 512 bytes, the same bytes it decodes to find a TAR inside, and
   looks for your `magic` in them. So a sequential format's magic must end within the
   first 512 bytes, and registration refuses one that does not. A format found only by its
-  `probe` is not found inside a compressor: name it with its extension or `format=`.
+  `probe` is found inside a compressor where the name says so (`.cpio.gz`) or with
+  `always_probe_content=True`: the probe runs on those 512 decoded bytes. Only `PROBABLE`, or a
+  `GUESS` the name raises, counts there: a `GUESS` the name does not back leaves the file a plain
+  compressed file, which opens for sure.
 - **Cost.** One compression stream holds every member, so the archive is solid:
   `archive.info.is_solid` is `True`, the listing needs decompression, and with random
   access, reading a member before the last one read decodes again from the nearest
@@ -933,9 +936,15 @@ archivey recognises a plugin's format by its `magic`, its `extensions`, and an o
   image's at 32 KiB. So detection reads about 32 KiB of a file before it decides that the
   file is in your format, not the 4 KiB a built-in magic near the start needs.
 - An **extension** that a built-in format uses is refused at registration.
-- A **probe** is a function that takes the first bytes of the source and returns `True`
-  for your format. It gets only the bytes detection has already read, and runs after
-  every built-in check. Like a built-in format's probe, it runs when the source's name
+- A **probe** is a function that takes the first bytes of the source and returns a verdict:
+  `DetectionConfidence.REJECTED` when the bytes are not your format, `DetectionConfidence.GUESS`
+  when they might be, and `DetectionConfidence.PROBABLE` when they are. A probe that can only tell
+  yes from no returns `PROBABLE` or `REJECTED`. `detect_format()` reports the verdict as the
+  confidence, and reports a `GUESS` as `PROBABLE` when the source's name has one of your extensions.
+  `CERTAIN` is for exact signatures only: a probe that returns it, or returns `None`, `True` or
+  `False`, counts as no match, with the same warning as a probe that raises. So a probe that forgets
+  a `return` shows up in the log. The probe gets only the bytes detection has already read, and runs
+  after every built-in check. Like a built-in format's probe, it runs when the source's name
   has one of your extensions, when the source has no name at all (a stream passed to
   `open_stream()`), or when `ArchiveyConfig(always_probe_content=True)` is set. So it
   sees untrusted bytes that may not be your format at all. The prefix may be shorter

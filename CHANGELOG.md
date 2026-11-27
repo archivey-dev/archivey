@@ -22,6 +22,13 @@ line. How to write the entry: see
 
 ### Changed
 
+- **Breaking:** a plugin's `probe` (on `FormatHandler` and `CodecHandler`) returns a
+  verdict, not a bool: the new `DetectionConfidence.REJECTED` for no,
+  `DetectionConfidence.GUESS` for a weak match, `DetectionConfidence.PROBABLE` for a
+  match. `detect_format()` reports it as the confidence, raised to `PROBABLE` when the
+  extension names the format. A probe that returns a bool, `None` or `CERTAIN` counts as
+  no match and logs a warning; replace `True` with `DetectionConfidence.PROBABLE` and
+  `False` with `DetectionConfidence.REJECTED`.
 - RAR5: a header whose size field is longer than 3 bytes is refused with
   `CorruptionError`, as the RAR5 technical note requires ("must not be longer than 3
   bytes") and as salvage's header search already did; it was read as a header.

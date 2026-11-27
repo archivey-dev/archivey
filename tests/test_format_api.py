@@ -31,6 +31,7 @@ from archivey import (
     ArchiveyUsageError,
     CompressionAlgorithm,
     CorruptionError,
+    DetectionConfidence,
     FormatSupport,
     HashAlgorithm,
     MemberType,
@@ -837,9 +838,13 @@ def test_long_member_raises_corruption(clean_registry: None, tmp_path: Path) -> 
 def test_probe_detects_a_format_with_no_magic(clean_registry: None) -> None:
     seen: list[bytes] = []
 
-    def probe(prefix: bytes) -> bool:
+    def probe(prefix: bytes) -> DetectionConfidence:
         seen.append(prefix)
-        return prefix.startswith(_MAGIC)
+        return (
+            DetectionConfidence.PROBABLE
+            if prefix.startswith(_MAGIC)
+            else DetectionConfidence.REJECTED
+        )
 
     plugin = _plugin_with("probed", probe=probe)
     # Like a built-in probe, it runs on a nameless source only when asked to.
@@ -861,9 +866,9 @@ def test_probe_does_not_run_on_a_name_another_format_owns(
     # name gate must match the format, not the stream.
     calls: list[bytes] = []
 
-    def probe(prefix: bytes) -> bool:
+    def probe(prefix: bytes) -> DetectionConfidence:
         calls.append(prefix)
-        return True
+        return DetectionConfidence.PROBABLE
 
     plugin = _plugin_with("probed", probe=probe)
     data = build_toya(_ENTRIES)
@@ -871,6 +876,102 @@ def test_probe_does_not_run_on_a_name_another_format_owns(
     assert not calls
     assert detect_format(_write(tmp_path, data, "a.probed")).format == plugin.format
     assert calls
+
+
+def test_a_probe_grades_its_match(clean_registry: None, tmp_path: Path) -> None:
+    """A probe answers with a verdict: ``REJECTED`` for no, ``GUESS`` for a weak match,
+    ``PROBABLE`` for a match. Core reports the grade, and raises a weak match to
+    ``PROBABLE`` when the source's extension names the format."""
+    verdict: list[DetectionConfidence] = [DetectionConfidence.GUESS]
+
+    def probe(prefix: bytes) -> DetectionConfidence:
+        return verdict[0] if prefix.startswith(_MAGIC) else DetectionConfidence.REJECTED
+
+    plugin = _plugin_with("graded", probe=probe)
+    data = build_toya(_ENTRIES)
+    config = archivey.ArchiveyConfig(always_probe_content=True)
+    info = detect_format(io.BytesIO(data), config=config)
+    assert (info.format, info.confidence) == (plugin.format, DetectionConfidence.GUESS)
+    named = detect_format(_write(tmp_path, data, "a.graded"))
+    assert (named.format, named.confidence) == (
+        plugin.format,
+        DetectionConfidence.PROBABLE,
+    )
+    verdict[0] = DetectionConfidence.PROBABLE
+    info = detect_format(io.BytesIO(data), config=config)
+    assert info.confidence is DetectionConfidence.PROBABLE
+    verdict[0] = DetectionConfidence.REJECTED
+    with pytest.raises(archivey.FormatDetectionError):
+        detect_format(io.BytesIO(data), config=config)
+
+
+def test_an_indexed_probe_does_not_claim_a_compressed_stream(
+    clean_registry: None,
+) -> None:
+    """An indexed format is not read inside a compressor, so its probe does not name
+    one there: the gzip stays a gzip, even with every probe asked for."""
+    plugin = _plugin_with(
+        "indexedprobe",
+        probe=lambda prefix: (
+            DetectionConfidence.PROBABLE
+            if prefix.startswith(_MAGIC)
+            else DetectionConfidence.REJECTED
+        ),
+    )
+    config = archivey.ArchiveyConfig(always_probe_content=True)
+    data = build_toya(_ENTRIES)
+    assert detect_format(io.BytesIO(data), config=config).format == plugin.format
+    info = detect_format(io.BytesIO(gzip.compress(data, mtime=0)), config=config)
+    assert info.format == ArchiveFormat.GZ
+
+
+@pytest.mark.parametrize(
+    ("window", "whole"),
+    [
+        (DetectionConfidence.GUESS, DetectionConfidence.PROBABLE),
+        (DetectionConfidence.PROBABLE, DetectionConfidence.GUESS),
+    ],
+)
+def test_the_whole_source_verdict_is_the_one_reported(
+    clean_registry: None, window: DetectionConfidence, whole: DetectionConfidence
+) -> None:
+    """When detection runs the probe again on the whole source, that answer stands:
+    the probe has seen more."""
+    footer = b"TOYA-END"
+
+    def probe(prefix: bytes) -> DetectionConfidence:
+        if not prefix.startswith(_MAGIC):
+            return DetectionConfidence.REJECTED
+        return whole if prefix.endswith(footer) else window
+
+    plugin = _plugin_with("footed", probe=probe)
+    data = build_toya(_ENTRIES) + b"\0" * 5000 + footer
+    config = archivey.ArchiveyConfig(always_probe_content=True)
+    info = detect_format(io.BytesIO(data), config=config)
+    assert (info.format, info.confidence) == (plugin.format, whole)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [None, True, 1, "yes", DetectionConfidence.CERTAIN],
+    ids=["none", "bool", "int", "str", "certain"],
+)
+def test_a_probe_that_answers_with_no_verdict_is_no_match(
+    clean_registry: None, caplog: pytest.LogCaptureFixture, answer: object
+) -> None:
+    """A bool, as probes returned before 0.6.0, is no verdict, and neither is
+    ``None``, which a probe that forgets a ``return`` gives, nor ``CERTAIN``, which
+    only a signature gives. Each is a plugin bug: no match,
+    logged as a probe that raises is."""
+    _plugin_with("unsure", probe=lambda prefix: answer)
+    config = archivey.ArchiveyConfig(always_probe_content=True)
+    with (
+        caplog.at_level(logging.DEBUG, logger="archivey.detection"),
+        pytest.raises(archivey.FormatDetectionError),
+    ):
+        detect_format(io.BytesIO(build_toya(_ENTRIES)), config=config)
+    levels = [r.levelno for r in caplog.records if "plugin probe" in r.getMessage()]
+    assert levels == [logging.WARNING]
 
 
 def test_archive_info_fields(toya: ArchiveFormat, tmp_path: Path) -> None:
@@ -1724,7 +1825,7 @@ def test_a_probe_that_raises_is_no_match(clean_registry: None) -> None:
 def test_a_probe_out_of_memory_propagates(clean_registry: None) -> None:
     """Only the probe's own parsing errors count as no match."""
 
-    def probe(prefix: bytes) -> bool:
+    def probe(prefix: bytes) -> DetectionConfidence:
         raise MemoryError
 
     class Starved(ToyHandler):
@@ -1760,8 +1861,11 @@ class _StatefulProbe:
 
     offset: int
 
-    def __call__(self, prefix: bytes) -> bool:
-        return struct.unpack("<I", prefix[self.offset : self.offset + 4])[0] == 1
+    def __call__(self, prefix: bytes) -> DetectionConfidence:
+        value = struct.unpack("<I", prefix[self.offset : self.offset + 4])[0]
+        return (
+            DetectionConfidence.PROBABLE if value == 1 else DetectionConfidence.REJECTED
+        )
 
 
 def test_a_raising_unhashable_probe_is_no_match(

@@ -30,7 +30,7 @@ do not show (architecture, concurrency, crypto, resumable state, limits), end a 
 message with the trailer `Review-Tier: deep (why)`: its own line in the last paragraph,
 after a blank line. The script then prints deep; the same words inside prose do not count.
 Public API: "none" when the script's "public API:" line says unchanged, or the names
-added, changed or removed (the diff of dev-docs/api-surface.txt or of an archivey-codecs
+added, changed or removed (the diff of dev-docs/api-surface.txt or of an archivey-speedups
 .pyi stub lists them). Removing or renaming a public name is the
 maintainer's call.
 Security: "yes" or "no", and the rule behind it. Yes when the change, on any path:

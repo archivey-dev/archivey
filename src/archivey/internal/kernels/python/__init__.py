@@ -1,4 +1,4 @@
-"""archivey's Python decoders in the API of ``archivey_codecs``.
+"""archivey's Python decoders in the API of ``archivey_speedups``.
 
 Each module here is the Python twin of the package module of the same name, with the
 classes, functions, arguments and attributes call sites use. The package's state

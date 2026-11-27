@@ -1,21 +1,21 @@
-# Codec kernels: archivey-codecs and the Python twins
+# Codec kernels: archivey-speedups and the Python twins
 
 **In one minute.** archivey has its own Python decoders for a few old or rare formats:
 CAB's LZX, Unix `compress` (`.Z`), LZO, 7z's BCJ2 and its ARM64 and RISC-V branch
 filters, ZIP's traditional encryption (ZipCrypto), LHA's CRC-16, and Apple's LZFSE and
-LZVN (DMG images and HFS+ compressed files). The optional `archivey-codecs` package has
-Rust versions of the same ten kernels. Each Python
-decoder has a *twin* with the package's exact API, and a switch picks the Rust kernel or
-the twin: one switch per package module, so the two branch filters share one. A call
-site builds its decoder through the switch and does not know which one it got: both give
-the same bytes and raise the same errors, so the package changes speed only. This page
+LZVN (DMG images and HFS+ compressed files). The optional `archivey-speedups` package
+has Rust versions of the same ten kernels. Each Python decoder has a *twin* with the
+package's exact API, and a switch picks the Rust kernel or the twin: one switch per
+package module, so the two branch filters share one. A call site builds its decoder
+through the switch and does not know which one it got: both give the same bytes and
+raise the same errors, so the package changes speed only. This page
 covers the switch, the two sides, what happens under `NATIVE_DECODERS`, and the rules
 for changing a kernel. The guide's [streams and
 codecs](../guide/06-streams-and-codecs.md) page sets the codec layer in context.
 
 The code is in `src/archivey/internal/kernels/` (archivey's side) and
-`packages/archivey-codecs/` (the package). Other pages own parts of this, and this page
-links them rather than repeating them:
+`packages/archivey-speedups/` (the package). Other pages own parts of this, and this
+page links them rather than repeating them:
 
 - The design and its rulings are openspec change `rust-codecs-package`
   (`openspec/changes/rust-codecs-package/design.md`): D3 the decoder API, D4 the
@@ -28,7 +28,7 @@ links them rather than repeating them:
   (LZFSE and LZVN).
 - The decoder child that runs the kernels under `NATIVE_DECODERS` is
   [`process-isolation.md`](process-isolation.md)'s.
-- The package's own README (`packages/archivey-codecs/README.md`) has the table of
+- The package's own README (`packages/archivey-speedups/README.md`) has the table of
   kernels, their package names and their twins, and the developer commands.
 
 ## At a glance
@@ -45,7 +45,7 @@ links them rather than repeating them:
   message, and the twins raise those directly. A message differs only where the Rust
   kernel refuses something only a caller can reach (two LZX frame-size cases, in the
   package README).
-- **One switch for the caller.** `OptionalLibrary.ARCHIVEY_CODECS` in the call's
+- **One switch for the caller.** `OptionalLibrary.ARCHIVEY_SPEEDUPS` in the call's
   `FormatPolicy` (`exclude_libraries` or `only_libraries`) turns the package off. No
   environment variable does.
 - **Isolation.** Under `KNOWN_CRASHES` (the default) and `NONE` the kernels run in the
@@ -62,7 +62,7 @@ links them rather than repeating them:
   - The package's whole API on the twins. A twin has only what archivey's call sites
     use: no state methods (`getstate`, `from_state`, and `copy` except ZipCrypto's),
     and no LZX `unused_data` or `total_in`. The package's stubs
-    (`python/archivey_codecs/`) have the whole API.
+    (`python/archivey_speedups/`) have the whole API.
   - A way to tell, from outside, which side decoded a member. Nothing in the result
     changes. LZO is the one kernel whose backend a reader records (§2.1).
   - Rust parsers. The package holds decoding kernels only; archive parsing stays in
@@ -90,7 +90,7 @@ links them rather than repeating them:
   them with the protocol it has.
 - **archivey imports the package, never the reverse.** The package's tests import
   archivey (for the twins), but the package itself has no Python dependency. Its
-  releases are separate (`codecs-vX.Y.Z` tags), so archivey has to cope with an older
+  releases are separate (`speedups-vX.Y.Z` tags), so archivey has to cope with an older
   or newer package (§2.5).
 
 ## 2. The machinery
@@ -103,7 +103,7 @@ functions wrapped by `kernels/rust.py` (§2.3); otherwise it returns the twin's 
 `kernels/python/` (§2.2). The protocols at the top of the module (`LzxDecompressor`,
 `BranchDecoder` and the rest) are the API both sides meet, for the type checker.
 
-Each namespace also has `library`: `OptionalLibrary.ARCHIVEY_CODECS` when the package
+Each namespace also has `library`: `OptionalLibrary.ARCHIVEY_SPEEDUPS` when the package
 decodes, else `None`. `filters` has `arm64_library` and `riscv_library` instead,
 because the two filters are separate kernels with separate revisions.
 
@@ -120,7 +120,7 @@ The call sites:
 | `bcj2` | `streams/codecs/bcj2_filter.py` |
 | `lzfse`, `lzvn` | `streams/codecs/lzfse_decoder.py` (DMG runs, HFS+ compressed files) |
 
-LZO is the exception to "one code path". Its order is archivey-codecs, then
+LZO is the exception to "one code path". Its order is archivey-speedups, then
 compress-utils, then Python (design question 11), so its call site takes only the
 package from the switch, falls back to compress-utils itself, and calls the Python
 decoder last. It is also the one call site that records `library` as the backend
@@ -173,7 +173,7 @@ it reads its four input streams by calling their `read()` methods. The module de
 `NATIVE_DECODERS` promises that no native decoder runs in the caller's process, and
 the Rust kernels are native. So under it, a decoding kernel runs in archivey's generic
 decoder child, as zlib and lzma do ([`process-isolation.md`](process-isolation.md)
-§2.2). `child.open_kernels` returns a stand-in for the `archivey_codecs` module whose
+§2.2). `child.open_kernels` returns a stand-in for the `archivey_speedups` module whose
 objects each live in a child, and the wrappers in `rust.py` use it as they use the real
 module. So the bytes, the errors and the panic handling are the same as in-process: a
 panic in the child comes back as `ChildPanic`, which `is_panic` counts as a panic.
@@ -200,9 +200,9 @@ panic in the child comes back as `ChildPanic`, which `is_panic` counts as a pani
 
 A kernel is used when all of these hold:
 
-- the call's `FormatPolicy` leaves `OptionalLibrary.ARCHIVEY_CODECS` on;
+- the call's `FormatPolicy` leaves `OptionalLibrary.ARCHIVEY_SPEEDUPS` on;
 - the package is installed and imports (`streams/codecs/deps.py` loads it once);
-- `archivey_codecs.KERNELS[name]` is at least `MIN_REVISIONS[name]`;
+- `archivey_speedups.KERNELS[name]` is at least `MIN_REVISIONS[name]`;
 - under `NATIVE_DECODERS`, for a decoding kernel, a child can run it (§2.4).
 
 `KERNELS` maps each kernel to a revision, raised whenever the kernel's observable
@@ -225,7 +225,7 @@ an error class is not a new revision; it is a new `KERNELS` key (design D4).
   bindings in `src/lib.rs`, the stubs, a twin under `kernels/python/` with the call
   sites' subset of the API, a switch function and protocol in `kernels/__init__.py`, a
   wrapper in `kernels/rust.py`, its `KERNELS` and `MIN_REVISIONS` entries, parity tests,
-  a benchmark row, and the twin's files in `codecs-publish.yml`'s path filter. If it
+  a benchmark row, and the twin's files in `speedups-publish.yml`'s path filter. If it
   decodes a compressed stream, it also needs the decoder child to carry it (§2.4).
 - **The kernel modules forbid `unsafe` code** (`#![forbid(unsafe_code)]` in
   `src/kernels/mod.rs`). The PyO3 bindings are in `src/lib.rs`.
@@ -250,7 +250,7 @@ an error class is not a new revision; it is a new `KERNELS` key (design D4).
   package and a path for Python, with different API shapes.
 - **Per-kernel revisions, not one ABI number.** One number would turn every kernel off
   when any one changed (design D4).
-- **The caller's switch is `OptionalLibrary.ARCHIVEY_CODECS`, and nothing else.** The
+- **The caller's switch is `OptionalLibrary.ARCHIVEY_SPEEDUPS`, and nothing else.** The
   prototype's environment variable is gone; tests that need the Python side exclude the
   library or patch the switch (design D5).
 - **LZO tries compress-utils between the package and Python,** because ours is tested
@@ -271,21 +271,21 @@ an error class is not a new revision; it is a new `KERNELS` key (design D4).
 With the package built into the environment:
 
 ```sh
-uv pip install ./packages/archivey-codecs
-CODECS_PARITY_CASES=1000 uv run --no-sync pytest --no-cov packages/archivey-codecs/tests
+uv pip install ./packages/archivey-speedups
+SPEEDUPS_PARITY_CASES=1000 uv run --no-sync pytest --no-cov packages/archivey-speedups/tests
 uv run --no-sync pytest tests/test_kernels.py
-uv run --no-sync python packages/archivey-codecs/bench/bench_kernels.py
-cargo test --manifest-path packages/archivey-codecs/Cargo.toml
+uv run --no-sync python packages/archivey-speedups/bench/bench_kernels.py
+cargo test --manifest-path packages/archivey-speedups/Cargo.toml
 ```
 
 Without the package, archivey's tests run with the twins only; the package's tests
-skip. `codecs-publish.yml` runs the package's tests on every wheel it builds, for a pull
-request that touches the package, a twin or a decoder a twin wraps.
+skip. `speedups-publish.yml` runs the package's tests on every wheel it builds, for a
+pull request that touches the package, a twin or a decoder a twin wraps.
 
 ## 8. References
 
 - openspec change `rust-codecs-package`: `design.md` (D1 to D8, the questions) and
   `tasks.md`.
-- `packages/archivey-codecs/README.md` and `CHANGELOG.md`.
+- `packages/archivey-speedups/README.md` and `CHANGELOG.md`.
 - [`process-isolation.md`](process-isolation.md) §2.2, the decoder child.
 - [`design-rules.md`](../design-rules.md#dr-5-same-input-same-outcome), DR-5.
