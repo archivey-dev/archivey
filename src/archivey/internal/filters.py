@@ -1044,8 +1044,19 @@ def _collapse_dotdot(name: str) -> str:
 
 
 def extracted_segments(name: str) -> list[str]:
-    """The segments of the furthest-reaching path that ``name`` can extract to, as
-    stored: the rewrites of :func:`extracted_top_segment`, every segment kept."""
+    """The segments of the path a member named ``name`` extracts to, under every
+    extraction policy, each spelled as stored.
+
+    It makes the rewrites that can move a name between directories: the root is
+    dropped (``/``, ``\\``, a drive letter and its separator), each ``..`` is resolved
+    against the segments before it and dropped when nothing is left to climb out of,
+    and both ``/`` and ``\\`` separate segments. Empty and ``.`` segments go.
+    ``"/a/./b/../c"`` gives ``["a", "c"]``.
+
+    A reader that must keep members inside a folder (the payload of a macOS package,
+    the data tree of a ``.deb``) compares a member's segments with the folder's, folded
+    with :func:`collision_key`, so that no rewrite and no filesystem moves the member
+    out. :func:`extracted_top_segment` gives the first segment only."""
     resolved = _collapse_dotdot(strip_absolute_root(name))
     return [s for s in _SEP_SPLIT.split(resolved) if s not in ("", ".")]
 
@@ -1172,7 +1183,12 @@ def sanitize_names(member: ArchiveMember) -> ArchiveMember:
 
 
 def collision_key(name: str, policy: ExtractionPolicy) -> str:
-    """The per-run duplicate-detection key for a member's relative ``name`` (O2).
+    """The key under which extraction with ``policy`` takes two member names for one
+    file: two names with the same key land on the same path, on some filesystem.
+
+    A reader that checks where its members land (a member that must stay inside a
+    folder, :func:`extracted_segments`) compares keys rather than names. ``name`` is
+    relative, as a member's name is after its root is dropped.
 
     ``STRICT``/``STANDARD`` fold case and Unicode normalization so ``README``/``readme`` and
     NFC/NFD ``café`` collide on every platform; ``TRUSTED`` keys on the exact name (defer to
