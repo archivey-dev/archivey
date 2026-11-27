@@ -801,7 +801,9 @@ booleans, a named choice, a path. `ArchiveyConfig(format_options=[...])` takes s
 objects, at most one per class; a reader or codec asks its context for its class and
 gets the caller's object or the class default. Core does not know a plugin's class.
 Core's own formats use the same shape: `ZipOptions` and `RarOptions` replace the four
-per-format fields of `ArchiveyConfig` (the API trim of R21 makes that change). A
+per-format fields of `ArchiveyConfig`. The config trim of R21 makes that change and
+builds `format_options` and the context call with it, since it lands before step 2;
+step 2 adds only the manifest's side. A
 manifest entry names its options class under a short name, so a name and a mapping of
 plain values can be turned into the object, and back, without importing anything
 else: an unknown name or field is refused when it is read. No reader or writer of
@@ -1177,9 +1179,14 @@ and the evidence in front of him (review round A):
 - **R18. The format packages get lighter compatibility checks and the same safety
   checks** (§7; maintainer, 2026-11-27). A change to core runs core and every package
   on the full matrix. A change to one package runs core and that package on Linux,
-  and with it each package that declares a dependency on it (SquashFS decodes with the
-  compressors' LZ4 and LZO; four packages call kernels of `archivey-speedups`), read
-  from the packages' declared dependencies. `archivey-speedups` keeps Windows and
+  and with it each package that uses it. Neither kind of use is an install
+  dependency (SquashFS reaches the compressors' LZ4 and LZO by codec name, and
+  `archivey-speedups` is optional everywhere), so the edges are read from two places
+  that already have to be right: a codec entry's `speedups` list in a manifest, and
+  each package's test dependency group in its `pyproject.toml`, which names the
+  other packages its tests need (disk-images names the compressors). A package's
+  tests run in an environment holding core, the package and that group only, so an
+  edge left out fails the package's own run and cannot be missed. `archivey-speedups` keeps Windows and
   macOS on its own changes, as the only native code, and DMG keeps its macOS job,
   which compares the reader with `hdiutil`. The full matrix for everything runs
   nightly and before a release. Fuzz targets, limit checks and the type checkers
