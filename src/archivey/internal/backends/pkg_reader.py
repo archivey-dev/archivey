@@ -32,9 +32,10 @@ import hashlib
 import io
 import itertools
 import re
+import typing
 import zlib
 from collections.abc import Callable, Iterator
-from typing import Any, BinaryIO, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
 from archivey.exceptions import CorruptionError, UnsupportedFeatureError
 from archivey.formats import (
@@ -44,6 +45,8 @@ from archivey.formats import (
     ReaderArchiveInfo,
     ReaderContext,
     ReaderSource,
+    collision_key,
+    extracted_segments,
 )
 from archivey.internal.backends.xar_reader import (
     _HEADER,
@@ -52,8 +55,6 @@ from archivey.internal.backends.xar_reader import (
     _Inner,
     _Location,
 )
-from archivey.internal.filters import collision_key, extracted_segments
-from archivey.internal.overrides import override
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -63,6 +64,13 @@ from archivey.types import (
     MemberType,
     StreamFormat,
 )
+
+# ``typing.override`` (Python 3.12) where there is one. A format written outside
+# archivey carries the same lines, so the module imports no internal name for it.
+if TYPE_CHECKING:
+    from typing_extensions import override
+else:
+    override = getattr(typing, "override", lambda method: method)
 
 # The members that hold a CPIO: ``Payload`` and ``Scripts`` of a package, at the top
 # of a component package or in a product archive's component folder, and the top

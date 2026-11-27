@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import ast
 import importlib
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 import archivey
@@ -35,13 +35,17 @@ def _imported_names(path: Path) -> Iterator[tuple[str, str]]:
             yield from ((node.module, alias.name) for alias in node.names)
 
 
-def assert_only_public_archivey(module_file: str | None) -> None:
-    """Every archivey name the module imports is public. Core registers the module's
-    handler from its table (``internal/format_table.py``), and the module carries its
-    own ``override`` shim, as a format from outside would."""
+def assert_only_public_archivey(
+    module_file: str | None, *, siblings: Iterable[str] = ()
+) -> None:
+    """Every archivey name the module imports is public, or comes from one of
+    ``siblings``, the modules that leave core in the same package. Core registers the
+    module's handler from its table (``internal/format_table.py``), and the module
+    carries its own ``override`` shim, as a format from outside would."""
     assert module_file is not None
+    allowed = frozenset(siblings)
     for module, name in _imported_names(Path(module_file)):
-        if module.split(".")[0] != "archivey":
+        if module.split(".")[0] != "archivey" or module in allowed:
             continue
         assert module in _PUBLIC, module
         assert name in _PUBLIC[module], (module, name)
@@ -75,9 +79,10 @@ def _own_private_names(tree: ast.Module) -> set[str]:
     return {name for name in own if name.startswith("_")}
 
 
-def foreign_private_reads(path: Path) -> list[str]:
-    """Each ``x._name`` in ``path`` whose ``_name`` the module does not define itself,
-    as ``file:line expression``. Such a name belongs to an archivey object (a
+def foreign_private_reads(path: Path, *, siblings: Iterable[Path] = ()) -> list[str]:
+    """Each ``x._name`` in ``path`` whose ``_name`` neither the module nor one of
+    ``siblings`` (the modules that leave core in its package) defines, as
+    ``file:line expression``. Such a name belongs to an archivey object (a
     ``ReaderContext``, a ``ReaderSource``, a base class's state reached through
     ``self``), which a format written outside archivey cannot rely on. Dunder names
     are not private and are skipped, and so are the documented methods of a named
@@ -87,7 +92,12 @@ def foreign_private_reads(path: Path) -> list[str]:
     and so is a read of a core attribute that shares its name with one the module
     defines; both are review matters."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    own = _own_private_names(tree)
+    own = _own_private_names(tree).union(
+        *(
+            _own_private_names(ast.parse(sibling.read_text(encoding="utf-8")))
+            for sibling in siblings
+        )
+    )
     return sorted(
         (
             f"{path.name}:{node.lineno} {ast.unparse(node)}"

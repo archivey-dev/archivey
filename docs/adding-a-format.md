@@ -599,6 +599,13 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
   member first: rename it (and a hard link's `link_target` with it: the inner listing
   has normalized it already, and archivey normalizes the renamed one again), or add
   `MemberSpan.digests` from a checksum list the outer archive keeps.
+- **Keep a renamed member in its folder.** A walk that puts the inner members under
+  a folder (`Payload/` of a macOS package) checks that each one extracts there:
+  `extracted_segments(name)` gives the segments of the path a name extracts to under
+  every policy (root dropped, `..` resolved), and `collision_key(segment,
+  ExtractionPolicy.STANDARD)` folds each segment as a case-insensitive filesystem
+  would. Compare the member's first segments with the folder's, both folded. A
+  member named `Payload/../Bom` would otherwise replace the outer `Bom`.
 - **Cost.** Inner members are decoded data, so the rules of the next section hold: a
   pass reads them once, and `open()` of one afterwards walks the archive again to it.
   Have `archive_info()` return `ReaderArchiveInfo(is_solid=True)`.
