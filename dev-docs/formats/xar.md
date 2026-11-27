@@ -159,8 +159,10 @@ choice).
   the rest of the payload drained after the CPIO ends, and a mismatch raises
   `CorruptionError`. A payload file, or a hard link's target, that extracts outside its
   folder (`../Bom`, `a/../../Scripts/x`) is refused: it would replace another member of
-  the package. Symlinks inside a payload are not followed for that check; extraction's
-  own link checks apply.
+  the package. So is a file under a symlink of the payload (`l -> ..`, then `l/Bom`),
+  which extraction writes through, inside the destination: the payload is read with
+  `ReaderContext.open_nested(under=)`, and core follows its symlinks. Until the deb
+  port moved that check into core, pkg checked names and hard links only.
 - **Opening a file.** `open_member` opens the payload again and calls `open_nested`,
   which yields the one span asked for (`format-plugins`, "An indexed reader reads an
   archive stored inside its archive"). The adapter mutes the inner reader's reports on

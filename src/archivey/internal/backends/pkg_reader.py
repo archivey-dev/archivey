@@ -19,8 +19,10 @@ magic, or one whose first CPIO header cannot be read.
 
 The payloads are read through :meth:`ReaderContext.open_nested`, so listing decodes
 each one, and the XAR checksum of a payload is checked as the listing reads it. A
-payload file that extracts outside its folder (``../Bom``), or a hard link whose target
-does, is refused: it would replace another member of the package.
+payload file that extracts outside its folder (``../Bom``), a hard link whose target
+does, and a file under a symlink of the payload (``l -> ..``, then ``l/Bom``) are
+refused: each would replace another member of the package
+(``ReaderContext.open_nested(under=)``).
 
 Handbook page: ``dev-docs/formats/xar.md``.
 """
@@ -45,8 +47,6 @@ from archivey.formats import (
     ReaderArchiveInfo,
     ReaderContext,
     ReaderSource,
-    collision_key,
-    extracted_segments,
 )
 from archivey.internal.backends.xar_reader import (
     _HEADER,
@@ -60,7 +60,6 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
     ContainerFormat,
-    ExtractionPolicy,
     MemberType,
     StreamFormat,
 )
@@ -129,6 +128,10 @@ def _payload_folder(member: ArchiveMember) -> bool:
     if member.type is not MemberType.FILE:
         return False
     parts = member.name.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        # Not a folder of the package (``../Payload``): the file it is, which the
+        # listing's name checks refuse or rewrite.
+        return False
     if len(parts) == 1:
         return parts[0] in _PACKAGE_PAYLOADS or parts[0] == _XIP_PAYLOAD
     return len(parts) == 2 and parts[1] in _PACKAGE_PAYLOADS
@@ -142,10 +145,6 @@ def _inner_format(head: bytes) -> ArchiveFormat | None:
     if head.startswith(_CPIO_MAGIC):
         return ArchiveFormat.CPIO
     return None
-
-
-def _key(segments: list[str]) -> list[str]:
-    return [collision_key(s, ExtractionPolicy.STANDARD) for s in segments]
 
 
 class _Payload(io.RawIOBase):
@@ -235,41 +234,27 @@ class PkgReader(XarReader):
                 digest = hashlib.new(algorithm.value, usedforsecurity=False)
             data = _Payload(head, stream, digest)
             folder = payload.name
-            folder_key = _key(extracted_segments(folder))
             inner_location = _Inner(payload, location, fmt)
-            spans = iter(self._context.open_nested(data, fmt))
+            # archivey lists the payload's files under its folder and refuses one
+            # that leaves it, by name, hard link or the payload's own symlinks.
+            spans = iter(self._context.open_nested(data, fmt, under=f"{folder}/"))
             try:
                 first = next(spans, None)
-            except CorruptionError:
+            except CorruptionError as error:
+                if error.member_name is not None:
+                    # Its first file leaves the folder.
+                    raise
                 # It starts like a CPIO but none follows: the file it is. A payload
                 # that fails after its first member has listed files, and raises.
                 yield record
                 return
             for span in itertools.chain(() if first is None else (first,), spans):
-                member = span.member
-                inner = member.name
-                member.name = folder if inner in (".", "./") else f"{folder}/{inner}"
-                self._check_inside(folder, folder_key, member.name, member)
-                if member.type is MemberType.HARDLINK and member.link_target:
-                    member.link_target = f"{folder}/{member.link_target}"
-                    self._check_inside(folder, folder_key, member.link_target, member)
-                yield MemberRecord(member, _Location(None, inner_location))
+                yield MemberRecord(span.member, _Location(None, inner_location))
             data.drain()
             if digest is not None and digest.digest() != expected:
                 raise CorruptionError(
                     f"XAR file {quoted(folder)} fails its {digest.name} checksum"
                 )
-
-    @staticmethod
-    def _check_inside(
-        folder: str, folder_key: list[str], path: str, member: ArchiveMember
-    ) -> None:
-        if _key(extracted_segments(path)[: len(folder_key)]) != folder_key:
-            raise CorruptionError(
-                f"macOS package payload {quoted(folder)} has a member that extracts "
-                "outside its folder",
-                member_name=member.name,
-            )
 
     @override
     def open_member(self, member: ArchiveMember, locator: _Location) -> MemberData:

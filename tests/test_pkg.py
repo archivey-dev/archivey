@@ -345,7 +345,7 @@ def test_a_payload_file_outside_its_folder_is_refused(
 ) -> None:
     blob = _product(_component(odc_cpio(entries, links=links)))
     with (
-        pytest.raises(CorruptionError, match="outside its folder"),
+        pytest.raises(CorruptionError, match=r"outside app0\.pkg/Payload/"),
         open_archive(io.BytesIO(blob)) as archive,
     ):
         archive.members()
@@ -355,10 +355,41 @@ def test_a_hard_link_to_a_path_outside_its_folder_is_refused() -> None:
     payload = odc_cpio([("./../x", b"x"), ("./b", b"")], links={"./b": "./../x"})
     blob = _product(_component(payload))
     with (
-        pytest.raises(CorruptionError, match="outside its folder"),
+        pytest.raises(CorruptionError, match=r"outside app0\.pkg/Payload/"),
         open_archive(io.BytesIO(blob)) as archive,
     ):
         archive.members()
+
+
+@pytest.mark.parametrize(
+    ("entries", "match"),
+    [
+        ([("./l", b".."), ("./l/Bom", b"x")], "under a symlink"),
+        ([("./l", b"../.."), ("./l/Distribution", b"x")], "under a symlink"),
+    ],
+    ids=["sibling", "package-top"],
+)
+def test_a_payload_file_that_leaves_its_folder_through_a_symlink_is_refused(
+    entries: list[tuple[str, bytes | None]], match: str
+) -> None:
+    """A payload symlink ``l -> ..`` makes ``l/Bom`` the package's own ``Bom``:
+    extraction writes through it, inside the destination."""
+    symlinks = {name: 0o120777 for name, data in entries if data and b"." in data}
+    blob = _product(_component(odc_cpio(entries, modes=symlinks)))
+    with (
+        pytest.raises(CorruptionError, match=match),
+        open_archive(io.BytesIO(blob)) as archive,
+    ):
+        archive.members()
+
+
+def test_a_payload_symlink_that_stays_in_its_folder_is_listed() -> None:
+    entries: list[tuple[str, bytes | None]] = [("./a", b"x"), ("./l", b"a")]
+    payload = odc_cpio(entries, modes={"./l": 0o120777})
+    with open_archive(io.BytesIO(_product(_component(payload)))) as archive:
+        link = archive.get("app0.pkg/Payload/l")
+        assert link.type is MemberType.SYMLINK
+        assert link.link_target == "a"
 
 
 def test_a_hard_link_inside_a_payload_names_its_prefixed_target() -> None:

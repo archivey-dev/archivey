@@ -34,8 +34,9 @@
 - [ ] 0.6 Public listing-limit, timestamp and Unix-mode helpers (ISO, xar, CAB, DMG,
   LHA, ARJ)
 - [ ] 0.7 Crypto facade (makeself, DMG, ARJ)
-- [ ] 0.8 Nested-archive helpers folded into `ReaderContext.open_nested`; the path
-  helpers public (deb, pkg)
+- [x] 0.8 Nested-archive helpers folded into `ReaderContext.open_nested`; the path
+  helpers public (deb, pkg). Done as `open_nested(under=, keep_out=)` and
+  `read_nested` instead: neither reader needs a path helper
 - [ ] 0.8a Public calls for each private attribute listed in design.md §5 (spanning
   checks, decoded-byte and decoder-use accounting, listing budgets, source origin,
   range hints and progress), each with the reader that needs it

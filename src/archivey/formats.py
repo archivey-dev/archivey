@@ -78,7 +78,6 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, TruncatedError
 from archivey.internal.arg_checks import check_bool
-from archivey.internal.filters import collision_key, extracted_segments
 from archivey.internal.listing_limits import str_retained_bytes
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.overrides import override
@@ -129,8 +128,6 @@ __all__ = [
     "SequentialReader",
     "block_stream",
     "buffered_stream",
-    "collision_key",
-    "extracted_segments",
     "register_codec",
     "register_format",
     "str_retained_bytes",
