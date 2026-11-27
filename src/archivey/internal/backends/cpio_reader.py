@@ -47,6 +47,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from enum import Enum
 
+from archivey.detection import DetectionConfidence
 from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
@@ -832,18 +833,21 @@ class CpioReader(SequentialReader):
             scanned += len(chunk)
 
 
-def _binary_probe(prefix: bytes) -> bool:
+def _binary_probe(prefix: bytes) -> DetectionConfidence:
     """A binary CPIO header: the two-byte magic alone is too weak a signature, so the
-    header must also hold a name of the size it declares, ending in a NUL."""
+    header must also hold a name of the size it declares, ending in a NUL. The check
+    tells yes from no, so a match is ``PROBABLE``."""
     if len(prefix) < 26:
-        return False
+        return DetectionConfidence.REJECTED
     for order, magic in (("<", _BINARY_LE), (">", _BINARY_BE)):
         if prefix[:2] != magic:
             continue
         name_size = struct.unpack_from(f"{order}H", prefix, 20)[0]
         end = 26 + name_size
-        return 1 < name_size and end <= len(prefix) and prefix[end - 1] == 0
-    return False
+        if 1 < name_size and end <= len(prefix) and prefix[end - 1] == 0:
+            return DetectionConfidence.PROBABLE
+        return DetectionConfidence.REJECTED
+    return DetectionConfidence.REJECTED
 
 
 class CpioHandler(SequentialFormatHandler):

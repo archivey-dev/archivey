@@ -37,6 +37,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -47,6 +48,12 @@ _REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO))
 
 TIMEOUT = 300
+# hdiutil create once failed with "Resource busy" right after the previous image was
+# detached (issue #1846), likely diskimages-helper still holding it. The same helper
+# may be busy for any hdiutil call, so each one (create, attach, detach, verify) is
+# tried again, with a growing wait, while it gives that answer.
+HDIUTIL_ATTEMPTS = 4
+HDIUTIL_RETRY_SECONDS = 5
 FORMATS = ("UDZO", "UDBZ", "ULFO", "ULMO", "UDRO", "UDCO")
 # Formats that a newer hdiutil may no longer create; a refusal skips the row.
 OPTIONAL_FORMATS = frozenset({"UDCO"})
@@ -77,7 +84,9 @@ class Result:
         return "ok" if not self.problems else "FAILED"
 
 
-def _run(*args: str, password: str | None = None) -> subprocess.CompletedProcess[str]:
+def _run_once(
+    *args: str, password: str | None = None
+) -> subprocess.CompletedProcess[str]:
     """``args`` run; with ``password``, ``-stdinpass`` is added and the password sent
     on standard input, which ``hdiutil`` reads to its end."""
     if password is not None:
@@ -90,6 +99,20 @@ def _run(*args: str, password: str | None = None) -> subprocess.CompletedProcess
         check=False,
         input=password,
     )
+
+
+def _run(*args: str, password: str | None = None) -> subprocess.CompletedProcess[str]:
+    """``args`` run; an ``hdiutil`` call that fails with "Resource busy" is tried
+    again. Any other failure, and the last busy one, is returned as it is."""
+    for attempt in range(1, HDIUTIL_ATTEMPTS + 1):
+        done = _run_once(*args, password=password)
+        if args[0] != "hdiutil" or done.returncode == 0:
+            return done
+        if "Resource busy" not in done.stderr:
+            return done
+        if attempt < HDIUTIL_ATTEMPTS:
+            time.sleep(HDIUTIL_RETRY_SECONDS * attempt)
+    return done
 
 
 def _nfc(text: str) -> str:

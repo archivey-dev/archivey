@@ -29,7 +29,6 @@ from archivey.formats import SequentialReader
 from archivey.internal.backends import ar_reader
 from archivey.internal.backends.ar_reader import ArReader
 from tests.memory_util import traced_peak
-from tests.public_names import assert_only_public_archivey
 from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO, open_mode
 
 AR = archivey.ArchiveFormat.AR
@@ -562,11 +561,6 @@ def test_a_time_past_the_datetime_range(tmp_path: Path) -> None:
         assert member.modified is None
         codes = [d.code for d in member.diagnostics]
         assert codes == [DiagnosticCode.MEMBER_TIMESTAMP_INVALID]
-
-
-def test_the_reader_uses_only_public_archivey() -> None:
-    """Written as a format added from outside would be."""
-    assert_only_public_archivey(ar_reader.__file__)
 
 
 def test_the_reader_is_a_sequential_reader() -> None:

@@ -70,6 +70,7 @@ from typing import (
 )
 
 from archivey.config import ArchiveyConfig, DecoderLimits
+from archivey.detection import DetectionConfidence
 from archivey.diagnostics import (
     DiagnosticCode,
     DiagnosticContext,
@@ -1340,10 +1341,22 @@ class FormatHandler(ABC):
     """Exact signatures. One counts only when no built-in signature matched. A
     replacement plugin declares none."""
 
-    probe: ClassVar[Callable[[bytes], bool] | None] = None
+    probe: ClassVar[Callable[[bytes], DetectionConfidence] | None] = None
     """A content check for a format with no exact signature. It gets only the bytes
     detection already read from the start of the source, and runs after every
-    built-in probe. A replacement plugin declares none."""
+    built-in probe. A replacement plugin declares none.
+
+    It answers with a verdict: :attr:`DetectionConfidence.REJECTED
+    <archivey.DetectionConfidence.REJECTED>` when the bytes are not the format,
+    :attr:`DetectionConfidence.GUESS <archivey.DetectionConfidence.GUESS>` for a
+    weak match, :attr:`DetectionConfidence.PROBABLE
+    <archivey.DetectionConfidence.PROBABLE>` for a match. A probe that only tells
+    yes from no answers ``PROBABLE`` or ``REJECTED``. archivey reports the verdict as
+    the detection's confidence, and reports a ``GUESS`` as ``PROBABLE`` when the
+    source's extension names the format. Inside a compressor, a ``GUESS`` the extension
+    does not raise is no match: the source stays the compressed file. Any other answer,
+    ``None``, a bool or ``CERTAIN`` among them, is a plugin bug: archivey logs it and
+    takes it as no match, as it does a probe that raises."""
 
     uses_encoding: ClassVar[bool] = False
     """Whether the reader applies ``encoding=`` (through
@@ -1539,10 +1552,11 @@ class CodecHandler(ABC):
     magic: ClassVar[tuple[Magic, ...]] = ()
     """Exact signatures. One counts only when no built-in signature matched."""
 
-    probe: ClassVar[Callable[[bytes], bool] | None] = None
+    probe: ClassVar[Callable[[bytes], DetectionConfidence] | None] = None
     """A content check for a format with no exact signature. It gets only the bytes
     detection already read from the start of the source, and runs after every
-    built-in probe."""
+    built-in probe. It answers with a verdict, as :attr:`FormatHandler.probe`
+    does."""
 
     concatenated: ClassVar[bool] = True
     """Whether a stream may follow the first, its output after the first's, as
