@@ -85,8 +85,9 @@ follows, and every path step of resolving earlier targets again, SHALL count aga
 raised when they cross it. It SHALL raise `CorruptionError` in the same way for a
 control-tar member, or hard link target, whose `DEBIAN/`-prefixed path, read the same
 way but not folded, does not have exactly `DEBIAN` as its first segment, for a
-control-tar member under a control-tar symlink, and for a control-tar symlink at the
-path of a directory or of another symlink. The reader names these borders with
+control-tar member under a control-tar symlink, for a control-tar symlink at the path
+of a directory or of another symlink, and for a control-tar directory at a symlink's
+path. The reader names these borders with
 `ReaderContext.open_nested(under="DEBIAN/")` for the control tar and
 `open_nested(keep_out=("DEBIAN/",))` for the data tar (`format-plugins`, "A reader
 names the borders between the trees it joins"). `dpkg-deb -R`
