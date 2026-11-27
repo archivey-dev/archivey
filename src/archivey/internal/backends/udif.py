@@ -9,7 +9,8 @@ property list's ``blkx`` array holds one ``mish`` table per piece of the disk (t
 protective MBR, the GPT, each partition), and each table lists its runs.
 
 :class:`UdifImage` reads the ``koly`` block and the tables at open and checks every
-range before any byte of a run is read (design §4 of ``openspec/changes/dmg-reader``).
+range before any byte of a run is read (design §4 of
+``openspec/changes/archive/2026-11-27-dmg-reader``).
 :meth:`UdifImage.read` serves bytes of the virtual disk, decoding the runs a read
 covers; a few decoded runs stay in a cache. :class:`UdifSource` is a
 :class:`~archivey.formats.ReaderSource` over a range of the disk, so a filesystem parser

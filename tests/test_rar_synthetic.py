@@ -1,10 +1,10 @@
 """The synthetic RAR writer: ``unrar`` reads each member as it does from the archive.
 
 ``rar_synthetic`` builds the small archive the reader will hand ``unrar`` instead of
-the original (``openspec/changes/rar-synthetic-archives``). These tests build one
-for every member with packed data in every committed RAR fixture (the member alone,
-or its solid chain) and compare what ``unrar p`` prints with what the reader reads
-from the original archive today.
+the original (``openspec/changes/archive/2026-11-27-rar-synthetic-archives``). These
+tests build one for every member with packed data in every committed RAR fixture (the
+member alone, or its solid chain) and compare what ``unrar p`` prints with what the
+reader reads from the original archive today.
 """
 
 from __future__ import annotations

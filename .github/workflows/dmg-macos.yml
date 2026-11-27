@@ -1,7 +1,7 @@
 name: DMG against hdiutil
 
 # Checks the DMG reader and its test writer against Apple's own tools, which only macOS
-# has (DMG plan, openspec/changes/dmg-reader/tasks.md section M):
+# has (DMG plan, openspec/changes/archive/2026-11-27-dmg-reader/tasks.md section M):
 # scripts/investigations/dmg_macos_check.py makes every tests/dmg_build.py image pass
 # `hdiutil verify`, `fsck_hfs -n` and a read-only mount that shows what the writer put
 # there, and compares archivey's listing and hashes with the mounted volume of fresh

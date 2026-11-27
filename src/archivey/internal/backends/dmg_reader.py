@@ -1,7 +1,8 @@
 """Apple disk images (``.dmg``): UDIF images holding HFS+ or HFSX volumes, written
 against ``archivey.formats``.
 
-Three layers, one module each (design ``openspec/changes/dmg-reader``):
+Three layers, one module each (design
+``openspec/changes/archive/2026-11-27-dmg-reader``):
 
 1. :mod:`.udif`: the ``koly`` block, the property list and the run tables, and the
    virtual disk they describe, decoded run by run on demand.
