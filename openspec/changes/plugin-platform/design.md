@@ -1059,7 +1059,8 @@ What it cannot undo is a published package name, which is why DMG is split now.
 ## Decisions
 
 All ten were put to the maintainer and agreed on 2026-11-24. Decisions 5, 6 and 7 were
-revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R24 below).
+revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R17
+below), and extended on 2026-11-27 after the direction-review check (R18 to R24).
 
 1. **Installed plugins load by themselves, behind the guardrails of §3.** This replaces
    the 2026-10-25 rule (explicit `register_format()` only), which the maintainer
@@ -1143,6 +1144,12 @@ and the evidence in front of him (review round A):
   before its first release, because "codecs" does not say that it is an optional
   accelerator. Rejected: `archivey-compression-formats` (other archives seem to fit),
   `archivey-compression-methods`, `archivey-accelerators`, `archivey-native`.
+
+- **R13. Core keeps the binary CPIO check** (§4). A hint may carry a small check that
+  core runs when the format has no signature strong enough to be data and a wrapper
+  would otherwise read the file differently. Rejected: a weak two-byte signature that
+  refuses on a match (it would refuse good files), keeping CPIO in core, and
+  documenting the difference as an exception.
 
 - **R14. Interface first** (Migration Plan, step 0; the maintainer's proposal of
   2026-11-26). Before the manifest and before any wheel, the plugin interface is
@@ -1245,12 +1252,6 @@ and the evidence in front of him (review round A):
   hold plain values only. Rejected: a mapping of names and values per format
   (untyped, and a typo shows late), and a group for core's options only (ZIP and RAR
   would change shape again when a plugin needs options).
-
-- **R13. Core keeps the binary CPIO check** (§4). A hint may carry a small check that
-  core runs when the format has no signature strong enough to be data and a wrapper
-  would otherwise read the file differently. Rejected: a weak two-byte signature that
-  refuses on a match (it would refuse good files), keeping CPIO in core, and
-  documenting the difference as an exception.
 
 Changed without a ruling to revise, because the plan contradicted a spec or the code:
 `CompressionAlgorithm` stays a non-string type, no extra is named after a package, and

@@ -198,6 +198,8 @@
   and a newer plugin tried against two host versions
 - [ ] 3.9a The test kit of 0.9a published as a public module with the pilot wheel
   (R19), run from the package's own tests against an installed core wheel
+- [ ] 3.9b Timing: cold import and first successful operation, on a core-only, a
+  recommended and a crowded environment
 - [ ] 3.9c The CI rule of R18: which jobs a core change and a package change run,
   with the edges read from the manifests' `speedups` lists and each package's test
   dependency group; a package's tests run with core, the package and that group
@@ -208,8 +210,6 @@
   lands: an installed package's probe runs by default, a plugin is trusted code like
   any dependency, the pure-Python claim covers archivey's own packages, and
   `FormatPolicy.COMMON` is the setting for files you did not make
-- [ ] 3.9b Timing: cold import and first successful operation, on a core-only, a
-  recommended and a crowded environment
 - [ ] 3.10 A session that did not work on the migration writes the guide's indexed
   example from the guide alone; its unchanged wheel is tried against the next minor
 - [ ] 3.11 Spec deltas: `format-manifest`, `format-plugins`, `packaging-and-extras`
