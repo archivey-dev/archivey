@@ -2372,7 +2372,7 @@ def test_name_flagged_utf8_that_is_not_decodes_as_unflagged(
     assert diag.code == DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
     assert diag.context.fallback_encoding == codec
     assert "UTF-8 flag set" in diag.message
-    assert wrong.code == DiagnosticCode.MEMBER_NAME_UTF8_FLAG_WRONG
+    assert wrong.code == DiagnosticCode.MEMBER_NAME_ENCODING_MISMATCH
     assert wrong.context.fallback_encoding == codec
 
 

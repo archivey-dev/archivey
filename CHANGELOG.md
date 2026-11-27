@@ -74,7 +74,7 @@ line. How to write the entry: see
   `"surrogateescape"`); a valid UTF-8 name no longer emits it. The context fields
   `inferred_encoding` and `declared_encoding` became one `fallback_encoding`.
   `DiagnosticPolicy.STRICT` no longer refuses it. A ZIP name whose UTF-8 flag its bytes
-  refute is reported as the new `MEMBER_NAME_UTF8_FLAG_WRONG` too, which `STRICT`
+  refute is reported as the new `MEMBER_NAME_ENCODING_MISMATCH` too, which `STRICT`
   refuses.
 - **Breaking:** the deprecated `ArchiveyConfig` fields `zip_unflagged_fallback_encoding`,
   `rar_decompressor`, `unrar_path` and `unar_path` always read back as `None`: a value

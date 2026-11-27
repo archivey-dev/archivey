@@ -2944,7 +2944,7 @@ class ZipReader(BaseArchiveReader):
                 ),
             )
             if decoded_name.declared_encoding == "utf-8":
-                self._emit_utf8_flag_wrong(
+                self._emit_name_encoding_mismatch(
                     member, index, codec=decoded_name.fallback_encoding
                 )
         if decoded_name.unicode_extra_fault is not None:

@@ -246,7 +246,7 @@ def test_a_tar_inside_a_makeself_reports_a_name_once() -> None:
     assert _fallbacks(data) == ["surrogateescape"]
 
 
-_FLAG_WRONG = archivey.DiagnosticCode.MEMBER_NAME_UTF8_FLAG_WRONG
+_MISMATCH = archivey.DiagnosticCode.MEMBER_NAME_ENCODING_MISMATCH
 
 
 def _codes(data: bytes, **kwargs: object) -> list[archivey.DiagnosticCode]:
@@ -259,7 +259,7 @@ def test_a_utf8_flag_the_bytes_contradict_is_reported_and_strict_refuses() -> No
     code page, so STRICT refuses it, while the name still lists by default."""
     data = _flagged_zip_with_name(_RAW)
     codes = _codes(data)
-    assert _FLAG_WRONG in codes
+    assert _MISMATCH in codes
     assert _FALLBACK in codes
     strict = ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.STRICT)
     with pytest.raises(archivey.ArchiveyError):
@@ -271,8 +271,8 @@ def test_a_utf8_flag_the_bytes_contradict_is_reported_and_strict_refuses() -> No
 )
 def test_a_utf8_name_is_not_a_wrong_flag(build) -> None:
     """A UTF-8 name, flagged or not (macOS writes it unflagged), is not reported."""
-    assert _FLAG_WRONG not in _codes(build(_CP1252_NAME.encode("utf-8")))
+    assert _MISMATCH not in _codes(build(_CP1252_NAME.encode("utf-8")))
 
 
 def test_a_legacy_name_without_the_flag_is_not_a_wrong_flag() -> None:
-    assert _FLAG_WRONG not in _codes(_zip_with_name(_RAW))
+    assert _MISMATCH not in _codes(_zip_with_name(_RAW))

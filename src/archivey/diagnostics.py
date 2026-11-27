@@ -87,12 +87,13 @@ class DiagnosticCode(StrEnum):
     the fallback decoded it: ``ArchiveyConfig.fallback_encoding``, or the format's own
     (cp437 for ZIP, surrogate escapes for most others). A different
     ``fallback_encoding`` could change the name; the context names the codec used."""
-    MEMBER_NAME_UTF8_FLAG_WRONG = "member_name_utf8_flag_wrong"
-    """A ZIP member's UTF-8 flag (bit 11) is set, but its name's bytes are not valid
-    UTF-8, so the flag cannot be honoured and the name decodes as an unflagged one,
-    also reported as ``MEMBER_NAME_FALLBACK_ENCODING``. The header contradicts itself,
-    so ``DiagnosticPolicy.STRICT`` refuses it; a UTF-8 name without the flag, which
-    macOS writes, is not reported."""
+    MEMBER_NAME_ENCODING_MISMATCH = "member_name_encoding_mismatch"
+    """A member's name bytes are not valid in the encoding the archive declares for
+    them, so that encoding cannot be honoured and the name went to the fallback, also
+    reported as ``MEMBER_NAME_FALLBACK_ENCODING``. The archive contradicts itself, so
+    ``DiagnosticPolicy.STRICT`` refuses it. ZIP reports it for a name whose UTF-8 flag
+    (bit 11) is set over bytes that are not UTF-8; a UTF-8 name without the flag,
+    which macOS writes, declares nothing and is not reported."""
     MEMBER_NAME_BIDI_CONTROL = "member_name_bidi_control"
     """A member's name or link target contains bidi controls, which change the order
     the text displays in and can make an ``.exe`` look like a ``.png``."""
@@ -324,8 +325,8 @@ DiagnosticCodeStr = Literal[
     "member-name-normalized",
     "member_name_fallback_encoding",
     "member-name-fallback-encoding",
-    "member_name_utf8_flag_wrong",
-    "member-name-utf8-flag-wrong",
+    "member_name_encoding_mismatch",
+    "member-name-encoding-mismatch",
     "member_name_bidi_control",
     "member-name-bidi-control",
     "member_name_zero_width_character",
@@ -439,7 +440,7 @@ class NameNormalizationContext(_JsonSafeContext):
 @dataclass(frozen=True)
 class NameEncodingContext(_JsonSafeContext):
     """A member name decoded by the fallback (``MEMBER_NAME_FALLBACK_ENCODING``), or a
-    ZIP name whose UTF-8 flag its bytes contradict (``MEMBER_NAME_UTF8_FLAG_WRONG``).
+    name whose bytes break its declared encoding (``MEMBER_NAME_ENCODING_MISMATCH``).
 
     ``fallback_encoding`` decoded ``raw_name_base64`` to ``member_name``: the
     caller's ``ArchiveyConfig.fallback_encoding`` or the format's own fallback, such
@@ -1529,7 +1530,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
     {
         DiagnosticCode.MEMBER_NAME_NORMALIZED: "name_normalization",
         DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING: "name_encoding",
-        DiagnosticCode.MEMBER_NAME_UTF8_FLAG_WRONG: "name_encoding",
+        DiagnosticCode.MEMBER_NAME_ENCODING_MISMATCH: "name_encoding",
         DiagnosticCode.MEMBER_NAME_BIDI_CONTROL: "member_name_controls",
         DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER: "member_name_controls",
         DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER: "member_name_controls",
@@ -1584,7 +1585,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
 ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
     {
         DiagnosticCode.MEMBER_NAME_NORMALIZED,
-        DiagnosticCode.MEMBER_NAME_UTF8_FLAG_WRONG,
+        DiagnosticCode.MEMBER_NAME_ENCODING_MISMATCH,
         DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
         DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER,
         DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED,
@@ -1649,7 +1650,7 @@ The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-five codes are delib
 - ``MEMBER_NAME_FALLBACK_ENCODING`` — a name in a legacy code page is how DOS and
   Windows tools, and older Unix locales, wrote archives: the bytes are not damaged,
   only undeclared. ``STRICT`` would refuse every such ZIP and TAR. A ZIP name whose
-  UTF-8 flag its bytes contradict is refused through ``MEMBER_NAME_UTF8_FLAG_WRONG``.
+  UTF-8 flag its bytes contradict is refused through ``MEMBER_NAME_ENCODING_MISMATCH``.
 - ``MEMBER_NAME_INVISIBLE_CHARACTER`` — zero-width joiners are part of ordinary emoji
   sequences, non-joiners of Persian and Indic spelling, and tag characters of
   subdivision flags. ``STRICT`` would refuse an archive of legitimately named files.

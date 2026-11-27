@@ -1104,7 +1104,7 @@ consulted. Every name that went past UTF-8 to that fallback, flagged or not, SHA
 `MEMBER_NAME_FALLBACK_ENCODING` on its member, naming the codec used, so the decision is
 observable and escalatable via `DiagnosticPolicy`; a name read as UTF-8 emits none, since
 no setting could change it. A name whose bit 11 its bytes refute SHALL also emit
-`MEMBER_NAME_UTF8_FLAG_WRONG`, which `DiagnosticPolicy.STRICT` refuses: the header
+`MEMBER_NAME_ENCODING_MISMATCH`, which `DiagnosticPolicy.STRICT` refuses: the header
 contradicts itself. A valid UTF-8 name with bit 11 clear SHALL NOT emit it. Decoding SHALL
 NOT raise a bare `UnicodeDecodeError`.
 
@@ -1152,7 +1152,7 @@ UTF-8 flag is set. `name` is always `raw_name` decoded and normalized.
 - **THEN** the archive lists every member, the name decodes as `cafΘ.txt` (cp437), or
   as `café.txt` under `fallback_encoding="cp1252"`, `raw_name` keeps the stored bytes,
   and `MEMBER_NAME_FALLBACK_ENCODING` records the codec used, its message naming the set
-  flag; `MEMBER_NAME_UTF8_FLAG_WRONG` is emitted too, so `DiagnosticPolicy.STRICT`
+  flag; `MEMBER_NAME_ENCODING_MISMATCH` is emitted too, so `DiagnosticPolicy.STRICT`
   refuses the archive
 
 #### Scenario: Unicode Path extra field
@@ -1199,7 +1199,7 @@ A field the comment used SHALL NOT appear in `extra["zip.extra_fields"]`.
 | The same field with the CRC of other bytes, or version 2 | Field ignored: `comment == "café"` (cp437) |
 | Field of 3 bytes, or matching CRC and invalid UTF-8 text | `comment == "café"`; `MEMBER_HEADER_RECORD_SKIPPED`, `record="unicode_comment"`; `DiagnosticPolicy.STRICT` refuses |
 | Bit 11 set over a valid UTF-8 name, malformed field | Field not consulted: no diagnostic |
-| Bit 11 set over the name `caf\xe9.txt`, which refutes it, good or malformed field | Field not consulted: `comment == "café"`; only the name's `MEMBER_NAME_FALLBACK_ENCODING` and `MEMBER_NAME_UTF8_FLAG_WRONG` |
+| Bit 11 set over the name `caf\xe9.txt`, which refutes it, good or malformed field | Field not consulted: `comment == "café"`; only the name's `MEMBER_NAME_FALLBACK_ENCODING` and `MEMBER_NAME_ENCODING_MISMATCH` |
 
 #### Scenario: A flagged member comment ignores `fallback_encoding`
 

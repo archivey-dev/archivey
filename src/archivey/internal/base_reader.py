@@ -3617,14 +3617,14 @@ class BaseArchiveReader(ArchiveReader):
             logger=logger,
         )
 
-    def _emit_utf8_flag_wrong(
+    def _emit_name_encoding_mismatch(
         self, member: ArchiveMember, member_id: int, *, codec: str
     ) -> None:
-        """Report ``MEMBER_NAME_UTF8_FLAG_WRONG`` on ``member``: its ZIP UTF-8 flag is
+        """Report ``MEMBER_NAME_ENCODING_MISMATCH`` on ``member``: its ZIP UTF-8 flag is
         set over a name whose bytes are not valid UTF-8, which ``codec`` decoded as an
         unflagged name. ``member_id`` is the walk position."""
         self._diagnostics_collector.emit(
-            code=DiagnosticCode.MEMBER_NAME_UTF8_FLAG_WRONG,
+            code=DiagnosticCode.MEMBER_NAME_ENCODING_MISMATCH,
             message=(
                 "ZIP member name has its UTF-8 flag set, but its bytes are not UTF-8; "
                 f"decoded as an unflagged name with {codec!r}: {quoted(member.name)}"
