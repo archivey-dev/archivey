@@ -1087,7 +1087,8 @@ def _resolve_single_file_or_tar(
     container (:func:`_probe_inner_container`); on a hit it becomes ``(TAR, <stream>)``
     (e.g. ``TAR_GZ``), or ``(<plugin container>, <stream>)``, reported as ``PROBABLE`` /
     ``content_probe`` (the inner test is structural, weaker than an exact magic). A
-    container probe's ``GUESS`` is no hit: it stays the compressor it surely is.
+    container probe's ``GUESS`` the extension does not raise is no hit: it stays the
+    compressor it surely is.
     An inner-container upgrade is corroboration for a probe hit — two independent signals
     had to hold — so ``corroborated`` is set. Otherwise a matching extension (same stream
     format) is the corroborating signal. ``peek_more`` gives the probe a bounded,
