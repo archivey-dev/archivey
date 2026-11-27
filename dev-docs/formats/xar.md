@@ -159,8 +159,10 @@ choice).
   the rest of the payload drained after the CPIO ends, and a mismatch raises
   `CorruptionError`. A payload file, or a hard link's target, that extracts outside its
   folder (`../Bom`, `a/../../Scripts/x`) is refused: it would replace another member of
-  the package. So is a file under a symlink of the payload (`l -> ..`, then `l/Bom`),
-  which extraction writes through, inside the destination: the payload is read with
+  the package. So is a file under a symlink of the payload (`l -> ..`, then `l/Bom`):
+  archivey's extraction refuses a path through a symlink it created, but a caller
+  writing files from `stream_members()` would write through it, so the listing holds
+  the border as a `.deb` does. The payload is read with
   `ReaderContext.open_nested(under=)`, and core follows its symlinks. Until the deb
   port moved that check into core, pkg checked names and hard links only.
 - **Opening a file.** `open_member` opens the payload again and calls `open_nested`,

@@ -21,8 +21,9 @@ The payloads are read through :meth:`ReaderContext.open_nested`, so listing deco
 each one, and the XAR checksum of a payload is checked as the listing reads it. A
 payload file that extracts outside its folder (``../Bom``), a hard link whose target
 does, and a file under a symlink of the payload (``l -> ..``, then ``l/Bom``) are
-refused: each would replace another member of the package
-(``ReaderContext.open_nested(under=)``).
+refused (``ReaderContext.open_nested(under=)``): the first two would replace another
+member of the package, and the last would for a caller that writes files from the
+listing itself.
 
 Handbook page: ``dev-docs/formats/xar.md``.
 """
