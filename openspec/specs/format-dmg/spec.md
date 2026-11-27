@@ -2,7 +2,8 @@
 
 ## Purpose
 
-TBD - created by archiving change dmg-reader. Update Purpose after archive.
+Read a macOS disk image (UDIF `.dmg`, plain or password-encrypted): its run tables as a
+virtual disk, the partitions on it, and the HFS+ and APFS volumes they hold.
 
 ## Requirements
 
@@ -22,9 +23,9 @@ not its decoded size, SHALL raise `CorruptionError`, and a compressed run whose 
 length exceeds twice its decoded size plus 64 KiB SHALL raise `ResourceLimitError` (a
 support limit, not a validity bound); no decoder pull SHALL return more than the decoded
 size plus one byte. Runs SHALL be decoded through `ReaderContext.decompress` for zlib,
-bzip2 and xz and through archivey's own decoders for LZFSE, LZVN and ADC, whose output
-is bounded by the run's size: the pure-Python decoders, or for LZFSE and LZVN the
-`archivey-speedups` kernels when that package is installed and the call allows them,
+bzip2 and xz and through archivey's own decoders for LZFSE (with its LZVN blocks) and
+ADC, whose output is bounded by the run's size: the pure-Python decoders, or for LZFSE
+the `archivey-speedups` kernel when that package is installed and the call allows them,
 with the same bytes and errors. A run that decodes to another length, runs
 that overlap or leave their table's sector range, and stored ranges outside the data
 fork SHALL raise `CorruptionError`; a file that ends inside a run or the property list
@@ -226,8 +227,7 @@ size over its cap (16 key entries; 4 KiB for each key entry) `ResourceLimitError
 
 ### Requirement: Image checksums raise members together
 
-Before the partition CRC-32 spanning check exists (Part F), members of a DMG SHALL list
-with `verifiable = LENGTH`. With it, `verifiable` SHALL be set at listing: `CHECKSUM`
+`verifiable` SHALL be set at listing: `CHECKSUM`
 for a file member whose partition is fully covered by `blkx` tables that each carry a
 CRC-32, else `LENGTH`. Only `verified` SHALL change after the pass. A zero-fill run
 SHALL be folded into the CRC in time logarithmic in its length, never walked byte by

@@ -445,9 +445,7 @@ optimization being the other strategy this capability declares.
 A non-path stream source SHALL NOT be copied to disk at open. Both stream shapes —
 a single stream and an ordered set of stream volumes — SHALL defer the copy to the
 first member read that `unrar` has to serve, and a caller that only lists SHALL
-write nothing. An `open()` the reader refuses before spawning `unrar` — a name it
-cannot address through an include mask, or one whose mask would pull in earlier
-members — is not such a read and SHALL write nothing either. Listing SHALL be served from the source the caller supplied; for a
+write nothing. Listing SHALL be served from the source the caller supplied; for a
 volume set the reader SHALL read each volume as its own bounded view over that
 source rather than reopening or copying it.
 
@@ -690,12 +688,14 @@ compression-info versions 0 and 1 and RAR 1.5-4 `UNP_VER` 13 to 29; outside them
 member reads whatever version it declares, as in `unrar`. A later compressed member of
 the same solid stream (by the members' solid flags) SHALL raise `UnsupportedFeatureError`
 naming the unknown member, in the same way and with either decompressor, since decoding it
-means decoding that member first. With `unrar`, in an archive whose main header has the
-solid bit, every later member that `unrar` would decode SHALL raise it too, a later solid
-stream included: archivey addresses a member through an include mask, and with one
-`unrar` decodes the archive from its start. That message SHALL say so, and SHALL NOT
-say the archive needs the unknown member decoded. With `unar`, which reads a later stream
-on its own, a member of a later stream SHALL be read.
+means decoding that member first. A member of a later solid stream read through a
+synthetic archive, which starts at that member's own stream, SHALL be read. When `unrar`
+reads the original archive through an include mask instead (a large plainly named member
+of a path source, or a member no synthetic archive can hold), in an archive whose main
+header has the solid bit, every later member SHALL raise it too, a later solid stream
+included: with a mask, `unrar` decodes the archive from its start. That message SHALL say
+so, and SHALL NOT say the archive needs the unknown member decoded. With `unar`, which
+reads a later stream on its own, a member of a later stream SHALL be read.
 
 #### Scenario: unsupported variant matrix
 
@@ -709,7 +709,7 @@ on its own, a member of a later stream SHALL be read.
 | Compressed RAR 1.5-4 member with `UNP_VER` below 13 or above 29 | Listing succeeds; read raises `UnsupportedFeatureError` |
 | Stored member declaring an unknown version | Reads normally |
 | Solid archive, compressed member after one with an unknown version, same solid stream | Read raises `UnsupportedFeatureError` naming that member, with either decompressor |
-| Solid archive, member of a later solid stream after one with an unknown version | `unrar`: read raises `UnsupportedFeatureError` naming that member and the include mask; `unar`: reads normally |
+| Solid archive, member of a later solid stream after one with an unknown version | `unrar` through a synthetic archive and `unar`: reads normally; `unrar` on the original archive through a mask: `UnsupportedFeatureError` naming that member and the include mask |
 
 ### Requirement: Support multi-volume RAR sets
 
@@ -1181,7 +1181,7 @@ most `rar` writes, SHALL be `None` and SHALL NOT be weighed or decoded.
 | `rar_decompressor="auto"`, only a `unar` that passes the RAR5 check | `unar` is spawned |
 | Only a `unar` that fails the RAR5 check (`tests/test_unar_probe.py`), `auto` or `"unar"` | `auto`: as with neither present; `"unar"`: `PackageNotInstalledError` saying what the check saw |
 | `rar_decompressor="auto"`, neither present | `PackageNotInstalledError` names RARLAB `unrar` or `rar` |
-| `unar` selected, member name contains `*` | Read by index; no `rar_allow_glob_member_concatenation` needed |
+| `unar` selected, member name contains `*` | Read by index |
 | `unar` selected, encrypted RAR5 member, right password | Read correctly; the password is passed with `-p` |
 | `unar` selected, encrypted RAR5 member, wrong password | `EncryptionError` |
 | `unar` selected, encrypted RAR 2.x-4.x member, compressed or split | `UnsupportedFeatureError` naming the RAR 2.x-4.x reason |
@@ -1210,9 +1210,9 @@ program that will run, so under `rar_decompressor="auto"` it is the rule of the 
 
 - `unar`: the largest dictionary declared in the member's solid stream, up to and
   including the member.
-- `unrar`, nonsolid: for the member and for every earlier member its include mask also
-  selects, the smaller of that member's declared dictionary and its unpacked size; the
-  largest of these.
+- `unrar`, nonsolid: the smaller of the member's declared dictionary and its unpacked
+  size. A synthetic archive holds the member alone, and a read on the original archive
+  uses a mask that selects the member alone (a plain name).
 - `unrar`, solid: the smaller of the largest dictionary declared up to and including the
   member and the unpacked size of those members. "Solid" here is the MAIN header's solid
   flag, which is what `unrar` decides by; a member's own solid flag does not.
@@ -1236,7 +1236,6 @@ SHALL give the declared size when the count is smaller.
 | `unrar`, a nonsolid member declaring 4 GiB and 3 GiB unpacked, default cap | `ResourceLimitError` naming 3 GiB and the declared 4 GiB; `unrar` not spawned |
 | `unrar`, a solid member behind a member declaring 4 GiB and 3 GiB unpacked | `ResourceLimitError`, for a named read and in a `stream_members()` pass |
 | `unrar`, a stored solid member behind a member declaring 4 GiB and 3 GiB unpacked | `ResourceLimitError` naming the earlier member; `unar` counts it 0 |
-| `unrar` with `rar_allow_glob_member_concatenation`, a duplicate name whose earlier entry declares 4 GiB and 3 GiB unpacked | `ResourceLimitError` when the later, small entry is read |
 | `rar_decompressor="auto"` | The count of the program `auto` picked |
 
 ### Requirement: A RAR file cut inside a header SHALL list the members before the cut

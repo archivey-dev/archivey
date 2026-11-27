@@ -856,9 +856,13 @@ another filesystem than the partition holds; the filesystem decides),
 the map's range is read), `"member_type"` (an HFS+ file's mode and Finder type
 disagree on whether it is a symlink, reported on the member, or an APFS directory
 entry's type disagrees with its inode's mode; the mode decides), `"apfs_checkpoint"`
-(the newest APFS checkpoint is incomplete, and an older one is looked for) or
+(the newest APFS checkpoint is incomplete, and an older one is looked for),
 `"link_count"` (an APFS file's hard-link records disagree with its inode's link count;
-the directory records decide what is listed). The
+the directory records decide what is listed), `"key_entry"` (a password key entry of an
+encrypted image that archivey cannot use, skipped because another entry is usable) or
+`"folder_thread"` (HFS+ folders whose thread record is missing, unreadable or names
+another parent or name than the folder record; reported once per volume, the folder
+records decide the paths). The
 code SHALL be in `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` raises on it.
 
 A DMG image that holds, beside the volumes it lists, a partition with contents archivey
