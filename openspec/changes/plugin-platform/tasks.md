@@ -99,7 +99,9 @@
   executed from the spec whose origin was compared with the listed file, and a
   parent `__path__` that leads elsewhere is refused, in the host and in the child
 - [ ] 3.2 Policy before import: no dotted path of an installed package is imported
-  before the call's policy allows its provider. The provider policy gates every code
+  before the call's policy allows its provider and every library its entry lists
+  (`exclude_libraries={"brotli"}` and `only_libraries=set()` with the compressors
+  installed: no Brotli probe, no import of `brotli`). The provider policy gates every code
   load; the format policy gates opening and decoding the detected format (R9), so a
   probe or refinement of an allowed provider runs for a format the call refuses
 - [ ] 3.3 The recorder test: a wheel whose `__init__` records that it ran; discovery,
@@ -127,7 +129,9 @@
   with the hint without it; the package's handler reuses core's check
 - [ ] 3.8 CI: build the wheel, install it beside a core wheel in a fresh environment,
   run the public-imports test and the pilot checks (discovery, plain and compressed
-  CPIO, limits, cleanup); wheel, editable and zipped installs
+  CPIO, limits, cleanup); wheel, editable and zipped installs; the editable rule of
+  design.md §3 (a `.pth` of directory lines is accepted, one with an `import` line
+  and a hook-based install are refused)
 - [ ] 3.9 `archivey.formats.API_VERSION` with the acceptance rule of design.md §5,
   checked on the manifest before import; the manifest envelope (`api` and names) read
   whatever the version; `format_availability()` and an open by name pinned for an
@@ -164,8 +168,11 @@
   Python declaration and `call.native(...)` are from 0.3a), the child loading an
   allowed dotted path, the error mapping; a
   test wheel with a native decoder that runs in the child under `NATIVE_DECODERS` and
-  in process otherwise; `docs/security.md` and the threat model state the undeclared
-  case
+  in process otherwise; the `isolation` floor (a `.bz3` file decodes in a child under
+  the default config and raises `ResourceUnavailableError` where none can start);
+  `native` naming a worker module of the package; `requires` apart from `speedups`
+  (lzop and Snappy stay `FULL` with `faster_with` when `compress-utils` is absent);
+  `docs/security.md` and the threat model state the undeclared case
 - [ ] 4.7 Public listing-limit, timestamp and Unix-mode helpers (ISO, xar, CAB, DMG,
   LHA, ARJ)
 - [ ] 4.7a The probe context: bounded `read_at`, `charge_decode`, isolation and decoder
@@ -173,7 +180,10 @@
   only return type of a probe (no bool), declared on the manifest entry; the Python
   side and Brotli's probe on it are from 0.3a; `_brotli_probe_confidence` out of
   core
-- [ ] 4.8 SFX stub scan declared on the entry (LHA, ARJ)
+- [ ] 4.8 SFX stub scan declared on the entry (LHA, ARJ): needles, whether the
+  parser scans, and a required validator by dotted path, gated like a probe; a 2 MiB
+  program with chance `60 EA` bytes is not ARJ; on a core-only install an LHA stub
+  is refused with the hint and an ARJ stub is not recognised (Open Question 13)
 - [ ] 4.9 Crypto facade (makeself, DMG, ARJ)
 - [ ] 4.10 Nested-archive helpers folded into `ReaderContext.open_nested`; the path
   helpers public (deb, pkg)

@@ -280,6 +280,13 @@ installed code.
    no module of the package is imported in that call. The **format** policy is applied
    after detection (ruling R9, §4): it decides whether the identified format is read,
    and so it gates the handler and the decoders, not the code that identifies. The
+   **library** policy is a second gate on code, beside the provider (review AG2):
+   a probe, a refinement check or a stub validator of an entry is neither imported
+   nor run when `exclude_libraries` or `only_libraries` bars a library the entry
+   lists (in `requires` or in `speedups`, §6), as on main today, where a caller who
+   excludes `brotli` gets no Brotli probe and no import of `brotli`. A check skipped
+   for that reason reads as a library that is not installed and records nothing
+   in `unavailable_tiers`. The
    policy of one call does not depend on what an earlier call did, apart from modules
    being already in `sys.modules`.
 5. A handler module is imported when an archive of its format is opened.
@@ -300,9 +307,17 @@ Guardrails:
     `pkg` first and runs its initializer. So core never calls it on a dotted name;
   - a dotted target (`pkg.reader:Handler`) is checked against the distribution's file
     list first: the file for each part of the path must be listed there. Only then is
-    anything imported. Where the file list cannot show it (some editable installs, a
-    custom import hook), the provider is refused and reported before any lookup that
-    could run an initializer;
+    anything imported. Where the file list cannot show it (a custom import hook),
+    the provider is refused and reported before any lookup that could run an
+    initializer;
+  - an editable install lists only its `.pth` file and metadata, never the package's
+    files (review AG5), and the packages under `packages/` are installed that way in
+    development. One case is accepted: the distribution's `direct_url.json` marks it
+    editable, and the `.pth` file it lists holds directory lines only. The package
+    directory under such a directory then counts as the distribution's file tree, for
+    the manifest and for each origin compared below. A `.pth` file with an `import`
+    line, and an editable install that works through an import hook, are refused: no
+    metadata says which file would run;
   - the file that was checked is the file that runs (review C1). A dotted import
     finds each child through its parent's `__path__` and the active finders, so a
     parent that changes its search path can lead to another file although the listed
@@ -313,10 +328,13 @@ Guardrails:
     before that part runs;
   - this holds for the manifest, a handler, a probe, a refinement check and a decoder,
     in the caller's process and in the decoder child alike;
-  - a codec's `native` object usually lives in a dependency (the library it wraps), not
-    in the package. Its module must be one the entry lists in `requires`, the library
-    policy (`exclude_libraries`, `only_libraries`) governs it, and the one-owner check
-    applies to its top-level name too.
+  - a codec's `native` target is one of two things (review AG3). It is a module of
+    a library the entry lists, in `requires` or in `speedups` (§6): the library
+    policy (`exclude_libraries`, `only_libraries`) governs it, and the one-owner
+    check applies to its top-level name too. Or it is a worker module of the
+    manifest's own distribution, checked like any other dotted path of it, which
+    imports only listed libraries and nothing of `archivey`; a static test of the
+    package holds that, as `tests/test_worker_scripts.py` does for core's workers.
   Tests: two distributions that expose the same import name, one allowed by
   `providers=` and one not, with the recorder of the next point in both, and neither
   runs; a dotted target whose file the distribution does not list, with a
@@ -548,7 +566,19 @@ What the ten readers import from `archivey.internal` today, and how each is reso
 - Timestamp and Unix-mode helpers, used by ISO, LHA, ARJ: public, beside `set_unix_time`
   and `unix_member_type`.
 - The SFX stub scan, used by LHA and ARJ: the entry declares that the format may sit
-  behind a stub, and core runs the scan.
+  behind a stub, and core runs the scan. The declaration has three parts, as the
+  readers have today (review AG4): the needles, whether the parser scans, and a
+  validator by dotted path. The validator is required whenever needles are declared:
+  ARJ's needle is two bytes (`60 EA`), which 2 MiB of any program holds about 32
+  times by chance, and only the header's CRC-32 tells a real archive from them. A
+  validator is code, gated like a probe (provider and library policy, §3).
+  Both validators parse a header, so neither meets the bar of R13 and core keeps
+  none. With `archivey-legacy-formats` missing, the hint table lists only needles
+  strong enough to stand alone: LHA's method ids (`-lh5-` and its kin, five bytes at
+  a fixed place in the header) give the refusal with the hint. ARJ's two bytes do
+  not, so an ARJ archive behind a stub is not recognised on a core-only install,
+  unless the caller names the format, which gives the hint. This is a stated
+  exception to "read the same or refused with a hint" (Open Question 13).
 - AES and key-derivation primitives and the password error, used by makeself, DMG, ARJ:
   a small public crypto facade beside `charge_key_derivation` and `NeedsPassword`.
 - Nested-archive helpers (`HeldInnerData`, `DependencyIndex`), used by deb and pkg:
@@ -688,6 +718,9 @@ name = "shrink"
 decoder = "archivey_legacy_formats.zip_methods:ShrinkCodec"
 methods = { zip = [1] }        # a vacant slot in ZIP's method namespace
 # native = "somelib:Decompressor"   a native decoder object, for process isolation
+# isolation = "known_crashes"       the lowest setting that isolates it (bzip3)
+# requires = ["somelib"]            without it the format is unavailable
+# speedups = ["fastlib"]            without it the package's Python decoder runs
 # stream = { extensions = [".lzo"], hex = "..." }   for a file format of its own
 ```
 
@@ -727,11 +760,31 @@ So a package gets isolation without writing any of it:
 
 - A codec entry names its native object: `native = "somelib:Decompressor"`.
 - The codec asks archivey for that object (`call.native(...)`). It gets the object
-  itself, or under `NATIVE_DECODERS` a stand-in with the same methods that runs in a
+  itself, or, where the caller's setting isolates it (`NATIVE_DECODERS`, or the
+  entry's own floor below), a stand-in with the same methods that runs in a
   child. The child imports that one dotted path and nothing else. The codec's own
   logic stays in the caller's process and is the same in both cases.
-- A library that is not shaped like a decoder object (a one-shot function) needs a
-  small adapter class, in a module of the package that imports only the library.
+- A library that is not shaped like a decoder object (a one-shot function, as
+  `lz4.block` for mozlz4), or a decoder that needs two libraries (Snappy with its
+  CRC-32C package), needs a small worker class, in a module of the package that
+  imports only those libraries. `native` may name that module (§3).
+- **Hard requirements and speed-ups are listed apart** (review AG3). `requires`
+  lists what the codec cannot work without: when one is missing the format reports
+  `FormatSupport.NONE`. `speedups` lists native libraries that replace a Python
+  decoder the package has: when one is missing the format stays `FULL`, reports it
+  in `faster_with`, and decodes in Python. lzop, raw LZO1X and Snappy list
+  `compress-utils` (and Snappy its other choices) there, so they still read on
+  PyPy, Intel macOS and 3.13t. The library policy, `BackendUse` and `call.native`
+  treat both lists alike.
+- **A codec may ask for more isolation than the caller's setting gives by default**
+  (review AG1). On main, libbzip3 runs in a child under the default
+  `ProcessIsolation.KNOWN_CRASHES` too, and a `.bz3` file raises
+  `ResourceUnavailableError` where no child can start. A rule that isolates only
+  under `NATIVE_DECODERS` would lose that when bzip3 moves. So an entry may declare
+  the lowest setting at which its native target runs in the child: `known_crashes`
+  or, by default, `native_decoders`. bzip3 declares `known_crashes`. Under
+  `ProcessIsolation.NONE` nothing is isolated, as today. The declaration can only
+  add isolation, so it needs no consent.
 - An error raised in the child reaches the codec's `translate_exception` as something
   it can recognise. The mapping rule is settled with the implementation.
 - A codec with no `native` is pure Python and never pays for a process.
@@ -1093,3 +1146,7 @@ For the next rounds of this plan. None blocks step 1.
 12. The public names and exact shape of the richer decoder of R15, and the wording
     of its rule that every pass offers the same restart points. Settled by the first
     port that uses it (`.Z`), in step 0.
+13. An ARJ archive behind a self-extracting stub is not recognised without
+    `archivey-legacy-formats` (§5): its needle is too weak to list in the hint table
+    and its validator parses a header. Accepted as an exception, or core keeps the
+    ARJ main-header check. For the maintainer.
