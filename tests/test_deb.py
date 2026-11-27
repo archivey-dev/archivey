@@ -436,6 +436,23 @@ def test_a_control_member_outside_debian_is_refused(
     assert seen == ["DEBIAN/", "DEBIAN/control"]
 
 
+def test_a_control_member_under_a_control_symlink_is_refused() -> None:
+    """The control tar is held to the symlink rules too (``open_nested(under=)``):
+    ``s -> .`` then ``s/control`` writes through the symlink on extraction."""
+    control = [
+        ("./", None),
+        ("./control", CONTROL),
+        ("./s@symlink", b"."),
+        ("./s/control", CONTROL),
+    ]
+    with (
+        pytest.raises(CorruptionError, match="under a symlink") as caught,
+        open_archive(io.BytesIO(_deb(control=control))) as reader,
+    ):
+        reader.members()
+    assert caught.value.member_name == "DEBIAN/s/control"
+
+
 def test_a_control_member_with_dotdot_inside_debian_is_listed() -> None:
     control = [
         ("./", None),

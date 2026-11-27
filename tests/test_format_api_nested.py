@@ -1322,3 +1322,21 @@ def test_a_folder_that_names_no_folder_of_the_listing_is_a_usage_error(
 ) -> None:
     with pytest.raises(ArchiveyUsageError, match=match):
         _border_listing(border_boxes, [("a", "f", "a")], under=under, keep_out=keep_out)
+
+
+def test_under_alone_resolves_no_symlink_target(
+    border_boxes: pytest.MonkeyPatch,
+) -> None:
+    """With no folder kept out, no resolution can refuse anything, so none is made
+    and none is charged to ``max_members``: 20 chained symlinks inside the folder
+    list under a limit of 100 path steps."""
+    members = [("x", "f", "x"), ("l0", "s", "x")] + [
+        (f"l{i}", "s", f"l{i - 1}/../l{i - 1}") for i in range(1, 20)
+    ]
+    border_boxes.setattr(BorderBoxesReader, "under", "Payload/")
+    data = _boxes((b"T", _links_tar(members)))
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=100))
+    with open_archive(
+        io.BytesIO(data), format=BorderBoxesHandler.format, config=config
+    ) as reader:
+        assert len(reader.members()) == 21
