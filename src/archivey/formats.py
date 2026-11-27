@@ -774,11 +774,6 @@ class ReaderContext:
         charge_key_derivation: Callable[[int], None] | None = None,
     ) -> None:
         self._encoding = encoding
-        # The names ``decode_name`` decoded through the fallback, by stored bytes, with
-        # the codec used, until the member that carries them is listed and reported
-        # (``MEMBER_NAME_FALLBACK_ENCODING``). Bounded: a reader that decodes names it
-        # never lists does not grow it.
-        self._fallback_names: dict[bytes, str] = {}
         self._charge_key_derivation = charge_key_derivation
         # The open reader's resource-usage recorder, for a built-in reader that checks
         # a declared allocation itself (``check_decoder_memory``), or that calls a
@@ -1085,36 +1080,36 @@ class ReaderContext:
 
         Valid UTF-8 wins. Other bytes decode with the caller's fallback encoding
         (:attr:`encoding`) when there is one, else as UTF-8 with ``surrogateescape``, so
-        no byte is lost. A name decoded either of those ways is reported as
-        ``MEMBER_NAME_FALLBACK_ENCODING`` on the member whose ``raw_name`` is ``raw``,
-        once that member is listed: set ``raw_name`` to the bytes passed here.
+        no byte is lost. A listed member whose ``raw_name`` is not valid UTF-8 is
+        reported as ``MEMBER_NAME_FALLBACK_ENCODING``, naming the codec this method
+        would use for it, when the format sets ``uses_encoding``: set ``raw_name`` to
+        the stored bytes.
         """
-        try:
+        codec = self._fallback_codec(raw)
+        if codec is None:
             return raw.decode("utf-8")
+        if codec == "surrogateescape":
+            return raw.decode("utf-8", errors="surrogateescape")
+        return raw.decode(codec, errors="surrogateescape")
+
+    def _fallback_codec(self, raw: bytes) -> str | None:
+        """The codec :meth:`decode_name` decodes ``raw`` with: ``None`` for valid
+        UTF-8, else the caller's fallback encoding when it decodes ``raw``, else
+        ``"surrogateescape"``."""
+        try:
+            raw.decode("utf-8")
         except UnicodeDecodeError:
             pass
+        else:
+            return None
         if self._encoding is not None:
             try:
-                text = raw.decode(self._encoding, errors="surrogateescape")
+                raw.decode(self._encoding, errors="surrogateescape")
             except UnicodeError:
                 pass
             else:
-                self._note_name_fallback(raw, self._encoding)
-                return text
-        self._note_name_fallback(raw, "surrogateescape")
-        return raw.decode("utf-8", errors="surrogateescape")
-
-    def _note_name_fallback(self, raw: bytes, codec: str) -> None:
-        if len(self._fallback_names) >= 64:
-            del self._fallback_names[next(iter(self._fallback_names))]
-        self._fallback_names[raw] = codec
-
-    def _take_name_fallback(self, raw: bytes | None) -> str | None:
-        """The codec ``decode_name`` used for ``raw`` through the fallback, or
-        ``None`` when it decoded ``raw`` as UTF-8 or never saw it."""
-        if raw is None:
-            return None
-        return self._fallback_names.pop(raw, None)
+                return self._encoding
+        return "surrogateescape"
 
     def decompress(
         self,

@@ -257,7 +257,7 @@ class _PluginAdapter(BaseArchiveReader):
         self._source = source
         self._plugin = plugin
         self._usage.note_backend("reader", handler_name(plugin), format.display_name)
-        # The caller's ``encoding=``, for a nested reader (``_open_nested``).
+        # The caller's ``fallback_encoding``, for a nested reader (``_open_nested``).
         self._encoding = encoding
         # Iterators ReaderContext.open_nested() returned, closed with the archive at the
         # latest.
@@ -1392,8 +1392,21 @@ class _PluginAdapter(BaseArchiveReader):
             archive_name=self._archive_name,
             member_id=index,
         )
-        codec = self._reader_context._take_name_fallback(member.raw_name)
-        if codec is not None:
+        # Decided from the stored bytes, so it holds whichever bytes the reader passed
+        # to decode_name. A member a nested built-in reader listed (a TAR inside a
+        # makeself or deb) carries that reader's report already, and a built-in reader
+        # whose raw_name can be another encoding (ISO's Joliet and UDF) reports itself.
+        codec = (
+            self._reader_context._fallback_codec(member.raw_name)
+            if self._plugin.uses_encoding
+            and member.raw_name
+            and not getattr(self._plugin, "_reports_own_name_fallback", False)
+            else None
+        )
+        if codec is not None and not any(
+            d.code is DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
+            for d in member.diagnostics
+        ):
             self._emit_name_fallback_encoding(
                 member, index, codec=codec, format_label=self._format.display_name
             )

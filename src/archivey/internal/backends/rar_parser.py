@@ -813,7 +813,7 @@ def parse_rar_archive(
     so a member's PswCheck reuses the header's; without one the parse makes a
     fresh cache.
 
-    ``name_encoding`` is the caller's ``encoding=``, for RAR 1.5-4 names stored
+    ``name_encoding`` is the caller's ``fallback_encoding``, for RAR 1.5-4 names stored
     as 8-bit bytes that are not valid UTF-8 (``_decode_rar3_8bit_name``). RAR5
     names are UTF-8.
     """
@@ -2020,7 +2020,7 @@ def _decode_comment_text(raw: bytes, *, encoding: str | None) -> str:
 
     The text ends at the first NUL, because ``unrar`` hands the bytes to a C-string
     conversion (``DoGetComment``, ``Archive::ReadCommentData``). What is left is
-    UTF-8 if it is valid, else the caller's ``encoding=``, else windows-1252. A byte
+    UTF-8 if it is valid, else the caller's ``fallback_encoding``, else windows-1252. A byte
     the code page cannot decode (five are undefined in windows-1252) survives as a lone
     surrogate, as it does in a name. The order and the error handler are the ones
     ``_decode_rar3_8bit_name`` uses for a name, and the ones a ZIP comment uses; keep
@@ -2043,7 +2043,7 @@ def _decode_comment_text(raw: bytes, *, encoding: str | None) -> str:
         except UnicodeError:
             # A codec that refuses the bytes or the handler outright (``utf-32`` on a
             # length that is not a multiple of four, ``idna``): decode as without
-            # ``encoding=``.
+            # ``fallback_encoding``.
             pass
     return text.decode("windows-1252", "surrogateescape")
 
@@ -2053,7 +2053,7 @@ def _decode_rar3_8bit_name(raw: bytes, *, host_os: int, encoding: str | None) ->
 
     Strict UTF-8 is tried first, with or without the header's Unicode flag, because
     ``rar`` on Unix stores the locale's bytes, which today are UTF-8. The caller's
-    ``encoding=`` applies only to bytes that are not valid UTF-8, as it does for a
+    ``fallback_encoding`` applies only to bytes that are not valid UTF-8, as it does for a
     TAR name or a ZIP name without the UTF-8 flag. Without it, such bytes are in the
     writer's code page. WinRAR on DOS, OS/2 and Windows writes the OEM code page,
     which is how Windows ``unrar`` reads the name back (``ArcCharToWide`` with

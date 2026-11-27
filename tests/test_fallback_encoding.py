@@ -157,6 +157,26 @@ def _ar_with_name(raw: bytes) -> bytes:
     return b"!<arch>\n" + header + data
 
 
+def _rpm_with_name(raw: bytes) -> bytes:
+    """An RPM whose one file is ``/opt/`` + ``raw``: its reader decodes the name with a
+    ``.`` in front, so the bytes it decodes are not the bytes it stores."""
+    from tests.test_rpm import _F, _build, _Package
+
+    return _build(_Package([_F(b"/opt/" + raw, data=b"data")]))
+
+
+def _xar_with_nested_name(raw: bytes) -> bytes:
+    """A XAR with ``raw`` as a base64 name inside the directory ``d``: its reader
+    decodes one component and stores the joined path."""
+    import base64
+
+    from tests.xar_util import XarFile, write_xar
+
+    name = f'<name enctype="base64">{base64.b64encode(raw).decode()}</name>'
+    inner = XarFile("", b"data", name_xml=name)
+    return write_xar([XarFile("d", type="directory", children=[inner])])
+
+
 _FALLBACK = archivey.DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
 
 
@@ -177,8 +197,10 @@ def _fallbacks(data: bytes, **kwargs: object) -> list[str]:
         (_zip_with_name, "cp437"),
         (_tar_with_name, "surrogateescape"),
         (_ar_with_name, "surrogateescape"),
+        (_rpm_with_name, "surrogateescape"),
+        (_xar_with_nested_name, "surrogateescape"),
     ],
-    ids=["zip", "tar", "ar-through-decode_name"],
+    ids=["zip", "tar", "ar-through-decode_name", "rpm-prefixed", "xar-nested"],
 )
 def test_a_name_through_the_fallback_is_reported_with_its_codec(build, own) -> None:
     """Whichever fallback decoded it, the format's own or the caller's, the report is
@@ -201,3 +223,14 @@ def test_strict_does_not_refuse_a_legacy_name() -> None:
     """A code-page name is how DOS and Windows tools wrote archives, not damage."""
     strict = ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.STRICT)
     assert _fallbacks(_zip_with_name(_RAW), config=strict) == ["cp437"]
+
+
+def test_a_tar_inside_a_makeself_reports_a_name_once() -> None:
+    """The nested TAR reader reports the name; the makeself listing adds no second
+    report for the same member."""
+    import gzip
+
+    from tests.test_makeself import _with_payloads
+
+    data = _with_payloads([gzip.compress(_tar_with_name(_RAW), mtime=0)])
+    assert _fallbacks(data) == ["surrogateescape"]

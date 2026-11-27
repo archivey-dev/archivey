@@ -25,7 +25,7 @@ How a listing is built:
    renders each entry's path. :meth:`IsoReader._entry_name` gives each entry's name.
    Rock Ridge takes the ``NM`` name, else the ISO 9660 identifier. Joliet takes its
    UTF-16 identifier. Plain ISO 9660 takes its identifier. A Rock Ridge or plain name
-   is bytes in no declared charset: it decodes as UTF-8, else with ``encoding=``. A
+   is bytes in no declared charset: it decodes as UTF-8, else with ``fallback_encoding``. A
    Rock Ridge name that neither decodes takes the name of the same file in the Joliet
    tree, when the two line up. Any other name keeps its bytes as
    ``surrogateescape``.
@@ -716,7 +716,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         config = context.config
         self._encoding = encoding
         # The Joliet tree's files by extent, and by extent and the ASCII runs of their
-        # name, built the first time a Rock Ridge name is not UTF-8 and ``encoding=``
+        # name, built the first time a Rock Ridge name is not UTF-8 and ``fallback_encoding``
         # does not decode it; and the entries whose name was taken from their Joliet
         # counterpart, by ``id()``, to report on the member. The keys are entries of
         # ``self._volume``, which the reader holds for its whole life.
@@ -1051,7 +1051,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
 
         Nothing in the image says which charset these bytes are in: a Rock Ridge name
         is whatever the writer's locale was. UTF-8 is tried first; bytes that are not
-        valid UTF-8 are decoded with ``encoding=`` when the caller gave one, as TAR
+        valid UTF-8 are decoded with ``fallback_encoding`` when the caller gave one, as TAR
         does for its names, then by the name of the Joliet counterpart of the Rock
         Ridge record ``rr_entry`` when one is given (``_joliet_name``), and with UTF-8
         and ``surrogateescape`` otherwise.
@@ -1059,7 +1059,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         Decoding always returns. A codec ``open_archive`` accepted can still fail on
         these bytes (``utf-32`` on a length that is not a multiple of four, or
         ``idna``, which has no ``surrogateescape``); the name then decodes as it would
-        with no ``encoding=``.
+        with no ``fallback_encoding``.
         """
         decoded = self._decode_known(raw)
         if decoded is None and rr_entry is not None:
@@ -1090,7 +1090,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         return "surrogateescape"
 
     def _decode_known(self, raw: bytes) -> str | None:
-        """``raw`` as UTF-8, else with ``encoding=``; ``None`` when neither applies."""
+        """``raw`` as UTF-8, else with ``fallback_encoding``; ``None`` when neither applies."""
         try:
             return raw.decode("utf-8")
         except UnicodeDecodeError:
@@ -2028,7 +2028,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
     def _decode_link_target(self, entry: IsoEntry, target: bytes) -> str:
         """Decode a Rock Ridge link target so that it names what the member names name.
 
-        A target that is not UTF-8 and that ``encoding=`` does not decode is followed
+        A target that is not UTF-8 and that ``fallback_encoding`` does not decode is followed
         through the image from the symlink's directory, one component at a time. A
         component that names an entry here decodes the way that entry's own name does,
         Joliet fallback included, so a link to ``caf\\xe9.txt`` reads ``café.txt`` when
@@ -2411,6 +2411,9 @@ class IsoHandler(IndexedFormatHandler):
         Magic(0, RAW_SECTOR_SYNC),
     )
     uses_encoding = True  # for Rock Ridge and plain names that are not valid UTF-8
+    # ISO reports MEMBER_NAME_FALLBACK_ENCODING itself, by namespace: a Joliet or UDF
+    # ``raw_name`` is not UTF-8 by design, and a borrowed Joliet name has no codec.
+    _reports_own_name_fallback = True
 
     @override
     def open(self, source: ReaderSource, context: ReaderContext) -> IsoReader:

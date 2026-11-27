@@ -189,9 +189,10 @@ alone, or a directory's added `/`, is not reported. A hard link's `link_target` 
 another member, so archivey normalizes it the same way, as in every format: give it as
 the archive stores it too.
 `ReaderContext.decode_name()` decodes stored bytes the way the built-in formats do: valid
-UTF-8 wins, then the caller's `fallback_encoding`, then UTF-8 with no byte lost. Set the
-member's `raw_name` to the bytes you passed it: a name that went past UTF-8 is then reported
-as `MEMBER_NAME_FALLBACK_ENCODING` on that member, as in the built-in formats.
+UTF-8 wins, then the caller's `fallback_encoding`, then UTF-8 with no byte lost. Set
+`uses_encoding = True` on the handler and the member's `raw_name` to the stored bytes:
+a member whose `raw_name` is not valid UTF-8 is then reported as
+`MEMBER_NAME_FALLBACK_ENCODING`, naming the codec, as in the built-in formats.
 
 Three helpers fill fields many formats store the same way, and report a bad value as a
 built-in format does:
