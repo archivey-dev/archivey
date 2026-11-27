@@ -3357,7 +3357,9 @@ def test_pax_raw_name_is_the_stored_utf8_whatever_the_encoding(
     the caller's codec either crashed the listing or fabricated bytes."""
     for name in ("日本語.txt", "café.txt"):
         data = _one_member_tar(name, "utf-8", tarfile.PAX_FORMAT)
-        with open_archive(io.BytesIO(data), encoding=encoding) as ar:
+        with open_archive(
+            io.BytesIO(data), config=ArchiveyConfig(fallback_encoding=encoding)
+        ) as ar:
             (member,) = ar.members()
             assert member.name == name
             assert member.raw_name == name.encode("utf-8")
@@ -3365,7 +3367,9 @@ def test_pax_raw_name_is_the_stored_utf8_whatever_the_encoding(
 
 def test_ustar_raw_name_follows_the_archive_encoding() -> None:
     data = _one_member_tar("café.txt", "latin-1", tarfile.USTAR_FORMAT)
-    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as ar:
         (member,) = ar.members()
         assert member.name == "café.txt"
         assert member.raw_name == b"caf\xe9.txt"
@@ -3427,18 +3431,16 @@ def test_utf8_header_name_wins_over_the_caller_encoding(fmt: int) -> None:
     other format: the UTF-8 bytes ``c3 a9`` stay ``é``, not ``Ã©``."""
     name = "café-" + "x" * (120 if fmt == tarfile.GNU_FORMAT else 0) + ".txt"
     data = _one_member_tar(name, "utf-8", fmt)
-    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as ar:
         (member,) = ar.members()
         assert member.name == name
         assert member.raw_name == name.encode("utf-8")
-    # The choice is reported, as ZIP reports it, naming the codec passed over.
-    (diag,) = [
-        d
-        for d in member.diagnostics
-        if d.code == DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
-    ]
-    assert diag.context.inferred_encoding == "utf-8"
-    assert diag.context.declared_encoding == "latin-1"
+    # Valid UTF-8 never reaches the fallback, so no setting could change the name.
+    assert DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING not in {
+        d.code for d in member.diagnostics
+    }
 
 
 def test_utf8_link_target_and_owner_win_over_the_caller_encoding() -> None:
@@ -3446,7 +3448,9 @@ def test_utf8_link_target_and_owner_win_over_the_caller_encoding() -> None:
     data = _one_member_tar(
         "link", "utf-8", tarfile.USTAR_FORMAT, linkname=target, owner="josé"
     )
-    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as ar:
         (member,) = ar.members()
         assert member.link_target == target
         assert member.uname == "josé"
@@ -3457,15 +3461,22 @@ def test_caller_encoding_decodes_header_fields_that_are_not_utf8() -> None:
     data = _one_member_tar(
         "café.txt", "latin-1", tarfile.USTAR_FORMAT, linkname="à.txt", owner="josé"
     )
-    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as ar:
         (member,) = ar.members()
         assert member.name == "café.txt"
         assert member.raw_name == b"caf\xe9.txt"
         assert member.link_target == "à.txt"
         assert member.uname == "josé"
-        # encoding= decoded it: nothing was inferred.
-        counts = ar.diagnostics.counts
-    assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+        # The fallback decoded the name, and says which codec: another
+        # fallback_encoding would give another name.
+        (diag,) = [
+            d
+            for d in member.diagnostics
+            if d.code == DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
+        ]
+    assert diag.context.fallback_encoding == "latin-1"
 
 
 def test_mixed_header_names_each_decode_by_their_own_bytes() -> None:
@@ -3478,7 +3489,9 @@ def test_mixed_header_names_each_decode_by_their_own_bytes() -> None:
             info = tarfile.TarInfo(raw.decode("utf-8", "surrogateescape"))
             info.size = 0
             t.addfile(info)
-    with open_archive(io.BytesIO(buf.getvalue()), encoding="latin-1") as ar:
+    with open_archive(
+        io.BytesIO(buf.getvalue()), config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as ar:
         assert [m.name for m in ar.members()] == ["é-utf8.txt", "é-latin1.txt"]
 
 
@@ -3509,7 +3522,9 @@ def test_binary_pax_path_that_is_valid_utf8_wins_over_the_caller_encoding() -> N
     """``hdrcharset=BINARY`` declares no encoding, so the record decodes as a ustar
     name does: valid UTF-8 is UTF-8."""
     data = _binary_pax_tar(global_binary=False)
-    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as ar:
         (member,) = ar.members()
         assert member.name == "caé.txt"
         assert member.raw_name == b"ca\xc3\xa9.txt"
@@ -3520,7 +3535,9 @@ def test_pax_member_repeating_a_global_binary_charset_reads_as_binary() -> None:
     encoding, like one that says it alone: valid UTF-8 wins over ``encoding=``, and
     ``raw_name`` is the stored bytes."""
     data = _binary_pax_tar(global_binary=True)
-    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as ar:
         (member,) = ar.members()
         assert member.name == "caé.txt"
         assert member.raw_name == b"ca\xc3\xa9.txt"
@@ -3553,7 +3570,9 @@ def test_pax_raw_name_with_undecodable_bytes_round_trips() -> None:
 def test_pax_path_that_is_not_utf8_falls_back_to_the_caller_encoding() -> None:
     raw = b"caf\xe9\xe9.txt"
     data = _pax_tar_with_non_utf8_path(raw)
-    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as ar:
         (member,) = ar.members()
         assert member.name == "caféé.txt"
         # raw_name is not asserted: the UTF-8 bytes of "caféé.txt" decode to the same
@@ -3569,7 +3588,9 @@ def test_ascii_header_fields_ignore_an_encoding_that_reads_ascii_differently(
     codec first turned ``abc`` into ``/ÂÄ`` under EBCDIC ``cp037`` and raised
     ``UnicodeDecodeError`` under ``utf-16`` and ``utf-32``, before the listing began."""
     data = _one_member_tar("abc", "ascii", fmt, linkname="a+b", owner="root")
-    with open_archive(io.BytesIO(data), encoding=encoding) as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding=encoding)
+    ) as ar:
         (member,) = ar.members()
         assert member.name == "abc"
         assert member.link_target == "a+b"
@@ -3596,7 +3617,9 @@ def test_header_name_the_encoding_cannot_decode_falls_back_to_escapes(
     ``idna``, which has no ``surrogateescape``) decodes the name as with no
     ``encoding=``, as ZIP, RAR and ISO do, rather than failing the open."""
     data = _one_member_tar("a+caf\xe9.tx", "latin-1", tarfile.GNU_FORMAT)
-    with open_archive(io.BytesIO(data), encoding=encoding) as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding=encoding)
+    ) as ar:
         (member,) = ar.members()
         assert member.name == "a+caf\udce9.tx"
         assert member.raw_name == b"a+caf\xe9.tx"
@@ -3609,7 +3632,9 @@ def test_pax_value_the_encoding_cannot_decode_falls_back_to_escapes(
     # Each codec fails on these bytes; the "+" is what makes utf-7 fail.
     raw = b"a+f\xe9\xe9.txt"
     data = _pax_tar_with_non_utf8_path(raw)
-    with open_archive(io.BytesIO(data), encoding=encoding) as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding=encoding)
+    ) as ar:
         (member,) = ar.members()
         assert member.name == "a+f\udce9\udce9.txt"
         assert member.extra["tar.pax_headers"]["path"] == "a+f\udce9\udce9.txt"
@@ -3624,7 +3649,9 @@ def test_utf8_name_under_an_encoding_that_cannot_decode_it(
     read it differently must not fail when that codec cannot decode the bytes at all.
     Such a codec would not have named the member, so nothing is reported."""
     data = _one_member_tar("café.txt", "utf-8", fmt)
-    with open_archive(io.BytesIO(data), encoding=encoding) as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding=encoding)
+    ) as ar:
         (member,) = ar.members()
         assert member.name == "café.txt"
         assert not member.diagnostics
@@ -3634,7 +3661,9 @@ def test_binary_pax_record_text_matches_the_member_name() -> None:
     """Under ``hdrcharset=BINARY``, ``extra["tar.pax_headers"]`` decodes a valid UTF-8
     ``path`` as the name does, rather than with ``encoding=``."""
     data = _binary_pax_tar(global_binary=False)
-    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as ar:
         (member,) = ar.members()
         assert member.name == "caé.txt"
         assert member.extra["tar.pax_headers"]["path"] == "caé.txt"
@@ -3854,7 +3883,9 @@ def test_global_pax_path_wins_over_a_gnu_long_name() -> None:
     # The global header's blocks, then the GNU member and its end-of-archive blocks.
     data = glob.getvalue().rstrip(b"\0")
     data += b"\0" * (-len(data) % 512) + gnu.getvalue()
-    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as ar:
         (member,) = ar.members()
         assert (member.name, member.raw_name) == ("g", b"g")
 

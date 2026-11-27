@@ -362,6 +362,7 @@ class _PluginAdapter(BaseArchiveReader):
         context._keep_metadata = self._listing_tracker.keep
         if self._listing_decode is not None:
             context._listing_draw = self._listing_decode.draw
+        self._reader_context = context
         self._reader = self._open_reader(context)
         self._reader_open = True
         # What kept the first ``info`` from being published at open
@@ -1391,6 +1392,11 @@ class _PluginAdapter(BaseArchiveReader):
             archive_name=self._archive_name,
             member_id=index,
         )
+        codec = self._reader_context._take_name_fallback(member.raw_name)
+        if codec is not None:
+            self._emit_name_fallback_encoding(
+                member, index, codec=codec, format_label=self._format.display_name
+            )
         if member.type is MemberType.DIRECTORY and member.size:
             # No format gives a directory content: the bytes are delivered by a read and
             # dropped by extraction, as for a built-in format (data model, DR-3).

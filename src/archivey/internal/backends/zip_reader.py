@@ -77,7 +77,7 @@ from typing import (
     cast,
 )
 
-from archivey.config import AcceleratorMode, ArchiveyConfig, ZipOptions
+from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.cost import (
     AccessCost,
     CostReceipt,
@@ -168,7 +168,6 @@ from archivey.internal.backends.zipcrypto import (
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import (
     StreamConfig,
-    format_options_of,
     stream_config_from_archivey,
 )
 from archivey.internal.dataclass_copy import copy_with
@@ -267,8 +266,8 @@ if TYPE_CHECKING:
 # Decoding of a comment under a set UTF-8 flag its name's bytes do not refute: UTF-8,
 # else cp437 (the ZIP appnote default, which maps every byte and therefore never fails).
 # An unflagged comment, and one whose name was decoded as unflagged because the bytes
-# refute the flag, go through `_decode_unflagged_comment`, which shares the `encoding=`
-# / fallback step (`_decode_unflagged_legacy`) with the unflagged-name sniff.
+# refute the flag, go through `_decode_unflagged_comment`, which shares the fallback
+# step (`_decode_unflagged_legacy`) with the unflagged-name sniff.
 _ZIP_ENCODINGS = ("utf-8", "cp437")
 
 # The end record (22 bytes) and the longest comment it can carry: where the end-record
@@ -1404,10 +1403,11 @@ class _DecodedName(NamedTuple):
     """The bytes ``text`` was decoded from."""
     alternate_raw_name: bytes | None
     """The header's bytes, when the Unicode Path field named the entry instead."""
-    inferred_encoding: str | None
-    """The codec that produced ``text`` when it is not the one the name would
-    otherwise have had (a sniff's choice over the default, or the codec used for a
-    name whose UTF-8 flag the bytes refute), for the diagnostic."""
+    fallback_encoding: str | None
+    """The codec the fallback decoded ``text`` with, because the bytes are not valid
+    UTF-8 and nothing usable declares their encoding (an unflagged name, or one whose
+    UTF-8 flag the bytes refute): the caller's fallback encoding or cp437. ``None``
+    for a name read as UTF-8 or from a Unicode Path field. For the diagnostic."""
     declared_encoding: str | None
     """``"utf-8"`` when the UTF-8 flag is set over bytes that are not UTF-8, so the
     name and its comment decode as unflagged ones; ``None`` otherwise."""
@@ -2519,37 +2519,30 @@ class ZipReader(BaseArchiveReader):
     def _sniff_unflagged_name(
         self, raw_name: bytes, cp437_decoded: str
     ) -> tuple[str, str | None]:
-        """Decode an unflagged ZIP name: prefer valid UTF-8, else the caller's
-        ``encoding=``, else the configured legacy fallback (default cp437).
+        """Decode an unflagged ZIP name: prefer valid UTF-8, else the caller's fallback
+        encoding, else cp437, ZIP's own fallback.
 
-        Returns ``(name, inferred_encoding)`` where ``inferred_encoding`` is the encoding
-        archivey chose over the one the name would otherwise have had (for the
-        diagnostic), else ``None``. The caller's ``encoding=`` is not an inference, so it
-        gives ``None``. UTF-8 is self-validating, so a clean decode is strong evidence the bytes
-        are UTF-8; legacy bytes that are coincidentally valid UTF-8 are the documented
-        residual risk. Pure ASCII (and any other bytes that decode identically under
-        UTF-8 and cp437) is not an override — both encodings agree, so no diagnostic.
+        Returns ``(name, fallback_encoding)``: the codec the fallback used when the bytes
+        are not valid UTF-8 (for the diagnostic), else ``None``. UTF-8 is
+        self-validating, so a clean decode is strong evidence the bytes are UTF-8;
+        legacy bytes that are coincidentally valid UTF-8 are the documented residual
+        risk, and no fallback setting changes those names.
         """
         try:
-            utf8_decoded = raw_name.decode("utf-8")
+            return raw_name.decode("utf-8"), None
         except UnicodeDecodeError:
-            text, codec = self._decode_unflagged_legacy(raw_name, lambda: cp437_decoded)
-            # The caller's encoding= is not an inference, nor is the cp437 default.
-            return text, None if codec in (self._encoding, "cp437") else codec
-        if utf8_decoded == cp437_decoded:
-            return utf8_decoded, None
-        return utf8_decoded, "utf-8"
+            return self._decode_unflagged_legacy(raw_name, lambda: cp437_decoded)
 
     def _decode_unflagged_legacy(
         self, raw: bytes, cp437_decoded: Callable[[], str]
     ) -> tuple[str, str]:
-        """Decode unflagged bytes that are not valid UTF-8: the caller's ``encoding=``,
-        else the configured legacy fallback (default cp437).
+        """Decode unflagged bytes that are not valid UTF-8: the caller's fallback
+        encoding, else cp437.
 
         ``cp437_decoded`` is called only when the cp437 reading is the answer. Returns
-        ``(text, codec)``: ``codec`` is the caller's ``encoding=``, the configured
-        fallback or ``"cp437"``, whichever decoded ``text``. A byte the chosen codec
-        does not define survives as a lone surrogate.
+        ``(text, codec)``: ``codec`` is the caller's fallback encoding or ``"cp437"``,
+        whichever decoded ``text``. A byte the chosen codec does not define survives as
+        a lone surrogate.
         """
         if self._encoding is not None:
             try:
@@ -2559,28 +2552,15 @@ class ZipReader(BaseArchiveReader):
                 )
             except UnicodeError:
                 # A codec that refuses the surrogateescape handler outright
-                # (``idna``): fall through to the configured fallback.
+                # (``idna``): fall through to ZIP's own cp437 fallback.
                 pass
-        fallback = format_options_of(self._config, ZipOptions).fallback_encoding
-        if fallback.lower().replace("-", "").replace("_", "") in {
-            "cp437",
-            "437",
-            "ibm437",
-        }:
-            return cp437_decoded(), "cp437"
-        try:
-            return raw.decode(fallback, errors="surrogateescape"), fallback
-        except (LookupError, UnicodeError):
-            # An unknown fallback encoding name, or a codec that refuses the
-            # surrogateescape handler outright (``idna``): keep the cp437 decode
-            # rather than fail.
-            return cp437_decoded(), "cp437"
+        return cp437_decoded(), "cp437"
 
     def _decode_unflagged_comment(self, raw: bytes) -> str:
         """Decode a comment with no UTF-8 flag, or one whose name's bytes refute the flag,
         the way an unflagged name is decoded.
 
-        A comment is not a name, so no ``member_name_encoding_inferred`` is reported.
+        A comment is not a name, so no ``member_name_fallback_encoding`` is reported.
         As for a name, ASCII skips the sniff (UTF-8 and cp437 agree on it), and the
         cp437 decode runs only when it is the answer.
         """
@@ -2634,7 +2614,7 @@ class ZipReader(BaseArchiveReader):
                     text=text,
                     raw_name=raw_name,
                     alternate_raw_name=None,
-                    inferred_encoding=codec,
+                    fallback_encoding=codec,
                     declared_encoding="utf-8",
                     unicode_extra_fault=None,
                     unicode_path_used=False,
@@ -2644,10 +2624,10 @@ class ZipReader(BaseArchiveReader):
         name_source = decoded
         # An unflagged name with an Info-ZIP Unicode Path extra field (0x7075) whose CRC
         # matches the stored bytes is named by the field, ahead of the sniff and of an
-        # explicit encoding=, as 7-Zip, Info-ZIP unzip and stdlib zipfile 3.12+ do. The
+        # fallback encoding, as 7-Zip, Info-ZIP unzip and stdlib zipfile 3.12+ do. The
         # field's UTF-8 bytes become raw_name, so name stays raw_name decoded, and the
         # header's bytes are kept in extra. The field is authoritative, not a guess, so
-        # no member_name_encoding_inferred diagnostic is emitted for a name taken from
+        # no member_name_fallback_encoding diagnostic is emitted for a name taken from
         # it; the header's spelling stays visible as extra["alternate_raw_name"].
         # A malformed field is dropped with a MEMBER_HEADER_RECORD_SKIPPED diagnostic
         # and the name decoded as if it were absent (`_unicode_path_name`). Only the
@@ -2669,19 +2649,19 @@ class ZipReader(BaseArchiveReader):
         # Many tools write UTF-8 names without setting the UTF-8 flag (APPNOTE says cp437),
         # so cp437 would yield mojibake. With no authoritative signal (flag clear and no
         # Unicode Path field), prefer UTF-8 when the stored bytes are valid UTF-8, else
-        # the caller's encoding= or a configurable legacy fallback. A set flag over valid
+        # the caller's fallback encoding or cp437. A set flag over valid
         # UTF-8 is honored as-is (one the bytes refute returned above). ASCII bytes
         # decode identically under UTF-8 and cp437 — skip the sniff.
-        inferred_encoding: str | None = None
+        fallback_encoding: str | None = None
         if not is_utf8_flagged and unicode_name is None and not raw_name.isascii():
-            name_source, inferred_encoding = self._sniff_unflagged_name(
+            name_source, fallback_encoding = self._sniff_unflagged_name(
                 raw_name, decoded
             )
         return _DecodedName(
             text=name_source,
             raw_name=raw_name,
             alternate_raw_name=alternate_raw_name,
-            inferred_encoding=inferred_encoding,
+            fallback_encoding=fallback_encoding,
             declared_encoding=None,
             unicode_extra_fault=unicode_extra_fault,
             unicode_path_used=unicode_name is not None,
@@ -2951,8 +2931,18 @@ class ZipReader(BaseArchiveReader):
         # 7. Diagnostics. Each report below names the member by its position in the
         # walk, because registration has not stamped `_member_id` yet and stamps that
         # same position.
-        if decoded_name.inferred_encoding is not None:
-            self._report_name_encoding(member, index, decoded_name)
+        if decoded_name.fallback_encoding is not None:
+            self._emit_name_fallback_encoding(
+                member,
+                index,
+                codec=decoded_name.fallback_encoding,
+                format_label="ZIP",
+                why=(
+                    "has its UTF-8 flag set, but its bytes are not UTF-8"
+                    if decoded_name.declared_encoding == "utf-8"
+                    else "is not valid UTF-8 and has no UTF-8 flag"
+                ),
+            )
         if decoded_name.unicode_extra_fault is not None:
             self._emit_extra_field_dropped(
                 member,
@@ -3061,7 +3051,7 @@ class ZipReader(BaseArchiveReader):
             return _decode_with_fallback(comment), _NO_UNICODE_PATH
         # A comment with bit 11 clear and an Info-ZIP Unicode Comment field (0x6375)
         # whose CRC matches the stored bytes takes the field's text, ahead of the
-        # sniff and of encoding=, as 7-Zip does. The rule is the Unicode Path field's
+        # sniff and of the fallback, as 7-Zip does. The rule is the Unicode Path field's
         # for a name: the field is read only when bit 11 is clear, so a flag the name
         # refutes leaves both fields unread, as 7-Zip 23.01 does.
         unicode_comment = _NO_UNICODE_PATH
@@ -3073,48 +3063,6 @@ class ZipReader(BaseArchiveReader):
             else self._decode_unflagged_comment(comment)
         )
         return text, unicode_comment
-
-    def _report_name_encoding(
-        self, member: ArchiveMember, index: int, name: _DecodedName
-    ) -> None:
-        """Report that ``member``'s name was decoded with a codec other than the one
-        its flag or the configuration named (``name.inferred_encoding`` is set)."""
-        inferred_encoding = name.inferred_encoding
-        assert inferred_encoding is not None
-        declared_encoding = name.declared_encoding
-        if declared_encoding is not None:
-            self._emit_name_encoding_inferred(
-                member,
-                index,
-                inferred_encoding=inferred_encoding,
-                passed_over=declared_encoding,
-                message=(
-                    f"ZIP member name decoded as {inferred_encoding!r}: its UTF-8 flag "
-                    f"is set but the name is not valid UTF-8: {quoted(member.name)}"
-                ),
-            )
-            return
-        # The codec the name would otherwise have had: for a UTF-8 reading, the
-        # caller's encoding= or the configured fallback; for a configured fallback,
-        # the cp437 APPNOTE default.
-        passed_over = (
-            (
-                self._encoding
-                or format_options_of(self._config, ZipOptions).fallback_encoding
-            )
-            if inferred_encoding == "utf-8"
-            else "cp437"
-        )
-        self._emit_name_encoding_inferred(
-            member,
-            index,
-            inferred_encoding=inferred_encoding,
-            passed_over=passed_over,
-            message=(
-                f"ZIP member name decoded as {inferred_encoding!r} rather than "
-                f"{passed_over!r} (UTF-8 flag not set): {quoted(member.name)}"
-            ),
-        )
 
     def _emit_extra_field_dropped(
         self,

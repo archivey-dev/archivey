@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey.config import ZipOptions
+from archivey import ArchiveyConfig
 from archivey.exceptions import (
     ResourceLimitError,
     ResourceUnavailableError,
@@ -169,7 +169,9 @@ def test_idna_encoding_does_not_raise_raw_unicode_error() -> None:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("hello.txt", b"x")
-    with archivey.open_archive(io.BytesIO(buf.getvalue()), encoding="idna") as ar:
+    with archivey.open_archive(
+        io.BytesIO(buf.getvalue()), config=ArchiveyConfig(fallback_encoding="idna")
+    ) as ar:
         try:
             members = ar.members()
         except archivey.ArchiveyError:
@@ -184,7 +186,9 @@ def test_idna_encoding_leaves_ascii_names_and_their_raw_name() -> None:
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("a..b", b"x")
         zf.writestr("ok.txt", b"y")
-    with archivey.open_archive(io.BytesIO(buf.getvalue()), encoding="idna") as ar:
+    with archivey.open_archive(
+        io.BytesIO(buf.getvalue()), config=ArchiveyConfig(fallback_encoding="idna")
+    ) as ar:
         members = ar.members()
     assert [(m.name, m.raw_name) for m in members] == [
         ("a..b", b"a..b"),
@@ -199,7 +203,9 @@ def test_idna_encoding_on_a_legacy_name_keeps_the_fallback() -> None:
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("cafX.txt", b"x")  # ASCII, so the UTF-8 flag stays clear
     blob = buf.getvalue().replace(b"cafX.txt", b"caf\x82.txt")  # cp437 0x82 = é
-    with archivey.open_archive(io.BytesIO(blob), encoding="idna") as ar:
+    with archivey.open_archive(
+        io.BytesIO(blob), config=ArchiveyConfig(fallback_encoding="idna")
+    ) as ar:
         assert [m.name for m in ar.members()] == ["café.txt"]
 
 
@@ -209,9 +215,7 @@ def test_idna_unflagged_fallback_keeps_the_cp437_name() -> None:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("café.txt", b"x")  # cp437-encodable: flag bit 11 stays clear
-    config = archivey.ArchiveyConfig(
-        format_options=[ZipOptions(fallback_encoding="idna")]
-    )
+    config = archivey.ArchiveyConfig(fallback_encoding="idna")
     with archivey.open_archive(io.BytesIO(buf.getvalue()), config=config) as ar:
         assert [m.name for m in ar.members()] == ["café.txt"]
 

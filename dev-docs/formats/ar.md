@@ -18,7 +18,7 @@ format added from outside uses, and is registered as a built-in the way ISO is.
 | Core dependencies | None |
 | Encryption | None |
 | Checksums | None. Damage shows only as a header that does not parse |
-| Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
+| Name encoding | Bytes. UTF-8 first, then `fallback_encoding`, then escaped, as in every format |
 | Refuses | A thin archive (`!<thin>\n`), with `UnsupportedFeatureError` |
 | Spec | `openspec/specs/format-ar/spec.md` |
 

@@ -37,6 +37,7 @@ from __future__ import annotations
 import errno
 import io
 import os
+import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Literal, NoReturn, cast, overload
@@ -582,19 +583,12 @@ def open_archive(
     archive begin at ``tell() == 0`` (an archive embedded mid-file works uniformly,
     without manual slicing).
 
-    ``encoding`` names the codec for member names whose encoding the archive does not
-    declare and whose bytes are not valid UTF-8 (ZIP, TAR, ISO, RAR 1.5-4, CPIO, ar,
-    RPM, makeself, SquashFS, CAB, XAR, LHA and ARJ). A name whose bytes are valid UTF-8
-    is decoded as UTF-8 in every format, with or without ``encoding``, and ``encoding``
-    replaces only the format's fallback (cp437 or
-    ``ZipOptions.fallback_encoding`` for ZIP, the host's code page for
-    RAR 1.5-4, surrogate escapes for TAR, ISO, CPIO, ar, RPM, makeself, SquashFS, CAB,
-    XAR, LHA and ARJ). ``member.raw_name`` keeps the stored bytes. A ZIP comment without
-    the UTF-8 flag (the archive comment always) and an 8-bit RAR 1.5-4 comment decode the
-    same way as a name without a declared encoding, and a byte the codec does not define
-    survives as a lone surrogate. The one difference is that a RAR comment's last
-    fallback is always windows-1252. 7z, directory and single-file sources decode names
-    another way, ignore it, and record ``ENCODING_ARGUMENT_UNUSED``.
+    ``encoding`` is deprecated since 0.6.0: pass
+    ``config=ArchiveyConfig(fallback_encoding=...)``, which does the same and reaches
+    the archives opened inside this one too. Passing ``encoding`` warns and replaces
+    the config's ``fallback_encoding`` for this call alone; a format that does not
+    read it (7z, a directory, a single-file source) records
+    ``ENCODING_ARGUMENT_UNUSED``. archivey 0.7.0 removes it.
 
     ``source`` may be an ordered sequence of paths or binary streams that together form
     a multi-volume archive (7z concatenates volumes; RAR opens volume 1 and lets
@@ -700,6 +694,14 @@ def open_archive(
     check_config(config, call="open_archive(config=…)")
     _check_parent(parent)
     check_encoding(encoding, call="open_archive(encoding=…)")
+    if encoding is not None:
+        warnings.warn(
+            "open_archive(encoding=) is deprecated: pass "
+            "config=ArchiveyConfig(fallback_encoding=...), which nested opens inherit. "
+            "archivey 0.7.0 removes it.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     if (streaming or pipe) and concurrent_operations:
         mode = "pipe=True" if pipe else "streaming=True"
@@ -736,6 +738,11 @@ def open_archive(
         effective_config = cast("BaseArchiveReader", parent)._config
     else:
         effective_config = DEFAULT_ARCHIVEY_CONFIG
+    # The deprecated ``encoding=`` replaces the config's fallback for this call alone;
+    # only that argument is checked for use (``ENCODING_ARGUMENT_UNUSED``).
+    encoding_argument = encoding
+    if encoding is None:
+        encoding = effective_config.fallback_encoding
     # Collector is created before detection so open + detect share one budget /
     # occurrence order, and reader.diagnostics covers both.
     collector = collector_from_config(effective_config)
@@ -768,6 +775,7 @@ def open_archive(
                 pipe=pipe,
                 passwords=passwords,
                 encoding=encoding,
+                encoding_argument=encoding_argument,
                 config=effective_config,
                 collector=collector,
                 member_streams=member_streams,
@@ -1204,7 +1212,7 @@ def _backend_for_source(
     *,
     pipe: bool,
     passwords: _PasswordCandidates,
-    encoding: str | None,
+    encoding_argument: str | None,
     config: ArchiveyConfig,
     collector: DiagnosticCollector,
 ) -> type[ReadBackend]:
@@ -1260,7 +1268,7 @@ def _backend_for_source(
             resolved_format,
             archive_name=archive_name,
             passwords=passwords,
-            encoding=encoding,
+            encoding=encoding_argument,
             collector=collector,
             replacement=replacement,
         )
@@ -1302,7 +1310,7 @@ def _backend_for_source(
         resolved_format,
         archive_name=archive_name,
         passwords=passwords,
-        encoding=encoding,
+        encoding=encoding_argument,
         collector=collector,
         replacement=replacement,
     )
@@ -1339,6 +1347,7 @@ def _open_resolved(
     pipe: bool,
     passwords: _PasswordCandidates,
     encoding: str | None,
+    encoding_argument: str | None,
     config: ArchiveyConfig,
     collector: DiagnosticCollector,
     member_streams: MemberStreams,
@@ -1376,7 +1385,7 @@ def _open_resolved(
         replacement,
         pipe=pipe,
         passwords=passwords,
-        encoding=encoding,
+        encoding_argument=encoding_argument,
         config=config,
         collector=collector,
     )

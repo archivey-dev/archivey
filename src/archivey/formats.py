@@ -774,6 +774,11 @@ class ReaderContext:
         charge_key_derivation: Callable[[int], None] | None = None,
     ) -> None:
         self._encoding = encoding
+        # The names ``decode_name`` decoded through the fallback, by stored bytes, with
+        # the codec used, until the member that carries them is listed and reported
+        # (``MEMBER_NAME_FALLBACK_ENCODING``). Bounded: a reader that decodes names it
+        # never lists does not grow it.
+        self._fallback_names: dict[bytes, str] = {}
         self._charge_key_derivation = charge_key_derivation
         # The open reader's resource-usage recorder, for a built-in reader that checks
         # a declared allocation itself (``check_decoder_memory``), or that calls a
@@ -791,7 +796,8 @@ class ReaderContext:
 
     @property
     def encoding(self) -> str | None:
-        """The caller's ``encoding=`` for names that are not UTF-8, or ``None``."""
+        """The caller's fallback encoding for names that declare none and are not
+        valid UTF-8 (``ArchiveyConfig.fallback_encoding``), or ``None``."""
         return self._encoding
 
     @property
@@ -1077,8 +1083,11 @@ class ReaderContext:
     def decode_name(self, raw: bytes) -> str:
         """Decode a stored name the way built-in formats do.
 
-        Valid UTF-8 wins. Other bytes decode with ``encoding=`` when the caller gave
-        one, else as UTF-8 with ``surrogateescape``, so no byte is lost.
+        Valid UTF-8 wins. Other bytes decode with the caller's fallback encoding
+        (:attr:`encoding`) when there is one, else as UTF-8 with ``surrogateescape``, so
+        no byte is lost. A name decoded either of those ways is reported as
+        ``MEMBER_NAME_FALLBACK_ENCODING`` on the member whose ``raw_name`` is ``raw``,
+        once that member is listed: set ``raw_name`` to the bytes passed here.
         """
         try:
             return raw.decode("utf-8")
@@ -1086,10 +1095,26 @@ class ReaderContext:
             pass
         if self._encoding is not None:
             try:
-                return raw.decode(self._encoding, errors="surrogateescape")
+                text = raw.decode(self._encoding, errors="surrogateescape")
             except UnicodeError:
                 pass
+            else:
+                self._note_name_fallback(raw, self._encoding)
+                return text
+        self._note_name_fallback(raw, "surrogateescape")
         return raw.decode("utf-8", errors="surrogateescape")
+
+    def _note_name_fallback(self, raw: bytes, codec: str) -> None:
+        if len(self._fallback_names) >= 64:
+            del self._fallback_names[next(iter(self._fallback_names))]
+        self._fallback_names[raw] = codec
+
+    def _take_name_fallback(self, raw: bytes | None) -> str | None:
+        """The codec ``decode_name`` used for ``raw`` through the fallback, or
+        ``None`` when it decoded ``raw`` as UTF-8 or never saw it."""
+        if raw is None:
+            return None
+        return self._fallback_names.pop(raw, None)
 
     def decompress(
         self,
@@ -1329,9 +1354,9 @@ class FormatHandler(ABC):
     takes it as no match, as it does a probe that raises."""
 
     uses_encoding: ClassVar[bool] = False
-    """Whether the reader applies ``encoding=`` (through
-    :meth:`ReaderContext.decode_name`). When ``False``, a caller's ``encoding=`` is
-    reported as unused."""
+    """Whether the reader applies the caller's fallback encoding (through
+    :meth:`ReaderContext.decode_name`). When ``False``, the deprecated
+    ``open_archive(encoding=)`` is reported as unused."""
 
     supports_password: ClassVar[bool] = False
     """Whether the format can be encrypted, so that its reader may hand archivey a

@@ -22,7 +22,7 @@ ended. Registers keep the status — this page states the behaviour and links th
 | Core dependencies | None: the core install reads every tree |
 | Refuses | Non-seekable sources (`StreamNotSeekableError`) · raw CD sector images (`.bin`) other than Mode 1 / Mode 2 Form 1, by name, before the tree is parsed (the two data layouts are read through `cd_sectors.cooked_source`) · damaged directory records and descriptors (`CorruptionError`, §4) · a multi-extent file, or a UDF file, whose extents overlap each other (`CorruptionError`) · a UDF tree in a sparable or virtual partition, when the image has no ISO 9660 tree to list instead (`UnsupportedFeatureError`) · reading a zisofs2 member · writing |
 | Accepts and ignores | `password=` (`PASSWORD_ARGUMENT_UNUSED`) |
-| `encoding=` | Applied to a Rock Ridge or plain name, or a Rock Ridge link target, whose bytes are not valid UTF-8; without it, such a Rock Ridge name takes its Joliet name when the two line up (§2.2) |
+| `fallback_encoding` | Applied to a Rock Ridge or plain name, or a Rock Ridge link target, whose bytes are not valid UTF-8; without it, such a Rock Ridge name takes its Joliet name when the two line up (§2.2) |
 
 **Three things a reader might expect and will not find.** There is no integrity check
 anywhere in the format, so a damaged image reads damaged bytes without an error. A
@@ -275,13 +275,15 @@ directory lists as the file record it is.
 What is ISO-specific in turning a record into a member:
 
 - **Names.** Rock Ridge `NM` bytes, plain identifiers and Rock Ridge link targets decode
-  as UTF-8. Bytes that are not valid UTF-8 decode with `encoding=` when the caller passed
-  one, the rule TAR applies to a PAX `path`, and as UTF-8 with `surrogateescape` when
-  nothing better is found. Nothing in the image names the charset, and a name that is
-  valid UTF-8 is far more likely UTF-8 than Latin-1 that happens to parse, so `encoding=`
-  cannot turn a valid UTF-8 name into mojibake. Without `encoding=` (or when it raises), a
-  Rock Ridge name that is not UTF-8 takes the Joliet name of the same file or directory,
-  with `MEMBER_NAME_ENCODING_INFERRED` (`_joliet_name`). The trees are separate, so the
+  as UTF-8. Bytes that are not valid UTF-8 decode with `fallback_encoding` when the
+  caller passed one, the rule TAR applies to a PAX `path`, and as UTF-8 with
+  `surrogateescape` when nothing better is found; either way the name emits
+  `MEMBER_NAME_FALLBACK_ENCODING` naming the codec. Nothing in the image names the
+  charset, and a name that is valid UTF-8 is far more likely UTF-8 than Latin-1 that
+  happens to parse, so `fallback_encoding` cannot turn a valid UTF-8 name into mojibake.
+  Without `fallback_encoding` (or when it raises), a Rock Ridge name that is not UTF-8
+  takes the Joliet name of the same file or directory, with
+  `MEMBER_NAME_FALLBACK_ENCODING` (`_joliet_name`). The trees are separate, so the
   match goes through the data: a file by its extent, a directory as the Joliet parent of a
   non-empty file found in the first 64 records under it. The Joliet name is used only when
   its ASCII runs equal the stored bytes' (`_ascii_runs_match`), which rejects a Joliet
@@ -300,13 +302,15 @@ What is ISO-specific in turning a record into a member:
   target that falls through is followed from the symlink's directory
   (`_decode_link_target`), and each component that names a record there decodes as that
   record's name does, so a link keeps naming its target's member; an absolute target
-  points outside the image and stays escaped. The `MEMBER_NAME_ENCODING_INFERRED`
-  context leaves both encoding fields empty, because no decode of the stored bytes made
-  the name. Joliet decodes as UTF-16BE with `surrogatepass` (`_decode_joliet`), as 7z
-  names do: a lone surrogate stays in the name, for the Joliet namespace and for a Rock
+  points outside the image and stays escaped. For a borrowed Joliet name the
+  `MEMBER_NAME_FALLBACK_ENCODING` context leaves `fallback_encoding` empty, because no
+  decode of the stored bytes made the name. Joliet decodes as UTF-16BE with
+  `surrogatepass` (`_decode_joliet`), as 7z names do: a lone surrogate stays in the
+  name, for the Joliet namespace and for a Rock
   Ridge name that borrows it, and extraction writes it by the cross-format rule in
   `safe-extraction` ("Lone surrogates in a member name"); 7-Zip 23.01 writes it as it
-  does a 7z name. Only an odd trailing byte becomes U+FFFD. Joliet ignores `encoding=`.
+  does a 7z name. Only an odd trailing byte becomes U+FFFD. Joliet ignores
+  `fallback_encoding`.
   Decoding never raises. Backslash is an ordinary character. `raw_name` is the stored
   bytes in the Rock Ridge and plain namespaces, and the UTF-8 of the decoded path in
   Joliet (a lone surrogate as its three `surrogatepass` bytes).
@@ -390,7 +394,7 @@ What is ISO-specific in turning a record into a member:
 - **POSIX fields.** `mode` (permission bits only), `uid` and `gid` come from `PX`, and
   are `None` outside Rock Ridge. `link_target` is the `SL` path.
 - **Archive info.** `comment` is the primary descriptor's volume identifier, decoded as
-  a plain ISO 9660 name is (UTF-8, else `encoding=`, else `surrogateescape`): the
+  a plain ISO 9660 name is (UTF-8, else `fallback_encoding`, else `surrogateescape`): the
   standard allows only d-characters there, but xorriso 1.5.6 stores `-V` as UTF-8. The
   Joliet descriptor's copy is not read, because xorriso writes each non-ASCII byte of it
   as `_` and it holds 16 characters to the primary's 32 bytes. `format_version` is
@@ -507,7 +511,7 @@ Identifier should start and more after them.
 **The member.** The name is the File Identifier decoded by its compression ID: 8 or 254
 is one byte per character (Latin-1), 16 or 255 UTF-16BE, a lone surrogate kept as in a
 Joliet name. `raw_name` is the stored bytes without the compression ID, joined by `/`.
-`encoding=` does not apply. The ICB file type gives the member type: a directory, a file
+`fallback_encoding` does not apply. The ICB file type gives the member type: a directory, a file
 (type 5, or 0), a symlink (12), or `OTHER` with `extra["special_file_type"]` for a
 device, FIFO or socket with no data. `mode` is the permission bits: UDF keeps execute 1,
 write 2 and read 4 for other, group and owner at bits 0, 5 and 10, the POSIX order.
@@ -586,7 +590,7 @@ are refused by name.
 
 **Rock Ridge names follow the writer's locale.** `genisoimage -input-charset iso8859-1`
 stores `café.txt` as `caf\xe9.txt` in the Rock Ridge `NM` record and as proper UTF-16 in
-Joliet; archivey lists `caf\udce9.txt`, and `café.txt` with `encoding="latin-1"` (§2.2).
+Joliet; archivey lists `caf\udce9.txt`, and `café.txt` with `fallback_encoding="latin-1"` (§2.2).
 
 ## 4. Threat surface
 
@@ -666,7 +670,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A damaged image returns damaged bytes | **format** | No checksum exists anywhere in ISO 9660 (§4) |
 | A zisofs2 member raises `UnsupportedFeatureError` on read | **archivey** | Only zisofs version 1 is decoded (§2.2) |
 | A symlink from genisoimage with a long target lists with `link_target=None` | **format** | genisoimage wraps the `SL` length; what follows the cut cannot be trusted (§3) |
-| A Rock Ridge name written in Latin-1 lists with `\udcXX` escapes | **format** | Rock Ridge names have no charset field, and this image has no Joliet name that lines up with it (none, cut at 64 characters, or a directory with no file under it). Pass `encoding=` (§2.2) |
+| A Rock Ridge name written in Latin-1 lists with `\udcXX` escapes | **format** | Rock Ridge names have no charset field, and this image has no Joliet name that lines up with it (none, cut at 64 characters, or a directory with no file under it). Pass `fallback_encoding` (§2.2) |
 | A file exists in the listing of one tool and not another | **format** | The trees are independent (§1). archivey picks Rock Ridge first, then UDF; 7-Zip and Windows UDF first, then Joliet |
 | An image whose UDF tree uses a sparable or virtual partition lists its Joliet or plain names, or is refused when it has no ISO 9660 tree | **archivey** | Neither partition type is read (§2.6) |
 | A multi-extent file whose extents overlap each other raises `CorruptionError` on read | **archivey** | Its `size` lists; no writer makes overlapping extents, and reading them would let a small image produce a huge file (§2.3) |
@@ -691,8 +695,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `format_version` is `None` | ISO 9660 stores no level; `pycdlib`'s inference read 3 on nearly every image | Inferring a level |
 | A System Use entry that does not parse ends its record's area, and only that record loses entries | One odd record otherwise costs every member, and zisofs is a valid image. Linux's isofs stops a record's area the same way | Refusing the image, as `pycdlib` did on any entry body it could not parse |
 | Decode zisofs version 1 in archivey | It is zlib per block, in the stdlib, and seekable from the pointer table | Refusing zisofs members as unsupported. zisofs2 is not decoded: only `xorriso` writes it, and only when asked |
-| `encoding=` applies only to bytes that are not valid UTF-8 | The TAR PAX rule; a caller who passes a legacy encoding for one image still gets UTF-8 names right on the next | Applying `encoding=` to every Rock Ridge name, which turns valid UTF-8 into mojibake |
-| Without `encoding=`, a non-UTF-8 Rock Ridge name takes its Joliet name when the ASCII runs line up | The Joliet tree usually holds the name converted correctly when the image was written; matching by extent plus the ASCII check never borrows another file's name | Escaping and leaving it to `encoding=`, which needs the caller to know the charset; matching by position or by name, which the separate trees do not support |
+| `fallback_encoding` applies only to bytes that are not valid UTF-8 | The TAR PAX rule; a caller who passes a legacy encoding for one image still gets UTF-8 names right on the next | Applying `fallback_encoding` to every Rock Ridge name, which turns valid UTF-8 into mojibake |
+| Without `fallback_encoding`, a non-UTF-8 Rock Ridge name takes its Joliet name when the ASCII runs line up | The Joliet tree usually holds the name converted correctly when the image was written; matching by extent plus the ASCII check never borrows another file's name | Escaping and leaving it to `fallback_encoding`, which needs the caller to know the charset; matching by position or by name, which the separate trees do not support |
 | Refuse a looping directory tree in any tree, at open | The parser enters each directory extent once; a loop in a tree archivey does not list (Joliet, UDF) fails the whole open, where DR-2 would hand back the intact ISO 9660 tree. One flipped bit makes that shape. Reopen if a real producer writes a looping tree | Listing the intact tree with a diagnostic |
 | `created` holds only a `TF` creation time | `created` never holds `st_ctime`; the attribute-change time goes to `ctime` | Falling back to the attribute-change time, as before PR #470 |
 | Bytes after the image's end are `ARCHIVE_TRAILING_DATA`, and the end counts the partitions the MBR or GPT lists | Ruled by davitf, 2026-10-10 ("count partitions"). DR-3 reports bytes outside an archive. A hybrid installer image appends an EFI partition and a GPT backup header after the volume space (`xorriso -append_partition`, measured); they belong to the disk image, and a warning on every distro ISO would teach callers to ignore it. A GPT counts only when both its CRCs match, so damage in transfer, or `EFI PART` alone, widens nothing; a protective MBR entry (`0xEE`, often spanning the whole medium) is skipped. An MBR has no checksum, so a crafted MBR or a crafted valid GPT can cover appended bytes, but whoever writes the image can already hide them by declaring a larger volume space. A partition or backup header reaching past the end of the file still counts: a hybrid cut inside its EFI partition would otherwise report its own partition bytes. UEFI allows GPT entry sizes of 128 times a power of two, all accepted; the array read is bounded at 512 KiB | Ending the image at the volume space, as 7-Zip does (it warns on hybrid images); no check; trusting `EFI PART` without its CRCs |
@@ -732,7 +736,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Bytes after the volume space reported, zeros silent, strict refuses, 1 MiB bound; MBR and GPT partitions after the volume space (hand-built, and `xorriso` hybrids; `xorriso` is installed by `setup-dev-env.sh` and on the Linux `all` CI legs) are part of the image; a GPT with a bad CRC or out-of-range fields, a protective MBR entry, or an MBR without its signature widens nothing; a valid GPT partition reaching past the file (entry sizes 128, 1024, 4096) still counts, the test that fails if such a partition is dropped |
 | Cost, seekable-only, write refused, password unused |
 | Unknown System Use entries skipped; zisofs lists and reads decoded, seeks, refuses zisofs2 under `ZF` or `Z2` and a too-short entry (listing `UNKNOWN`) and damaged, over-long or unterminated blocks, and a member cut by the image end raises `TruncatedError`; a malformed entry costs its own member only, a cut symlink withholds its target, strict refuses |
-| Names that are not UTF-8 take `encoding=`, else their Joliet name when it lines up, and a relative link target follows the members it names; UTF-8 names ignore it; `raw_name` is the stored bytes |
+| Names that are not UTF-8 take `fallback_encoding`, else their Joliet name when it lines up, and a relative link target follows the members it names; UTF-8 names ignore it; `raw_name` is the stored bytes |
 | Namespace selection and metadata per namespace |
 | Record walk: `/` in a name, duplicate names, cycles, `rr_moved`, a record without Rock Ridge or without `NM` |
 | Device node is `OTHER`; plain versions keep the newest current; a directory keeps a `;N` suffix |

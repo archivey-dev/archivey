@@ -309,19 +309,19 @@ CORPUS: tuple[Adversarial, ...] = (
         "zip-name-wtf8-flagged",
         "lone_surrogate",
         utf8=True,
-        warning_text="UTF-8 flag is set",
+        warning_text="UTF-8 flag set",
     ),
     _zip_name_case(
         "zip-name-invalid-utf8-flagged",
         "invalid_utf8",
         utf8=True,
-        warning_text="UTF-8 flag is set",
+        warning_text="UTF-8 flag set",
     ),
     _zip_name_case(
         "zip-name-overlong-utf8-flagged",
         "overlong",
         utf8=True,
-        warning_text="UTF-8 flag is set",
+        warning_text="UTF-8 flag set",
     ),
     _zip_name_case(
         "zip-name-rtl-override",

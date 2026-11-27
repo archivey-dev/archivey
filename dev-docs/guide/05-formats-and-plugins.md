@@ -58,7 +58,7 @@ are the formats that need something the public interface does not offer:
 A format that fits is two classes (`src/archivey/formats.py`):
 
 - a **handler** declares the format: its `ArchiveFormat`, extensions, magic, optional
-  probe, the modules it needs, and whether it uses `encoding=`. It opens a reader.
+  probe, the modules it needs, and whether it uses `fallback_encoding`. It opens a reader.
 - a **reader** yields members and gives their bytes.
 
 There are two reader shapes, because archive formats come in two shapes:
@@ -87,7 +87,7 @@ link. archivey does all of that, the same way as for TAR.
 
 Every reader gets a `ReaderContext`, its only door into archivey:
 
-- `decode_name(raw)` applies `encoding=` and the UTF-8 rule; `normalize_name()` is
+- `decode_name(raw)` applies `fallback_encoding` and the UTF-8 rule; `normalize_name()` is
   available too, though archivey normalizes what the reader yields anyway.
 - `report(...)` records a diagnostic, from a fixed set of codes (a plugin cannot invent
   new codes yet).

@@ -2307,7 +2307,9 @@ def test_rar3_comments_decode_with_explicit_encoding(
         + stored
         + end_hdr
     )
-    with open_archive(io.BytesIO(data), encoding=encoding) as archive:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding=encoding)
+    ) as archive:
         assert archive.info.comment == expected
         old_member = archive.get("old.txt")
         service_member = archive.get("svc.txt")
@@ -2316,7 +2318,7 @@ def test_rar3_comments_decode_with_explicit_encoding(
         assert service_member.comment == expected
         # A comment is not a name: no name diagnostic is reported for it.
         counts = archive.diagnostics.counts
-        assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+        assert DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING not in counts
 
 
 def test_rar3_compressed_comments_take_explicit_encoding(
@@ -2355,7 +2357,9 @@ def test_rar3_compressed_comments_take_explicit_encoding(
         ("cp1251", _CP1251_COMMENT),
         (None, _CP1251_COMMENT.encode("cp1251").decode("windows-1252")),
     ]:
-        with open_archive(io.BytesIO(data), encoding=encoding) as archive:
+        with open_archive(
+            io.BytesIO(data), config=ArchiveyConfig(fallback_encoding=encoding)
+        ) as archive:
             assert archive.info.comment == expected
             got = archive.get("m.txt")
             assert got is not None
@@ -2377,9 +2381,14 @@ def test_rar3_and_zip_comments_agree_on_an_undecodable_byte() -> None:
         z.writestr("a.txt", b"x")
         z.comment = stored
 
-    with open_archive(io.BytesIO(rar_data), encoding="cp1251") as archive:
+    with open_archive(
+        io.BytesIO(rar_data), config=ArchiveyConfig(fallback_encoding="cp1251")
+    ) as archive:
         rar_comment = archive.info.comment
-    with open_archive(io.BytesIO(zip_buf.getvalue()), encoding="cp1251") as archive:
+    with open_archive(
+        io.BytesIO(zip_buf.getvalue()),
+        config=ArchiveyConfig(fallback_encoding="cp1251"),
+    ) as archive:
         zip_comment = archive.info.comment
     assert rar_comment == zip_comment == "a\udc98b"
 

@@ -3934,18 +3934,9 @@ class RarReader(BaseArchiveReader):
             self._emit_special_file_has_data(member, index)
         if info.has_unknown_redirect():
             self._emit_unknown_redirect(info, member, index)
-        if info.rar3_utf8_over_encoding:
-            assert self._encoding is not None
-            self._emit_name_encoding_inferred(
-                member,
-                index,
-                inferred_encoding="utf-8",
-                passed_over=self._encoding,
-                message=(
-                    f"RAR member name decoded as 'utf-8' rather than "
-                    f"{self._encoding!r} (the stored bytes are valid UTF-8): "
-                    f"{quoted(member.name)}"
-                ),
+        if info.rar3_fallback_encoding is not None:
+            self._emit_name_fallback_encoding(
+                member, index, codec=info.rar3_fallback_encoding, format_label="RAR"
             )
         for issue in info.timestamp_issues:
             field = _timestamp_field_name(info, issue.field)

@@ -18,6 +18,7 @@ import pytest
 
 import archivey
 from archivey import (
+    ArchiveyConfig,
     CorruptionError,
     DiagnosticCode,
     MemberType,
@@ -440,7 +441,9 @@ def test_a_name_that_is_not_utf8_follows_encoding(tmp_path: Path) -> None:
     path = _archive(tmp_path, _ar((b"caf\xe9.txt/", b"data")))
     with open_archive(path) as reader:
         assert [m.name for m in reader.members()] == ["caf\udce9.txt"]
-    with open_archive(path, encoding="latin-1") as reader:
+    with open_archive(
+        path, config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as reader:
         assert [m.name for m in reader.members()] == ["café.txt"]
 
 

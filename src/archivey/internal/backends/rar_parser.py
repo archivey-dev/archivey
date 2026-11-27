@@ -194,20 +194,26 @@ _RAR3_FILE_LARGE = 0x0100
 _RAR3_FILE_UNICODE = 0x0200
 
 
-def _utf8_over_encoding(raw: bytes, encoding: str | None) -> bool:
-    """Whether :func:`_decode_rar3_8bit_name` took the UTF-8 reading of ``raw`` where
-    the caller's ``encoding`` would have given a different name."""
-    if encoding is None or raw.isascii():
-        return False
+def _rar3_fallback_codec(
+    raw: bytes, *, host_os: int, encoding: str | None
+) -> str | None:
+    """The codec :func:`_decode_rar3_8bit_name` decodes ``raw`` with past UTF-8: the
+    caller's fallback encoding, else cp437 or windows-1252 by host; ``None`` when
+    ``raw`` is valid UTF-8."""
     try:
-        utf8 = raw.decode("utf-8")
+        raw.decode("utf-8")
     except UnicodeDecodeError:
-        return False
-    try:
-        return raw.decode(encoding, errors="surrogateescape") != utf8
-    except UnicodeError:
-        # A codec that refuses surrogateescape (``idna``) would not have named it.
-        return False
+        pass
+    else:
+        return None
+    if encoding is not None:
+        try:
+            raw.decode(encoding, errors="surrogateescape")
+        except UnicodeError:
+            pass
+        else:
+            return encoding
+    return "cp437" if host_os in _RAR3_OEM_HOSTS else "windows-1252"
 
 
 _RAR3_FILE_SALT = 0x0400
@@ -497,9 +503,10 @@ class RarMemberInfo:
     # ``filename`` can differ from it (``_fix_rar3_astral_truncation``). ``None``
     # for RAR5 and for a RAR3 name ``unrar`` reads from the 8-bit field.
     rar3_unicode_name: str | None = None
-    # A RAR 1.5-4 8-bit name, with no Unicode flag, that decoded as UTF-8 where the
-    # caller's ``encoding=`` would have given a different name.
-    rar3_utf8_over_encoding: bool = False
+    # The codec a RAR 1.5-4 8-bit name that is not valid UTF-8 was decoded with: the
+    # caller's fallback encoding, or the host's (cp437 or windows-1252). ``None`` for
+    # a name read as UTF-8, from its Unicode field, and for RAR5.
+    rar3_fallback_encoding: str | None = None
     # RAR5 FHEXTRA records that were malformed and dropped, and a RAR 1.5-4 ``UOW``
     # header after the member with no owner in it, as ``(record_name, record_type,
     # reason)``. Empty for every well-formed archive, and the shared empty tuple
@@ -3557,8 +3564,8 @@ class _Rar3Name(NamedTuple):
     """The 8-bit name, the bytes before the NUL when a Unicode form follows."""
     unicode_name: str | None
     """The Unicode form, when the field has one that decodes to a name."""
-    utf8_over_encoding: bool
-    """Whether the 8-bit name was read as UTF-8 over the caller's ``encoding=``."""
+    fallback_encoding: str | None
+    """The codec the 8-bit name was decoded with past UTF-8, or ``None``."""
 
 
 def _decode_rar3_name(
@@ -3571,7 +3578,7 @@ def _decode_rar3_name(
     the field is the 8-bit name alone, decoded by :func:`_decode_rar3_8bit_name`.
     """
     unicode_name: str | None = None
-    utf8_over_encoding = False
+    fallback_encoding: str | None = None
     if flags & _RAR3_FILE_UNICODE and b"\0" in name:
         nul = name.find(b"\0")
         orig_filename = name[:nul]
@@ -3581,17 +3588,19 @@ def _decode_rar3_name(
             filename = _decode_rar3_8bit_name(
                 orig_filename, host_os=host_os, encoding=name_encoding
             )
-            utf8_over_encoding = _utf8_over_encoding(orig_filename, name_encoding)
+            fallback_encoding = _rar3_fallback_codec(
+                orig_filename, host_os=host_os, encoding=name_encoding
+            )
         else:
             unicode_name = decoded
             filename = _fix_rar3_astral_truncation(decoded, orig_filename)
     else:
         orig_filename = name
         filename = _decode_rar3_8bit_name(name, host_os=host_os, encoding=name_encoding)
-        # The Unicode flag declares UTF-8, so a UTF-8 reading there is not inferred.
-        if not flags & _RAR3_FILE_UNICODE:
-            utf8_over_encoding = _utf8_over_encoding(name, name_encoding)
-    return _Rar3Name(filename, orig_filename, unicode_name, utf8_over_encoding)
+        fallback_encoding = _rar3_fallback_codec(
+            name, host_os=host_os, encoding=name_encoding
+        )
+    return _Rar3Name(filename, orig_filename, unicode_name, fallback_encoding)
 
 
 def _parse_rar3_file_header(
@@ -3637,7 +3646,7 @@ def _parse_rar3_file_header(
 
     name, pos = _load_bytes(hdata, name_size, pos)
     name_end = pos
-    filename, orig_filename, unicode_name, utf8_over_encoding = _decode_rar3_name(
+    filename, orig_filename, unicode_name, fallback_encoding = _decode_rar3_name(
         name, flags=flags, host_os=host_os, name_encoding=name_encoding
     )
     filename = filename.replace("\\", "/").rstrip("/")
@@ -3689,7 +3698,7 @@ def _parse_rar3_file_header(
         filename=filename,
         orig_filename=orig_filename,
         rar3_unicode_name=unicode_name,
-        rar3_utf8_over_encoding=utf8_over_encoding,
+        rar3_fallback_encoding=fallback_encoding,
         file_size=file_size,
         compress_size=compress_size,
         compress_type=compress_type,

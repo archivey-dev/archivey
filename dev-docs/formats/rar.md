@@ -828,8 +828,8 @@ decrypts at most one garbage-sized header (then CRC fails and the walk
 rewrites that as `EncryptionError`); that is strictly less work than the
 unencrypted walk already allows.
 
-**Names, and `encoding=`.** A RAR5 name is UTF-8, and a RAR 1.5-4 name usually has a
-UTF-16 field beside its 8-bit bytes; both decode as stored. A RAR5 name, or a RAR5
+**Names, and `fallback_encoding`.** A RAR5 name is UTF-8, and a RAR 1.5-4 name usually
+has a UTF-16 field beside its 8-bit bytes; both decode as stored. A RAR5 name, or a RAR5
 redirect target, that is not valid UTF-8 decodes with `surrogateescape`, as a TAR name
 does: each bad byte is one U+DC80–U+DCFF character, and extraction handles it the
 shared way (refused under `STRICT`, `a%FFq.txt` under `STANDARD`, the raw byte under
@@ -840,13 +840,13 @@ used to decode with `replace`, so `a\xffq.txt` and `a\xfeq.txt` both listed as
 stored name reaches `unrar` (§2.3). A
 RAR 1.5-4 name with only the 8-bit bytes records no code page, so it is decoded like an
 unflagged ZIP name: strict UTF-8 first, with or without the Unicode flag, then
-`encoding=` when the caller passed one, otherwise cp437 for a member whose host is
-MS-DOS, OS/2 or Win32 and windows-1252 for any other host (§7 has the evidence). So
-`encoding=` applies only to bytes that are not valid UTF-8, as in every format (design
-rules, ruled 2026-10-07), and a name without the Unicode flag that took the UTF-8
-reading over `encoding=` emits `MEMBER_NAME_ENCODING_INFERRED`, as in ZIP and TAR. The
-five bytes windows-1252 leaves undefined decode with `surrogateescape` too, so
-`b\x81.txt` and `b\x8d.txt` stay two names. The 8-bit field is never tried as UTF-16LE:
+`fallback_encoding` when the caller passed one, otherwise cp437 for a member whose host
+is MS-DOS, OS/2 or Win32 and windows-1252 for any other host (§7 has the evidence). So
+`fallback_encoding` applies only to bytes that are not valid UTF-8, as in every format
+(design rules, ruled 2026-10-07), and a name that took one of those fallbacks emits
+`MEMBER_NAME_FALLBACK_ENCODING` naming the codec, as in ZIP and TAR. The five bytes
+windows-1252 leaves undefined decode with `surrogateescape` too, so `b\x81.txt` and
+`b\x8d.txt` stay two names. The 8-bit field is never tried as UTF-16LE:
 almost any even-length byte string decodes that way, so `caf\xe9.txt` used to list as
 `慣琮瑸`. The UTF-16 field decodes with `surrogatepass`, as 7z names do (7z.md §2): a
 lone surrogate stays in `name`, and extraction writes it by the cross-format rule in
@@ -865,7 +865,7 @@ is UTF-16LE, read in whole 2-byte units (an odd trailing byte is dropped, as `un
 reads `CmtSize / 2` units) and cut at the first U+0000. Every other RAR 1.5-4 comment
 (an unflagged `CMT`, or an old-style COMMENT subblock, stored or compressed) is
 8-bit text cut at the first NUL, decoded as strict UTF-8, then with the caller's
-`encoding=` when one was passed, then windows-1252. A byte the code page leaves undefined
+`fallback_encoding` when one was passed, then windows-1252. A byte the code page leaves undefined
 (five in windows-1252) survives as a lone surrogate (`surrogateescape`). That is the
 order and the error handler an 8-bit name uses, and the ones a ZIP comment uses, because
 a comment records its code page no more than a name does; only the last fallback differs
@@ -923,7 +923,7 @@ between to blame or to defer to.
 | `comment` | RAR3 CMT SERVICE when the solid flag is set (attaches to the preceding member) and RAR 1.5 / 2.x FILE COMMENT subblocks. Stored comments decode natively; compressed ones (old-style or `CMT`) decode through RARLAB `unrar` when available | No member comment block, a RAR5 `CMT` (archive-only, below), a compressed comment without `unrar` / with an invalid CRC, or an encrypted comment (known limitation, §5) |
 
 **Archive comments are `ArchiveInfo.comment`.** RAR5 `CMT` is archive-only — it never
-becomes a member comment. It is UTF-8 by the format, so `encoding=` does not apply, and
+becomes a member comment. It is UTF-8 by the format, so `fallback_encoding` does not apply, and
 a byte that is not valid UTF-8 survives as a lone surrogate, as in a RAR5 name. `rar`
 7.00 never stores one: it writes a comment file's undecodable byte as U+FFFE followed by
 U+E000 plus the byte, which is valid UTF-8, and `unrar l` prints `??` for the pair. RAR3
@@ -1544,7 +1544,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | A corrupt encrypted member can be reported as a wrong password | **library** / **archivey** | `unrar` reports both as exit 2/3 with empty output on RAR4 and exposes no signal to separate them — that half is upstream's. Resolving the ambiguity toward `EncryptionError` is ours and is reversible (§2.3) |
 | A 7-Zip SFX stub sitting beside a numbered split (`vol.exe` next to `vol.exe.001` / `vol.7z.001` / `vol.zip.001`) | **archivey** | Opening the stub follows that first volume. The stub is still not a sibling. An old-scheme SFX first volume (`name.exe` + `.r00`) is discovered as volume 1 of that `.rNN` set |
 | A RAR from a pipe or socket needs RARLAB `unrar` 7.00 or later, one volume, and one password for the pass; a RAR5 file copy is refused, and a failed member ends the data of the pass | **archivey** | §2.6: the source is read once, so nothing can be read again; nothing is buffered for you (ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
-| A RAR 1.5-4 name stored only as 8-bit bytes can list in the wrong code page | **format** | The header records none. Archivey guesses strict UTF-8, then cp437 for a DOS or Windows host and windows-1252 otherwise; `encoding=` overrides the guess, as in ZIP. Reading is unaffected (§2.2) |
+| A RAR 1.5-4 name stored only as 8-bit bytes can list in the wrong code page | **format** | The header records none. Archivey guesses strict UTF-8, then cp437 for a DOS or Windows host and windows-1252 otherwise; `fallback_encoding` overrides the guess, as in ZIP. Reading is unaffected (§2.2) |
 | A member whose name is not plain raises `UnsupportedFeatureError` on the `unrar` path, and reads with `RarOptions(decompressor='unar')` | **archivey** | Only when no synthetic archive can hold it: a RAR 1.5-4 member split past 4 GiB with no 64-bit sizes, or a solid chain with data out of reach. The original archive is then read through a mask, which is trusted only for a plain name (§2.3) |
 | `unrar` given an archive path in place can open a file other than the one archivey parsed | **library** / **archivey** | Two causes. `unrar` 6.x keeps only a prefix of a long archive path and opens the file that prefix names: on POSIX it cuts at 2047 bytes of the multibyte name (`File::Open`; measured on 6.24), on Windows at 2047 wide units (from the 6.2.12 source, not run). And every version expands `*` and `?` in the archive name, even after `--`, so `rep*.rar` also opens a `rep-a.rar` beside it, or blocks forever on a FIFO of that name. Archivey's answer: on POSIX `unrar` is always started in the archive's directory and given the name alone, so no directory reaches it, and a volume whose name holds `*` or `?` is linked under a fixed name in a private directory (`unrar_needs_staged_name`, `_choose_unrar_volume_paths`). On Windows `unrar` gets the whole path, so a volume path holding a wildcard or longer than 1024 UTF-16 units is staged, and a staged path past what 6.x keeps is refused (§2.2) |
 | Every RAR5 symlink and hard link has no `hashes` entry, where ZIP and 7z have one | **format** | The stored field covers zero bytes, so the only honest answer is no digest (§2.2). RAR3/4 keeps its digest, which is genuine — but note what it covers: the **target string**, not anything the link points at, the same as ZIP's and 7z's (§2.2, §6) |
@@ -1656,7 +1656,7 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   Cyrillic). No tool decodes the field as UTF-16. So archivey takes cp437, the OEM code
   page of the US and western European installs, for DOS, OS/2 and Win32 hosts, and
   windows-1252 for any other host, after strict UTF-8. That guess is wrong for other
-  OEM code pages (cp850, cp866, cp932), which is what `encoding=` is for.
+  OEM code pages (cp850, cp866, cp932), which is what `fallback_encoding` is for.
 - **Settled (0.4.0): the per-member `unar` fallback and the name model are gone.** Every
   `unrar` read gets a synthetic archive with a placeholder name, except a large member of
   a source on disk whose name is plain (§2.3), so no read needs `unar` to address a name
@@ -1865,7 +1865,7 @@ python3 scripts/investigations/exploration/rar_decompressor_matrix.py      # §3
 | A NUL in a password or a member name is a typed refusal; a password past the pipe buffer does not deadlock the spawn |
 | `unrar` runs under a UTF-8 locale; an 8-bit RAR3 name in any code page reads |
 | Each read returns its own member's bytes whatever `unrar` would make of the name; only a plain name takes the mask route (`_plain_unrar_masks`) |
-| An 8-bit RAR 1.5-4 name lists in its writer's code page, honours `encoding=`, and still reads; RAR5 names ignore `encoding=` |
+| An 8-bit RAR 1.5-4 name lists in its writer's code page, honours `fallback_encoding`, and still reads; RAR5 names ignore `fallback_encoding` |
 | An explicit volume list in separate directories reads as given |
 | An invalid DOS date or out-of-range FILETIME is `None` plus `MEMBER_TIMESTAMP_INVALID`; a crafted `;n` suffix is not a bare `ValueError` |
 | Exit-code mapping: 11, 2/3, 10, hash-present suppression, solid-pipe suppression, negative rc |

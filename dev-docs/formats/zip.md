@@ -356,28 +356,28 @@ not its ZIP structure, which is single-disk.
 
 **Name decoding.** A set bit 11 is honoured as UTF-8 when the bytes are valid UTF-8. An
 unflagged name is decoded as UTF-8 when the bytes are valid UTF-8, and otherwise with
-the caller's `encoding=` when one was passed, else with
-`ZipOptions.fallback_encoding` (default `cp437`, which decodes every
-byte, so no `UnicodeDecodeError` escapes). Both decode with `surrogateescape`. The
+the caller's `fallback_encoding` when one was passed, else with cp437, which decodes
+every byte, so no `UnicodeDecodeError` escapes. Both decode with `surrogateescape`. The
 parser hands the reader the stored bytes, so nothing is decoded twice. A flagged name
 that is not valid UTF-8 is decoded as an unflagged name that is not UTF-8 would be
-(`encoding=`, else the fallback), with `MEMBER_NAME_ENCODING_INFERRED` naming that codec
-and `declared_encoding="utf-8"`: the flag is the one claim the bytes can check, and they
-refute it. The Unicode Path field is not consulted for it, as for any flagged name. This
-departs from stdlib's `metadata_encoding` and from `unzip -O`, which apply the codec to
-every unflagged name: a valid UTF-8 name wins over `encoding=` in every format (design
-rules, ruled 2026-10-07), so a legacy `encoding=` fixes the legacy names in a mixed
-archive without garbling its UTF-8 ones.
+(`fallback_encoding`, else cp437), and its message says the bytes refute the flag: the
+flag is the one claim the bytes can check. The Unicode Path field is not consulted for
+it, as for any flagged name. This departs from stdlib's `metadata_encoding` and from
+`unzip -O`, which apply the codec to every unflagged name: a valid UTF-8 name wins over
+`fallback_encoding` in every format (design rules, ruled 2026-10-07), so a legacy
+`fallback_encoding` fixes the legacy names in a mixed archive without garbling its UTF-8
+ones.
 
-Choosing UTF-8 for an unflagged name emits `MEMBER_NAME_ENCODING_INFERRED`; a pure-ASCII
-name does not, because ASCII decodes identically under both and nothing was overridden.
+Each name that took `fallback_encoding` or cp437 emits `MEMBER_NAME_FALLBACK_ENCODING`
+naming the codec: a different `fallback_encoding` could change that name. A name read as
+UTF-8, flagged or not, does not, and neither does a pure-ASCII name.
 The sniff is validation rather than guessing: UTF-8 is self-checking, so a clean decode is
 near-conclusive evidence. No equivalent is possible for the legacy tail — see §5.
 
 Before any of that, an unflagged name with a Unicode Path extra field (`0x7075`) in its
 central-directory entry is named by the field when the field is version 1, its CRC-32
 matches the stored name bytes, and its name is non-empty valid UTF-8. It outranks the sniff
-and an explicit `encoding=` alike, as in 7-Zip, which also consults it only for unflagged
+and an explicit `fallback_encoding` alike, as in 7-Zip, which also consults it only for unflagged
 names and before its code page switch. Info-ZIP `unzip` and stdlib `zipfile` 3.12+
 (`ZipInfo.filename`) use it too. `raw_name` is then the field's UTF-8 bytes, so `name` stays
 `raw_name` decoded, and the header's bytes go to `extra["alternate_raw_name"]`; no
@@ -425,7 +425,7 @@ took nothing from in `extra["zip.extra_fields"]`.
 | `compression` | CDH method → `CompressionMethod` | — |
 | `is_encrypted` | general-purpose bit 0, or method 99: a WinZip AES member is encrypted even when a writer left bit 0 clear, and opening it asks for a password either way, so listing and opening share one predicate | — |
 | `hashes["crc32"]` | CDH CRC (the local header's or data descriptor's on a listing from local headers; `_crc_is_digest` says which members carry one), as four big-endian bytes — present for AE-1 (and verified on read); omitted for AE-2, where the format zeroes the field and the HMAC is the integrity signal | WinZip AE-2 members |
-| `comment` | CDH member comment. APPNOTE puts it under the name's bit 11, so it decodes as the name would: UTF-8 when flagged over a valid UTF-8 name; unflagged, or flagged over a name that is not UTF-8, the same sniff as an unflagged name (UTF-8 if valid, else `encoding=`, else `ZipOptions.fallback_encoding`), with no diagnostic; a byte the codec leaves undefined survives as a lone surrogate. Before the sniff, an Info-ZIP Unicode Comment field (`0x6375`) gives the comment by the Unicode Path field's rules (above): version 1 with the CRC-32 of the stored comment, read as 7-Zip reads it (Info-ZIP `unzip` 6.00 prints the header bytes instead); a malformed one is dropped with `MEMBER_HEADER_RECORD_SKIPPED` (`record="unicode_comment"`). The field is read only when bit 11 is clear, as for a name, so a flag the name refutes leaves it unread, as in 7-Zip 23.01. When the field gives the comment, the header's comment bytes are not kept: unlike a name, a comment is never looked up, so there is no `alternate_raw_name` counterpart, and 7-Zip shows only the field's text too. `ArchiveInfo.comment` (the end record's, which has no flag) decodes as an unflagged one | The entry stores none, which is the common case |
+| `comment` | CDH member comment. APPNOTE puts it under the name's bit 11, so it decodes as the name would: UTF-8 when flagged over a valid UTF-8 name; unflagged, or flagged over a name that is not UTF-8, the same sniff as an unflagged name (UTF-8 if valid, else `fallback_encoding`, else cp437), with no diagnostic; a byte the codec leaves undefined survives as a lone surrogate. Before the sniff, an Info-ZIP Unicode Comment field (`0x6375`) gives the comment by the Unicode Path field's rules (above): version 1 with the CRC-32 of the stored comment, read as 7-Zip reads it (Info-ZIP `unzip` 6.00 prints the header bytes instead); a malformed one is dropped with `MEMBER_HEADER_RECORD_SKIPPED` (`record="unicode_comment"`). The field is read only when bit 11 is clear, as for a name, so a flag the name refutes leaves it unread, as in 7-Zip 23.01. When the field gives the comment, the header's comment bytes are not kept: unlike a name, a comment is never looked up, so there is no `alternate_raw_name` counterpart, and 7-Zip shows only the field's text too. `ArchiveInfo.comment` (the end record's, which has no flag) decodes as an unflagged one | The entry stores none, which is the common case |
 | `create_system` | CDH "version made by", high byte | Never — an unrecognised value maps to `CreateSystem.UNKNOWN` rather than to nothing |
 | `extra` | `zip.compress_type`, plus `zip.aes_vendor_version` / `zip.aes_strength` / `zip.aes_actual_method` on AE members, plus `is_reparse_point` from the attribute bit and `is_junction` when a stored reparse buffer says so (§2.2.1) | — |
 | `extra["zip.extra_fields"]` | The CDH extra fields archivey took no value from, as `{tag: data}`: unknown tags (a vendor's field, the `jar` tool's empty `0xcafe`) and known ones that gave nothing (malformed, a Unicode Path field about another name, a `0x5855` under a `0x5455`). The first of several fields with one tag; a tag any copy of which gave a value is left out, and so are the structural ZIP64, WinZip AES and Strong Encryption fields. Charged to `max_metadata_bytes` at 72 bytes per field plus its data (an empty field retains about 70 bytes). A pipe pass sets it when it reaches the directory | Every field gave a value, or there are none: the usual case |
@@ -1165,8 +1165,8 @@ executable, an xattr, a resource fork, an empty folder and an NFD name:
 - Symlinks are Unix-mode entries whose data is the target; the hard link is a second
   copy. A FIFO hangs `ditto`.
 - Names are UTF-8 without the UTF-8 flag (bit 11), NFD as the filesystem gives them,
-  so every non-ASCII name reports `MEMBER_NAME_ENCODING_INFERRED`. davi chose to keep
-  that diagnostic.
+  so they take the UTF-8 sniff and report no `MEMBER_NAME_FALLBACK_ENCODING`: a
+  different `fallback_encoding` would not change them.
 - Finder writes UTC into the DOS time field and `ditto` local time; both write the
   real UTC mtime in the `UX` field (`0x5855`).
 - Both write `__MACOSX/<path>/._<name>` AppleDouble sidecars. `ditto` writes one for
@@ -1297,7 +1297,7 @@ ours.
 | --- | --- | --- |
 | A ZIP from a pipe opens only with `pipe=True`, and its members arrive without the fields only the directory holds: no mode, host or comment, and a symlink is a `FILE` until the pass reaches the directory | **format** | The index is at the end (§1). The pass updates the members in place from the directory and says so through `member_state_final`; extraction applies the same fields to disk at the end of the pass (§2.2.2) |
 | From a pipe, a few crafted or damaged shapes fail a member, or leave files on disk, that a file read handles otherwise | **format** / **archivey** | The data goes by before the directory that would correct it arrives; matching the file read would mean buffering every member (ADR 0010). The list is in §2.2.2 |
-| A name whose UTF-8 flag is set over bytes that are not UTF-8 decodes as an unflagged name, with `MEMBER_NAME_ENCODING_INFERRED`, and `DiagnosticPolicy.STRICT` refuses it | **archivey** | The bytes refute the flag, so it cannot be honoured; reading the name as unflagged keeps every other member and the name itself, where refusing cost at least the rest of the listing. The diagnostic's `declared_encoding` is `"utf-8"` and its `inferred_encoding` the codec used (§2.2) |
+| A name whose UTF-8 flag is set over bytes that are not UTF-8 decodes as an unflagged name, with `MEMBER_NAME_FALLBACK_ENCODING`, which says the bytes refute the flag | **archivey** | The bytes refute the flag, so it cannot be honoured; reading the name as unflagged keeps every other member and the name itself, where refusing cost at least the rest of the listing. The diagnostic's `fallback_encoding` is the codec used (§2.2). `DiagnosticPolicy.STRICT` does not refuse it: the code is not an archive-integrity code |
 | The last part of a `zip -s` set opened alone, a `.zip` with its `.z01` … gone, lists nothing and raises `TruncatedError`, though it holds the whole central directory | **archivey** | Its members' data is on the parts that are gone, except for whichever members happen to sit on the last part; listing the directory would promise members that cannot be read. The end record's disk number says the set has more parts (`0xFFFF` is the ZIP64 sentinel, not a disk number), and the error says how many (§2.2). From a pipe the forward pass lists the members whole on that part before the end record arrives, as it does for any damage it meets late (§2.2.2) |
 | A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. The part opens with `PK\x03\x04`, so it looks like a ZIP to a detector, but the central directory is in the *last* part, so no end record is found and not even a listing is available. "Rejoin first" names the actual problem. A numbering gap is `TruncatedError` instead |
 | An archive cut before its end record lists its members without mode, host or comment, then raises | **format** | Those fields live only in the directory. With no end record in the tail, the reader walks the local headers, lists what they hold as a pipe read does before its directory, then raises the walk's error (`TruncatedError` for a cut). A damaged *directory* lists the entries before the damage and the local headers' past it, then raises (§2.2) |
@@ -1403,8 +1403,8 @@ move.
 | `extra["zip.extra_fields"]`: unknown and unused known fields kept, first copy per tag, a field whose times were all replaced kept, absent when every field was read, set by a pipe pass at the directory, and charged per field against `max_metadata_bytes` |
 | Encoding sniff, fallback, override, escalation |
 | Owner ids from each of the four fields, their ranking, the central directory's short copies, and a damaged deciding field dropped with `MEMBER_HEADER_RECORD_SKIPPED` (strict refuses); a pass yields no owner and leaves the same owner on disk as a file read |
-| Unicode Path field names the member over the sniff and `encoding=`; a stale, unknown-version or local-only field is ignored |
-| Unicode Comment field (`0x6375`) gives an unflagged member comment over the sniff and `encoding=`; a stale or unknown-version field is ignored; a malformed one is dropped with `MEMBER_HEADER_RECORD_SKIPPED`; a trusted flag's comment does not consult it |
+| Unicode Path field names the member over the sniff and `fallback_encoding`; a stale, unknown-version or local-only field is ignored |
+| Unicode Comment field (`0x6375`) gives an unflagged member comment over the sniff and `fallback_encoding`; a stale or unknown-version field is ignored; a malformed one is dropped with `MEMBER_HEADER_RECORD_SKIPPED`; a trusted flag's comment does not consult it |
 | A short, empty, cut-short or non-UTF-8 Unicode Path field is dropped with `MEMBER_HEADER_RECORD_SKIPPED` on every Python version, with no stdlib warning; strict refuses; a flagged name's field is not consulted |
 | Backslash by origin |
 | Symlink target from member data; encrypted target withheld |

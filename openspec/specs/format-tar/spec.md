@@ -95,9 +95,9 @@ in every format; the record name appears only in the message.
 | `SYMTYPE` or `LNKTYPE` entry declaring 600 bytes with no blocks behind it, then a file | Both members list; the link is reported with `MEMBER_HEADER_AMBIGUOUS` (`size_on_no_data`) |
 | `SYMTYPE` entry declaring 64 KiB as the last member, then a 1024-byte trailer | The archive lists through the link, `MEMBER_LINK_DATA_IGNORED` is reported, no `TruncatedError` |
 | `SYMTYPE` or `LNKTYPE` entry declaring 10 or 600 bytes as the last member, then a 1024-byte trailer | The archive lists through the link and only `MEMBER_LINK_DATA_IGNORED` is reported, in both access modes |
-| PAX name `日本語.txt`, `encoding="latin-1"` | Lists; `raw_name` is the UTF-8 bytes the PAX record holds |
-| ustar name, `encoding="latin-1"` | `raw_name` is the latin-1 bytes |
-| PAX `path` holding the non-UTF-8 bytes `caf\xe9.txt`, `encoding="latin-1"` | `raw_name == b"caf\xe9.txt"` |
+| PAX name `日本語.txt`, `fallback_encoding="latin-1"` | Lists; `raw_name` is the UTF-8 bytes the PAX record holds |
+| ustar name, `fallback_encoding="latin-1"` | `raw_name` is the latin-1 bytes |
+| PAX `path` holding the non-UTF-8 bytes `caf\xe9.txt`, `fallback_encoding="latin-1"` | `raw_name == b"caf\xe9.txt"` |
 | Old GNU or v7 header with bytes at offsets 345 to 500 (GNU incremental `tar -G` fills `atime` there) | Not joined to the name: `d/f.txt`, not `15262452373/d/f.txt` |
 | PAX global header, then members with no records of their own | Each member's `extra["tar.pax_headers"]` holds the global records, and a later global header does not change it. Changing it raises `TypeError` |
 | PAX sparse 1.0 map holding a number longer than 20 digits | `CorruptionError` while the header is parsed. GNU tar reads each number into a 20-digit buffer and refuses a longer one; this structural bound keeps a number with no newline from growing one buffer for the rest of the archive |
@@ -407,26 +407,25 @@ listing accounts for.
 
 ### Requirement: Decode TAR member names as UTF-8 by default
 
-When the caller does not pass `encoding=`, the TAR backend SHALL decode ustar and GNU
+When the caller does not pass `fallback_encoding`, the TAR backend SHALL decode ustar and GNU
 long-name fields, and the other header strings (`uname`, `gname`, `linkname`), as UTF-8
 with `errors="surrogateescape"`. The result MUST NOT depend on the process locale or
 `sys.getfilesystemencoding()`. These fields do not declare an encoding, so a field whose
 bytes are valid UTF-8 SHALL be decoded as UTF-8
-whatever `encoding=` says, and a caller-passed `encoding=` SHALL replace the
+whatever `fallback_encoding` says, and a caller-passed `fallback_encoding` SHALL replace the
 surrogate-escaped UTF-8 decode, with the same error handler, only for a field whose bytes
-are not valid UTF-8. When a caller-passed `encoding=` would have given a different name
-than that UTF-8 reading, the backend SHALL emit `MEMBER_NAME_ENCODING_INFERRED` with
-`inferred_encoding="utf-8"` and `declared_encoding` set to the caller's encoding, as ZIP
-does. A PAX record SHALL be decoded strictly as UTF-8 first; when that
-fails it SHALL be decoded with the same archive codec and error handler, so `encoding=`
+are not valid UTF-8. A member whose name is not valid UTF-8, and so went through that
+fallback, SHALL carry `MEMBER_NAME_FALLBACK_ENCODING` naming the codec used: the caller's
+encoding, or `"surrogateescape"`. A PAX record SHALL be decoded strictly as UTF-8 first; when that
+fails it SHALL be decoded with the same archive codec and error handler, so `fallback_encoding`
 (or the UTF-8 default) applies to a PAX record only when its bytes are not UTF-8. A PAX
 record under `hdrcharset=BINARY`, in its own header or in a global header before it that
 no later global header reset, declares no encoding and is decoded as a ustar field is.
-A field of ASCII bytes is valid UTF-8, so `encoding=` never applies to it. A
+A field of ASCII bytes is valid UTF-8, so `fallback_encoding` never applies to it. A
 caller-passed codec that cannot decode a field's bytes (`utf-16` on an odd byte count,
 `utf-32` on a code point out of range, `utf-7` on a `+` shift that ends badly, `idna`,
 which has no `surrogateescape`) SHALL
-NOT fail the open or the listing: the field SHALL decode as with no `encoding=`, as in ZIP,
+NOT fail the open or the listing: the field SHALL decode as with no `fallback_encoding`, as in ZIP,
 RAR and ISO. `extra["tar.pax_headers"]` SHALL decode each record value by the same rule
 as the member's name.
 
@@ -434,17 +433,17 @@ as the member's name.
 
 | Case | Expected |
 | --- | --- |
-| ustar or GNU long name stored as UTF-8 `café.txt`, no `encoding=`, filesystem encoding Latin-1 or ASCII | `name == "café.txt"`; `raw_name` is the UTF-8 bytes |
-| ustar name stored as Latin-1 `caf\xe9.txt`, no `encoding=`, any locale | `name == "caf\udce9.txt"`; `raw_name == b"caf\xe9.txt"` |
-| ustar or GNU long name stored as UTF-8 `café.txt`, `encoding="latin-1"` | `name == "café.txt"`; `raw_name` is the UTF-8 bytes; one `MEMBER_NAME_ENCODING_INFERRED` naming `latin-1` |
-| ustar name stored as Latin-1 `caf\xe9.txt`, `encoding="latin-1"` | `name == "café.txt"`; `raw_name == b"caf\xe9.txt"` |
-| ustar `linkname`, `uname` or `gname` stored as UTF-8, `encoding="latin-1"` | Decoded as UTF-8 |
-| PAX `path` record holding the non-UTF-8 bytes `caf\xe9\xe9.txt`, no `encoding=`, any locale | `name == "caf\udce9\udce9.txt"`; `raw_name == b"caf\xe9\xe9.txt"` |
-| The same PAX record, `encoding="latin-1"` | `name == "caféé.txt"` |
-| A global header with `hdrcharset=BINARY`, then a member whose PAX `path` holds UTF-8 `café.txt`, `encoding="latin-1"` | `name == "café.txt"`; one `MEMBER_NAME_ENCODING_INFERRED` naming `latin-1`, as under the member's own `hdrcharset=BINARY` |
-| ustar or GNU name, link target and owner stored as ASCII `abc`, `encoding="cp037"`, `"utf-16"` or `"utf-32"` | `name == "abc"`, the others as stored; no diagnostic; never `UnicodeDecodeError` |
-| GNU name stored as Latin-1 `a+caf\xe9.tx` (odd length), `encoding="utf-16"`, `"utf-32"`, `"utf-7"` or `"idna"` | `name == "a+caf\udce9.tx"`, as with no `encoding=` |
-| ustar or GNU name stored as UTF-8 `café.txt`, `encoding="utf-16"` or `"idna"` | `name == "café.txt"`; no diagnostic, since that codec cannot decode the bytes and so would not have named it; never an exception |
+| ustar or GNU long name stored as UTF-8 `café.txt`, no `fallback_encoding`, filesystem encoding Latin-1 or ASCII | `name == "café.txt"`; `raw_name` is the UTF-8 bytes |
+| ustar name stored as Latin-1 `caf\xe9.txt`, no `fallback_encoding`, any locale | `name == "caf\udce9.txt"`; `raw_name == b"caf\xe9.txt"` |
+| ustar or GNU long name stored as UTF-8 `café.txt`, `fallback_encoding="latin-1"` | `name == "café.txt"`; `raw_name` is the UTF-8 bytes; no `MEMBER_NAME_FALLBACK_ENCODING` |
+| ustar name stored as Latin-1 `caf\xe9.txt`, `fallback_encoding="latin-1"` | `name == "café.txt"`; `raw_name == b"caf\xe9.txt"`; one `MEMBER_NAME_FALLBACK_ENCODING` naming `latin-1` |
+| ustar `linkname`, `uname` or `gname` stored as UTF-8, `fallback_encoding="latin-1"` | Decoded as UTF-8 |
+| PAX `path` record holding the non-UTF-8 bytes `caf\xe9\xe9.txt`, no `fallback_encoding`, any locale | `name == "caf\udce9\udce9.txt"`; `raw_name == b"caf\xe9\xe9.txt"` |
+| The same PAX record, `fallback_encoding="latin-1"` | `name == "caféé.txt"` |
+| A global header with `hdrcharset=BINARY`, then a member whose PAX `path` holds UTF-8 `café.txt`, `fallback_encoding="latin-1"` | `name == "café.txt"`, as under the member's own `hdrcharset=BINARY`; no `MEMBER_NAME_FALLBACK_ENCODING` |
+| ustar or GNU name, link target and owner stored as ASCII `abc`, `fallback_encoding="cp037"`, `"utf-16"` or `"utf-32"` | `name == "abc"`, the others as stored; no diagnostic; never `UnicodeDecodeError` |
+| GNU name stored as Latin-1 `a+caf\xe9.tx` (odd length), `fallback_encoding="utf-16"`, `"utf-32"`, `"utf-7"` or `"idna"` | `name == "a+caf\udce9.tx"`, as with no `fallback_encoding` |
+| ustar or GNU name stored as UTF-8 `café.txt`, `fallback_encoding="utf-16"` or `"idna"` | `name == "café.txt"`; no diagnostic; never an exception |
 
 ### Requirement: Parse TAR headers natively
 

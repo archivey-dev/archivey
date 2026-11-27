@@ -577,7 +577,9 @@ def test_rar5_comment_that_is_not_utf8_keeps_its_bytes(tmp_path: Path) -> None:
     path = tmp_path / "cmt.rar"
     path.write_bytes(_rar5_build(blocks))
     # encoding= does not apply: a RAR5 comment is UTF-8 by the format.
-    with open_archive(path, encoding="cp1252") as archive:
+    with open_archive(
+        path, config=ArchiveyConfig(fallback_encoding="cp1252")
+    ) as archive:
         assert archive.info.comment == "caf\udce9 \udcff ok"
 
 

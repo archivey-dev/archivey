@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
+import warnings
 import weakref
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -27,10 +28,12 @@ import fsspec
 from fsspec.archive import AbstractArchiveFileSystem
 from fsspec.core import OpenFile
 
+from archivey.config import DEFAULT_ARCHIVEY_CONFIG
 from archivey.core import open_archive
 from archivey.diagnostics import DiagnosticCode, PathRefusedContext
 from archivey.exceptions import DiagnosticRaisedError, FilterRejectionError
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
+from archivey.internal.config_copy import copy_config_quietly
 from archivey.internal.enum_args import coerce_enum
 from archivey.internal.extraction import hardlink_chain_end
 from archivey.internal.filters import (
@@ -510,7 +513,9 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
 
     The archive is opened once, with ``seekable_members=True`` and
     ``concurrent_operations=True``, and the reader is :attr:`reader`. ``format``,
-    ``password``, ``encoding`` and ``config`` are :func:`~archivey.open_archive`'s.
+    ``password`` and ``config`` are :func:`~archivey.open_archive`'s. ``encoding`` is
+    deprecated since 0.6.0: it warns and sets ``config``'s ``fallback_encoding``, and
+    archivey 0.7.0 removes it.
 
     **The tree is what extraction writes.** Each path is the relative path
     ``reader.extract_all(dest, policy=policy)`` gives the member, into an empty
@@ -600,11 +605,22 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
             )
         else:
             source = fo
+        if encoding is not None:
+            warnings.warn(
+                "ArchiveyFileSystem(encoding=) is deprecated: pass "
+                "config=ArchiveyConfig(fallback_encoding=...). archivey 0.7.0 removes "
+                "it.",
+                DeprecationWarning,
+                # This ``__init__``, then fsspec's caching metaclass ``__call__``.
+                stacklevel=3,
+            )
+            config = copy_config_quietly(
+                config or DEFAULT_ARCHIVEY_CONFIG, fallback_encoding=encoding
+            )
         reader = open_archive(
             cast("Any", source),
             format=cast("Any", format),
             password=password,
-            encoding=encoding,
             config=config,
             seekable_members=True,
             concurrent_operations=True,

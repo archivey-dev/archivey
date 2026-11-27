@@ -663,9 +663,12 @@ def test_plugins_false_does_not_turn_a_replacement_off(tmp_path: Path) -> None:
 def test_unused_arguments_name_the_replacement_not_the_format(tmp_path: Path) -> None:
     path = tmp_path / "a.zip"
     path.write_bytes(_zip_bytes())
-    with open_archive(
-        path, password="secret", encoding="cp437", config=_REPLACE_ZIP
-    ) as reader:
+    with (
+        pytest.warns(DeprecationWarning, match="encoding"),
+        open_archive(
+            path, password="secret", encoding="cp437", config=_REPLACE_ZIP
+        ) as reader,
+    ):
         found = {
             d.code: d
             for d in reader.diagnostics.retained

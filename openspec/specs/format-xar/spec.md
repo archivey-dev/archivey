@@ -28,7 +28,7 @@ The XAR backend SHALL read the header, decode the zlib-compressed table of conte
 parse it with expat, and list one member per `<file>` element in document order, a
 directory before the files inside it, each named by its enclosing directories' names and
 its own joined with `/`. A `<name enctype="base64">` SHALL be decoded from base64 and then
-as any stored name: UTF-8 first, then `encoding=`. Members SHALL carry the stored mode,
+as any stored name: UTF-8 first, then `fallback_encoding`. Members SHALL carry the stored mode,
 uid, gid, user and group names, and `mtime`, `atime` and `ctime` as UTC times. A file's
 data SHALL be read from the heap, stored or decoded as zlib (`application/x-gzip`), bzip2,
 LZMA Alone (`application/x-lzma`) or xz through archivey's decoder limits, and its
@@ -47,7 +47,7 @@ refused with `StreamNotSeekableError`.
 | --- | --- |
 | bsdtar 3.7.2 archives with each `xar:compression` (none, gzip, bzip2, lzma, xz) | Same members and data; each file `CHECKSUM` |
 | A hard link written before the entry holding its data | Listed after it; reads that entry's data |
-| A base64 name of Latin-1 bytes with `encoding="latin-1"` | The decoded name; `raw_name` the bytes |
+| A base64 name of Latin-1 bytes with `fallback_encoding="latin-1"` | The decoded name; `raw_name` the bytes |
 | A file checked with MD5, SHA-1, SHA-224, SHA-256, SHA-384 or SHA-512 | `member.hashes` holds that digest |
 | A file checksum of another style (`whirlpool`), or with no style | No hash; `DIGEST_UNVERIFIABLE` (`reason="unknown_algorithm_or_backend"`) |
 | A time with no `Z`, or not a date | `None`; `MEMBER_TIMESTAMP_INVALID` |

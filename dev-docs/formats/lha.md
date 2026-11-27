@@ -17,7 +17,7 @@ as a built-in, as CAB, XAR and ar are.
 | Access cost | `DIRECT`: each member is its own stream |
 | Core dependencies | None. The LZH methods through `internal/streams/codecs/lzh_decoder.py` and `lharc_decoder.py`, archivey's own, in Python |
 | Encryption | None in the format |
-| Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
+| Name encoding | Bytes. UTF-8 first, then `fallback_encoding`, then escaped, as in every format |
 | Checksums | A CRC-16/ARC of each member's data, checked by the read; an 8-bit header sum (levels 0 and 1) or a header CRC-16 (the common record, levels 1 to 3), checked when the header is read |
 | Refuses | Methods it does not decode, when read; a header level past 3; a pipe, with `StreamNotSeekableError` |
 | Spec | `openspec/specs/format-lha/spec.md` |

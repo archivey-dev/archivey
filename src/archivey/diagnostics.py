@@ -82,9 +82,11 @@ class DiagnosticCode(StrEnum):
     """A member's stored name was changed to give ``name``, for example its
     separators or a ``.`` segment. Not reported for a leading ``./`` alone, which
     ``tar czf a.tar.gz .`` writes, or for a directory gaining its trailing ``/``."""
-    MEMBER_NAME_ENCODING_INFERRED = "member_name_encoding_inferred"
-    """A member's name was decoded with an encoding archivey inferred, not one the
-    archive or the caller declared."""
+    MEMBER_NAME_FALLBACK_ENCODING = "member_name_fallback_encoding"
+    """A member's name declares no encoding its bytes fit and is not valid UTF-8, so
+    the fallback decoded it: ``ArchiveyConfig.fallback_encoding``, or the format's own
+    (cp437 for ZIP, surrogate escapes for most others). A different
+    ``fallback_encoding`` could change the name; the context names the codec used."""
     MEMBER_NAME_BIDI_CONTROL = "member_name_bidi_control"
     """A member's name or link target contains bidi controls, which change the order
     the text displays in and can make an ``.exe`` look like a ``.png``."""
@@ -117,9 +119,11 @@ class DiagnosticCode(StrEnum):
     EMPTY_ARCHIVE = "empty_archive"
     """The listing finished without error and found no members."""
     ENCODING_ARGUMENT_UNUSED = "encoding_argument_unused"
-    """``encoding=`` was passed for a format that decodes member names without it
-    (7z, a directory, a single-file format), or for a format whose replacement reader
-    (``FormatPolicy(replace=)``) does not apply one."""
+    """The deprecated ``open_archive(encoding=)`` was passed for a format that decodes
+    member names without it (7z, a directory, a single-file format), or for a format
+    whose replacement reader (``FormatPolicy(replace=)``) does not apply one. An
+    ``ArchiveyConfig.fallback_encoding`` applies to every format, so it is never
+    reported."""
     PASSWORD_ARGUMENT_UNUSED = "password_argument_unused"
     """A password was passed for a format with no encryption (TAR, ISO, a directory,
     a single-file format), or for a format whose replacement reader
@@ -312,8 +316,8 @@ class DiagnosticCode(StrEnum):
 DiagnosticCodeStr = Literal[
     "member_name_normalized",
     "member-name-normalized",
-    "member_name_encoding_inferred",
-    "member-name-encoding-inferred",
+    "member_name_fallback_encoding",
+    "member-name-fallback-encoding",
     "member_name_bidi_control",
     "member-name-bidi-control",
     "member_name_zero_width_character",
@@ -426,15 +430,14 @@ class NameNormalizationContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class NameEncodingContext(_JsonSafeContext):
-    """Member name bytes decoded with an inferred (not declared) encoding.
+    """A member name decoded by the fallback (``MEMBER_NAME_FALLBACK_ENCODING``).
 
-    ``inferred_encoding`` decodes ``raw_name_base64`` to ``member_name``.
-    ``declared_encoding`` is the encoding the name would otherwise have had: the
-    caller's ``encoding=`` or the format's fallback when UTF-8 was inferred, ZIP's
-    cp437 default when a configured fallback was used, and ``"utf-8"`` when a ZIP name's
-    UTF-8 flag is set over bytes that are not UTF-8. Both encoding fields are empty
-    when no decode of the stored bytes produced the name: ISO takes a Rock Ridge name
-    that is not UTF-8 from the file's Joliet record instead.
+    ``fallback_encoding`` decoded ``raw_name_base64`` to ``member_name``: the
+    caller's ``ArchiveyConfig.fallback_encoding`` or the format's own fallback, such
+    as ``"cp437"`` for ZIP, or ``"surrogateescape"`` when each byte that is not UTF-8
+    was kept as a lone surrogate. It is empty when no decode of the stored bytes
+    produced the name: ISO takes a Rock Ridge name that is not UTF-8 from the file's
+    Joliet record instead, unless a ``fallback_encoding`` is set.
     """
 
     kind: Literal["name_encoding"] = "name_encoding"
@@ -442,8 +445,7 @@ class NameEncodingContext(_JsonSafeContext):
     member_name: str = ""
     member_id: int | None = None
     raw_name_base64: str | None = None
-    inferred_encoding: str = ""
-    declared_encoding: str = ""
+    fallback_encoding: str = ""
 
 
 @dataclass(frozen=True)
@@ -1517,7 +1519,7 @@ DiagnosticContext = (
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
     {
         DiagnosticCode.MEMBER_NAME_NORMALIZED: "name_normalization",
-        DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED: "name_encoding",
+        DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING: "name_encoding",
         DiagnosticCode.MEMBER_NAME_BIDI_CONTROL: "member_name_controls",
         DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER: "member_name_controls",
         DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER: "member_name_controls",
@@ -1572,7 +1574,6 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
 ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
     {
         DiagnosticCode.MEMBER_NAME_NORMALIZED,
-        DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
         DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
         DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER,
         DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED,
@@ -1600,7 +1601,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-four codes are deliberately
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-five codes are deliberately
 **out**, and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -1634,6 +1635,9 @@ The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-four codes are delib
 - ``MEMBER_SPECIAL_FILE_HAS_DATA`` — a documented writer option (Info-ZIP ``zip -FI``)
   produces the shape, and the member's bytes are delivered and checked like any file's,
   so nothing is hidden; ``STRICT`` would refuse an ordinary archive (DR-25).
+- ``MEMBER_NAME_FALLBACK_ENCODING`` — a name in a legacy code page is how DOS and
+  Windows tools, and older Unix locales, wrote archives: the bytes are not damaged,
+  only undeclared. ``STRICT`` would refuse every such ZIP and TAR.
 - ``MEMBER_NAME_INVISIBLE_CHARACTER`` — zero-width joiners are part of ordinary emoji
   sequences, non-joiners of Persian and Indic spelling, and tag characters of
   subdivision flags. ``STRICT`` would refuse an archive of legitimately named files.

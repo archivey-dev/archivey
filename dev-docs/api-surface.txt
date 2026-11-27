@@ -142,13 +142,14 @@ method archivey.ArchiveStream.verify(self, *, password_only: bool = False) -> Ve
 method archivey.ArchiveStream.writable(self) -> bool
 method archivey.ArchiveStream.write(self, b: object, /) -> int
 class archivey.ArchiveyConfig()
-init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode | AcceleratorModeStr = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode | None | AcceleratorModeStr = None, process_isolation: ProcessIsolation | ProcessIsolationStr = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str | None = None, rar_decompressor: RarDecompressor | None | RarDecompressorStr = None, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None, recover_partial_data: PartialDataRecovery | PartialDataRecoveryStr = PartialDataRecovery.BEFORE_DAMAGE, on_source_read: OnSourceRead | None = None, source_read_step: int = 1048576, salvage_limits: SalvageLimits = SalvageLimits(...), format_options: Sequence[object] = ()) -> None
+init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode | AcceleratorModeStr = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode | None | AcceleratorModeStr = None, process_isolation: ProcessIsolation | ProcessIsolationStr = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str | None = None, rar_decompressor: RarDecompressor | None | RarDecompressorStr = None, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None, recover_partial_data: PartialDataRecovery | PartialDataRecoveryStr = PartialDataRecovery.BEFORE_DAMAGE, on_source_read: OnSourceRead | None = None, source_read_step: int = 1048576, salvage_limits: SalvageLimits = SalvageLimits(...), format_options: Sequence[object] = (), fallback_encoding: str | None = None) -> None
 field archivey.ArchiveyConfig.always_probe_content: bool = False
 field archivey.ArchiveyConfig.decoder_limits: DecoderLimits = DecoderLimits(...)
 field archivey.ArchiveyConfig.detection_budget: DetectionBudget = DetectionBudget(...)
 field archivey.ArchiveyConfig.diagnostic_policy: DiagnosticPolicy = <factory>
 field archivey.ArchiveyConfig.discover_volumes: bool = True
 field archivey.ArchiveyConfig.extraction_limits: ExtractionLimits = ExtractionLimits(...)
+field archivey.ArchiveyConfig.fallback_encoding: str | None = None
 field archivey.ArchiveyConfig.format_options: Sequence[object] = ()
 field archivey.ArchiveyConfig.formats: FormatPolicy = <factory>
 field archivey.ArchiveyConfig.listing_limits: ListingLimits = ListingLimits(...)
@@ -209,7 +210,7 @@ method archivey.Diagnostic.to_dict(self) -> dict[str, object]
 class archivey.DiagnosticCode(StrEnum)
 open-enum archivey.DiagnosticCode
 value archivey.DiagnosticCode.MEMBER_NAME_NORMALIZED = 'member_name_normalized'
-value archivey.DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED = 'member_name_encoding_inferred'
+value archivey.DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING = 'member_name_fallback_encoding'
 value archivey.DiagnosticCode.MEMBER_NAME_BIDI_CONTROL = 'member_name_bidi_control'
 value archivey.DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER = 'member_name_zero_width_character'
 value archivey.DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER = 'member_name_invisible_character'
@@ -662,9 +663,6 @@ class archivey.config.SpoolLimits()
 init archivey.config.SpoolLimits(max_bytes: int | None = 1073741824) -> None
 field archivey.config.SpoolLimits.max_bytes: int | None = 1073741824
 attribute archivey.config.SpoolLimits.UNLIMITED = SpoolLimits(...)
-class archivey.config.ZipOptions()
-init archivey.config.ZipOptions(fallback_encoding: str = 'cp437') -> None
-field archivey.config.ZipOptions.fallback_encoding: str = 'cp437'
 module archivey.cost
 class archivey.cost.AccessCost(Enum)
 enum archivey.cost.AccessCost
@@ -793,7 +791,6 @@ item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_NA
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_BIDI_CONTROL
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED
-item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_NORMALIZED
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_TIMESTAMP_INVALID
@@ -832,8 +829,8 @@ reexport archivey.diagnostics.Diagnostic = archivey.Diagnostic
 reexport archivey.diagnostics.DiagnosticCode = archivey.DiagnosticCode
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_normalized'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-normalized'
-code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_encoding_inferred'
-code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-encoding-inferred'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_fallback_encoding'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-fallback-encoding'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_bidi_control'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-bidi-control'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_zero_width_character'
@@ -1071,10 +1068,9 @@ field archivey.diagnostics.NameDuplicateContext.member_name: str = ''
 field archivey.diagnostics.NameDuplicateContext.member_type: str = ''
 method archivey.diagnostics.NameDuplicateContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.NameEncodingContext(_JsonSafeContext)
-init archivey.diagnostics.NameEncodingContext(kind: Literal['name_encoding'] = 'name_encoding', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, raw_name_base64: str | None = None, inferred_encoding: str = '', declared_encoding: str = '') -> None
+init archivey.diagnostics.NameEncodingContext(kind: Literal['name_encoding'] = 'name_encoding', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, raw_name_base64: str | None = None, fallback_encoding: str = '') -> None
 field archivey.diagnostics.NameEncodingContext.archive_name: str | None = None
-field archivey.diagnostics.NameEncodingContext.declared_encoding: str = ''
-field archivey.diagnostics.NameEncodingContext.inferred_encoding: str = ''
+field archivey.diagnostics.NameEncodingContext.fallback_encoding: str = ''
 field archivey.diagnostics.NameEncodingContext.kind: Literal['name_encoding'] = 'name_encoding'
 field archivey.diagnostics.NameEncodingContext.member_id: int | None = None
 field archivey.diagnostics.NameEncodingContext.member_name: str = ''

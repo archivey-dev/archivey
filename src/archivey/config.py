@@ -932,29 +932,6 @@ class SalvageLimits:
 
 
 @dataclass(frozen=True)
-class ZipOptions:
-    """ZIP settings, passed in :attr:`ArchiveyConfig.format_options`."""
-
-    fallback_encoding: str = "cp437"
-    """Encoding for a ZIP member name that is neither flagged nor valid UTF-8.
-
-    A name stored without the UTF-8 flag is tried as UTF-8 first; this encoding is used
-    when those bytes are not valid UTF-8. The default is cp437, as the ZIP specification
-    (APPNOTE) says. Set a local code page (for example ``"cp1252"`` or ``"shift_jis"``)
-    for archives known to come from one. An explicit ``encoding=`` on
-    :func:`~archivey.open_archive` replaces this fallback for that archive; a name
-    whose bytes are valid UTF-8 is still decoded as UTF-8.
-    """
-
-    def __post_init__(self) -> None:
-        check_encoding(
-            self.fallback_encoding,
-            call="ZipOptions(fallback_encoding=…)",
-            allow_none=False,
-        )
-
-
-@dataclass(frozen=True)
 class RarOptions:
     """RAR settings, passed in :attr:`ArchiveyConfig.format_options`."""
 
@@ -1016,7 +993,6 @@ class RarOptions:
 # The deprecated ``ArchiveyConfig`` fields, each with the options class and field that
 # replace it.
 _MOVED_TO_OPTIONS: dict[str, tuple[type, str]] = {
-    "zip_unflagged_fallback_encoding": (ZipOptions, "fallback_encoding"),
     "rar_decompressor": (RarOptions, "decompressor"),
     "unrar_path": (RarOptions, "unrar_path"),
     "unar_path": (RarOptions, "unar_path"),
@@ -1024,7 +1000,7 @@ _MOVED_TO_OPTIONS: dict[str, tuple[type, str]] = {
 
 # Archivey's own options classes: the only ``archivey`` classes ``format_options`` takes,
 # and none of them may be subclassed there, since a reader looks its class up exactly.
-_OPTIONS_CLASSES: tuple[type, ...] = (ZipOptions, RarOptions)
+_OPTIONS_CLASSES: tuple[type, ...] = (RarOptions,)
 
 
 @dataclass(frozen=True)
@@ -1092,9 +1068,9 @@ class ArchiveyConfig:
     """
 
     zip_unflagged_fallback_encoding: str | None = None
-    """Deprecated since 0.6.0: pass ``format_options=[ZipOptions(fallback_encoding=...)]``.
-    Setting it warns and moves the value into :attr:`format_options`, so the field
-    always reads back as ``None``; archivey 0.7.0 removes it."""
+    """Deprecated since 0.6.0: pass :attr:`fallback_encoding`, which applies to every
+    format. Setting it warns and moves the value into :attr:`fallback_encoding`, so the
+    field always reads back as ``None``; archivey 0.7.0 removes it."""
 
     rar_decompressor: RarDecompressor | None = None
     """Deprecated since 0.6.0: pass ``format_options=[RarOptions(decompressor=...)]``.
@@ -1285,10 +1261,28 @@ class ArchiveyConfig:
 
     format_options: Sequence[object] = ()
     """The settings of single formats: one options object per format, such as
-    :class:`ZipOptions` and :class:`RarOptions`, at most one of each class. A format
+    :class:`RarOptions`, at most one of each class. A format
     with no object here uses its class's defaults. Stored as a ``tuple``.
 
     A plugin's format can have an options class of its own, passed here the same way.
+    """
+
+    fallback_encoding: str | None = None
+    """Encoding for a member name that declares none and whose bytes are not valid
+    UTF-8, in every format whose names can lack a declared encoding: ZIP, TAR, ISO,
+    RAR 1.5-4, CPIO, ar, RPM, makeself, SquashFS, CAB, XAR, LHA and ARJ.
+
+    A name whose bytes are valid UTF-8 is decoded as UTF-8 whatever this says, and a
+    name whose archive declares its encoding (a ZIP name with the UTF-8 flag, a RAR5
+    name) is decoded as declared. ``None`` keeps each format's own fallback: cp437 for
+    ZIP, as the ZIP specification says, the host's code page for RAR 1.5-4, and
+    surrogate escapes for the others, which keep every stored byte as a lone surrogate.
+    Set a code page (``"cp1252"``, ``"cp866"``, ``"shift_jis"``) for archives known to
+    come from one. A byte the codec does not define survives as a lone surrogate, and
+    ``member.raw_name`` keeps the stored bytes. Each name decoded by a fallback is
+    reported as ``MEMBER_NAME_FALLBACK_ENCODING``, naming the codec it used, since a
+    different setting could change it. 7z, directory and single-file sources decode
+    names another way and do not read it.
     """
 
     if TYPE_CHECKING:
@@ -1331,6 +1325,7 @@ class ArchiveyConfig:
             source_read_step: int = ...,
             salvage_limits: SalvageLimits = ...,
             format_options: Sequence[object] = ...,
+            fallback_encoding: str | None = ...,
         ) -> None: ...
 
     def __post_init__(self) -> None:
@@ -1362,6 +1357,7 @@ class ArchiveyConfig:
                 DeprecationWarning,
                 stacklevel=3,
             )
+        _fold_zip_fallback_encoding(self)
         moved = [name for name in _MOVED_TO_OPTIONS if getattr(self, name) is not None]
         if moved and not copying_config():
             spelled = ", ".join(
@@ -1597,8 +1593,8 @@ def _convert_format_options(config: ArchiveyConfig, moved: list[str]) -> None:
         ):
             raise _UsageTypeError(
                 "ArchiveyConfig(format_options=) takes options objects, instances of "
-                "a frozen dataclass a format reads its settings from (ZipOptions, "
-                f"RarOptions, or a plugin's own), got {type(item).__name__}."
+                "a frozen dataclass a format reads its settings from (RarOptions, or "
+                f"a plugin's own), got {type(item).__name__}."
             )
         if type(item) in by_class:
             raise _UsageValueError(
@@ -1609,7 +1605,15 @@ def _convert_format_options(config: ArchiveyConfig, moved: list[str]) -> None:
     folded: dict[type, dict[str, object]] = {}
     for name in moved:
         cls, field_name = _MOVED_TO_OPTIONS[name]
-        folded.setdefault(cls, {})[field_name] = getattr(config, name)
+        value = getattr(config, name)
+        try:
+            cls(**{field_name: value})
+        except (_UsageTypeError, _UsageValueError) as exc:
+            # Name the field the caller wrote, not only the options class it moved to.
+            raise type(exc)(
+                f"ArchiveyConfig({name}=) (now {cls.__name__}({field_name}=)): {exc}"
+            ) from exc
+        folded.setdefault(cls, {})[field_name] = value
     for cls, fields in folded.items():
         made = cls(**fields)
         given = by_class.get(cls)
@@ -1623,6 +1627,34 @@ def _convert_format_options(config: ArchiveyConfig, moved: list[str]) -> None:
     for name in moved:
         object.__setattr__(config, name, None)
     object.__setattr__(config, "format_options", tuple(by_class.values()))
+
+
+def _fold_zip_fallback_encoding(config: ArchiveyConfig) -> None:
+    """Check ``fallback_encoding``, and move a deprecated
+    ``zip_unflagged_fallback_encoding`` into it, warning at the caller's line."""
+    old = config.zip_unflagged_fallback_encoding
+    if old is not None:
+        if not copying_config():
+            warnings.warn(
+                "ArchiveyConfig(zip_unflagged_fallback_encoding=) is deprecated: pass "
+                "fallback_encoding=, which applies to every format. archivey 0.7.0 "
+                "removes it.",
+                DeprecationWarning,
+                stacklevel=4,
+            )
+        check_encoding(
+            old,
+            call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",
+            allow_none=False,
+        )
+        if config.fallback_encoding is not None and config.fallback_encoding != old:
+            raise _UsageValueError(
+                "ArchiveyConfig() got zip_unflagged_fallback_encoding= beside a "
+                "different fallback_encoding=; pass fallback_encoding= alone."
+            )
+        object.__setattr__(config, "fallback_encoding", old)
+        object.__setattr__(config, "zip_unflagged_fallback_encoding", None)
+    check_encoding(config.fallback_encoding, call="ArchiveyConfig(fallback_encoding=…)")
 
 
 def _frozen_dataclass(item: object) -> bool:
@@ -1722,5 +1754,4 @@ __all__ = [
     "RarOptions",
     "SalvageLimits",
     "SpoolLimits",
-    "ZipOptions",
 ]

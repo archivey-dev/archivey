@@ -257,7 +257,9 @@ def test_unicode_path_extra_field_wins_over_encoding() -> None:
     # The field is UTF-8 tied to the stored bytes by their CRC, so it names the
     # member even when the caller passes a (here wrong) encoding=.
     blob, real = _unicode_path_zip()
-    with archivey.open_archive(io.BytesIO(blob), encoding="latin-1") as ar:
+    with archivey.open_archive(
+        io.BytesIO(blob), config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as ar:
         (member,) = ar.members()
         assert member.name == real
         assert member.raw_name == real.encode("utf-8")
@@ -280,7 +282,9 @@ def test_unicode_path_extra_field_that_does_not_vouch_is_ignored(field: bytes) -
         assert member.name == _UNICODE_PATH_STORED.decode("cp437")
         assert member.raw_name == _UNICODE_PATH_STORED
         assert "alternate_raw_name" not in member.extra
-    with archivey.open_archive(io.BytesIO(blob), encoding="cp866") as ar:
+    with archivey.open_archive(
+        io.BytesIO(blob), config=ArchiveyConfig(fallback_encoding="cp866")
+    ) as ar:
         (member,) = ar.members()
         assert member.name == _UNICODE_PATH_REAL
         assert member.raw_name == _UNICODE_PATH_STORED
@@ -338,7 +342,10 @@ def test_malformed_unicode_path_field_is_dropped_with_a_diagnostic(
         assert second.name == _OTHER_STORED.decode("cp437")
         assert second.raw_name == _OTHER_STORED
         assert "alternate_raw_name" not in second.extra
-        (diagnostic,) = second.diagnostics
+        # The header bytes are not UTF-8, so the cp437 fallback named it, and says so.
+        fallback, diagnostic = second.diagnostics
+        assert fallback.code is DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
+        assert fallback.context.fallback_encoding == "cp437"
         assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
         assert diagnostic.context.record == "unicode_path"
         assert diagnostic.context.record_id == 0x7075
@@ -378,7 +385,8 @@ def test_malformed_unicode_path_field_from_a_file_path(tmp_path: Path) -> None:
     with archivey.open_archive(path) as ar:
         (member,) = ar.members()
         assert [d.code for d in member.diagnostics] == [
-            DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+            DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING,
+            DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
         ]
         assert ar.read(member) == b"hi"
 
@@ -425,7 +433,9 @@ def test_unicode_comment_field_gives_the_member_comment(
     source: io.RawIOBase | io.BytesIO = (
         NonSeekableBytesIO(blob) if pipe else io.BytesIO(blob)
     )
-    with archivey.open_archive(source, encoding=encoding, pipe=pipe) as ar:
+    with archivey.open_archive(
+        source, config=ArchiveyConfig(fallback_encoding=encoding), pipe=pipe
+    ) as ar:
         # A pipe pass fills the comment in when it reaches the directory, after the
         # last member, so the member is checked once the pass is done.
         (member,) = [member for member, _ in ar.stream_members()]
@@ -505,7 +515,7 @@ def test_unicode_comment_field_under_a_refuted_flag_is_not_consulted(
         (member,) = ar.members()
         assert member.comment == "café"  # the cp437 reading of the header bytes
         assert [d.code for d in member.diagnostics] == [
-            DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
+            DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
         ]
         assert member.extra["zip.extra_fields"] == {0x6375: field[4:]}
 
@@ -566,7 +576,8 @@ def test_unicode_path_fields_after_a_member_comment(comment: bytes) -> None:
         assert second.diagnostics == ()
         assert third.name == _OTHER_STORED.decode("cp437")
         assert [d.code for d in third.diagnostics] == [
-            DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+            DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING,
+            DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
         ]
         assert ar.read(second) == b"yo"
 

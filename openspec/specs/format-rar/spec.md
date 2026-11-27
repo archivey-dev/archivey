@@ -106,14 +106,12 @@ text. A RAR5 name or redirect target that is not valid UTF-8 SHALL decode with
 extraction escapes the bytes by the portable-name rule, as for a TAR name. A RAR 1.5-4
 name stored only as 8-bit bytes records no code page. The system SHALL try strict UTF-8
 first, with or without the Unicode flag. When the bytes are not valid UTF-8 it SHALL
-decode them with the caller's `encoding=` when one was passed, and without one with
+decode them with the caller's `fallback_encoding` when one is set, and without one with
 cp437 (the OEM code page WinRAR writes) for a member whose host is MS-DOS, OS/2 or
 Win32, and windows-1252 for any other host, with `surrogateescape` for the bytes the
-codec leaves undefined. When a name without the Unicode flag decodes as UTF-8 and the
-caller's `encoding=` would have given a different name, the system SHALL emit
-`MEMBER_NAME_ENCODING_INFERRED` with `inferred_encoding="utf-8"` and `declared_encoding`
-set to the caller's encoding, as ZIP does; the Unicode flag declares UTF-8, so a flagged
-name emits none. The system MUST NOT decode an 8-bit name as UTF-16LE. `raw_name` SHALL be the
+codec leaves undefined. A member whose 8-bit name is not valid UTF-8, and so went through
+that fallback, SHALL carry `MEMBER_NAME_FALLBACK_ENCODING` naming the codec used, as in
+ZIP and TAR. The system MUST NOT decode an 8-bit name as UTF-16LE. `raw_name` SHALL be the
 stored bytes in every case, and RAR SHALL NOT emit `ENCODING_ARGUMENT_UNUSED`. How a
 name is decoded SHALL NOT change which member a read returns: a read gives `unrar` the
 member through a synthetic archive under a placeholder name, or the stored name itself
@@ -129,12 +127,12 @@ name that is not plain.
 
 | Case | Expected |
 | --- | --- |
-| 8-bit `caf\x82.txt` written on Windows or DOS | `café.txt` (cp437) |
-| 8-bit `caf\xe9.txt` written on Unix | `café.txt` (windows-1252) |
+| 8-bit `caf\x82.txt` written on Windows or DOS | `café.txt` (cp437); `MEMBER_NAME_FALLBACK_ENCODING` naming `cp437` |
+| 8-bit `caf\xe9.txt` written on Unix | `café.txt` (windows-1252); `MEMBER_NAME_FALLBACK_ENCODING` naming `windows-1252` |
 | 8-bit name whose bytes are valid UTF-8 | Decoded as UTF-8 |
-| 8-bit name that is not valid UTF-8, with `encoding="cp1251"` | Decoded with cp1251; still reads |
-| 8-bit name whose bytes are valid UTF-8, `encoding=` passed, with or without the Unicode flag | UTF-8; one `MEMBER_NAME_ENCODING_INFERRED` without the flag, none with it |
-| RAR5 name with `encoding=` passed | Unchanged; no `ENCODING_ARGUMENT_UNUSED` |
+| 8-bit name that is not valid UTF-8, with `fallback_encoding="cp1251"` | Decoded with cp1251; still reads |
+| 8-bit name whose bytes are valid UTF-8, `fallback_encoding` set, with or without the Unicode flag | UTF-8; no `MEMBER_NAME_FALLBACK_ENCODING` |
+| RAR5 name with the deprecated `encoding=` passed | Unchanged; no `ENCODING_ARGUMENT_UNUSED` |
 | Any 8-bit name | `raw_name` is the stored bytes |
 | UTF-16 field holds a lone surrogate (`hi` U+D800) | `name == "hi\ud800"`; `raw_name` is the 8-bit field; the member reads |
 | RAR5 `a\xffq.txt` and `a\xfeq.txt` | Two members, `a\udcffq.txt` and `a\udcfeq.txt`; each reads its own bytes through `unrar` |
@@ -142,28 +140,28 @@ name that is not plain.
 
 ### Requirement: Decode RAR 1.5-4 comments in the order names use
 
-A RAR5 comment is UTF-8 by the format and SHALL ignore `encoding=`; a byte that is not
+A RAR5 comment is UTF-8 by the format and SHALL ignore `fallback_encoding`; a byte that is not
 valid UTF-8 SHALL survive as a lone surrogate, as it does in a RAR5 name. A RAR 2.9-4
 `CMT` SERVICE header with `SUBHEAD_FLAGS_CMT_UNICODE` set SHALL decode as UTF-16LE, a
 surrogate unit without its partner kept as that unit, as in a RAR3 Unicode name. Every
 other RAR 1.5-4 comment (an unflagged `CMT` or an old-style COMMENT subblock, each stored
 or compressed) records no code page. It SHALL be cut at the first NUL, as `unrar` reads
 it, and SHALL decode as strict UTF-8 when the bytes are valid UTF-8, else with the
-caller's `encoding=` when one was passed, else as windows-1252. A byte the chosen code
+caller's `fallback_encoding` when one is set, else as windows-1252. A byte the chosen code
 page leaves undefined SHALL survive as a lone surrogate, as it does in a name. The system
 MUST NOT decode an 8-bit comment as UTF-16LE. A comment is not a name, so decoding it
-SHALL NOT emit `MEMBER_NAME_ENCODING_INFERRED`.
+SHALL NOT emit `MEMBER_NAME_FALLBACK_ENCODING`.
 
 #### Scenario: An undecodable comment byte survives
 
 - **WHEN** an 8-bit comment holds `b"a\x98b"` and the archive is opened with
-  `encoding="cp1251"`, which leaves 0x98 undefined
+  `fallback_encoding="cp1251"`, which leaves 0x98 undefined
 - **THEN** the comment is `"a\udc98b"`, the same string a ZIP comment with those bytes gives
 
 #### Scenario: A RAR5 comment byte that is not UTF-8 survives
 
 - **WHEN** a RAR5 comment holds `b"caf\xe9 \xff ok"` and the archive is opened with
-  `encoding="cp1252"`
+  `fallback_encoding="cp1252"`
 - **THEN** the comment is `"caf\udce9 \udcff ok"`, never U+FFFD
 
 ### Requirement: Accept a non-zero archive start offset (SFX)

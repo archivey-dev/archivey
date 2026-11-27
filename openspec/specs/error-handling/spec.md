@@ -569,9 +569,9 @@ The arguments covered:
 | `ArchiveReader.extract_all()`, `ArchiveReader.stream_members()` | `members` |
 | `ArchiveReader.extract_all()` | `filter` |
 | `ArchiveReader.open()` / `.read()` | `member` |
-| `ArchiveyConfig(...)` | `extraction_limits`, `listing_limits`, `diagnostic_policy`, `on_diagnostic`, `format_options`, `max_retained_diagnostic_references`, `detection_budget` (a `DetectionBudget`; a `DetectionBudgetPreset` or its spelling is converted, see below) |
+| `ArchiveyConfig(...)` | `extraction_limits`, `listing_limits`, `diagnostic_policy`, `on_diagnostic`, `format_options`, `fallback_encoding`, `max_retained_diagnostic_references`, `detection_budget` (a `DetectionBudget`; a `DetectionBudgetPreset` or its spelling is converted, see below) |
 | `ExtractionLimits(...)`, `ListingLimits(...)` | every guard field |
-| `ZipOptions(...)`, `RarOptions(...)` | `fallback_encoding`, `unrar_path`, `unar_path` |
+| `RarOptions(...)` | `unrar_path`, `unar_path` |
 | `DetectionBudget(...)` | every field |
 
 `ArchiveyConfig`, the `*Limits` types and `DetectionBudget` SHALL validate their own

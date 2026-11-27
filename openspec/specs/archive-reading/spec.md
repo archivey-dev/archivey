@@ -1368,7 +1368,7 @@ class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode | None = None  # deprecated in 0.6.0
     process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
-    zip_unflagged_fallback_encoding: str | None = None  # deprecated: ZipOptions
+    zip_unflagged_fallback_encoding: str | None = None  # deprecated: fallback_encoding
     read_link_targets: bool = True
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
@@ -1381,10 +1381,7 @@ class ArchiveyConfig:
     on_diagnostic: Callable[[Diagnostic], None] | None = None
     max_read_through: int = 2**20
     format_options: Sequence[object] = ()  # stored as a tuple
-
-@dataclass(frozen=True)
-class ZipOptions:
-    fallback_encoding: str = "cp437"
+    fallback_encoding: str | None = None
 
 @dataclass(frozen=True)
 class RarOptions:
@@ -1395,18 +1392,31 @@ class RarOptions:
 
 `format_options` SHALL hold at most one object of each class, and only frozen
 dataclass instances that are not other archivey config classes or subclasses of
-`ZipOptions` or `RarOptions`; a second object of one class, or anything else, SHALL raise
+`RarOptions`; a second object of one class, or anything else, SHALL raise
 `ArchiveyUsageError` at construction. A format's reader SHALL read its settings from the
 object of its class, or from the class's defaults when there is none
 (`ReaderContext.options(cls)` for a plugin). Option fields SHALL hold plain values only:
 text, numbers, booleans, a named choice or a path. The deprecated fields
-`zip_unflagged_fallback_encoding`, `rar_decompressor`, `unrar_path` and `unar_path`
+`rar_decompressor`, `unrar_path` and `unar_path`
 (0.6.0, removed in 0.7.0) SHALL default to unset; a caller who sets one SHALL get a
 `DeprecationWarning` at their line, its value SHALL move into its options object in
 `format_options`, and the field SHALL read back as unset, so a `dataclasses.replace` copy
 keeps the setting only through `format_options`.
 Setting one beside an options object of its class that says otherwise SHALL raise
 `ArchiveyUsageError`.
+
+`fallback_encoding` SHALL name the codec for a member name that declares no encoding its
+bytes fit and whose bytes are not valid UTF-8, in every format that reads it (ZIP, TAR,
+ISO, RAR 1.5-4 and the formats whose readers decode names with
+`ReaderContext.decode_name`); `None` SHALL keep each format's own fallback. An unknown or
+text-only codec SHALL raise `ArchiveyUsageError` at construction. A reader opened with
+`open_archive(parent=)` and no `config=` uses its parent's config, so it SHALL use the
+same fallback. The deprecated `zip_unflagged_fallback_encoding` (0.6.0, removed in
+0.7.0) SHALL warn at the caller's line, move its value into `fallback_encoding` and read
+back as unset; beside a different `fallback_encoding` it SHALL raise
+`ArchiveyUsageError`. The deprecated `open_archive(encoding=)` and
+`ArchiveyFileSystem(encoding=)` SHALL warn at the caller's line and replace
+`fallback_encoding` for that call.
 
 `max_retained_diagnostic_references` SHALL be non-negative. `max_read_through` is the
 longest forward gap, in bytes, that a remote fetch planner reads through rather than

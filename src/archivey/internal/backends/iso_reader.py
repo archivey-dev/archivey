@@ -1071,6 +1071,24 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
             decoded = raw.decode("utf-8", errors="surrogateescape")
         return decoded
 
+    def _fallback_codec(self, raw: bytes) -> str | None:
+        """The codec :meth:`_decode_bytes_name` used for ``raw`` past UTF-8: the
+        caller's fallback encoding, ``"surrogateescape"``, or ``None`` for UTF-8."""
+        try:
+            raw.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+        else:
+            return None
+        if self._encoding is not None:
+            try:
+                raw.decode(self._encoding, errors="surrogateescape")
+            except UnicodeError:
+                pass
+            else:
+                return self._encoding
+        return "surrogateescape"
+
     def _decode_known(self, raw: bytes) -> str | None:
         """``raw`` as UTF-8, else with ``encoding=``; ``None`` when neither applies."""
         try:
@@ -1827,14 +1845,15 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
     ) -> None:
         """Report a member whose name did not come from where its namespace puts it.
 
-        Three cases: a Rock Ridge name that is not UTF-8 and was taken from the Joliet
-        tree; a record in a Rock Ridge image with no Rock Ridge entries at all; and a
-        Rock Ridge ``NM`` entry that spells an empty name. The last two leave the
+        Four cases: a Rock Ridge name that is not UTF-8 and was taken from the Joliet
+        tree; any other Rock Ridge or plain name that is not UTF-8, which the fallback
+        decoded; a record in a Rock Ridge image with no Rock Ridge entries at all; and
+        a Rock Ridge ``NM`` entry that spells an empty name. The last two leave the
         member under its ISO 9660 name.
         """
         if id(entry) in self._joliet_named:
             self._context.report(
-                DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
+                DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING,
                 (
                     "Rock Ridge name is not valid UTF-8; the name is taken from the "
                     f"Joliet tree: {quoted(member.name)}"
@@ -1846,11 +1865,34 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
                     raw_name_base64=raw_name_to_base64(member.raw_name),
                     # No decode of the stored bytes happened: the name is another
                     # record's, and Rock Ridge declares no charset.
-                    inferred_encoding="",
-                    declared_encoding="",
+                    fallback_encoding="",
                 ),
                 member=member,
             )
+        elif self._namespace in ("rock_ridge", "iso9660") and member.raw_name:
+            codec = self._fallback_codec(member.raw_name)
+            if codec is not None:
+                how = (
+                    "with surrogate escapes"
+                    if codec == "surrogateescape"
+                    else f"with the fallback encoding {codec!r}"
+                )
+                self._context.report(
+                    DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING,
+                    (
+                        "ISO member name is not valid UTF-8 and declares no encoding; "
+                        f"decoded {how}, so a different fallback_encoding could "
+                        f"change it: {quoted(member.name)}"
+                    ),
+                    NameEncodingContext(
+                        archive_name=self._archive_name,
+                        member_name=member.name,
+                        member_id=index,
+                        raw_name_base64=raw_name_to_base64(member.raw_name),
+                        fallback_encoding=codec,
+                    ),
+                    member=member,
+                )
         if self._namespace == "rock_ridge" and rr is None:
             # The image is Rock Ridge but this record's System Use area carries none
             # (absent or damaged). The member is kept under its ISO 9660 name; what the

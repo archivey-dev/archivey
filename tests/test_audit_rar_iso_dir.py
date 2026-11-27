@@ -492,6 +492,7 @@ _C_LOCALE_READ = textwrap.dedent(
     """
     import sys
     from archivey import ArchiveyConfig, open_archive
+    from archivey.config import RarOptions
     config = ArchiveyConfig(format_options=[RarOptions(decompressor="unrar")])
     with open_archive(sys.argv[1], config=config) as archive:
         member = archive.members()[0]
@@ -553,7 +554,9 @@ def test_rar3_8bit_name_is_not_decoded_as_utf16(tmp_path: Path) -> None:
         # The fixture was written on Unix, so the fallback is windows-1252.
         assert member.name == "café.txt"
         assert member.raw_name == b"caf\xe9.txt"
-    with open_archive(path, encoding="cp437") as archive:
+    with open_archive(
+        path, config=ArchiveyConfig(fallback_encoding="cp437")
+    ) as archive:
         member = archive.members()[0]
         assert member.name == "cafΘ.txt"
         assert member.raw_name == b"caf\xe9.txt"

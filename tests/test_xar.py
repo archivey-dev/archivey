@@ -14,6 +14,7 @@ import pytest
 import archivey
 from archivey import (
     ArchiveFormat,
+    ArchiveyConfig,
     CorruptionError,
     DiagnosticCode,
     MemberType,
@@ -428,7 +429,7 @@ def test_a_hard_link_that_names_no_entry_is_refused(files: list[XarFile]) -> Non
 def test_a_base64_name_decodes_with_the_encoding_given() -> None:
     files = [XarFile("", b"x", name_xml='<name enctype="base64">Y2Fm6S50eHQ=</name>')]
     raw = write_xar(files)
-    with _open(raw, encoding="latin-1") as reader:
+    with _open(raw, config=ArchiveyConfig(fallback_encoding="latin-1")) as reader:
         (member,) = reader.members()
         assert member.name == "caf\xe9.txt"
         assert member.raw_name == b"caf\xe9.txt"

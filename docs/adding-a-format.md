@@ -189,7 +189,9 @@ alone, or a directory's added `/`, is not reported. A hard link's `link_target` 
 another member, so archivey normalizes it the same way, as in every format: give it as
 the archive stores it too.
 `ReaderContext.decode_name()` decodes stored bytes the way the built-in formats do: valid
-UTF-8 wins, then the caller's `encoding=`, then UTF-8 with no byte lost.
+UTF-8 wins, then the caller's `fallback_encoding`, then UTF-8 with no byte lost. Set the
+member's `raw_name` to the bytes you passed it: a name that went past UTF-8 is then reported
+as `MEMBER_NAME_FALLBACK_ENCODING` on that member, as in the built-in formats.
 
 Three helpers fill fields many formats store the same way, and report a bad value as a
 built-in format does:
@@ -1014,13 +1016,13 @@ start of the archive. archivey refuses, before `open()` runs, a multi-volume set
 archive behind a prefix (a self-extracting stub or other leading bytes) with
 `UnsupportedFeatureError`, a source that
 cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO,
-since its bytes are not an ISO 9660 image (the built-in reader strips the sectors as it reads). The format's own config options, such as
-`ZipOptions.fallback_encoding` or `RarOptions.decompressor`, reach the plugin through
-`ReaderContext.options(ZipOptions)`; honouring them is the plugin's job. `password=` reaches a
-replacement that sets `supports_password` and asks for passwords with `NeedsPassword`, as
-any plugin does; `encoding=` reaches it when the plugin sets `uses_encoding`. A missing module in
-`requires` raises `PackageNotInstalledError` naming the plugin, without falling back to
-the built-in reader.
+since its bytes are not an ISO 9660 image (the built-in reader strips the sectors as it
+reads). The format's own config options, such as `RarOptions.decompressor`, reach the
+plugin through `ReaderContext.options(RarOptions)`; honouring them is the plugin's job.
+`password=` reaches a replacement that sets `supports_password` and asks for passwords
+with `NeedsPassword`, as any plugin does, and `fallback_encoding` reaches it through
+`ReaderContext.decode_name()`. A missing module in `requires` raises
+`PackageNotInstalledError` naming the plugin, without falling back to the built-in reader.
 
 ## Adding a compression format
 

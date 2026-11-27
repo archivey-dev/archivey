@@ -78,9 +78,9 @@ directly.
   wrong password and a damaged member fail with the same error, and its decryption is slow, a few
   MiB/s.
 - **Names:** a name not flagged as UTF-8 is still read as UTF-8 when it is valid UTF-8, because
-  many tools write UTF-8 without setting the flag. Otherwise archivey uses `encoding=`, or cp437 by
-  default. Unlike `zipfile`'s `metadata_encoding`, `encoding=` applies only to names that are not
-  valid UTF-8.
+  many tools write UTF-8 without setting the flag. Otherwise archivey uses `fallback_encoding`, or
+  cp437 by default. Unlike `zipfile`'s `metadata_encoding`, `fallback_encoding` applies only to
+  names that are not valid UTF-8.
 - **Archives from macOS:** in a ZIP over 4 GiB that Finder wrote without ZIP64, which 7-Zip and
   `zipfile` can't read, a member's size can be listed as `None` until a full read fills it in.
   Finder also adds `__MACOSX/` sidecar files ([macOS sidecar
@@ -141,7 +141,7 @@ may decode the block again from its start.
   encrypted headers, a wrong password raises `EncryptionError`, except in archives written by
   `py7zr`, which store no header checksum: there a wrong password can, rarely, list garbage
   members.
-- **Names** are stored as UTF-16, so `encoding=` has no effect.
+- **Names** are stored as UTF-16, so `fallback_encoding` has no effect.
 
 Damaged archives, and the details of confirming a password among several candidates, are covered
 in the [7z development
@@ -184,8 +184,8 @@ RarOptions(decompressor="none")   # run no program
   names them, with the number in `extra["rar.file_version"]` and `is_current=False`. Extraction
   skips them by default.
 - **Names** in RAR 1.5-4 that are stored only as 8-bit bytes are read as UTF-8 when they are valid
-  UTF-8. Otherwise they're decoded with `encoding=`, or by default with cp437 for an archive from
-  DOS or Windows and windows-1252 otherwise.
+  UTF-8. Otherwise they're decoded with `fallback_encoding`, or by default with cp437 for an archive
+  from DOS or Windows and windows-1252 otherwise.
 - **With `unrar` older than 7.00**, a large member or solid stream from an archive opened as a
   stream (not a path) is copied whole to a temporary file before `unrar` reads it.
   `SpoolLimits.max_bytes` (1 GiB by default) bounds the copy, and a read over it raises
@@ -271,10 +271,10 @@ and says which in `ArchiveInfo.extra["iso.namespace"]`.
   reading one raises `UnsupportedFeatureError`. Video and audio-only CD images raise
   `UnsupportedFeatureError`.
 
-- **Names:** Rock Ridge and plain names are read as UTF-8, then with `encoding=` when you pass
-  one. Without it, a name that isn't UTF-8 takes the matching Joliet name when the image has one,
-  and is escaped otherwise. Joliet names are UTF-16, and UDF names are Latin-1 or UTF-16, as each
-  name says, so `encoding=` has no effect on them.
+- **Names:** Rock Ridge and plain names are read as UTF-8, then with `fallback_encoding` when you
+  set one. Without it, a name that isn't UTF-8 takes the matching Joliet name when the image has
+  one, and is escaped otherwise. Joliet names are UTF-16, and UDF names are Latin-1 or UTF-16, as
+  each name says, so `fallback_encoding` has no effect on them.
 - **File versions:** the `;1` at the end of a plain or Joliet file name is dropped, and the number
   is kept in `extra["iso.version"]`. When a folder holds several versions of one name, the highest
   takes the bare name, and older ones are listed as `FOO.;1` with `is_current=False`, as RAR file
@@ -384,7 +384,7 @@ XAR needs nothing extra. Members are read directly, each compressed on its own.
   data (SHA-1 by default), which is in `member.hashes` and checked when you read the member to
   its end.
 - **Names** stored as base64, as writers do for bytes that aren't UTF-8, are decoded with
-  `encoding=` like names in any other format.
+  `fallback_encoding` like names in any other format.
 
 The [XAR development
 docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xar.md) cover the index,
@@ -427,9 +427,9 @@ LZX is decoded by archivey itself, in Python, at a few megabytes a second.
 - **Solid folders:** a cabinet groups its files into folders, each one compressed stream.
   Reaching a file decodes its folder from the start. Reading the files in listed order, as
   `stream_members()` does, decodes each folder once.
-- **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. A Japanese cabinet from
-  `makecab` is usually `encoding="cp932"`. A cabinet stores paths, not folders, and `\` becomes
-  `/`.
+- **Names** are UTF-8 when valid, otherwise decoded with `fallback_encoding`. A Japanese cabinet
+  from `makecab` is usually `fallback_encoding="cp932"`. A cabinet stores paths, not folders, and
+  `\` becomes `/`.
 - **Checksums:** each data block stores a checksum, checked as it is read, so a member read to its
   end is checked when its blocks carry one (some writers store 0, meaning none).
 
@@ -477,8 +477,8 @@ directly.
 - **Not supported:** `-lh2-`, `-lh3-`, `-pm1-` and `-pm2-` members. They are listed, and reading
   one raises `UnsupportedFeatureError`.
 - **Checksums:** each member stores a CRC-16 of its data, checked when you read it to its end.
-- **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. An archive from a Japanese PC
-  is usually `encoding="cp932"`.
+- **Names** are UTF-8 when valid, otherwise decoded with `fallback_encoding`. An archive from a
+  Japanese PC is usually `fallback_encoding="cp932"`.
 
 The [LHA development
 docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/lha.md) cover header
@@ -499,8 +499,8 @@ Each member is compressed on its own and read directly.
 - **Not supported:** members encrypted with ARJ's later GOST cipher, and members split across the
   volumes of a multi-volume set, raise `UnsupportedFeatureError` when read.
 - **Checksums:** each member stores a CRC-32 of its data, checked when you read it to its end.
-- **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. DOS archives are usually
-  `encoding="cp437"`, or `"cp866"` from Russian systems.
+- **Names** are UTF-8 when valid, otherwise decoded with `fallback_encoding`. DOS archives are
+  usually `fallback_encoding="cp437"`, or `"cp866"` from Russian systems.
 
 The [ARJ development
 docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/arj.md) cover the
@@ -554,7 +554,7 @@ as an archive's: forward-only, one at a time, until you pass `seekable_members=T
 
 - **Hard links:** when several names in the folder share one file, the first name the walk reaches
   is a `FILE` and the others are `HARDLINK` members to it, as `tar` lists them.
-- **Names** come from the filesystem, so `encoding=` has no effect.
+- **Names** come from the filesystem, so `fallback_encoding` has no effect.
 - **`/proc` and `/sys`** files report sizes that aren't their content's, so they are listed with
   `size` set to `None` and read to their end.
 

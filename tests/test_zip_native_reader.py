@@ -1224,7 +1224,7 @@ def test_decoded_name_field_order_is_pinned() -> None:
         "text",
         "raw_name",
         "alternate_raw_name",
-        "inferred_encoding",
+        "fallback_encoding",
         "declared_encoding",
         "unicode_extra_fault",
         "unicode_path_used",

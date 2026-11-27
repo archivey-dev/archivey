@@ -1032,7 +1032,7 @@ def test_extract_non_utf8_tar_with_explicit_encoding(tmp_path: Path) -> None:
     archive.write_bytes(buf.getvalue())
 
     dest = tmp_path / "out"
-    open_and_extract(archive, dest, encoding="latin-1")
+    open_and_extract(archive, dest, config=ArchiveyConfig(fallback_encoding="latin-1"))
     assert (dest / "café.txt").read_bytes() == b"tea"
 
 

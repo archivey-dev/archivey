@@ -74,7 +74,6 @@ from archivey.config import (
     RarOptions,
     SalvageLimits,
     SpoolLimits,
-    ZipOptions,
 )
 from archivey.detection_cost import (
     BALANCED_BUDGET,
@@ -761,15 +760,13 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: format_availability("zip", config=b),
             )
         )
-    for bad in ("not-a-codec", "rot13", b"cp437", 0, None):
+    for bad in ("not-a-codec", "rot13", b"cp437", 0):
         rows.append(
             _case(
-                "ZipOptions",
+                "ArchiveyConfig",
                 "fallback_encoding",
                 bad,
-                lambda b=bad: _with_config(
-                    archive, out(), format_options=[ZipOptions(fallback_encoding=b)]
-                ),
+                lambda b=bad: _with_config(archive, out(), fallback_encoding=b),
             )
         )
 
@@ -926,7 +923,7 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     ("ArchiveyConfig", "unrar_path"): "deprecated; RarOptions(unrar_path=)",
     ("ArchiveyConfig", "unar_path"): "deprecated; RarOptions(unar_path=)",
     ("ArchiveyConfig", "zip_unflagged_fallback_encoding"): (
-        "deprecated; ZipOptions(fallback_encoding=)"
+        "deprecated; folded into fallback_encoding"
     ),
     ("ArchiveyConfig", "process_isolation"): "coerced by enum_args, in __post_init__",
     (
@@ -963,7 +960,6 @@ def _public_surface() -> list[tuple[str, list[str]]]:
         RarOptions,
         SalvageLimits,
         SpoolLimits,
-        ZipOptions,
     ):
         surface.append((cls.__name__, [f.name for f in dataclasses.fields(cls)]))
     return surface
@@ -1088,7 +1084,10 @@ def test_valid_arguments_still_work(archive: Path, tmp_path: Path) -> None:
         assert detect_format(archive, config=config).format.container.name == "ZIP"
     with open_archive(archive, config=ArchiveyConfig()) as reader:
         assert reader.extract_all(dest / "a").results
-    with open_archive(archive, encoding="UTF8") as reader:  # an alias, not a name
+    # An alias, not a name.
+    with open_archive(
+        archive, config=ArchiveyConfig(fallback_encoding="UTF8")
+    ) as reader:
         assert reader.extract_all(dest / "c").results
     with open_archive(archive) as reader:
         assert reader.extract_all(dest / "b", limits=ExtractionLimits.UNLIMITED).results

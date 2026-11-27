@@ -28,6 +28,7 @@ import archivey
 from archivey import (
     ArchiveFormat,
     ArchiveMember,
+    ArchiveyConfig,
     ArchiveyUsageError,
     CorruptionError,
     MemberType,
@@ -1021,7 +1022,9 @@ def test_archive_info_errors_are_translated(
 
 def test_decode_name_fallbacks(toya: ArchiveFormat, tmp_path: Path) -> None:
     path = _write(tmp_path, build_toya([(b"caf\xe9.txt", MemberType.FILE, b"x")]))
-    with open_archive(path, encoding="latin-1") as reader:
+    with open_archive(
+        path, config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as reader:
         assert [m.name for m in reader.members()] == ["café.txt"]
     with open_archive(path) as reader:
         (member,) = reader.members()
@@ -1034,7 +1037,12 @@ def test_encoding_unused_when_the_plugin_takes_none(
 ) -> None:
     _plugin_with("noenc", uses_encoding=False)
     path = _write(tmp_path, build_toya(_ENTRIES), "t.noenc")
-    with open_archive(path, encoding="latin-1") as reader:
+    # The diagnostic names the deprecated argument alone: a config field applies to
+    # every format, so a format that ignores it is no mistake.
+    with (
+        pytest.warns(DeprecationWarning),
+        open_archive(path, encoding="latin-1") as reader,
+    ):
         assert reader.diagnostics.counts.get(
             archivey.DiagnosticCode.ENCODING_ARGUMENT_UNUSED
         )

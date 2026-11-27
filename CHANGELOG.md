@@ -19,9 +19,12 @@ line. How to write the entry: see
   (`ArchiveyConfig.salvage_limits`). No format has a salvage search yet, so every format
   reads as before and records `SALVAGE_UNAVAILABLE`.
 - `ArchiveyConfig(format_options=[...])` holds the settings of single formats, one
-  object per format: `archivey.config.ZipOptions` and `RarOptions` for the built-in
-  ones, and a plugin's format can have its own. A reader asks for its own with
-  `ReaderContext.options(cls)`.
+  object per format: `archivey.config.RarOptions` for RAR, and a plugin's format can
+  have its own. A reader asks for its own with `ReaderContext.options(cls)`.
+- `ArchiveyConfig(fallback_encoding=)` names the codec for member names that are not
+  valid UTF-8 and whose archive declares no encoding, in every format. Nested archives
+  opened with `parent=` inherit it. By default each format keeps its own fallback:
+  cp437 for ZIP, the host's code page for RAR 1.5-4, surrogate escapes for the others.
 - `ArchiveyConfig.UNTRUSTED`, the settings for files you didn't make, such as uploads:
   `FormatPolicy.COMMON`, `DiagnosticPolicy.STRICT`, `NATIVE_DECODERS`, lower listing,
   decoder and extraction limits, and rapidgzip off. Adjust it with
@@ -63,9 +66,18 @@ line. How to write the entry: see
   `archivey extract --stop-on-error` now stops at a refused member too.
 - **Breaking:** `ArchiveyConfig.use_rapidgzip` decides bzip2 too, so
   `use_rapidgzip="off"` alone now keeps rapidgzip away from bzip2 as well.
+- **Breaking:** `DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED` is now
+  `MEMBER_NAME_FALLBACK_ENCODING`, and it means something else: the name was not valid
+  UTF-8 and its archive declared no encoding, so it went through the fallback and a
+  different `fallback_encoding` could change it. Every format emits it, also when no
+  codec was given (its context's `fallback_encoding` names the codec used, or
+  `"surrogateescape"`); a valid UTF-8 name no longer emits it. The context fields
+  `inferred_encoding` and `declared_encoding` became one `fallback_encoding`.
+  `DiagnosticPolicy.STRICT` no longer refuses it, also for a ZIP name whose UTF-8 flag
+  its bytes refute.
 - **Breaking:** the deprecated `ArchiveyConfig` fields `zip_unflagged_fallback_encoding`,
   `rar_decompressor`, `unrar_path` and `unar_path` always read back as `None`: a value
-  passed to one moves into `format_options`, so read it from the options object.
+  passed to one moves into `fallback_encoding` or `format_options`, so read it there.
   `use_indexed_bzip2` reads back as `None` unless the caller set it; read
   `use_rapidgzip`.
 - A streaming pass over a format with an index (a ZIP, 7z, RAR, ISO, CAB and others)
@@ -92,10 +104,14 @@ line. How to write the entry: see
   second member at one path under the default `overwrite="error"`, and
   `ExtractionResult.rewrites` lists every rewritten name. `archivey extract --abort-on`
   is deprecated the same way. 0.7.0 removes them.
-- `ArchiveyConfig(zip_unflagged_fallback_encoding=, rar_decompressor=, unrar_path=,
-  unar_path=)` keep working in 0.6 with a `DeprecationWarning`; pass
-  `format_options=[ZipOptions(fallback_encoding=...), RarOptions(decompressor=...,
+- `ArchiveyConfig(rar_decompressor=, unrar_path=, unar_path=)` keep working in 0.6 with
+  a `DeprecationWarning`; pass `format_options=[RarOptions(decompressor=...,
   unrar_path=..., unar_path=...)]` from `archivey.config`. 0.7.0 removes them.
+- `open_archive(encoding=)`, `ArchiveyFileSystem(encoding=)` and
+  `ArchiveyConfig(zip_unflagged_fallback_encoding=)` keep working in 0.6 with a
+  `DeprecationWarning`; pass `config=ArchiveyConfig(fallback_encoding=...)`, or
+  `dataclasses.replace(config, fallback_encoding=...)` to change only that field. 0.7.0
+  removes them.
 - `ArchiveyConfig.use_indexed_bzip2` keeps working in 0.6 with a `DeprecationWarning`,
   and decides bzip2 alone while it is set; use `use_rapidgzip`. 0.7.0 removes it.
 

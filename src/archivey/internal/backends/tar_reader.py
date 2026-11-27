@@ -1622,33 +1622,29 @@ class TarReader(BaseArchiveReader):
 
     def _decode_name(
         self, raw: bytes, source: NameSource | None, binary: bool
-    ) -> tuple[str, bool]:
-        """A name, link name, user or group name as text, and whether the UTF-8
-        reading was taken over the caller's ``encoding=``.
+    ) -> tuple[str, str | None]:
+        """A name, link name, user or group name as text, and the codec the fallback
+        decoded it with (``None`` when it is UTF-8): the caller's fallback encoding, or
+        ``"surrogateescape"``.
 
         A PAX value is UTF-8 unless its block says ``hdrcharset=BINARY``; one that is
         not valid UTF-8 falls back to the archive codec. A ustar or GNU field, or a
         ``BINARY`` PAX value, declares no encoding: it is UTF-8 when its bytes are
-        valid UTF-8, else the caller's ``encoding=`` (UTF-8 with surrogateescape by
+        valid UTF-8, else the caller's fallback encoding (UTF-8 with surrogateescape by
         default), the rule every format follows.
         """
-        # UTF-8 is tried before the codec, ASCII included: ``encoding="cp037"`` would
-        # otherwise turn the ASCII name ``abc`` into ``/ÂÄ``.
+        # UTF-8 is tried before the codec, ASCII included: ``fallback_encoding="cp037"``
+        # would otherwise turn the ASCII name ``abc`` into ``/ÂÄ``.
         try:
-            utf8_text = raw.decode("utf-8")
+            return raw.decode("utf-8"), None
         except UnicodeDecodeError:
-            return self._decode_not_utf8(raw), False
-        if (
-            self._encoding is None
-            or raw.isascii()
-            or (source is NameSource.PAX and not binary)
-        ):
-            return utf8_text, False
-        # Through the helper, not the codec: a codec that cannot decode these bytes
-        # (``idna``, ``utf-16`` on an odd byte count) must not fail the listing, and
-        # would not have named the member, so its fallback reading equals the UTF-8
-        # one and nothing is reported, as RAR's ``_utf8_over_encoding`` does.
-        return utf8_text, utf8_text != self._decode_not_utf8(raw)
+            pass
+        if self._encoding is not None:
+            try:
+                return raw.decode(self._encoding, "surrogateescape"), self._encoding
+            except UnicodeError:
+                pass
+        return raw.decode("utf-8", "surrogateescape"), "surrogateescape"
 
     def _to_member(self, entry: TarEntry, index: int) -> ArchiveMember:
         """Type one member. ``index`` is its position in the walk, the id registration
@@ -1660,7 +1656,7 @@ class TarReader(BaseArchiveReader):
         (:meth:`_report_member_findings`).
         """
         member_type = _member_type(entry)
-        presented, inferred = self._decode_name(
+        presented, fallback = self._decode_name(
             entry.name, entry.name_source, entry.name_binary
         )
         if entry.name_source is NameSource.PAX or member_type == MemberType.DIRECTORY:
@@ -1735,7 +1731,7 @@ class TarReader(BaseArchiveReader):
         if entry.sparse_format is not None:
             member.is_sparse = True
         self._report_member_findings(
-            member, entry, index, presented, timestamp_issues, inferred=inferred
+            member, entry, index, presented, timestamp_issues, fallback=fallback
         )
         return member
 
@@ -1782,10 +1778,10 @@ class TarReader(BaseArchiveReader):
         presented: str,
         timestamp_issues: list[TimestampIssue],
         *,
-        inferred: bool,
+        fallback: str | None,
     ) -> None:
         """Emit the diagnostics about one member, once it is built: a normalized
-        name, bad times, a name decoded as UTF-8 over ``encoding=``, and what the
+        name, bad times, a name the fallback decoded, and what the
         walk found in its headers. ``presented`` is the decoded name before
         normalization."""
         # emit_member_name_normalized makes the same check; making it here skips the
@@ -1800,20 +1796,9 @@ class TarReader(BaseArchiveReader):
             )
         for issue in timestamp_issues:
             self._emit_timestamp_invalid(member, index, issue)
-        if inferred:
-            # The UTF-8 reading was taken over the caller's encoding=, which ZIP and
-            # RAR 1.5-4 report the same way.
-            assert self._encoding is not None
-            self._emit_name_encoding_inferred(
-                member,
-                index,
-                inferred_encoding="utf-8",
-                passed_over=self._encoding,
-                message=(
-                    f"TAR member name decoded as 'utf-8' rather than "
-                    f"{self._encoding!r} (the stored bytes are valid UTF-8): "
-                    f"{quoted(member.name)}"
-                ),
+        if fallback is not None:
+            self._emit_name_fallback_encoding(
+                member, index, codec=fallback, format_label="TAR"
             )
         if entry.header.device_number_fault is not None:
             # GNU tar 1.35 reports the field and lists the device with a garbage

@@ -787,11 +787,11 @@ class ReadBackend(ABC):
     # salvage by a backend without one records SALVAGE_UNAVAILABLE at open and reads as
     # it does without salvage.
     SUPPORTS_SALVAGE: bool = False
-    # Whether this backend applies a caller-supplied `encoding=` when decoding member
+    # Whether this backend applies the caller's fallback encoding when decoding member
     # names. False for backends that decode names some other way — 7z stores UTF-16LE,
     # the directory and single-file names come from the filesystem — so open_archive()
-    # can record ENCODING_ARGUMENT_UNUSED rather than let the argument be dropped with
-    # no signal.
+    # can record ENCODING_ARGUMENT_UNUSED for the deprecated `encoding=` rather than
+    # let the argument be dropped with no signal.
     USES_ENCODING: bool = False
     # The optional package this backend needs, an ``OptionalLibrary``; the registry
     # derives availability centrally from whether it imports. ``None`` for core
@@ -3578,32 +3578,39 @@ class BaseArchiveReader(ArchiveReader):
             attach_to_member=True,
         )
 
-    def _emit_name_encoding_inferred(
+    def _emit_name_fallback_encoding(
         self,
         member: ArchiveMember,
         member_id: int,
         *,
-        inferred_encoding: str,
-        passed_over: str,
-        message: str,
+        codec: str,
+        format_label: str,
+        why: str = "is not valid UTF-8 and declares no encoding",
     ) -> None:
-        """Report one ``MEMBER_NAME_ENCODING_INFERRED`` finding, attached to ``member``.
-
-        ``inferred_encoding`` decoded the stored bytes to ``member.name``;
-        ``passed_over`` is the encoding the name would otherwise have had (the caller's
-        ``encoding=``, or the format's fallback), recorded as ``declared_encoding``.
+        """Report one ``MEMBER_NAME_FALLBACK_ENCODING`` finding, attached to ``member``:
+        its name declares no encoding usable for its bytes and is not valid UTF-8, so
+        ``codec`` (the caller's ``fallback_encoding``, the format's own fallback, or
+        ``"surrogateescape"``) decoded it, and a different fallback could change it.
+        ``why`` says why the name reached the fallback, for the message.
         ``member_id`` is the walk position, as for :meth:`_emit_timestamp_invalid`.
         """
+        how = (
+            "with surrogate escapes"
+            if codec == "surrogateescape"
+            else f"with the fallback encoding {codec!r}"
+        )
         self._diagnostics_collector.emit(
-            code=DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED,
-            message=message,
+            code=DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING,
+            message=(
+                f"{format_label} member name {why}; decoded {how}, so a different "
+                f"fallback_encoding could change it: {quoted(member.name)}"
+            ),
             context=NameEncodingContext(
                 archive_name=self._archive_name,
                 member_name=member.name,
                 member_id=member_id,
                 raw_name_base64=raw_name_to_base64(member.raw_name),
-                inferred_encoding=inferred_encoding,
-                declared_encoding=passed_over,
+                fallback_encoding=codec,
             ),
             member=member,
             attach_to_member=True,

@@ -19,7 +19,7 @@ as a built-in the way ar and CPIO are.
 | Core dependencies | None. The payload is decoded by archivey's codecs (gzip, bzip2, xz, LZMA Alone, Zstandard) |
 | Encryption | None |
 | Checksums | The main header's SHA-256 and SHA-1 digests from the signature header, each one stored checked as the header is read; each regular file's digest from `FILEDIGESTS` (SHA-256 in current packages, MD5 in old ones), checked as it is read |
-| Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
+| Name encoding | Bytes. UTF-8 first, then `fallback_encoding`, then escaped, as in every format |
 | Refuses | Lead versions other than 3 and 4, delta RPMs, payload compressors archivey has no codec for |
 | Spec | `openspec/specs/format-rpm/spec.md` |
 
