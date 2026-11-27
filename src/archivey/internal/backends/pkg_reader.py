@@ -23,7 +23,8 @@ payload file that extracts outside its folder (``../Bom``), a hard link whose ta
 does, and a file under a symlink of the payload (``l -> ..``, then ``l/Bom``) are
 refused (``ReaderContext.open_nested(under=)``): the first two would replace another
 member of the package, and the last would for a caller that writes files from the
-listing itself. So is any other XAR member that can land in a payload's folder.
+listing itself. So is any other XAR member that can land in a payload's folder,
+another payload among them: two payloads at one folder, or one inside another's.
 
 Handbook page: ``dev-docs/formats/xar.md``.
 """
@@ -216,11 +217,7 @@ class PkgReader(XarReader):
         # before anything is listed, so no other XAR member may land in one, before
         # the payload or after it.
         records = list(super().iter_members())
-        folders = [
-            _key(extracted_segments(record.member.name))
-            for record in records
-            if record.locator.data is not None and _payload_folder(record.member)
-        ]
+        folders = self._payload_folders(records)
         for record in records:
             if record.locator.data is None or not _payload_folder(record.member):
                 self._check_outside_payloads(record.member, folders)
@@ -229,21 +226,49 @@ class PkgReader(XarReader):
             yield from self._expand(record)
 
     @staticmethod
+    def _payload_folders(
+        records: list[MemberRecord[_Location]],
+    ) -> set[tuple[str, ...]]:
+        """The folders of the payloads in ``records``, folded. Each payload's own
+        symlinks are checked against its own files only, so refuse a payload whose
+        folder is another one's or lies inside it."""
+        folders: dict[tuple[str, ...], str] = {}
+        for record in records:
+            member = record.member
+            if record.locator.data is None or not _payload_folder(member):
+                continue
+            key = tuple(_key(extracted_segments(member.name)))
+            if key in folders:
+                raise CorruptionError(
+                    f"macOS package has two payloads at {quoted(member.name)}: "
+                    "one is in the folder of another payload",
+                    member_name=member.name,
+                )
+            folders[key] = member.name
+        for key, name in folders.items():
+            if any(key[:i] in folders for i in range(1, len(key))):
+                raise CorruptionError(
+                    f"macOS package has the payload {quoted(name)} in the folder "
+                    "of another payload",
+                    member_name=name,
+                )
+        return set(folders)
+
+    @staticmethod
     def _check_outside_payloads(
-        member: ArchiveMember, folders: list[list[str]]
+        member: ArchiveMember, folders: set[tuple[str, ...]]
     ) -> None:
         """Refuse a XAR member that can land in a payload's folder: only the payload's
         own files, which ``open_nested(under=)`` checks against its symlinks, may."""
         if not folders:
             return
-        key = _key(extracted_segments(member.name))
-        for folder in folders:
-            if key[: len(folder)] == folder:
-                raise CorruptionError(
-                    f"macOS package has a member in {quoted(member.name)}, inside "
-                    "the folder of a payload's files",
-                    member_name=member.name,
-                )
+        key = tuple(_key(extracted_segments(member.name)))
+        if any(key[:i] in folders for i in range(1, len(key) + 1)):
+            raise CorruptionError(
+                f"macOS package has a member in {quoted(member.name)}, inside "
+                "the folder of a payload's files",
+                member_name=member.name,
+            )
 
     def _expand(
         self, record: MemberRecord[_Location]

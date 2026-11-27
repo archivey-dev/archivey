@@ -168,7 +168,10 @@ choice).
   XAR member may land in a payload's folder (a XAR directory `Payload/` beside the
   payload file, holding `l/Bom`): pkg knows every payload folder from the table of
   contents before it lists anything, and refuses such a member, compared with
-  `extracted_segments` and folded with `collision_key`, before or after the payload. A
+  `extracted_segments` and folded with `collision_key`, before or after the payload.
+  Another payload is such a member too: each payload's symlinks are checked against its
+  own files only, so pkg refuses two payloads at one folder (two XAR files `Payload`)
+  and a payload inside another's folder (a file `Payload` with a child `Scripts`). A
   component folder that is no folder (`../x`, `x\..\y`, `C:`) keeps its `Payload` as
   the file it is.
 - **Opening a file.** `open_member` opens the payload again and calls `open_nested`,

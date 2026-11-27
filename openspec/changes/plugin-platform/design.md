@@ -638,7 +638,8 @@ What the ten readers import from `archivey.internal` today, and how each is reso
   `strip_absolute_root` and their kin), used by deb and pkg for the layout rules of
   `dpkg-deb` and `pkgutil`: public as they are. They are path rules, not nesting.
   `collision_key` and `extracted_segments` are public (the pkg port): pkg refuses a
-  XAR member that lands in a payload's folder, a check of the outer listing that
+  XAR member (another payload included) that lands in a payload's folder, a check of
+  the outer listing that
   `open_nested` cannot make. deb needs none of them.
 - Limit checks (`refuse_past_archive_ratio`, `check_decoder_memory`), used by DMG and
   CAB: public, beside `charge_metadata`.

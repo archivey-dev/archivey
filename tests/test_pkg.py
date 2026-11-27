@@ -421,6 +421,37 @@ def test_a_xar_member_inside_a_payload_folder_is_refused(before: bool) -> None:
         archive.members()
 
 
+def _two_payloads(nested: bool) -> bytes:
+    """A flat package whose second payload lands under the first one's symlink to
+    ``..``: a XAR file ``Payload`` with a child payload ``Scripts``, or two files
+    named ``Payload``."""
+    if nested:
+        link, inner = "./Scripts", odc_cpio([("./Bom", b"x")])
+        children = [XarFile("Scripts", make_pbzx(inner), encoding="none")]
+    else:
+        link, inner = "./l", odc_cpio([("./l/Bom", b"x")])
+        children = []
+    outer = make_pbzx(odc_cpio([(link, b"..")], modes={link: 0o120777}))
+    files = [
+        XarFile("PackageInfo", b"<pkg-info/>"),
+        XarFile("Payload", outer, encoding="none", children=children),
+    ]
+    if not nested:
+        files.append(XarFile("Payload", make_pbzx(inner), encoding="none"))
+    return write_xar(files)
+
+
+@pytest.mark.parametrize("nested", [True, False], ids=["inside", "twice"])
+def test_a_payload_in_another_payloads_folder_is_refused(nested: bool) -> None:
+    """Each payload's symlinks are checked against its own files only, so no payload
+    folder may be another one's or lie inside it."""
+    with (
+        pytest.raises(CorruptionError, match="in the folder of another payload"),
+        open_archive(io.BytesIO(_two_payloads(nested))) as archive,
+    ):
+        archive.members()
+
+
 def test_a_payload_symlink_that_stays_in_its_folder_is_listed() -> None:
     entries: list[tuple[str, bytes | None]] = [("./a", b"x"), ("./l", b"a")]
     payload = odc_cpio(entries, modes={"./l": 0o120777})
