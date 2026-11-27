@@ -2368,10 +2368,12 @@ def test_name_flagged_utf8_that_is_not_decodes_as_unflagged(
     assert member.comment == name.removesuffix(".txt") + "ine"
     assert member.raw_name == raw
     assert [p.name for p in tmp_path.iterdir()] == [name]
-    (diag,) = member.diagnostics
+    diag, wrong = member.diagnostics
     assert diag.code == DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
     assert diag.context.fallback_encoding == codec
     assert "UTF-8 flag set" in diag.message
+    assert wrong.code == DiagnosticCode.MEMBER_NAME_UTF8_FLAG_WRONG
+    assert wrong.context.fallback_encoding == codec
 
 
 def test_a_policy_can_refuse_a_name_flagged_utf8_that_is_not() -> None:
@@ -2441,7 +2443,7 @@ def test_a_flag_overridden_name_collides_as_a_duplicate(
     assert [
         d.context.fallback_encoding
         for d in second.diagnostics
-        if isinstance(d.context, NameEncodingContext)
+        if d.code is DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
     ] == [encoding or "cp437"]
     assert not [
         d for d in first.diagnostics if isinstance(d.context, NameEncodingContext)

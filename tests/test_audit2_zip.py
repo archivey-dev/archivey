@@ -515,7 +515,8 @@ def test_unicode_comment_field_under_a_refuted_flag_is_not_consulted(
         (member,) = ar.members()
         assert member.comment == "café"  # the cp437 reading of the header bytes
         assert [d.code for d in member.diagnostics] == [
-            DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
+            DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING,
+            DiagnosticCode.MEMBER_NAME_UTF8_FLAG_WRONG,
         ]
         assert member.extra["zip.extra_fields"] == {0x6375: field[4:]}
 

@@ -211,6 +211,7 @@ class archivey.DiagnosticCode(StrEnum)
 open-enum archivey.DiagnosticCode
 value archivey.DiagnosticCode.MEMBER_NAME_NORMALIZED = 'member_name_normalized'
 value archivey.DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING = 'member_name_fallback_encoding'
+value archivey.DiagnosticCode.MEMBER_NAME_UTF8_FLAG_WRONG = 'member_name_utf8_flag_wrong'
 value archivey.DiagnosticCode.MEMBER_NAME_BIDI_CONTROL = 'member_name_bidi_control'
 value archivey.DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER = 'member_name_zero_width_character'
 value archivey.DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER = 'member_name_invisible_character'
@@ -792,6 +793,7 @@ item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_OF
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_BIDI_CONTROL
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_NORMALIZED
+item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_UTF8_FLAG_WRONG
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_TIMESTAMP_INVALID
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.SCAN_DIRECTORY_VANISHED
@@ -831,6 +833,8 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_normalized'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-normalized'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_fallback_encoding'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-fallback-encoding'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_utf8_flag_wrong'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-utf8-flag-wrong'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_bidi_control'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-bidi-control'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_zero_width_character'

@@ -28,6 +28,16 @@ def _zip_with_name(raw: bytes) -> bytes:
     return buf.getvalue().replace(b"X" * len(raw), raw)
 
 
+def _flagged_zip_with_name(raw: bytes) -> bytes:
+    """A one-member ZIP whose name is ``raw``, stored with the UTF-8 flag set."""
+    # A non-ASCII placeholder of the same byte length makes zipfile set the flag.
+    placeholder = "X" * (len(raw) - 2) + "\u00e9"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(placeholder, b"data")
+    return buf.getvalue().replace(placeholder.encode(), raw)
+
+
 def _tar_with_name(raw: bytes) -> bytes:
     """A one-member ustar TAR whose name is ``raw``."""
     buf = io.BytesIO()
@@ -234,3 +244,35 @@ def test_a_tar_inside_a_makeself_reports_a_name_once() -> None:
 
     data = _with_payloads([gzip.compress(_tar_with_name(_RAW), mtime=0)])
     assert _fallbacks(data) == ["surrogateescape"]
+
+
+_FLAG_WRONG = archivey.DiagnosticCode.MEMBER_NAME_UTF8_FLAG_WRONG
+
+
+def _codes(data: bytes, **kwargs: object) -> list[archivey.DiagnosticCode]:
+    with archivey.open_archive(io.BytesIO(data), **kwargs) as reader:  # type: ignore[arg-type]
+        return [d.code for m in reader.members() for d in m.diagnostics]
+
+
+def test_a_utf8_flag_the_bytes_contradict_is_reported_and_strict_refuses() -> None:
+    """The header claims UTF-8 and its bytes disprove it: damage, not a legacy
+    code page, so STRICT refuses it, while the name still lists by default."""
+    data = _flagged_zip_with_name(_RAW)
+    codes = _codes(data)
+    assert _FLAG_WRONG in codes
+    assert _FALLBACK in codes
+    strict = ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.STRICT)
+    with pytest.raises(archivey.ArchiveyError):
+        _codes(data, config=strict)
+
+
+@pytest.mark.parametrize(
+    "build", [_zip_with_name, _flagged_zip_with_name], ids=["unflagged", "flagged"]
+)
+def test_a_utf8_name_is_not_a_wrong_flag(build) -> None:
+    """A UTF-8 name, flagged or not (macOS writes it unflagged), is not reported."""
+    assert _FLAG_WRONG not in _codes(build(_CP1252_NAME.encode("utf-8")))
+
+
+def test_a_legacy_name_without_the_flag_is_not_a_wrong_flag() -> None:
+    assert _FLAG_WRONG not in _codes(_zip_with_name(_RAW))

@@ -73,8 +73,9 @@ line. How to write the entry: see
   codec was given (its context's `fallback_encoding` names the codec used, or
   `"surrogateescape"`); a valid UTF-8 name no longer emits it. The context fields
   `inferred_encoding` and `declared_encoding` became one `fallback_encoding`.
-  `DiagnosticPolicy.STRICT` no longer refuses it, also for a ZIP name whose UTF-8 flag
-  its bytes refute.
+  `DiagnosticPolicy.STRICT` no longer refuses it. A ZIP name whose UTF-8 flag its bytes
+  refute is reported as the new `MEMBER_NAME_UTF8_FLAG_WRONG` too, which `STRICT`
+  refuses.
 - **Breaking:** the deprecated `ArchiveyConfig` fields `zip_unflagged_fallback_encoding`,
   `rar_decompressor`, `unrar_path` and `unar_path` always read back as `None`: a value
   passed to one moves into `fallback_encoding` or `format_options`, so read it there.

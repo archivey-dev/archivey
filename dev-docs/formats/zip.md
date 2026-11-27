@@ -360,10 +360,11 @@ the caller's `fallback_encoding` when one was passed, else with cp437, which dec
 every byte, so no `UnicodeDecodeError` escapes. Both decode with `surrogateescape`. The
 parser hands the reader the stored bytes, so nothing is decoded twice. A flagged name
 that is not valid UTF-8 is decoded as an unflagged name that is not UTF-8 would be
-(`fallback_encoding`, else cp437), and its message says the bytes refute the flag: the
-flag is the one claim the bytes can check. The Unicode Path field is not consulted for
-it, as for any flagged name. This departs from stdlib's `metadata_encoding` and from
-`unzip -O`, which apply the codec to every unflagged name: a valid UTF-8 name wins over
+(`fallback_encoding`, else cp437), and it also emits `MEMBER_NAME_UTF8_FLAG_WRONG`,
+which `STRICT` refuses: the flag is the one claim the bytes can check, and they refute
+it. The Unicode Path field is not consulted for it, as for any flagged name. This
+departs from stdlib's `metadata_encoding` and from `unzip -O`, which apply the codec to
+every unflagged name: a valid UTF-8 name wins over
 `fallback_encoding` in every format (design rules, ruled 2026-10-07), so a legacy
 `fallback_encoding` fixes the legacy names in a mixed archive without garbling its UTF-8
 ones.
@@ -1297,7 +1298,7 @@ ours.
 | --- | --- | --- |
 | A ZIP from a pipe opens only with `pipe=True`, and its members arrive without the fields only the directory holds: no mode, host or comment, and a symlink is a `FILE` until the pass reaches the directory | **format** | The index is at the end (§1). The pass updates the members in place from the directory and says so through `member_state_final`; extraction applies the same fields to disk at the end of the pass (§2.2.2) |
 | From a pipe, a few crafted or damaged shapes fail a member, or leave files on disk, that a file read handles otherwise | **format** / **archivey** | The data goes by before the directory that would correct it arrives; matching the file read would mean buffering every member (ADR 0010). The list is in §2.2.2 |
-| A name whose UTF-8 flag is set over bytes that are not UTF-8 decodes as an unflagged name, with `MEMBER_NAME_FALLBACK_ENCODING`, which says the bytes refute the flag | **archivey** | The bytes refute the flag, so it cannot be honoured; reading the name as unflagged keeps every other member and the name itself, where refusing cost at least the rest of the listing. The diagnostic's `fallback_encoding` is the codec used (§2.2). `DiagnosticPolicy.STRICT` does not refuse it: the code is not an archive-integrity code |
+| A name whose UTF-8 flag is set over bytes that are not UTF-8 decodes as an unflagged name, with `MEMBER_NAME_FALLBACK_ENCODING` and `MEMBER_NAME_UTF8_FLAG_WRONG` | **archivey** | The bytes refute the flag, so it cannot be honoured; reading the name as unflagged keeps every other member and the name itself, where refusing cost at least the rest of the listing. The context's `fallback_encoding` is the codec used (§2.2). `DiagnosticPolicy.STRICT` refuses it through `MEMBER_NAME_UTF8_FLAG_WRONG`: the header contradicts itself, and no writer is known to make the shape (davi, 2026-11-27) |
 | The last part of a `zip -s` set opened alone, a `.zip` with its `.z01` … gone, lists nothing and raises `TruncatedError`, though it holds the whole central directory | **archivey** | Its members' data is on the parts that are gone, except for whichever members happen to sit on the last part; listing the directory would promise members that cannot be read. The end record's disk number says the set has more parts (`0xFFFF` is the ZIP64 sentinel, not a disk number), and the error says how many (§2.2). From a pipe the forward pass lists the members whole on that part before the end record arrives, as it does for any damage it meets late (§2.2.2) |
 | A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. The part opens with `PK\x03\x04`, so it looks like a ZIP to a detector, but the central directory is in the *last* part, so no end record is found and not even a listing is available. "Rejoin first" names the actual problem. A numbering gap is `TruncatedError` instead |
 | An archive cut before its end record lists its members without mode, host or comment, then raises | **format** | Those fields live only in the directory. With no end record in the tail, the reader walks the local headers, lists what they hold as a pipe read does before its directory, then raises the walk's error (`TruncatedError` for a cut). A damaged *directory* lists the entries before the damage and the local headers' past it, then raises (§2.2) |
