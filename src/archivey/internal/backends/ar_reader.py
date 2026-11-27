@@ -30,15 +30,17 @@ info says one was there. A *thin* archive (``!<thin>\\n``) stores only the names
 files kept outside it and is refused.
 
 The reader is written against ``archivey.formats`` and archivey's public names only,
-as a format added from outside would be; ``register_builtin_format`` is the one
-internal name it uses (``tests/test_ar.py`` checks). Handbook page:
+as a format added from outside would be (``tests/test_plugin_modules_use_public_api.py``
+checks); core's format table registers its handler. Handbook page:
 ``dev-docs/formats/ar.md``.
 """
 
 from __future__ import annotations
 
 import re
+import typing
 from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 from archivey.exceptions import (
     CorruptionError,
@@ -54,10 +56,15 @@ from archivey.formats import (
     SequentialFormatHandler,
     SequentialReader,
 )
-from archivey.internal.format_adapter import register_builtin_format
-from archivey.internal.overrides import override
 from archivey.terminal import quoted
 from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
+
+# ``typing.override`` (Python 3.12) where there is one. A format written outside
+# archivey carries the same lines, so the module imports no internal name for it.
+if TYPE_CHECKING:
+    from typing_extensions import override
+else:
+    override = getattr(typing, "override", lambda method: method)
 
 MAGIC = b"!<arch>\n"
 THIN_MAGIC = b"!<thin>\n"
@@ -248,6 +255,3 @@ class ArHandler(SequentialFormatHandler):
     @override
     def open_sequential(self, context: ReaderContext) -> ArReader:
         return ArReader(context)
-
-
-ArReadBackend = register_builtin_format(ArHandler)

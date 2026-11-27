@@ -1,9 +1,10 @@
 """Format backends — one self-registering reader module per archive format.
 
-Importing this package is required: each reader module ends by registering its backend
-(``register_reader(...)``, or ``register_builtin_format(...)`` for the modules written
-against ``archivey.formats``), so a bare ``import archivey.internal.backends`` fills
-the registry. Do not remove the side-effect imports below.
+Importing this package is required: it registers every format of core's table
+(``internal/format_table.py``), so a bare ``import archivey.internal.backends`` fills
+the registry. The modules written against ``BaseArchiveReader`` register on import
+(``register_reader(...)``); for those written against ``archivey.formats`` the table
+names the handler, and the module does not register itself.
 
 Module map. These are written against ``BaseArchiveReader`` and register with
 ``register_reader``. A reading backend usually has a ``*ReadBackend`` (registry /
@@ -58,29 +59,7 @@ stays at the top of ``internal/``.
 Native 7z and RAR also split parse from decode.
 """
 
-# deb registers before ar: a ``.deb`` starts with ar's magic, and the first magic that
-# matches wins. Kept out of the sorted block below so the import sorter cannot move it.
-# isort: off
-from archivey.internal.backends import deb_reader as _deb_reader  # noqa: F401
+from archivey.internal.format_table import register_core_formats
 
-# isort: on
-from archivey.internal.backends import (
-    ar_reader as _ar_reader,  # noqa: F401
-    arj_reader as _arj_reader,  # noqa: F401
-    cab_reader as _cab_reader,  # noqa: F401
-    cpio_reader as _cpio_reader,  # noqa: F401
-    directory_reader as _directory_reader,  # noqa: F401
-    dmg_reader as _dmg_reader,  # noqa: F401
-    iso_reader as _iso_reader,  # noqa: F401
-    lha_reader as _lha_reader,  # noqa: F401
-    makeself_reader as _makeself_reader,  # noqa: F401
-    pkg_reader as _pkg_reader,  # noqa: F401
-    rar_reader as _rar_reader,  # noqa: F401
-    rpm_reader as _rpm_reader,  # noqa: F401
-    sevenzip_reader as _sevenzip_reader,  # noqa: F401
-    single_file_reader as _single_file_reader,  # noqa: F401
-    squashfs_reader as _squashfs_reader,  # noqa: F401
-    tar_reader as _tar_reader,  # noqa: F401
-    xar_reader as _xar_reader,  # noqa: F401
-    zip_reader as _zip_reader,  # noqa: F401
-)
+# Imports each reader module and registers its format, in the table's order.
+register_core_formats()

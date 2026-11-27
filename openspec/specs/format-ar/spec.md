@@ -4,7 +4,7 @@
 
 Unix ar archives (static libraries `.a`, Windows `.lib`, the outer layer of a `.deb`)
 are read through the unified `ArchiveReader` API. The reader is a built-in written
-against `archivey.formats` and registered with `register_builtin_format`; it reads
+against `archivey.formats` and registered from core's format table; it reads
 both the GNU (System V) and the BSD (macOS) dialect in one forward pass. The format
 handbook is `dev-docs/formats/ar.md`.
 
