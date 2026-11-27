@@ -9,6 +9,7 @@ in 0.6.0 still works as ``archivey.<name>`` for the 0.6 series, with a
 
 from __future__ import annotations
 
+import ast
 import importlib
 import re
 import warnings
@@ -20,8 +21,7 @@ import archivey
 
 REPO = Path(__file__).resolve().parents[1]
 
-#: The root names the maintainer chose on 2026-11-27 (31 with the extraction error
-#: setting that replaces ``on_error``, ``on_blocked`` and ``abort_on``).
+#: The root names the maintainer chose on 2026-11-27.
 ROOT_NAMES = frozenset(
     {
         "__version__",
@@ -128,6 +128,18 @@ MOVED = {
     "Verification": "archivey.types",
 }
 
+#: The names ``archivey.core.__all__`` listed until 0.6.0 that ``core`` does not define,
+#: and the submodule each is imported from now.
+CORE_MOVED = {
+    "AcceleratorMode": "archivey.config",
+    "ExtractionLimits": "archivey.config",
+    "ListingLimits": "archivey.config",
+    "DetectionConfidence": "archivey.detection",
+    "FormatAvailability": "archivey.types",
+    "FormatSupport": "archivey.types",
+    "MissingComponent": "archivey.types",
+}
+
 #: Experimental names leave the root with no deprecation release (DR-12a).
 EXPERIMENTAL_MOVED = frozenset({"PluginContainer", "PluginStream"})
 
@@ -159,6 +171,47 @@ def test_from_import_of_a_moved_name_warns_at_the_import_line() -> None:
     ) as caught:
         from archivey import DecoderLimits  # noqa: F401
     assert caught[0].filename == __file__
+
+
+@pytest.mark.parametrize("name", sorted(CORE_MOVED))
+def test_a_name_that_left_core_still_works_with_a_warning(name: str) -> None:
+    import archivey.core
+
+    new_path = f"{CORE_MOVED[name]}.{name}"
+    with pytest.warns(DeprecationWarning, match=re.escape(new_path)) as caught:
+        value = getattr(archivey.core, name)
+    assert value is getattr(importlib.import_module(CORE_MOVED[name]), name)
+    assert caught[0].filename == __file__
+    assert name not in archivey.core.__all__
+
+
+@pytest.mark.parametrize(
+    ("module_name", "table"),
+    [("archivey", "_MOVED_IN_0_6"), ("archivey.core", "_MOVED_IN_0_6")],
+)
+def test_a_type_checker_sees_every_moved_name(module_name: str, table: str) -> None:
+    """The ``TYPE_CHECKING`` block imports each moved name from its new module.
+
+    A type checker does not run ``__getattr__``, so without that block it types the
+    old spelling as ``object`` and a typed caller fails at once instead of a release
+    later.
+    """
+    module = importlib.import_module(module_name)
+    assert module.__file__ is not None
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    seen: dict[str, str] = {}
+    for node in tree.body:
+        if (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Name)
+            and node.test.id == "TYPE_CHECKING"
+        ):
+            for stmt in node.body:
+                if isinstance(stmt, ast.ImportFrom) and stmt.module:
+                    for alias in stmt.names:
+                        if alias.asname == alias.name:
+                            seen[alias.name] = stmt.module
+    assert seen == getattr(module, table)
 
 
 @pytest.mark.parametrize("name", sorted(EXPERIMENTAL_MOVED))

@@ -150,11 +150,47 @@ from archivey.types import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from archivey.config import DecoderLimits
+    # ``X as X`` re-exports the names in ``_MOVED_IN_0_6`` below for type checkers,
+    # which do not run ``__getattr__``.
+    from archivey.config import (
+        AcceleratorMode as AcceleratorMode,  # noqa: PLC0414
+        DecoderLimits,
+        ExtractionLimits as ExtractionLimits,  # noqa: PLC0414
+        ListingLimits as ListingLimits,  # noqa: PLC0414
+    )
+    from archivey.detection import (
+        DetectionConfidence as DetectionConfidence,  # noqa: PLC0414
+    )
     from archivey.formats import FormatHandler
     from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
     from archivey.internal.diagnostics_collector import DiagnosticCollector
     from archivey.internal.streams.archive_stream import ArchiveStreamImpl
+    from archivey.types import (
+        FormatAvailability as FormatAvailability,  # noqa: PLC0414
+        FormatSupport as FormatSupport,  # noqa: PLC0414
+        MissingComponent as MissingComponent,  # noqa: PLC0414
+    )
+
+#: The names this module's ``__all__`` listed until 0.6.0 that it does not define, and
+#: the module each is imported from now. ``__getattr__`` below still serves them, with
+#: a ``DeprecationWarning``, for the 0.6 series (DR-12a); 0.7.0 deletes this table.
+_MOVED_IN_0_6: dict[str, str] = {
+    "AcceleratorMode": "archivey.config",
+    "ExtractionLimits": "archivey.config",
+    "ListingLimits": "archivey.config",
+    "DetectionConfidence": "archivey.detection",
+    "FormatAvailability": "archivey.types",
+    "FormatSupport": "archivey.types",
+    "MissingComponent": "archivey.types",
+}
+
+
+def __getattr__(name: str) -> object:
+    """Serve the names that left this module in 0.6.0, with a ``DeprecationWarning``."""
+    from archivey.internal.moved_names import moved_name
+
+    return moved_name(__name__, _MOVED_IN_0_6, name)
+
 
 __all__ = [
     "detect_format",
