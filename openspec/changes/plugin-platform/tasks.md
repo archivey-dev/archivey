@@ -6,9 +6,10 @@
   in core, the public interface gains what it needs (the Python side of the group 4
   services, the probe context), and its module joins the list of 0.1. What each
   still takes from `archivey.internal` is listed in design.md §5
-- [ ] 0.3 The same for the seven stream codecs that move (R11), onto `CodecHandler`
+- [ ] 0.3 The same for the eight stream codecs that move (the seven of R11 and pbzx,
+  whose xz chunks come from `CodecCall` as capped core decoders), onto `CodecHandler`
   with the hooks of R15; `.Z` goes first among those that need the richer decoder,
-  and settles its public shape (Open Question 12); raw LZO1X uses it with no restart
+  and settles its public shape (Open Question 11); raw LZO1X uses it with no restart
   points (a SquashFS LZO image and a direct block decode that ends at end of input;
   the size check before any allocation; a short last block)
 - [ ] 0.3a The in-process registration a ported codec uses before the manifest
@@ -45,6 +46,10 @@
 
 ## 2. Open names (breaking)
 
+- [ ] 2.0a The three couplings outside the readers (design.md §5, review AG7): the
+  policy's stream-to-method and decodes-with tables read from codec entries, a public
+  query for the known libraries (the CLI's version report), and a public "has an
+  outer stream" property in place of the CLI's container list
 - [ ] 2.0 Usage audit, written into the pull request: every use of enum iteration, enum
   attributes, the `Literal` aliases and persisted values in `src/`, `tests/`, `docs/`
   and the CLI; which names get a deprecation window under DR-12a (the stable ones) and
@@ -55,6 +60,10 @@
   when a call resolves the name, before I/O
 - [ ] 2.1a Tests: a known name whose package is missing, a typo at resolution, and a
   value built from a stored string before any discovery
+- [ ] 2.1f Role and display name without enums (review AG8): `ArchiveFormat` refuses
+  a typed name in the wrong position at construction; `ArchiveFormat("gz")` and
+  `FormatPolicy(exclude={ContainerFormat("xz")})` raise `ArchiveyUsageError` at
+  resolution; `display_name` from the entries, with every pair name of today pinned
 - [ ] 2.1b `FormatPolicy` stores containers, streams and methods by role;
   `only_libraries` by membership; a test that `exclude={StreamFormat("xz")}` still
   reads an xz member of a ZIP
@@ -69,7 +78,10 @@
 - [ ] 2.2 Remove `PluginContainer`, `PluginStream` and the `Literal` spelling lists
 - [ ] 2.2a `ExtraKey` and the generic overloads on `MemberExtra` and
   `ArchiveInfoExtra`; key constants for every format; the 62 per-key overloads
-  removed; the conformance check that a reader sets only declared keys (R3)
+  removed; the conformance check that a reader sets only declared keys (R3); the two
+  `get()` overloads ahead of the `str` ones, under both type checkers; the `EXTRA_*`
+  constants retyped in place; keys declared on the handler, core's shared keys
+  allowed to every reader
 - [ ] 2.3 `FormatInfo.provider` replaces `from_plugin`; `FormatPolicy(providers=...)`,
   with `plugins=False` as a deprecated spelling of `providers={"archivey"}` (R2)
 - [ ] 2.3a Detect first, judge after (R9), in the same pull request as `providers=`: a
@@ -110,9 +122,9 @@
   since opening a ZIP alone cannot show that a probe ran
 - [ ] 3.4 Ownership: one owner per name and signature, longest signature first, a
   clashing extension dropped alone; `refines` and `preempts` only with the owner's
-  consent or the caller's choice; a refinement from another distribution is data
-  only, and the file is refused, never read as its base, when that provider is
-  missing or barred; a bad manifest skipped
+  consent, never by a policy (an outside refinement is opened with `format=`); a
+  refinement from another distribution is data only, and the file is refused, never read
+  as its base, when that provider is missing or barred; a bad manifest skipped
 - [ ] 3.4a The provider query and `archivey --version -v`: found, refused, unparsable
   and incompatible providers, each with its reason
 - [ ] 3.5 The off switch (environment variable and function); it turns our own packages
@@ -183,7 +195,7 @@
 - [ ] 4.8 SFX stub scan declared on the entry (LHA, ARJ): needles, whether the
   parser scans, and a required validator by dotted path, gated like a probe; a 2 MiB
   program with chance `60 EA` bytes is not ARJ; on a core-only install an LHA stub
-  is refused with the hint and an ARJ stub is not recognised (Open Question 13)
+  is refused with the hint and an ARJ stub is not recognised (Open Question 12)
 - [ ] 4.9 Crypto facade (makeself, DMG, ARJ)
 - [ ] 4.10 Nested-archive helpers folded into `ReaderContext.open_nested`; the path
   helpers public (deb, pkg)
@@ -197,8 +209,8 @@
 
 - [ ] 5.0 Each move is the files, the manifest entry and the hint line, with no
   change to the code: the port was group 0
-- [ ] 5.1 The rest of `archivey-package-formats`: ar with deb, xar with pkg, makeself,
-  CAB; a base and its refinements in one pull request
+- [ ] 5.1 The rest of `archivey-package-formats`: ar with deb, xar with pkg and the
+  pbzx codec, makeself, CAB; a base and its refinements in one pull request
 - [ ] 5.2 `packages/archivey-legacy-formats`: LHA, ARJ, the legacy ZIP methods
 - [ ] 5.3 `packages/archivey-disk-images`: ISO, UDF, CD images, SquashFS
 - [ ] 5.3a `packages/archivey-dmg`: DMG with HFS+, APFS and encryption
@@ -208,7 +220,8 @@
   `bzip3` in `[bzip3]` only); the wheel resolves on macOS and 3.13t, and LZ4 is read in
   the free-threaded job; `.Z` joins the legacy package;
   SquashFS with LZ4 or LZO, and a 7z with those methods, refused with the hint when
-  the package is missing
+  the package is missing; the hint for LZ4, mozlz4 and Brotli names the package and
+  the library in one command, and a core-only install that runs it reads the file
 - [ ] 5.3c `VISION.md`: ISO comes with `[recommended]`, not with the bare install
 - [ ] 5.4 For each pack: the pilot checks, the public-imports test, and a corpus run on
   a core-only install (refused with the hint) and a full install (same results as
@@ -222,7 +235,16 @@
   streams, their `ArchiveFormat` constants, the moved methods), clean under both type
   checkers; importing archivey warns nothing
 - [ ] 5.7 Spec deltas: `packaging-and-extras`, the moved format specs
-- [ ] 5.8 Remove `openspec/changes/plugin-api`, which this change replaces
+- [ ] 5.8 Remove `openspec/changes/plugin-api`, which this change replaces, only
+  after its requirements that survive are in `openspec/specs/` (review AG10): the
+  reader contract, `hold()`, `data_on_demand`, inner-stream detection and
+  `CodecHandler` exist only in that change's deltas today. Either `plugin-api` is
+  archived first, or the implementing change of step 2 folds them into its
+  `format-plugins` and `compressed-streams` deltas; a dry-run `openspec archive`
+  shows it
+- [ ] 5.8a Archive `nested-archives`, `plugin-passwords` and `dmg-reader` before the
+  readers they describe move, so their format specs are in `openspec/specs/` when
+  step 5 edits them
 
 ## 6. Afterwards
 

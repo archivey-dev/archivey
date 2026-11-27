@@ -27,7 +27,7 @@ Checked on main `2b66e25` (2026-11-24).
 - **Reader API.** 13 readers are written on `archivey.formats`. ar, cpio and rpm import
   public names only. The other ten import `archivey.internal` (§5 lists what). The
   seven stream codecs that move (R11) are not on the public interface at all: each is
-  an internal `StreamCodec`.
+  an internal `StreamCodec`, and so is pbzx, which moves with pkg (eight codecs).
 - **Size.** The 13 readers and their helper modules are about 24,000 lines. ZIP, TAR,
   7z, RAR, single-file and directory are about 43,000.
 - **Core barely names the formats that would move.** Outside the readers and the enum,
@@ -120,6 +120,7 @@ api = "1.0"
 name = "dmg"
 extensions = [".dmg"]
 trailer = { offset = -512, hex = "6b6f6c79" }      # "koly"
+# ... and the two encrypted shapes: "encrcdsa" at offset 0, a "cdsaencr" trailer
 preempts = ["bz2", "xz"]
 handler = "archivey_dmg.reader:DmgHandler"
 
@@ -246,7 +247,20 @@ Rules:
   `"xz"` is both a stream and a method on purpose.
 - **Policy sets are stored by role.** `FormatPolicy` keeps containers, streams and
   methods apart inside, whatever the caller passed in one `exclude=` set, so no lookup
-  compares a method with a stream.
+  compares a method with a stream. The role comes from the registry when a call
+  resolves the policy, not from the Python type of the value (review AG8): a set
+  cannot hold `ContainerFormat("xz")` and `StreamFormat("xz")` apart, since they are
+  equal strings. A name passed under the wrong role, such as `ContainerFormat("xz")`,
+  raises `ArchiveyUsageError` and never becomes an exclusion that excludes nothing.
+- **What the closed enums gave for free is stated** (review AG8).
+  `ArchiveFormat(container, stream)` refuses a `StreamFormat` as its container and a
+  `ContainerFormat` as its stream when it is built, as today. A plain string cannot
+  be checked then, so `ArchiveFormat("gz")` is built and fails when a call resolves
+  it, with an error that says `gz` is a stream and names `ArchiveFormat.GZ`.
+  `display_name` no longer comes from an enum member's name. Every entry carries a
+  display name (`LZIP` for `lz`, `UNIX_COMPRESS` for `Z`); core's entries keep
+  today's, so `TAR_LZIP` and `CPIO_GZIP` do not change, and an entry without one
+  gets its name in capitals. A pair with an unknown name shows the names as written.
 - **Constants live with their owner.** Core has no `ContainerFormat.DMG`. The moved
   constants stay one release as aliases that warn and name the package: 13 on
   `ContainerFormat`, eight on `StreamFormat` (PBZX and the seven of R11), the matching
@@ -357,7 +371,7 @@ Guardrails:
   carries `providers={"archivey"}` for that reason (R11).
 - **One off switch for a deployment.** `ARCHIVEY_PLUGIN_AUTOLOAD=0`, or
   `archivey.formats.disable_autoload()` before first use, skips the listing in point 2.
-  It is a default for the process. A caller's policy works without it. Our own four
+  It is a default for the process. A caller's policy works without it. Our own five
   packages are plugins like any other, so the switch turns them off too: with it on,
   an `archivey[recommended]` install reads core's formats only. A deployment that
   wants some packages names them: `archivey.formats.load_provider("archivey-dmg")`
@@ -409,15 +423,15 @@ Detection has three phases, the same on every install:
      file. Until then a plugin format the policy turns off stays out of detection, as
      today.
    - A refinement by code check and its base ship in one distribution. So when the
-     package is missing, the refusal names the right package even where core cannot
-     tell pkg from xar. A refinement from **another** distribution must be data (a
-     longer signature at a fixed offset, or a trailer) and sits in the owner's table:
-     core then decides it on any install and under any policy, and refuses with the
-     refining provider's name when that provider is missing or barred. Otherwise the
-     same file would be the base under one policy and the refinement under another,
-     which R9 rules out. This is the one place the guarantee is weaker, and it is stated: on a
+     package is missing, the refusal names the right package even where core cannot tell
+     pkg from xar. This is the one place the guarantee is weaker, and it is stated: on a
      core-only install `detect_format()` reports the family (`xar`) with its provider
-     missing, not the refinement.
+     missing, not the refinement. A refinement from **another** distribution must be
+     data (a longer signature at a fixed offset, or a trailer) and sits in the owner's
+     table: core then decides it on any install and under any policy, and refuses with
+     the refining provider's name when that provider is missing or barred. Otherwise the
+     same file would be the base under one policy and the refinement under another,
+     which R9 rules out.
 3. **Availability.** The format's provider is installed and allowed, or the call is
    refused with the hint.
 
@@ -498,8 +512,9 @@ another's files, is now covered by the consent rule below. Three things follow:
 `refines` and `preempts` take something from another entry: a refinement takes files
 its base would read, and a preempting trailer outranks a signature (a UDIF image whose
 first block is bzip2 or xz data must not be read as a `.bz2`). Both need the consent of
-the entry they take from: they are valid inside one distribution, when the owner's own
-table lists them, or when the calling program's policy names the refining format. Core's
+the entry they take from: they are valid inside one distribution, or when the owner's own
+table lists them. A policy never turns one on (review AG9): the same file would be
+the base under one policy and the refinement under another, which R9 rules out. Core's
 hint table lists the DMG trailer (and its encrypted headers) over core's bzip2 and xz
 signatures, so a UDBZ or ULMO image is never read as a `.bz2` or `.xz`, with or without
 the package. A package cannot refine or preempt ZIP on its own word, and a format
@@ -578,7 +593,7 @@ What the ten readers import from `archivey.internal` today, and how each is reso
   a fixed place in the header) give the refusal with the hint. ARJ's two bytes do
   not, so an ARJ archive behind a stub is not recognised on a core-only install,
   unless the caller names the format, which gives the hint. This is a stated
-  exception to "read the same or refused with a hint" (Open Question 13).
+  exception to "read the same or refused with a hint" (Open Question 12).
 - AES and key-derivation primitives and the password error, used by makeself, DMG, ARJ:
   a small public crypto facade beside `charge_key_derivation` and `NeedsPassword`.
 - Nested-archive helpers (`HeldInnerData`, `DependencyIndex`), used by deb and pkg:
@@ -619,6 +634,15 @@ bzip3, Snappy and `.Z` each subclass the internal `StreamCodec`
   returns the output at the end of the input. The check of the declared size against
   the decoder memory limit runs in core before the decoder is built, as it does
   today, and a last block that decodes to less than the block size stays valid.
+- pbzx (review AG6) is the eighth: it moves with xar and pkg to
+  `archivey-package-formats`, and is an internal `StreamCodec` too. Its chunks are xz
+  streams, and it takes five helpers from core's xz decoder and `declared_memory`:
+  it reads each chunk's LZMA2 dictionary size, records it, and builds a decoder
+  capped by `max_decoder_memory`, so a pkg nested in an archive cannot step around
+  that limit. A package codec gets this from core and does not rebuild it:
+  `CodecCall` gives a decoder for a core codec by name (`xz` here), already capped
+  and already counted against the caller's limits. The same call serves any outside
+  codec that wraps a core one.
 - The child-process switch (`isolated.IN_PROCESS`, `Natives`, the decoder worker and
   child), used by lz4, mozlz4, Brotli, lzop and Snappy: `call.native(...)` (R4).
 - The kernel switch (`kernels`, `LzwDecompressor`), used by lzop and `.Z`: the public
@@ -640,6 +664,28 @@ becomes a public call or goes:
 - `context._listing_draw`, `_keep_metadata` (DMG, UDIF, APFS listing budgets).
 - `source._origin`, `_will_read`, `_progress_reporter`, `_raw` (SFX offsets in LHA and
   ARJ; range hints in ISO, UDF, DMG; progress over a multi-file cue sheet).
+- Found by review AG7, each needing a public call or a line in the entry:
+  `MAX_PENDING_HINTS` from `internal.remote` (ISO), `special_file_has_data_report`,
+  `release_decoder` and stream helpers (ISO), `SourceReadReporter` (cue sheets),
+  `context._checkpoint` (DMG), `config.formats._codec_refusal` and `_libraries_off`
+  (HFS+, UDIF, SquashFS, LHA, makeself, CAB: "may this method or library be used"
+  becomes a public question on the context), `member._listing_checksum` and the
+  reader's `_park` and `_read` (CAB).
+
+Three couplings sit outside the readers (review AG7), and step 2 must not find them
+by breaking:
+
+- `format_policy.py` holds two tables that name moved formats: `_STREAM_METHODS`
+  (stream format to its method, so that `exclude={CompressionAlgorithm.LZ4}` also
+  refuses a `.lz4` file) and `_DECODES_WITH` (LZFSE also decodes LZVN). Both become
+  data on the codec entry: which method a stream facet runs, and which other methods
+  a decoder also decodes.
+- The CLI iterates `OptionalLibrary` for `archivey --version -v` and indexes three
+  moved members. An open type has no members to iterate, so core gains a public
+  query for the known libraries (core's and the installed manifests').
+- `cli/common.py` decides whether a format has an outer stream to peel by a list of
+  containers and `isinstance(..., PluginContainer)`. That becomes a public property
+  of the format, read from its entry.
 
 **Typed `extra` keys (ruling R3).** `MemberExtra` and `ArchiveInfoExtra` carry 62
 `@overload`s today, one per known key: 20 for core's formats and 42 for the formats
@@ -664,8 +710,22 @@ member.extra[DmgExtra.RESOURCE_FORK_SIZE]     # int, no cast
 member.extra["dmg.resource_fork_size"]        # works as today, typed object
 ```
 
-A key is a string, so the dictionary and its contents do not change, and `get()` is
-typed the same way. Core's formats declare their keys in the same shape. The
+A key is a string, so the dictionary and its contents do not change. Three details
+(review AG11):
+
+- `get()` is typed the same way, with two overloads for a key (`T | None`, and
+  `T | D` with a default) placed ahead of the `str` ones, because an `ExtraKey` is
+  also a `str` and the first match wins. Both type checkers are run on it.
+- Core's existing `EXTRA_*` constants keep their names and become `ExtraKey` values,
+  so a caller who already uses a constant keeps its narrowing. The constant of a
+  format that moves stays in core one minor as a deprecated alias, with the moved
+  format constants (task 5.6).
+- A format declares its keys on its handler class, as a tuple of `ExtraKey`s. Core's
+  keys that belong to no format (`is_junction`, `is_reparse_point`, `is_file_copy`,
+  `alternate_raw_name`, `size_mod_2_32`, `special_file_type`) are allowed to every
+  reader and are not declared again.
+
+Core's formats declare their keys in the same shape. The
 conformance checks fail a reader that sets a key it did not declare. **Breaking:** for
 type checking only: a caller who subscripts with a string literal, for a ZIP key too,
 gets `object` until it uses the constant. It lands with the open names in step 2.
@@ -915,6 +975,11 @@ GIL off, and leaving them out of
 rules out format-named extras, because a published extra can never be removed, and
 `archivey[disk-images]` would freeze today's grouping. One package alone is installed
 by its own name, `pip install archivey-disk-images`. A hint names that package.
+A hint must fix the problem in one step (review AG12). Where the format also needs
+a library the wheel does not pull (LZ4, mozlz4, Brotli, and the 7z LZ4 and Brotli
+methods), the hint's command names both: `pip install archivey-compressors lz4`.
+bzip3 names its extra, which supplies both. lzop and Snappy decode in Python, so the
+package alone is enough.
 
 The type checkers, the fuzz targets and `test.sh --all-configs` cover `src` only
 today. Each move adds its package to them in the same pull request, or 25,000 lines
@@ -952,7 +1017,7 @@ revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R15
 8. **One repository, released together**, each package depending on one minor of core.
 9. **The concurrency cut comes first, as a separate change** (maintainer, 2026-11-24).
    This plan builds on the contract it leaves (§5) and carries none of its tasks.
-10. **Timing.** Steps 1 and 2 with the breaking trims of 0.6.0; the split in 0.7.0.
+10. **Timing.** Steps 0 to 2 with the breaking trims of 0.6.0; the split in 0.7.0.
 
 **The manifest is a data file** (maintainer, 2026-11-24, after review C1), not a Python
 entry point that callers opt in to.
@@ -1059,7 +1124,7 @@ Superseded: "built in, like ISO" (2026-10-28), by the 2026-11-24 direction to sp
 - **A lean core surprises someone.** A user of bare `archivey` loses ISO on upgrade.
   The error names the package, the changelog says it under **Breaking:**, and the
   documented install line is `[recommended]`.
-- **Lockstep releases of four distributions.** One workflow and one version, as
+- **Lockstep releases of five plugin distributions.** One workflow and one version, as
   `archivey-cli` does today.
 - **Helpers made public too early.** Mitigated by landing each with the reader that
   needs it, and by the API staying experimental until declared stable.
@@ -1070,15 +1135,15 @@ Each step ships by itself and leaves main working. One thing is proved at a time
 failure points at the API, at detection or at distribution, and not at all three.
 
 0. **Interface first: every class that will move is ported in place** (R14). The
-   public plugin interface grows what the moving readers and codecs need (the
-   services of step 4, the probe context of §4, the codec hooks and the richer decoder of R15),
-   and each of the 13 readers and seven codecs is ported while it still lives in
-   core, one pull request each, until its module imports nothing from
-   `archivey.internal`. The public-names test starts here and its list of modules
-   grows with each port. Nothing moves, no name changes for callers, and the
-   manifest is not needed: a ported class registers as it does today. Proves that the
-   interface is enough before anything depends on a wheel, so a gap shows as a
-   failing test in core and not as a package that cannot be built.
+   public plugin interface grows what the moving readers and codecs need (the services
+   of step 4, the probe context of §4, the codec hooks and the richer decoder of R15),
+   and each of the 13 readers and eight codecs (the seven of R11 and pbzx) is ported
+   while it still lives in core, one pull request each, until its module imports nothing
+   from `archivey.internal`. The public-names test starts here and its list of modules
+   grows with each port. Nothing moves, no name changes for callers, and the manifest is
+   not needed: a ported class registers as it does today. Proves that the interface is
+   enough before anything depends on a wheel, so a gap shows as a failing test in core
+   and not as a package that cannot be built.
 1. **Manifest and lazy loading, inside core.** No public name changes. Proves that
    detection, with the three phases of §4, gives the same answers from data, and that
    `import archivey` loads no reader.
@@ -1111,14 +1176,14 @@ failure points at the API, at detection or at distribution, and not at all three
 
 **The concurrency cut is not in this sequence.** It was a separate change and has
 landed (decision 9, archived 2026-11-25), so the reader contract is already the short
-one when step 1 starts and the migration guide of step 3 is written against it.
+one when step 0 starts and the migration guide of step 3 is written against it.
 
 Rollback: steps 0, 1 and 4 are internal and revert cleanly. Steps 2, 3 and 5 are released
 behaviour; their rollback is a new release.
 
 ## Open Questions
 
-For the next rounds of this plan. None blocks step 1.
+For the next rounds of this plan. None blocks the start of step 0.
 
 1. Field names of the manifest file, and whether `FormatHandler` keeps its declaring
    class attributes or reads them from its entry.
@@ -1143,10 +1208,10 @@ For the next rounds of this plan. None blocks step 1.
     and could skip the lock, so SquashFS, xar, CAB, LHA, ARJ and DMG would decode
     members in parallel as ZIP does. A speed-up, not a contract change: it comes after
     the concurrency cut and after the moves.
-12. The public names and exact shape of the richer decoder of R15, and the wording
+11. The public names and exact shape of the richer decoder of R15, and the wording
     of its rule that every pass offers the same restart points. Settled by the first
     port that uses it (`.Z`), in step 0.
-13. An ARJ archive behind a self-extracting stub is not recognised without
+12. An ARJ archive behind a self-extracting stub is not recognised without
     `archivey-legacy-formats` (§5): its needle is too weak to list in the hint table
     and its validator parses a header. Accepted as an exception, or core keeps the
     ARJ main-header check. For the maintainer.
