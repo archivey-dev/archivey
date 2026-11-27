@@ -1,7 +1,7 @@
 """Measure full and random reads through the rapidgzip child, against the stdlib.
 
 ``bench_process_isolation.py`` covers ``process_isolation`` with the accelerators off;
-this script covers ``use_rapidgzip`` and ``use_indexed_bzip2``, which always decode in a
+this script covers ``use_rapidgzip`` (gzip and bzip2), which always decode in a
 child process (``rapidgzip_child.py``). The investigation page
 ``dev-docs/investigations/process-isolation-overhead.md`` quotes its output.
 
@@ -158,13 +158,9 @@ def _archivey_read(path: str, mode: str) -> Callable[[], None]:
     from archivey.config import AcceleratorMode, ArchiveyConfig
 
     if mode == "off":
-        config = ArchiveyConfig(
-            use_rapidgzip=AcceleratorMode.OFF, use_indexed_bzip2=AcceleratorMode.OFF
-        )
+        config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
     elif mode == "on_seek":
-        config = ArchiveyConfig(
-            use_rapidgzip=AcceleratorMode.ON, use_indexed_bzip2=AcceleratorMode.ON
-        )
+        config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
     else:
         config = ArchiveyConfig()
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from enum import Enum
@@ -40,6 +41,7 @@ from archivey.internal.arg_checks import (
     check_limit,
     check_limit_fields,
 )
+from archivey.internal.config_copy import copying_config
 from archivey.internal.enum_args import coerce_enum
 from archivey.terminal import quoted
 from archivey.types import ArchiveMember, OnSourceRead, OptionalLibrary
@@ -68,8 +70,8 @@ class AcceleratorMode(Enum):
     """Always use it. Raises :class:`~archivey.PackageNotInstalledError` when its
     package is not installed."""
     OFF = "off"
-    """Never use it. The standard library decodes the stream. Set both ``use_rapidgzip``
-    and ``use_indexed_bzip2`` to this when results must not depend on the machine."""
+    """Never use it. The standard library decodes the stream. Set ``use_rapidgzip`` to
+    this when results must not depend on the machine."""
 
     def enabled_for(
         self,
@@ -108,11 +110,12 @@ class AcceleratorMode(Enum):
 
 
 # The string spellings of ``AcceleratorMode``, which ``ArchiveyConfig`` takes for
-# ``use_rapidgzip`` and ``use_indexed_bzip2``, so a type checker flags a bad one at the
-# call. Deliberately narrower than what ``internal.enum_args`` accepts: coercion also
-# takes the member *name* and ignores case, and a literal can express neither. Keep it
-# beside the enum: ``tests/test_enum_arguments.py`` fails if the two drift. The same
-# holds for ``ProcessIsolationStr`` and ``RarDecompressorStr`` below.
+# ``use_rapidgzip`` (and the deprecated ``use_indexed_bzip2``), so a type checker flags
+# a bad one at the call. Deliberately narrower than what ``internal.enum_args``
+# accepts: coercion also takes the member *name* and ignores case, and a literal can
+# express neither. Keep it beside the enum: ``tests/test_enum_arguments.py`` fails if
+# the two drift. The same holds for ``ProcessIsolationStr`` and ``RarDecompressorStr``
+# below.
 AcceleratorModeStr = Literal["auto", "on", "off"]
 
 
@@ -130,7 +133,7 @@ class ProcessIsolation(Enum):
 
     KNOWN_CRASHES = "known_crashes"
     """The default: only the decoders seen to crash on some input run in a child
-    process: rapidgzip (``use_rapidgzip``, ``use_indexed_bzip2``), pyppmd (every PPMd
+    process: rapidgzip (``use_rapidgzip``), pyppmd (every PPMd
     member) and libbzip3 (every ``.bz3`` file, a young library with memory-safety fixes
     in its 2023 releases). Every other decoder runs in the caller's process. Processes
     are reused for later decoders. Measured on one Linux machine
@@ -170,8 +173,8 @@ class ProcessIsolation(Enum):
     isolated by default because they crash the process on some input or may, and here a
     crash takes the caller with it. It suits trusted files where speed matters, tests,
     and environments that cannot start processes. PPMd members and ``.bz3`` files decode
-    in-process, and rapidgzip is not used: ``use_rapidgzip`` and ``use_indexed_bzip2``
-    under ``AUTO`` use the standard library, and ``ON`` is refused with
+    in-process, and rapidgzip is not used: ``use_rapidgzip`` under ``AUTO`` uses the
+    standard library, and ``ON`` is refused with
     :class:`~archivey.ArchiveyUsageError` when the config is built."""
 
 
@@ -290,7 +293,7 @@ PartialDataRecoveryStr = Literal["off", "before_damage", "before-damage", "all"]
 # design note.
 RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 16 * 1024 * 1024
 
-# Minimum known compressed input size (bytes) before ``use_indexed_bzip2`` AUTO selects
+# Minimum known compressed input size (bytes) before ``use_rapidgzip`` AUTO selects
 # rapidgzip's bzip2 decoder. ``ON`` ignores this; unknown size keeps pre-threshold AUTO.
 #
 # The bzip2 decoder runs in a child process too, so each accelerated stream pays about
@@ -937,10 +940,13 @@ class ArchiveyConfig:
     """
 
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
-    """Whether to use the ``rapidgzip`` accelerator for gzip, zlib and raw deflate.
+    """Whether to use the ``rapidgzip`` accelerator for gzip, zlib, raw deflate and
+    bzip2.
 
     It decodes those codecs in parallel, and seeks faster from its own index. Under
-    ``AUTO`` it is used only when the compressed input is known to be at least
+    ``AUTO`` it is used for bzip2 only when the compressed input is known to be at
+    least ``INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`` bytes (or its size is unknown). For
+    the others it is used only when the compressed input is known to be at least
     ``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`` bytes (or its size is unknown) and the
     decompressed size can be verified, so a truncated stream cannot be swallowed
     silently. With seeking asked for, that is enough. Without it, ``AUTO`` uses it only
@@ -962,17 +968,12 @@ class ArchiveyConfig:
     ``OFF`` never starts a child.
     """
 
-    use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
-    """Whether to use rapidgzip's bundled bzip2 backend, which decodes bzip2 in parallel.
+    use_indexed_bzip2: AcceleratorMode | None = None
+    """Deprecated since 0.6.0: :attr:`use_rapidgzip` decides bzip2 too. Setting it warns,
+    and archivey 0.7.0 removes it.
 
-    Under ``AUTO`` it is used only when the compressed input is known to be at least
-    ``INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`` bytes (or its size is unknown). Like the
-    gzip decoder, it runs in a child Python process, one per open stream, reused the same
-    way (see ``use_rapidgzip``). No crash has been seen in it; it is isolated as a
-    precaution, because it comes from the same library as the gzip decoder, which does
-    crash on some input. Where no child can be started, ``AUTO`` uses the standard
-    library, logging one warning per process on the ``archivey.streams`` logger, and
-    ``ON`` raises :class:`~archivey.exceptions.ResourceUnavailableError`.
+    While it is set, it decides bzip2 alone, as in 0.5. ``None``, the default, means
+    bzip2 follows :attr:`use_rapidgzip`.
     """
 
     process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
@@ -1203,7 +1204,7 @@ class ArchiveyConfig:
         def __init__(
             self,
             use_rapidgzip: AcceleratorMode | AcceleratorModeStr = ...,
-            use_indexed_bzip2: AcceleratorMode | AcceleratorModeStr = ...,
+            use_indexed_bzip2: AcceleratorMode | AcceleratorModeStr | None = ...,
             process_isolation: ProcessIsolation | ProcessIsolationStr = ...,
             zip_unflagged_fallback_encoding: str = ...,
             rar_decompressor: RarDecompressor | RarDecompressorStr = ...,
@@ -1248,6 +1249,17 @@ class ArchiveyConfig:
         _check_policy_fields(self)
         _convert_detection_budget(self)
         _check_guard_switches(self)
+        # Archivey's own copies of a caller's config (``copy_config_quietly``) pass
+        # the field on as if it were set again; only the caller's construction warns.
+        # The warning stays in this method so that ``stacklevel=3`` names the caller's
+        # line: one level is this method, the next is the dataclass ``__init__``.
+        if self.use_indexed_bzip2 is not None and not copying_config():
+            warnings.warn(
+                "ArchiveyConfig.use_indexed_bzip2 is deprecated: use_rapidgzip decides "
+                "bzip2 too. archivey 0.7.0 removes it.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
         _check_scalar_fields(self)
         _convert_enum_fields(self)
         _convert_program_paths(self)
@@ -1368,6 +1380,8 @@ def _convert_enum_fields(config: ArchiveyConfig) -> None:
     # Each call names its enum class directly: ``tests/test_enum_arguments.py`` reads
     # the coerced classes from the second argument of every ``coerce_enum`` call.
     for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
+        if getattr(config, field_name) is None and field_name == "use_indexed_bzip2":
+            continue
         object.__setattr__(
             config,
             field_name,

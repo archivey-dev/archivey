@@ -396,7 +396,7 @@ where a further stream starts, so the verdict is the standard library's.
 | AES then LZMA or LZMA2, decrypted input ending in AES padding | Original bytes; the pad is past the coder's input size |
 | LZMA1 coder without an end marker, with input after its data | `CorruptionError` (`7z t`: Data Error), except one zero byte |
 | 7-Zip's own LZMA, LZMA:eos, LZMA2, PPMd, `-mhe=on`, solid, `-ms=off` and BCJ2 archives | Read clean |
-| Two BZip2 streams under rapidgzip (`use_indexed_bzip2` `ON`), whatever the size and CRC count | `CorruptionError`, as with the accelerator off |
+| Two BZip2 streams under rapidgzip (`use_rapidgzip` `ON`), whatever the size and CRC count | `CorruptionError`, as with the accelerator off |
 | Two Deflate streams under `use_rapidgzip=ON`, the unpack size covering the first only, or the last index point in the first | `CorruptionError`, as with the accelerator off |
 | Two Deflate streams under `use_rapidgzip=ON`, the last index point in the second, the unpack size covering both | Decodes both streams |
 

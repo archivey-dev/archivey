@@ -1365,7 +1365,7 @@ class ProcessIsolation(Enum):
 @dataclass(frozen=True)
 class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
-    use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
+    use_indexed_bzip2: AcceleratorMode | None = None  # deprecated in 0.6.0
     process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
     zip_unflagged_fallback_encoding: str = "cp437"
     read_link_targets: bool = True
@@ -1420,7 +1420,8 @@ whose size is known only once it has been read (a ZIP member with bit 3 set, rea
 non-seekable source), SHALL be fed to pyppmd in pieces. `None` SHALL hold every member
 whose size is known. `process_isolation` SHALL be converted from the member or its name
 at construction, as the accelerator fields are. `process_isolation=NONE` together with
-`use_rapidgzip=ON` or `use_indexed_bzip2=ON` SHALL raise `ArchiveyUsageError` (also a
+`use_rapidgzip=ON` (or the deprecated `use_indexed_bzip2=ON`) SHALL raise
+`ArchiveyUsageError` (also a
 `ValueError`) at construction: rapidgzip runs only in a child process. Per-call `limits`
 still beat `config.extraction_limits`, then reader/library default. Other per-call
 operational args stay outside `ArchiveyConfig`. `detection_budget` SHALL bound what

@@ -109,9 +109,7 @@ _FUZZ_LIMITS = ExtractionLimits(max_extracted_bytes=8 << 20, max_entries=10_000)
 
 # Force the deterministic zero-dep codec path (see module docstring): the accelerators are
 # third-party C++ and can hang on crafted input, which is out of scope for this layer.
-_FUZZ_CONFIG = ArchiveyConfig(
-    use_rapidgzip=AcceleratorMode.OFF, use_indexed_bzip2=AcceleratorMode.OFF
-)
+_FUZZ_CONFIG = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
 
 # The mutated bytes have no file name, so by default detection would run no content probe;
 # always_probe_content keeps the probe decoders under the detection invariant below.

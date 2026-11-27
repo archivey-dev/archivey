@@ -101,7 +101,7 @@ def missing_snappy_native(
 
 def accelerator_used(mode: AcceleratorMode, config: ArchiveyConfig) -> bool:
     """Whether ``config`` would ever decode through rapidgzip with ``mode`` (its
-    ``use_rapidgzip`` or ``use_indexed_bzip2``), were it installed: not under ``OFF``,
+    resolved ``use_rapidgzip`` or ``use_indexed_bzip2``), were it installed: not under ``OFF``,
     and not under ``ProcessIsolation.NONE``, since rapidgzip runs only in a child."""
     return (
         mode is not AcceleratorMode.OFF
@@ -114,9 +114,10 @@ def missing_rapidgzip(
     mode: AcceleratorMode,
     config: ArchiveyConfig,
 ) -> tuple[MissingComponent, ...]:
-    """rapidgzip, for the deflate family (``mode`` = ``use_rapidgzip``) and bzip2
-    (``use_indexed_bzip2``). It decodes large data in parallel, in a child process,
-    so a config that never starts one has nothing to gain from it."""
+    """rapidgzip, for the deflate family and bzip2 (``mode`` = ``use_rapidgzip``, or for
+    bzip2 the deprecated ``use_indexed_bzip2`` while it is set). It decodes large data
+    in parallel, in a child process, so a config that never starts one has nothing to
+    gain from it."""
     if not accelerator_used(mode, config):
         return ()
     return missing_speedup(((rapidgzip_speedup(), deps.rapidgzip),), excluded)

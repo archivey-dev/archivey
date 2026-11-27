@@ -53,6 +53,8 @@ line. How to write the entry: see
   the full report as its `report` attribute. A damaged member no longer stops the run at
   once: pass `on_problem="stop"` for that, which also stops at the first refused member.
   `archivey extract --stop-on-error` now stops at a refused member too.
+- **Breaking:** `ArchiveyConfig.use_rapidgzip` decides bzip2 too, so
+  `use_rapidgzip="off"` alone now keeps rapidgzip away from bzip2 as well.
 - A streaming pass over a format with an index (a ZIP, 7z, RAR, ISO, CAB and others)
   reads the whole index before its first member, so `members_report_if_available()`
   gives the same answer inside the loop as before it.
@@ -77,6 +79,8 @@ line. How to write the entry: see
   second member at one path under the default `overwrite="error"`, and
   `ExtractionResult.rewrites` lists every rewritten name. `archivey extract --abort-on`
   is deprecated the same way. 0.7.0 removes them.
+- `ArchiveyConfig.use_indexed_bzip2` keeps working in 0.6 with a `DeprecationWarning`,
+  and decides bzip2 alone while it is set; use `use_rapidgzip`. 0.7.0 removes it.
 
 ### Removed
 

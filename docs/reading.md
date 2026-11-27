@@ -259,10 +259,7 @@ answer as other tools, on every machine, and you would rather it be slower than 
 accelerator off:
 
 ```python
-config = archivey.ArchiveyConfig(
-    use_rapidgzip=archivey.config.AcceleratorMode.OFF,
-    use_indexed_bzip2=archivey.config.AcceleratorMode.OFF,
-)
+config = archivey.ArchiveyConfig(use_rapidgzip=archivey.config.AcceleratorMode.OFF)
 with archivey.open_archive("data.zip", config=config) as archive:
     ...
 ```
@@ -291,4 +288,4 @@ format, and the mistake shows up during development.
 | Read from a pipe | `pipe=True` | [TAR, ZIP, cpio, ar, deb, RPM, makeself and single compressed files](#reading-from-a-pipe); [some results differ from a file](formats.md#reading-from-a-pipe) |
 | Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and a seek that [jumps over data](errors-and-diagnostics.md#damaged-archives) stops the checksum check |
 | Read members from several threads | `concurrent_operations=True` | [Slow on sources where each jump is costly](#several-members-at-once) |
-| Get the same result as other tools, on every machine | `use_rapidgzip` and `use_indexed_bzip2` set to `OFF` in `ArchiveyConfig` | [Large gzip and bzip2 reads are slower](#the-same-result-everywhere) |
+| Get the same result as other tools, on every machine | `use_rapidgzip` set to `OFF` in `ArchiveyConfig` | [Large gzip and bzip2 reads are slower](#the-same-result-everywhere) |

@@ -68,14 +68,12 @@ _CONFIG = ArchiveyConfig(
     detection_budget=BALANCED_BUDGET,
     always_probe_content=True,
     use_rapidgzip=AcceleratorMode.OFF,
-    use_indexed_bzip2=AcceleratorMode.OFF,
     decoder_limits=_FUZZ_DECODER_LIMITS,
 )
 _TINY_CONFIG = ArchiveyConfig(
     detection_budget=BALANCED_BUDGET,
     always_probe_content=True,
     use_rapidgzip=AcceleratorMode.OFF,
-    use_indexed_bzip2=AcceleratorMode.OFF,
     decoder_limits=DecoderLimits(max_decoder_memory=1 << 20),
     listing_limits=ListingLimits(max_members=5, max_metadata_bytes=2048),
     diagnostic_policy=DiagnosticPolicy.PEDANTIC,

@@ -670,7 +670,7 @@ The parameters covered:
 | Entry point | Parameters |
 | --- | --- |
 | `ArchiveReader.extract_all()` | `policy`, `overwrite`, `on_problem`, and the deprecated `on_error`, `on_blocked`, `abort_on` |
-| `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2`, `process_isolation`, `rar_decompressor`, `detection_budget` (a `DetectionBudget` passes through unconverted) |
+| `ArchiveyConfig(...)` | `use_rapidgzip`, the deprecated `use_indexed_bzip2`, `process_isolation`, `rar_decompressor`, `detection_budget` (a `DetectionBudget` passes through unconverted) |
 | `ArchiveFormat(...)` | `container`, `stream` (a plugin's member passes through unconverted) |
 | `DiagnosticPolicy(...)` | `ignore`, `raise_on` |
 

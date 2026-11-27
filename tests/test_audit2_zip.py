@@ -768,7 +768,7 @@ def test_bzip2_member_with_a_second_stream_after_its_end_is_corrupt() -> None:
 
 _BZ_ACCELERATED = [
     pytest.param(
-        {"config": ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)},
+        {"config": ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)},
         id="on",
         marks=requires("rapidgzip"),
     ),

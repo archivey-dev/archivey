@@ -264,7 +264,7 @@ def test_a_second_bzip2_or_lzma_stream_in_a_member_is_refused(
     # stream is input after the end, where a .bz2 or .lzma file reads it on.
     encode = ENCODINGS[encoding][1]
     raw = _member_stored_as(encode(_FIRST) + encode(_SECOND), declared, encoding)
-    config = archivey.ArchiveyConfig(use_indexed_bzip2=mode)
+    config = archivey.ArchiveyConfig(use_rapidgzip=mode)
     with (
         _open(raw, config=config) as reader,
         pytest.raises(CorruptionError, match="after its end"),

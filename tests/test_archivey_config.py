@@ -51,14 +51,11 @@ def test_open_archive_without_config_uses_defaults(tmp_path) -> None:
 
 
 def test_stream_config_derived_from_archivey_config() -> None:
-    cfg = ArchiveyConfig(
-        use_rapidgzip=AcceleratorMode.ON,
-        use_indexed_bzip2=AcceleratorMode.OFF,
-    )
+    cfg = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
     stream_cfg = stream_config_from_archivey(cfg, streaming=True)
     assert stream_cfg.streaming is True
     assert stream_cfg.use_rapidgzip is AcceleratorMode.ON
-    assert stream_cfg.use_indexed_bzip2 is AcceleratorMode.OFF
+    assert stream_cfg.use_indexed_bzip2 is AcceleratorMode.ON
 
 
 def test_accelerator_modes_honored_via_config(
@@ -89,10 +86,7 @@ def test_accelerator_modes_honored_via_config(
         return io.BytesIO(tar_bytes)
 
     monkeypatch.setattr(codecs_module, "open_codec_stream", _capture_open)
-    cfg = ArchiveyConfig(
-        use_rapidgzip=AcceleratorMode.ON,
-        use_indexed_bzip2=AcceleratorMode.OFF,
-    )
+    cfg = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as t:
         info = tarfile.TarInfo("a.txt")
@@ -103,7 +97,7 @@ def test_accelerator_modes_honored_via_config(
         ar.members()
     assert captured
     assert captured[0].use_rapidgzip is AcceleratorMode.ON
-    assert captured[0].use_indexed_bzip2 is AcceleratorMode.OFF
+    assert captured[0].use_indexed_bzip2 is AcceleratorMode.ON
 
 
 def test_strict_archive_eof_is_gone() -> None:

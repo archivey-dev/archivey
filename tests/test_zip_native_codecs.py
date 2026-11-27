@@ -632,7 +632,7 @@ def test_framed_stream_refuses_a_second_stream_after_the_end(
 @requires("rapidgzip")
 @pytest.mark.parametrize(
     ("method_name", "method", "accelerator"),
-    [("Deflate", 8, "use_rapidgzip"), ("BZip2", 12, "use_indexed_bzip2")],
+    [("Deflate", 8, "use_rapidgzip"), ("BZip2", 12, "use_rapidgzip")],
     ids=["deflate", "bzip2"],
 )
 @pytest.mark.parametrize("tail", _TAILS)

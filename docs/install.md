@@ -175,8 +175,8 @@ copies one. That has two effects:
 If you read data that needs lz4, pyppmd or inflate64, the error says why archivey doesn't use the
 package, in place of an install hint, and so do `format_availability()` and
 `archivey --version -v`. rapidgzip only speeds things up, so `format_availability()` lists it in
-`faster_with` with that reason, and so does `archivey --version -v`. Setting `use_rapidgzip` or
-`use_indexed_bzip2` to `AcceleratorMode.ON` raises an error with the same reason.
+`faster_with` with that reason, and so does `archivey --version -v`. Setting `use_rapidgzip` to
+`AcceleratorMode.ON` raises an error with the same reason.
 
 If you use PyPy, close member streams and passes yourself, with a `with` block or `close()`. On
 CPython, one that nothing refers to any more is closed at once. PyPy closes it only at a later

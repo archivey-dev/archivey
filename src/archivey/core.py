@@ -1510,9 +1510,8 @@ def open_stream(
     ``False``, ``seek()`` raises ``io.UnsupportedOperation``, and no seek index is
     built. A sequential read can still use an accelerator: ``AUTO`` picks rapidgzip for
     a large gzip or bzip2 that qualifies
-    (:attr:`~archivey.ArchiveyConfig.use_rapidgzip`,
-    :attr:`~archivey.ArchiveyConfig.use_indexed_bzip2`), and ``ON`` asks for it. Set
-    both to ``OFF`` to keep it out. Pass ``seekable=True`` to opt into the
+    (:attr:`~archivey.ArchiveyConfig.use_rapidgzip`), and ``ON`` asks for it. Set it
+    to ``OFF`` to keep it out. Pass ``seekable=True`` to opt into the
     seekable-decompressor-streams contract (native indexes, demand-driven accelerator
     ``AUTO``, loud slow rewinds on the non-accelerated path).
 

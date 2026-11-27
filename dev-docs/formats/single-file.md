@@ -162,7 +162,7 @@ detection's peek already holds all of it (`ArchiveSource.held_rest`): the byte i
 decoded from a copy. Otherwise it is not checked, because the byte would come out of its
 one pass. The cost is one decoded block, which matters only
 for bzip2 ([`bzip2.md`](bzip2.md) §2.2). The byte is decoded with the standard library
-whatever `use_rapidgzip` / `use_indexed_bzip2` say, so no rapidgzip child starts at open.
+whatever `use_rapidgzip` says, so no rapidgzip child starts at open.
 An `ON` accelerator is still resolved there (`StreamCodec.check_accelerator`), so rapidgzip
 absent or no child process possible raises at open as before. One `ON` failure moved to the
 first read: a child that fails to start (a process cap, no writable temporary directory, too
@@ -307,16 +307,16 @@ target when it is a resume point, or the nearest resume point and how far before
 target it is. For the DEFLATE family and bzip2 it also names `rapidgzip`, and suggests
 installing it only when it is absent.
 
-**Accelerators.** `ArchiveyConfig.use_rapidgzip` (gzip, zlib, raw DEFLATE) and
-`use_indexed_bzip2` (bzip2) are `AcceleratorMode`s. `OFF` never uses `rapidgzip`; `ON`
-always does, and raises `PackageNotInstalledError` without it and
-`StreamNotSeekableError` on a source that cannot seek; `AUTO` uses it only when
-seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`) and it is
-installed. For the DEFLATE family `AUTO` adds two conditions, a compressed input of at
-least 16 MiB and a way to check the decoded length, and `rapidgzip` runs there in a
-child process. It also takes a large sequential read there, at 3:1 or less, on Linux
-and macOS. All of it is on [`gzip.md`](gzip.md) §2.3; bzip2 stays in-process
-([`bzip2.md`](bzip2.md) §2.3).
+**Accelerators.** `ArchiveyConfig.use_rapidgzip` (gzip, zlib, raw DEFLATE and bzip2; the
+deprecated `use_indexed_bzip2` decides bzip2 alone while it is set) is an
+`AcceleratorMode`. `OFF` never uses `rapidgzip`; `ON` always does, and raises
+`PackageNotInstalledError` without it and `StreamNotSeekableError` on a source that
+cannot seek; `AUTO` uses it only when seeking was declared (`seekable_members=True`,
+`open_stream(seekable=True)`) and it is installed. For the DEFLATE family `AUTO` adds
+two conditions, a compressed input of at least 16 MiB and a way to check the decoded
+length. It also takes a large sequential read there, at 3:1 or less, on Linux and macOS.
+All of it is on [`gzip.md`](gzip.md) §2.3; bzip2 has its own threshold
+([`bzip2.md`](bzip2.md) §2.3). `rapidgzip` runs in a child process for both.
 
 **Truncation.** A decoder's `flush` runs once, at compressed end of file. When the stream
 is incomplete it arms a `TruncatedError` rather than raising it, and hands back whatever

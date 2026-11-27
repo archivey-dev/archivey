@@ -112,11 +112,15 @@ def _bzip2_zeros() -> bytes:
     return b"".join([*parts, compressor.flush()])
 
 
-def test_a_bzip2_child_names_its_own_setting() -> None:
-    """The bzip2 decoder is turned off by ``use_indexed_bzip2``, so that is the setting
-    the error suggests; ``use_rapidgzip`` would change nothing for this stream."""
+def test_a_bzip2_child_names_the_setting_it_came_from() -> None:
+    """While the deprecated ``use_indexed_bzip2`` is set, it alone turns the bzip2
+    decoder off, so that is the setting the error suggests."""
     with RapidgzipChildStream(
-        io.BytesIO(_bzip2_zeros()), label="bzip2", bzip2=True, max_memory=_SMALL_LIMIT
+        io.BytesIO(_bzip2_zeros()),
+        label="bzip2",
+        bzip2=True,
+        max_memory=_SMALL_LIMIT,
+        setting="use_indexed_bzip2",
     ) as child:
         error = _read_until_stopped(child)
         assert "use_indexed_bzip2=AcceleratorMode.OFF" in str(error)

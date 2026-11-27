@@ -702,7 +702,7 @@ def _encrypted_codec_archive(tmp_path: Path, *, method: str, payload: bytes) -> 
     ("method", "config_field", "algo"),
     [
         ("Deflate", "use_rapidgzip", CompressionAlgorithm.DEFLATE),
-        ("BZip2", "use_indexed_bzip2", CompressionAlgorithm.BZIP2),
+        ("BZip2", "use_rapidgzip", CompressionAlgorithm.BZIP2),
     ],
 )
 def test_encrypted_deflate_family_seeks_with_accelerator(

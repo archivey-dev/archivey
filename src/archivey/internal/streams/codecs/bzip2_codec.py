@@ -892,7 +892,12 @@ class Bzip2Codec(StreamCodec):
     def missing_speedups(
         self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
     ) -> tuple[MissingComponent, ...]:
-        return speedups.missing_rapidgzip(excluded, config.use_indexed_bzip2, config)
+        mode = (
+            config.use_rapidgzip
+            if config.use_indexed_bzip2 is None
+            else config.use_indexed_bzip2
+        )
+        return speedups.missing_rapidgzip(excluded, mode, config)
 
     @override
     def prepare_config(self, source: CodecSource, config: StreamConfig) -> StreamConfig:
@@ -959,15 +964,15 @@ class Bzip2Codec(StreamCodec):
         if config.use_indexed_bzip2 is not AcceleratorMode.ON:
             return
         if self._use_accelerator(config):
-            _refuse_forward_only_accelerator(source, "use_indexed_bzip2", "bzip2")
-            _require_rapidgzip_child("bzip2")
+            _refuse_forward_only_accelerator(source, config.bzip2_setting, "bzip2")
+            _require_rapidgzip_child("bzip2", config)
 
     def _use_accelerator(self, config: StreamConfig) -> bool:
         """Whether this open decodes through rapidgzip. Raises where ``ON`` asks for it
         and rapidgzip is absent."""
         why = _bzip2_auto_without_child(config)
         if why is not None:
-            _warn_child_fallback(why, "use_indexed_bzip2")
+            _warn_child_fallback(why, config.bzip2_setting, bzip2=True)
         if _bzip2_uses_accelerator(config):
             return True
         if config.use_indexed_bzip2 is AcceleratorMode.ON:
@@ -983,7 +988,7 @@ class Bzip2Codec(StreamCodec):
         """Open ``source`` through rapidgzip's bzip2 decoder in a child process, or
         ``None`` for an ``AUTO`` open whose child could not start
         (:func:`_open_rapidgzip`)."""
-        _refuse_forward_only_accelerator(source, "use_indexed_bzip2", "bzip2")
+        _refuse_forward_only_accelerator(source, config.bzip2_setting, "bzip2")
         # rapidgzip's bundled bzip2 decoder, not the separate indexed_bzip2 package
         # (ADR 0008). Bound the input: an AES pad after the end-of-stream marker is
         # trailing garbage, which rapidgzip would read as such.

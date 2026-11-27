@@ -33,9 +33,7 @@ from archivey.internal.streams.codecs.xz_decoder import XzDecompressorStream
 from tests.conftest import requires
 from tests.test_audit_tar_streams import _TRAILER, _gnu_sparse, _member
 
-_ACCEL_ON = ArchiveyConfig(
-    use_rapidgzip=AcceleratorMode.ON, use_indexed_bzip2=AcceleratorMode.ON
-)
+_ACCEL_ON = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
 
 
 def _read_single(
@@ -458,9 +456,7 @@ def test_accelerated_member_stream_seeks_like_the_stdlib_one(codec: str) -> None
         data, fmt = gzip.compress(payload), ArchiveFormat.GZ
     else:
         data, fmt = bz2.compress(payload), ArchiveFormat.BZ2
-    off = ArchiveyConfig(
-        use_rapidgzip=AcceleratorMode.OFF, use_indexed_bzip2=AcceleratorMode.OFF
-    )
+    off = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
     assert _single_member_stream_positions(data, fmt, off) == (1500, 0)
     assert _single_member_stream_positions(data, fmt, _ACCEL_ON) == (1500, 0)
 

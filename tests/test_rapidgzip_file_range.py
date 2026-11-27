@@ -142,9 +142,7 @@ def _open_kinds(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     return kinds
 
 
-_ON = ArchiveyConfig(
-    use_rapidgzip=AcceleratorMode.ON, use_indexed_bzip2=AcceleratorMode.ON
-)
+_ON = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
 
 
 @posix_only
@@ -188,7 +186,6 @@ def test_a_reported_member_is_still_read_from_the_file(
     calls: list[SourceProgress] = []
     config = ArchiveyConfig(
         use_rapidgzip=AcceleratorMode.ON,
-        use_indexed_bzip2=AcceleratorMode.ON,
         on_source_read=calls.append,
         source_read_step=0,
     )

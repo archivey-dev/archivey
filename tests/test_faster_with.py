@@ -68,7 +68,7 @@ def test_payload_and_member_containers_report_rapidgzip(
 @pytest.mark.parametrize(
     "config",
     [
-        ArchiveyConfig(use_rapidgzip="off", use_indexed_bzip2="off"),
+        ArchiveyConfig(use_rapidgzip="off"),
         ArchiveyConfig(process_isolation="none"),
     ],
     ids=["accelerators-off", "isolation-none"],
@@ -82,11 +82,13 @@ def test_config_that_never_uses_rapidgzip_does_not_list_it(
     assert _names(ArchiveFormat.GZ) == ["rapidgzip"]
 
 
-def test_one_accelerator_off_leaves_the_other(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_use_rapidgzip_off_drops_it_for_bzip2_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _absent(monkeypatch, OptionalLibrary.RAPIDGZIP)
     config = ArchiveyConfig(use_rapidgzip="off")
     assert _names(ArchiveFormat.GZ, config) == []
-    assert _names(ArchiveFormat.BZ2, config) == ["rapidgzip"]
+    assert _names(ArchiveFormat.BZ2, config) == []
 
 
 def test_lzo_and_snappy_report_their_python_fallbacks(

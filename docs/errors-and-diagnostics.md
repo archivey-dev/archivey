@@ -292,7 +292,7 @@ A `.tar.bz2` or `.tar.bz3` archive also has a checksum for each block it is comp
 does a `.tar.xz` written in several blocks, as `xz` does when it compresses with more than one
 thread. A TAR file reaches `CHECKSUM` as soon as every block its data lies in has passed its check,
 without waiting for the end of the archive. When the bzip2 accelerator decompresses the archive
-(`use_indexed_bzip2`; under `AUTO`, a `.tar.bz2` file on disk of 1 MiB or more), no file reaches
+(`use_rapidgzip`; under `AUTO`, a `.tar.bz2` file on disk of 1 MiB or more), no file reaches
 `CHECKSUM` before the end of the archive, as above. If a later block is damaged, the files in the
 earlier blocks keep `CHECKSUM`, except, in a `.tar.xz`, the files that end in the block right before
 the damage: an xz block counts as checked only once the decompressor is past its end. `verify_all()`
