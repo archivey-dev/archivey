@@ -256,7 +256,7 @@ class _TrackFile:
         self._lock = threading.Lock()
         self.size = st.st_size
         self.name = path.name
-        # ``ArchiveyConfig.on_source_read``'s reporter for this file, when set.
+        # ``on_source_read``'s reporter for this file, when set.
         self.progress: SourceReadReporter | None = None
 
     def read_at(self, offset: int, n: int) -> bytes:

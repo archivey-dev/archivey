@@ -624,7 +624,7 @@ otherwise open the current directory as a directory archive or extract into it.
 | `ArchiveyConfig(extraction_limits="none")` then `extract_all(...)` | `ArchiveyUsageError` at construction, not `AttributeError` part-way through the extraction |
 | `ArchiveyConfig(listing_limits="x")` then listing | `ArchiveyUsageError` at construction, not `AttributeError` mid-listing |
 | `ArchiveyConfig(max_retained_diagnostic_references="x")` | `ArchiveyUsageError` at construction |
-| `ArchiveyConfig(on_diagnostic=0)` | `ArchiveyUsageError` at construction, not when the first diagnostic fires |
+| `ArchiveyConfig(on_diagnostic=0)`, `open_archive(src, on_diagnostic=0)` | `ArchiveyUsageError` at construction or before the source is read, not when the first diagnostic fires |
 | `ArchiveyConfig(read_link_targets="false")` | `ArchiveyUsageError` at construction |
 | `open_archive(src, streaming="false")`, `open_stream(src, seekable=0)` | `ArchiveyUsageError` that is also a `TypeError`, naming the flag, before the source is read |
 | `ListingLimits(max_members="x")` | `ArchiveyUsageError` at construction, not `TypeError` mid-listing |

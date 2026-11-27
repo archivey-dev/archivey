@@ -647,6 +647,21 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: _with_config(archive, out(), on_source_read=b),
             )
         )
+        for function, keyword in (
+            (open_archive, "on_diagnostic"),
+            (open_archive, "on_source_read"),
+            (open_stream, "on_diagnostic"),
+            (open_stream, "on_source_read"),
+            (detect_format, "on_diagnostic"),
+        ):
+            rows.append(
+                _case(
+                    function.__name__,
+                    keyword,
+                    bad,
+                    lambda b=bad, f=function, k=keyword: f(archive, **{k: b}),
+                )
+            )
     # Guard switches: "false" is truthy, so a string would turn a refusal off.
     for field_name in (
         "read_link_targets",

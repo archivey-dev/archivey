@@ -13,7 +13,7 @@ from archivey.cli.common import (
     outer_directory_error,
     refuse_outer_selection,
     reject_stdin_token,
-    with_source_progress,
+    source_read,
 )
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
@@ -134,7 +134,9 @@ def _cat_outer(
             raise outer_directory_error(shown)
     try:
         try:
-            stream = open_stream(source, config=with_source_progress(config, progress))
+            stream = open_stream(
+                source, config=config, on_source_read=source_read(progress)
+            )
         finally:
             # Before the first byte goes out.
             if progress is not None:

@@ -11,7 +11,7 @@ from archivey.cli.common import (
     is_read_once,
     read_once_refusal,
     reject_stdin_token,
-    with_source_progress,
+    source_read,
 )
 from archivey.cli.format import (
     escape_path,
@@ -140,7 +140,8 @@ def run_info(
                 source,
                 password=pwd,
                 pipe=pipe,
-                config=with_source_progress(config, progress),
+                config=config,
+                on_source_read=source_read(progress),
             )
         finally:
             if progress is not None:

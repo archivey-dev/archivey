@@ -2434,7 +2434,7 @@ class ExtractionProgress:
 
 @dataclass(frozen=True)
 class SourceProgress:
-    """Progress snapshot for ``ArchiveyConfig.on_source_read``: how far archivey has
+    """Progress snapshot for ``open_archive(on_source_read=)``: how far archivey has
     read the archive's own file.
 
     A local file or stream reports about once per MiB read
@@ -2496,7 +2496,8 @@ class SourceProgress:
 
 
 OnSourceRead = Callable[[SourceProgress], None]
-"""The ``ArchiveyConfig.on_source_read`` callback."""
+"""The ``on_source_read=`` callback of :func:`~archivey.open_archive` and
+:func:`~archivey.open_stream`."""
 
 
 @dataclass(frozen=True)

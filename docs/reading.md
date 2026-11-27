@@ -211,9 +211,10 @@ your own threads. Archivey never calls your code from a thread it started.
 
 ## Showing progress
 
-To show how far archivey has read the archive's own file, set `on_source_read`. Archivey calls it
-with a `SourceProgress` as it reads: about once per MiB for a file on disk or a stream, and for a
-URL around each range request ([Remote archives](remote.md#watching-the-requests)).
+To show how far archivey has read the archive's own file, pass `on_source_read=` to `open_archive`
+or `open_stream`. Archivey calls it with a `SourceProgress` as it reads: about once per MiB for a
+file on disk or a stream, and for a URL around each range request
+([Remote archives](remote.md#watching-the-requests)).
 
 ```python
 import archivey
@@ -222,8 +223,7 @@ def show(progress: archivey.types.SourceProgress) -> None:
     if progress.nest_level == 0 and progress.size:
         print(f"{progress.position / progress.size:.0%} of {progress.name}")
 
-config = archivey.ArchiveyConfig(on_source_read=show)
-with archivey.open_archive("backup.tar.xz", config=config) as archive:
+with archivey.open_archive("backup.tar.xz", on_source_read=show) as archive:
     archive.extract_all("out")
 ```
 
@@ -242,7 +242,7 @@ opened. To log each part of the file archivey reads, set `ArchiveyConfig(source_
 the callback then runs for every read, and `read_start` to `position` is the part of the file that
 read took. For a RAR archive opened from a stream, archivey's own thread may copy the volumes to
 `unrar`; you get only the latest of those reads, so the log has gaps there, though `bytes_read`
-counts every byte. With `on_source_read` unset, nothing is counted.
+counts every byte. Without `on_source_read`, nothing is counted.
 
 ## The same result everywhere
 

@@ -726,7 +726,7 @@ class ArchiveSource(ReadOnlyIOStream):
     def report_reads(
         self, callback: OnSourceRead, step: int = 1 << 20, nest_level: int = 0
     ) -> None:
-        """Call ``callback`` (``ArchiveyConfig.on_source_read``) as this source is read.
+        """Call ``callback`` (``on_source_read``) as this source is read.
 
         A range source reports each request; any other source reports the bytes taken
         from it, about once per MiB (:mod:`archivey.internal.read_progress`).

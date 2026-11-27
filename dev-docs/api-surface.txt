@@ -353,10 +353,10 @@ field archivey.TruncatedError.report: ExtractionReport | None
 class archivey.UnsupportedFeatureError(ArchiveyError)
 init archivey.UnsupportedFeatureError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 field archivey.UnsupportedFeatureError.report: ExtractionReport | None
-function archivey.detect_format(source: SourceItem, *, config: ArchiveyConfig | None = None, follow_stub_volumes: bool = True) -> FormatInfo
+function archivey.detect_format(source: SourceItem, *, config: ArchiveyConfig | None = None, on_diagnostic: OnDiagnostic | None = None, follow_stub_volumes: bool = True) -> FormatInfo
 function archivey.format_availability(fmt: ArchiveFormat | str, *, check_programs: bool = True, config: ArchiveyConfig | None = None) -> FormatAvailability
-function archivey.open_archive(source: OpenSourceInput, *, format: ArchiveFormat | str | None = None, streaming: bool = False, pipe: bool = False, seekable_members: bool = False, concurrent_operations: bool = False, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None, parent: ForwardArchiveReader | None = None, salvage: bool = False) -> ForwardArchiveReader
-function archivey.open_stream(source: SourceItem, *, format: StreamFormat | PluginStream | ArchiveFormat | str | None = None, seekable: bool = False, config: ArchiveyConfig | None = None) -> ArchiveStream
+function archivey.open_archive(source: OpenSourceInput, *, format: ArchiveFormat | str | None = None, streaming: bool = False, pipe: bool = False, seekable_members: bool = False, concurrent_operations: bool = False, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None, on_diagnostic: OnDiagnostic | None = None, on_source_read: OnSourceRead | None = None, parent: ForwardArchiveReader | None = None, salvage: bool = False) -> ForwardArchiveReader
+function archivey.open_stream(source: SourceItem, *, format: StreamFormat | PluginStream | ArchiveFormat | str | None = None, seekable: bool = False, config: ArchiveyConfig | None = None, on_diagnostic: OnDiagnostic | None = None, on_source_read: OnSourceRead | None = None) -> ArchiveStream
 module archivey.core
 reexport archivey.core.detect_format = archivey.detect_format
 reexport archivey.core.format_availability = archivey.format_availability

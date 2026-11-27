@@ -1,4 +1,4 @@
-"""Reports for ``ArchiveyConfig.on_source_read``: how far the archive's file is read.
+"""Reports for ``on_source_read``: how far the archive's file is read.
 
 One :class:`SourceReadReporter` serves one opened source. Two kinds of source feed it:
 

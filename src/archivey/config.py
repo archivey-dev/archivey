@@ -1167,8 +1167,9 @@ class ArchiveyConfig:
     """
 
     on_diagnostic: OnDiagnostic | None = None
-    """A callback called with each diagnostic the policy collects or raises, as it is
-    emitted, or ``None``."""
+    """Deprecated since 0.6.0: pass ``on_diagnostic=`` to :func:`~archivey.open_archive`,
+    :func:`~archivey.open_stream` or :func:`~archivey.detect_format`. Setting it warns;
+    the call's keyword wins over it. archivey 0.7.0 removes it."""
 
     formats: FormatPolicy = field(default_factory=FormatPolicy)
     """Which formats this call may open. See :class:`~archivey.FormatPolicy`.
@@ -1218,31 +1219,9 @@ class ArchiveyConfig:
     """
 
     on_source_read: OnSourceRead | None = None
-    """A callback called with a :class:`~archivey.types.SourceProgress` as archivey reads the
-    archive's own file, or ``None``.
-
-    A local file or stream reports about once per MiB read. A URL source (an
-    ``fsspec.core.OpenFile``) reports before and after each range request, and over
-    HTTP about once per MiB of the answer as it comes in. Detection's reads count. It
-    runs on the thread that read, and an exception it raises propagates out of that
-    read: raising is how a caller stops a slow read. Every later read of the
-    file raises it again, and ``extract_all(on_problem="continue")`` stops on it rather
-    than counting it as one member's failure. A read on a thread archivey started (the
-    RAR volume feeder) does not call it: the latest such report is kept and delivered on
-    the caller's next read of the archive or of the member being read. Reports in
-    between are merged, so ``requests`` may skip numbers. Every reader reports to the
-    callback in its own config. A reader opened with ``parent=`` (an archive inside a
-    member, which uses the parent's config unless given one) reports with
-    :attr:`SourceProgress.nest_level <archivey.types.SourceProgress.nest_level>` one more than
-    its parent's. Each reader reports the bytes it reads from its own source (for a
-    nested reader, the member it was opened on), at its own level. A member stream
-    passed without ``parent=`` is a file of its own, at level 0. To tell apart nested
-    archives open at the same time, give each its own callback, such as
-    ``dataclasses.replace(config, on_source_read=functools.partial(on_read, name))``. A
-    split set found beside a stub, and the track files of a ``.cue`` sheet, report as
-    the file they stand in for. Bytes that an external program (``unrar``) or the RAR
-    reader's own volume reads take from a path directly are not reported.
-    """
+    """Deprecated since 0.6.0: pass ``on_source_read=`` to
+    :func:`~archivey.open_archive` or :func:`~archivey.open_stream`. Setting it warns;
+    the call's keyword wins over it. archivey 0.7.0 removes it."""
 
     source_read_step: int = 1 << 20
     """Bytes taken from a local file or stream between two ``on_source_read`` calls
@@ -1354,6 +1333,20 @@ class ArchiveyConfig:
             warnings.warn(
                 "ArchiveyConfig.use_indexed_bzip2 is deprecated: use_rapidgzip decides "
                 "bzip2 too. archivey 0.7.0 removes it.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+        callbacks = [
+            name
+            for name in ("on_diagnostic", "on_source_read")
+            if getattr(self, name) is not None
+        ]
+        if callbacks and not copying_config():
+            spelled = ", ".join(f"{name}=" for name in callbacks)
+            warnings.warn(
+                f"ArchiveyConfig({spelled}) is deprecated: pass the callback to "
+                "open_archive(), open_stream() or detect_format(), which a nested "
+                "open_archive(parent=) inherits. archivey 0.7.0 removes the fields.",
                 DeprecationWarning,
                 stacklevel=3,
             )

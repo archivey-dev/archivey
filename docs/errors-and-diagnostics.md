@@ -395,10 +395,11 @@ members, and `max_retained_diagnostic_references` in `ArchiveyConfig` changes th
 
 Each diagnostic is also logged as a warning on a logger under `archivey`, such as
 `archivey.normalization`, so a script that calls `logging.basicConfig()` prints a line for each. To
-handle them as they happen instead, pass a function as `on_diagnostic=` in
-`archivey.ArchiveyConfig`. Archivey calls it with each [`Diagnostic`][archivey.Diagnostic] as
-it's recorded, the same record the summaries keep. An exception it raises stops the operation and
-reaches your code.
+handle them as they happen instead, pass a function as `on_diagnostic=` to `open_archive`,
+`open_stream` or `detect_format`. Archivey calls it with each [`Diagnostic`][archivey.Diagnostic]
+as it's recorded, the same record the summaries keep. An exception it raises stops the operation
+and reaches your code. An archive opened from a member with `parent=` reports to the same
+function unless you pass it one of its own.
 
 Two codes are logged at INFO rather than as a warning, because they report how your code reads
 an archive, not a problem with the archive: `STREAM_REWIND_REDECOMPRESSES` (seeking back in a

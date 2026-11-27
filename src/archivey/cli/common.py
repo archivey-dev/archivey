@@ -30,6 +30,7 @@ from archivey.terminal import display_path
 from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
+    OnSourceRead,
     PluginContainer,
     StreamFormat,
 )
@@ -199,7 +200,7 @@ def open_for_cli(
     ``-`` from stdin passes the stream as ``stdin``, which opens in pipe mode as well
     when it cannot seek; for every other verb ``-`` is refused. ``format`` skips
     detection, as ``open_archive(format=)`` does. ``progress`` shows how far the
-    archive's file is read (``ArchiveyConfig.on_source_read``); it is closed when the
+    archive's file is read (``open_archive(on_source_read=)``); it is closed when the
     block ends.
     """
     source: Any
@@ -215,7 +216,6 @@ def open_for_cli(
         pipe = not is_remote(str(archive)) and is_read_once(archive)
         streaming = pipe
     err = err if err is not None else sys.stderr
-    config = with_source_progress(config, progress)
     try:
         if track_io:
             with (
@@ -226,6 +226,7 @@ def open_for_cli(
                     pipe=pipe,
                     streaming=streaming,
                     config=config,
+                    on_source_read=source_read(progress),
                     format=format,
                 ) as reader,
             ):
@@ -240,6 +241,7 @@ def open_for_cli(
                 pipe=pipe,
                 streaming=streaming,
                 config=config,
+                on_source_read=source_read(progress),
                 format=format,
             ) as reader:
                 yield reader
@@ -249,14 +251,10 @@ def open_for_cli(
             progress.close()
 
 
-def with_source_progress(
-    config: ArchiveyConfig | None, progress: ProgressCallback | None
-) -> ArchiveyConfig | None:
-    """``config`` with ``progress`` as its ``on_source_read``; ``config`` unchanged
-    when there is no progress line to show."""
-    if progress is None:
-        return config
-    return replace(config or ArchiveyConfig(), on_source_read=progress.source_read)
+def source_read(progress: ProgressCallback | None) -> OnSourceRead | None:
+    """The ``on_source_read=`` that draws ``progress``, or ``None`` when there is no
+    progress line to show."""
+    return None if progress is None else progress.source_read
 
 
 def _open(
@@ -266,6 +264,7 @@ def _open(
     pipe: bool,
     streaming: bool,
     config: ArchiveyConfig | None,
+    on_source_read: OnSourceRead | None,
     format: ArchiveFormat | None,
 ) -> ForwardArchiveReader:
     try:
@@ -276,6 +275,7 @@ def _open(
             pipe=pipe,
             streaming=streaming,
             config=config,
+            on_source_read=on_source_read,
         )
     except StreamNotSeekableError as exc:
         shown = archive if isinstance(archive, (str, Path)) else "stdin"

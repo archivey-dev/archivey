@@ -115,6 +115,11 @@ line. How to write the entry: see
   removes them.
 - `ArchiveyConfig.use_indexed_bzip2` keeps working in 0.6 with a `DeprecationWarning`,
   and decides bzip2 alone while it is set; use `use_rapidgzip`. 0.7.0 removes it.
+- `ArchiveyConfig(on_diagnostic=, on_source_read=)` keep working in 0.6 with a
+  `DeprecationWarning`; pass `on_diagnostic=` and `on_source_read=` to `open_archive`
+  or `open_stream`, and `on_diagnostic=` to `detect_format`. A reader opened with
+  `parent=` reports to its parent's callbacks unless its call passes others, also when
+  it has a `config=` of its own. 0.7.0 removes the fields.
 
 ### Removed
 

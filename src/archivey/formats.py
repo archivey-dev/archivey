@@ -427,7 +427,7 @@ class ReaderSource:
     # archivey only, for its built-in readers, and only on a remote source: ``None``
     # elsewhere, so a reader gathers no hints that would change nothing.
     _will_read: Callable[[int, int], None] | None = None
-    # Gives a reporter for ``ArchiveyConfig.on_source_read`` for another file that holds
+    # Gives a reporter for ``on_source_read`` for another file that holds
     # the archive's bytes (a ``.cue`` sheet's track), named and sized; ``None`` or
     # returning ``None`` when the source does not report. Set by archivey only.
     _progress_reporter: Callable[[str | None, int | None], Any] | None = None

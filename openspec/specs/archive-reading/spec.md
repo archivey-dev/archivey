@@ -1378,7 +1378,7 @@ class ArchiveyConfig:
     always_probe_content: bool = False
     diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
     max_retained_diagnostic_references: int = 256
-    on_diagnostic: Callable[[Diagnostic], None] | None = None
+    on_diagnostic: Callable[[Diagnostic], None] | None = None  # deprecated
     max_read_through: int = 2**20
     format_options: Sequence[object] = ()  # stored as a tuple
     fallback_encoding: str | None = None
@@ -2270,8 +2270,10 @@ system.
 
 ### Requirement: Reading the archive's file reports progress
 
-`ArchiveyConfig.on_source_read` SHALL, when set, be called with a `SourceProgress` as
-`open_archive()` and `open_stream()` read the archive's own file, detection included.
+The `on_source_read=` callback of `open_archive()` and `open_stream()` SHALL, when
+given, be called with a `SourceProgress` as the call reads the archive's own file,
+detection included. The deprecated `ArchiveyConfig.on_source_read` field SHALL warn when
+set and SHALL still be called when the call passes no `on_source_read=`.
 
 For a source read by range requests (an `fsspec.core.OpenFile`, alone or in a volume
 list) it SHALL be called once before each request, with `request_received == 0` and
@@ -2299,8 +2301,9 @@ requirement. An exception it raises SHALL propagate out of the read that called 
 unchanged; every later read of the file SHALL raise it again, bytes served from a cache
 or a replay included, and an extraction or verification that goes on past a member's
 error SHALL stop on it instead. A reader opened with `parent=` SHALL report to the
-callback in its own config (its parent's unless given one) with `nest_level` one more
-than its parent's; a member stream opened without `parent=` is a source of its own and
+callback its call passes, or else to its parent's, with or without a `config=` of its
+own, with `nest_level` one more than its parent's; a member stream opened without
+`parent=` is a source of its own and
 SHALL report at `nest_level` 0. A split set found beside a stub, and the track files of
 a `.cue` sheet, SHALL report as the file they stand in for. `position` and `read_start`
 SHALL count from the start of the file, also when a stream is opened where the caller
@@ -2326,7 +2329,7 @@ reporting work SHALL be done beyond checking that it is unset.
 #### Scenario: a nested reader
 
 - **WHEN** `on_source_read` is set and an archive is opened from a member with
-  `open_archive(member, parent=outer)` and no `config=`
+  `open_archive(member, parent=outer)` and no `on_source_read=`
 - **THEN** the outer file's reads report at `nest_level` 0 and the nested reader's
   reads report to the same callback at `nest_level` 1
 

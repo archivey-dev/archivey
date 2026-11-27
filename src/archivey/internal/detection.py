@@ -115,10 +115,12 @@ from archivey.exceptions import (
 from archivey.format_policy import FormatPolicy
 from archivey.internal.arg_checks import (
     check_bool,
+    check_callable,
     check_config,
     check_path_not_empty,
     require_source,
 )
+from archivey.internal.config_copy import config_with_callbacks
 from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
 from archivey.internal.detection_workspace import (
     DETECTION_LIMIT,
@@ -185,6 +187,7 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from archivey.diagnostics import OnDiagnostic
     from archivey.internal.streams.codecs.base import CodecId
     from archivey.types import OptionalLibrary
 
@@ -1686,6 +1689,7 @@ def detect_format(
     source: SourceItem,
     *,
     config: ArchiveyConfig | None = None,
+    on_diagnostic: OnDiagnostic | None = None,
     follow_stub_volumes: bool = True,
 ) -> FormatInfo:
     """Identify the archive format of ``source`` without fully opening it.
@@ -1698,7 +1702,8 @@ def detect_format(
     nothing ready (its ``read`` returns ``None``) raises ``BlockingIOError`` instead:
     bytes that have not arrived are not the same as no bytes. Detection diagnostics
     are on the returned :attr:`FormatInfo.diagnostics`, recorded into a standalone
-    collector made from ``config`` (or the library default).
+    collector made from ``config`` (or the library default). ``on_diagnostic`` is
+    called with each of them that the policy collects or raises, as it is emitted.
 
     What detection may read and decode is ``config.detection_budget``
     (:attr:`ArchiveyConfig.detection_budget`), ``BALANCED`` by default — the same
@@ -1746,6 +1751,14 @@ def detect_format(
         FileNotFoundError: The path does not exist.
     """
     check_bool(follow_stub_volumes, call="detect_format(follow_stub_volumes=…)")
+    check_callable(on_diagnostic, call="detect_format(on_diagnostic=…)")
+    if on_diagnostic is not None:
+        check_config(config, call="detect_format(config=…)")
+        config = config_with_callbacks(
+            config if config is not None else DEFAULT_ARCHIVEY_CONFIG,
+            on_diagnostic=on_diagnostic,
+            on_source_read=None,
+        )
     return detect_format_into(
         source, config=config, collector=None, follow_stub_volumes=follow_stub_volumes
     )
