@@ -1784,6 +1784,25 @@ def test_a_member_cut_short_after_a_found_one_ends_the_pass_in_its_error(
     assert isinstance(listing.error, CorruptionError)
 
 
+def test_a_search_from_past_the_archive_end_searches_nothing() -> None:
+    # The invariant behind the test above, at the walker's one search entry: a
+    # start built from a size the archive gives may lie past the known end, and
+    # the search there is empty rather than an assertion in the shared search.
+    data = _member("a.txt", b"a") + b"X" * BLOCKSIZE
+    state = SalvageState(
+        requested=True,
+        enabled=True,
+        limits=SalvageLimits(),
+        collector=collector_from_config(ArchiveyConfig()),
+        archive_name=None,
+        format_name="TAR",
+    )
+    walker = TarWalker(io.BytesIO(data), seekable=True, end=len(data))
+    result = walker.salvage_search(state, len(data) + 80 * BLOCKSIZE, layer="archive")
+    assert result.found is None
+    assert not result.limit_reached
+
+
 def _pax_record(key: str, value: str) -> bytes:
     body = f" {key}={value}\n"
     length = len(body) + 1
