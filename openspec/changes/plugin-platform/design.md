@@ -35,7 +35,10 @@ Checked on main `2b66e25` (2026-11-24).
   the 13 `ContainerFormat` members appear in four places: a makeself hint in `core.py`,
   one list in `cli/common.py`, `REPLACEABLE_CONTAINERS` in `format_adapter.py`, and two
   speed-up tables in `registry.py`.
-- **Diagnostic codes are generic.** None of the 49 is format-specific.
+- **Diagnostic codes are nearly all generic.** No moving reader needs a code of its
+  own, but three of the 49 are reported only by readers that move:
+  `ARCHIVE_STRUCTURE_INCONSISTENT` (DMG), `ARCHIVE_UNREAD_SESSION` (ISO and CD
+  images) and `MEMBER_NAME_DUPLICATE_UNEXPECTED` (CAB). Open Question 12.
 
 ### How other projects do it
 
@@ -1336,3 +1339,8 @@ For the next rounds of this plan. None blocks the start of step 0.
 12. Whether a plugin may define diagnostic codes of its own (a Non-Goal above for
     now). Decided after the diagnostic-code audit of R21, which shows which codes
     survive and whether a moved reader loses one it needs (maintainer, 2026-11-27).
+    The audit found the three codes named in §Context. After the split they would
+    be members of core's closed enum that only a package reports, against the goal
+    that core holds no enum member that exists only for plugins. The choices: keep
+    them as general codes any reader may report, fold them into broader codes, or
+    let a package declare them.
