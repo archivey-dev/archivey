@@ -448,6 +448,10 @@ class NameEncodingContext(_JsonSafeContext):
     was kept as a lone surrogate. It is empty when no decode of the stored bytes
     produced the name: ISO takes a Rock Ridge name that is not UTF-8 from the file's
     Joliet record instead, unless a ``fallback_encoding`` is set.
+
+    ``declared_encoding`` is the encoding the archive declared for the name and the
+    bytes break (``"utf-8"`` for a ZIP name with its UTF-8 flag set), and tells the two
+    codes apart: it is empty for ``MEMBER_NAME_FALLBACK_ENCODING``.
     """
 
     kind: Literal["name_encoding"] = "name_encoding"
@@ -456,6 +460,7 @@ class NameEncodingContext(_JsonSafeContext):
     member_id: int | None = None
     raw_name_base64: str | None = None
     fallback_encoding: str = ""
+    declared_encoding: str = ""
 
 
 @dataclass(frozen=True)
@@ -1796,6 +1801,14 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                 frozenset({"zeros_to_eof", "end_of_stream", "directory_padding"}),
             ),
             DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS: ("field", frozenset({"name"})),
+            DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING: (
+                "declared_encoding",
+                frozenset({""}),
+            ),
+            DiagnosticCode.MEMBER_NAME_ENCODING_MISMATCH: (
+                "declared_encoding",
+                frozenset({"utf-8"}),
+            ),
             DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS: (
                 "field",
                 frozenset({"method"}),

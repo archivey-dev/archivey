@@ -1072,8 +1072,9 @@ field archivey.diagnostics.NameDuplicateContext.member_name: str = ''
 field archivey.diagnostics.NameDuplicateContext.member_type: str = ''
 method archivey.diagnostics.NameDuplicateContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.NameEncodingContext(_JsonSafeContext)
-init archivey.diagnostics.NameEncodingContext(kind: Literal['name_encoding'] = 'name_encoding', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, raw_name_base64: str | None = None, fallback_encoding: str = '') -> None
+init archivey.diagnostics.NameEncodingContext(kind: Literal['name_encoding'] = 'name_encoding', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, raw_name_base64: str | None = None, fallback_encoding: str = '', declared_encoding: str = '') -> None
 field archivey.diagnostics.NameEncodingContext.archive_name: str | None = None
+field archivey.diagnostics.NameEncodingContext.declared_encoding: str = ''
 field archivey.diagnostics.NameEncodingContext.fallback_encoding: str = ''
 field archivey.diagnostics.NameEncodingContext.kind: Literal['name_encoding'] = 'name_encoding'
 field archivey.diagnostics.NameEncodingContext.member_id: int | None = None

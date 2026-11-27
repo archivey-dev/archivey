@@ -33,8 +33,8 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | Code | Variant and required fields |
 | --- | --- |
 | `MEMBER_NAME_NORMALIZED` | `NameNormalizationContext`: `kind="name_normalization"`, `archive_name`, `member_name`, `member_id`, `raw_name_base64`, `presented_name`, `normalized_name` |
-| `MEMBER_NAME_FALLBACK_ENCODING` | `NameEncodingContext`: `kind="name_encoding"`, `archive_name`, `member_name`, `member_id`, `raw_name_base64`, `fallback_encoding` (the codec the fallback used, `"surrogateescape"` when bytes were kept as escapes, empty when another record named the member) |
-| `MEMBER_NAME_ENCODING_MISMATCH` | `NameEncodingContext`, as above: `fallback_encoding` is the codec the fallback used |
+| `MEMBER_NAME_FALLBACK_ENCODING` | `NameEncodingContext`: `kind="name_encoding"`, `archive_name`, `member_name`, `member_id`, `raw_name_base64`, `fallback_encoding` (the codec the fallback used, `"surrogateescape"` when bytes were kept as escapes, empty when another record named the member), `declared_encoding` (empty) |
+| `MEMBER_NAME_ENCODING_MISMATCH` | `NameEncodingContext`, as above: `fallback_encoding` is the codec the fallback used, and `declared_encoding` the encoding the bytes break (`"utf-8"`) |
 | `MEMBER_NAME_BIDI_CONTROL` | `MemberNameControlsContext`: `kind="member_name_controls"`, `archive_name`, `member_name`, `member_id`, `raw_name_base64`, `controls`, `field` (`"name"` or `"link_target"`: which text carries the controls; emitted once per member for each), `category="bidi"` |
 | `MEMBER_NAME_ZERO_WIDTH_CHARACTER` | `MemberNameControlsContext` as for `MEMBER_NAME_BIDI_CONTROL`, with `category="zero_width"`: `controls` lists the occurrences of U+200B, U+2060 and U+FEFF |
 | `MEMBER_NAME_INVISIBLE_CHARACTER` | `MemberNameControlsContext` as for `MEMBER_NAME_BIDI_CONTROL`, with `category="invisible"`: `controls` lists the other characters of Unicode category Cf that are not bidi controls (for example U+00AD, U+200C, U+200D, the tag characters) |

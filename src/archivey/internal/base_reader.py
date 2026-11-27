@@ -3635,6 +3635,7 @@ class BaseArchiveReader(ArchiveReader):
                 member_id=member_id,
                 raw_name_base64=raw_name_to_base64(member.raw_name),
                 fallback_encoding=codec,
+                declared_encoding="utf-8",
             ),
             member=member,
             attach_to_member=True,
