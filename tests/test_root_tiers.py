@@ -232,14 +232,33 @@ def test_an_unknown_name_is_still_an_attribute_error() -> None:
         archivey.no_such_name  # noqa: B018
 
 
-_OLD_ATTR = re.compile(r"(?<![\w.])archivey\.(" + "|".join(MOVED) + r")\b")
+def test_the_old_spelling_scan_sees_both_shims() -> None:
+    text = (
+        "archivey.DecoderLimits\nfrom archivey import (ReadError, open_archive)\n"
+        "archivey.core.FormatSupport\nfrom archivey.core import ExtractionLimits\n"
+        "archivey.core.open_archive\nfrom archivey.config import DecoderLimits\n"
+    )
+    assert _old_spellings(text) == [
+        "archivey.DecoderLimits",
+        "from archivey import ReadError",
+        "archivey.core.FormatSupport",
+        "from archivey.core import ExtractionLimits",
+    ]
+
+
+#: Each shimmed module and the names it still serves under their old spelling.
+_SHIMS = {"archivey": MOVED, "archivey.core": CORE_MOVED}
 
 
 def _old_spellings(text: str) -> list[str]:
-    found = [m.group(0) for m in _OLD_ATTR.finditer(text)]
-    for m in re.finditer(r"from archivey import (\([^)]*\)|[^\n]*)", text):
-        names = re.findall(r"\b(\w+)\b(?:\s+as\s+\w+)?", m.group(1).strip("()"))
-        found += [f"from archivey import {n}" for n in names if n in MOVED]
+    found: list[str] = []
+    for module, moved in _SHIMS.items():
+        dotted = re.escape(module)
+        attr = re.compile(rf"(?<![\w.]){dotted}\.(" + "|".join(moved) + r")\b")
+        found += [m.group(0) for m in attr.finditer(text)]
+        for m in re.finditer(rf"from {dotted} import (\([^)]*\)|[^\n]*)", text):
+            names = re.findall(r"\b(\w+)\b(?:\s+as\s+\w+)?", m.group(1).strip("()"))
+            found += [f"from {module} import {n}" for n in names if n in moved]
     return found
 
 
