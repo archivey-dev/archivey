@@ -143,8 +143,13 @@ decoder = "archivey_dmg.lzfse:LzfseCodec"
   handler paths point into `archivey.internal`. The table does not care which base
   class a handler is built on.
 - `register_format()` and `register_codec()` take the same entry as an object, for a
-  program that adds a format of its own at run time. That is the program's own code,
-  which it chose to run.
+  program that adds a format of its own at run time. Both take an optional
+  `provider=` name, `None` by default (R17). An entry with no provider runs only
+  under a policy that does not restrict providers; no value of `providers=` can
+  allow it, so `providers={"archivey"}` and `COMMON` bar it, as `plugins=False`
+  does today. An entry with a provider name is allowed like a package of that name.
+  The name may not be `archivey` nor the name of an installed distribution that
+  ships a manifest. `FormatInfo.provider` is `None` for an entry without one.
 
 ### 2. Names
 
@@ -1036,7 +1041,7 @@ What it cannot undo is a published package name, which is why DMG is split now.
 ## Decisions
 
 All ten were put to the maintainer and agreed on 2026-11-24. Decisions 5, 6 and 7 were
-revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R16 below).
+revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R17 below).
 
 1. **Installed plugins load by themselves, behind the guardrails of §3.** This replaces
    the 2026-10-25 rule (explicit `register_format()` only), which the maintainer
@@ -1142,6 +1147,16 @@ and the evidence in front of him (review round A):
   the header size and its CRC-32 at each `60 EA` the scan finds. Rejected: leaving
   such a file unrecognised without the package, an exception to "read the same or
   refused with a hint".
+
+- **R17. A run-time entry has an optional provider name, `None` by default** (§1,
+  review F8; maintainer, 2026-11-27). `register_format()` and `register_codec()`
+  take `provider=`. Without it the entry runs only when the policy does not restrict
+  providers, and nothing can put it on an allow list. Only a program that restricts
+  providers has to name its own entries. Rejected: a required name (a new argument
+  for every caller); one fixed or default name for all such entries (a package that
+  registers at run time, in place of a manifest, would share the program's name and
+  be allowed with it); and leaving such entries outside `providers=` (it loosens
+  `COMMON`).
 
 - **R13. Core keeps the binary CPIO check** (§4). A hint may carry a small check that
   core runs when the format has no signature strong enough to be data and a wrapper
@@ -1276,10 +1291,3 @@ For the next rounds of this plan. None blocks the start of step 0.
     built on `COMMON` carries every field, `providers` included, without the caller
     copying each one. A public name, so the maintainer's call; until then the
     docstring's recipe copies `providers` by hand.
-13. The provider of a format or codec that a program registers at run time with
-    `register_format()` or `register_codec()` (review F8). Every provider rule names
-    a distribution, and such an entry has none. `plugins=False` bars it today, so
-    `providers={"archivey"}` and `COMMON` must bar it too, and a caller then needs a
-    name to allow its own entry while barring installed packages. Put to the
-    maintainer: a required provider name on the entry, one fixed name for all such
-    entries, or leaving them outside `providers=`.

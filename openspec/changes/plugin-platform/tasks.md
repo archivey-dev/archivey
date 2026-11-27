@@ -111,6 +111,11 @@
   allowed to every reader
 - [ ] 2.3 `FormatInfo.provider` replaces `from_plugin`; `FormatPolicy(providers=...)`,
   with `plugins=False` as a deprecated spelling of `providers={"archivey"}` (R2)
+- [ ] 2.3c `register_format()` and `register_codec()` take `provider=`, `None` by
+  default (R17): tests that an entry without a provider opens under the default
+  policy and is barred by every `providers=` value, `COMMON` included; that a named
+  entry is allowed by its name; and that `archivey` or an installed manifest's
+  distribution name is refused as a provider
 - [ ] 2.3a Detect first, judge after (R9), in the same pull request as `providers=`: a
   policy that allows a base and bars its refinement refuses the refined file and
   names the refinement; a barred provider's check and probe never run; the
