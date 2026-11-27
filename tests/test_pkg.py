@@ -362,23 +362,61 @@ def test_a_hard_link_to_a_path_outside_its_folder_is_refused() -> None:
 
 
 @pytest.mark.parametrize(
-    ("entries", "match"),
+    "entries",
     [
-        ([("./l", b".."), ("./l/Bom", b"x")], "under a symlink"),
-        ([("./l", b"../.."), ("./l/Distribution", b"x")], "under a symlink"),
+        [("./l", b".."), ("./l/Bom", b"x")],
+        [("./l", b"../.."), ("./l/Distribution", b"x")],
     ],
     ids=["sibling", "package-top"],
 )
 def test_a_payload_file_that_leaves_its_folder_through_a_symlink_is_refused(
-    entries: list[tuple[str, bytes | None]], match: str
+    entries: list[tuple[str, bytes | None]],
 ) -> None:
-    """A payload symlink ``l -> ..`` makes ``l/Bom`` the package's own ``Bom``:
-    extraction writes through it, inside the destination."""
-    symlinks = {name: 0o120777 for name, data in entries if data and b"." in data}
-    blob = _product(_component(odc_cpio(entries, modes=symlinks)))
+    """A payload symlink ``l -> ..`` makes ``l/Bom`` the package's own ``Bom`` for a
+    caller that writes the listed files itself (archivey's extraction refuses a path
+    through a symlink it made)."""
+    blob = _product(_component(odc_cpio(entries, modes={"./l": 0o120777})))
     with (
-        pytest.raises(CorruptionError, match=match),
+        pytest.raises(CorruptionError, match="under a symlink"),
         open_archive(io.BytesIO(blob)) as archive,
+    ):
+        archive.members()
+
+
+@pytest.mark.parametrize("folder", ["../app0.pkg", "x\\..\\y", "..\\x", "a\\..", "C:"])
+def test_a_payload_in_a_folder_that_is_no_folder_is_listed_as_it_is(
+    folder: str,
+) -> None:
+    """A component folder named so that it is not a folder of the package: its
+    ``Payload`` is the file it is, and the listing's name checks take it from there,
+    never a usage error."""
+    blob = write_xar(
+        [
+            XarFile("Distribution", b"<installer-gui-script/>"),
+            XarFile(folder, type="directory", children=_component()),
+        ]
+    )
+    with open_archive(io.BytesIO(blob), format=ArchiveFormat.PKG) as archive:
+        payloads = [m for m in archive.members() if m.name.endswith("Payload")]
+    assert [m.type for m in payloads] == [MemberType.FILE]
+
+
+@pytest.mark.parametrize("before", [False, True], ids=["after", "before"])
+def test_a_xar_member_inside_a_payload_folder_is_refused(before: bool) -> None:
+    """Only the payload's own files, checked against its symlinks, may land in its
+    folder: a XAR directory ``Payload/`` beside the payload file, holding ``l/Bom``
+    under the payload's ``l -> ..``, would write into the package's ``Bom``."""
+    payload = odc_cpio([("./l", b"..")], modes={"./l": 0o120777})
+    intruder = XarFile(
+        "Payload",
+        type="directory",
+        children=[XarFile("l", type="directory", children=[XarFile("Bom", b"x")])],
+    )
+    files = _component(payload)
+    files.insert(0 if before else len(files), intruder)
+    with (
+        pytest.raises(CorruptionError, match="inside the folder of a payload"),
+        open_archive(io.BytesIO(_product(files))) as archive,
     ):
         archive.members()
 

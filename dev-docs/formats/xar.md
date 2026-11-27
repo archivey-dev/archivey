@@ -164,7 +164,13 @@ choice).
   writing files from `stream_members()` would write through it, so the listing holds
   the border as a `.deb` does. The payload is read with
   `ReaderContext.open_nested(under=)`, and core follows its symlinks. Until the deb
-  port moved that check into core, pkg checked names and hard links only.
+  port moved that check into core, pkg checked names and hard links only. And no other
+  XAR member may land in a payload's folder (a XAR directory `Payload/` beside the
+  payload file, holding `l/Bom`): pkg knows every payload folder from the table of
+  contents before it lists anything, and refuses such a member, compared with
+  `extracted_segments` and folded with `collision_key`, before or after the payload. A
+  component folder that is no folder (`../x`, `x\..\y`, `C:`) keeps its `Payload` as
+  the file it is.
 - **Opening a file.** `open_member` opens the payload again and calls `open_nested`,
   which yields the one span asked for (`format-plugins`, "An indexed reader reads an
   archive stored inside its archive"). The adapter mutes the inner reader's reports on

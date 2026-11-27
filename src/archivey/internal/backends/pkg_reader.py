@@ -23,7 +23,7 @@ payload file that extracts outside its folder (``../Bom``), a hard link whose ta
 does, and a file under a symlink of the payload (``l -> ..``, then ``l/Bom``) are
 refused (``ReaderContext.open_nested(under=)``): the first two would replace another
 member of the package, and the last would for a caller that writes files from the
-listing itself.
+listing itself. So is any other XAR member that can land in a payload's folder.
 
 Handbook page: ``dev-docs/formats/xar.md``.
 """
@@ -48,6 +48,8 @@ from archivey.formats import (
     ReaderArchiveInfo,
     ReaderContext,
     ReaderSource,
+    collision_key,
+    extracted_segments,
 )
 from archivey.internal.backends.xar_reader import (
     _HEADER,
@@ -61,6 +63,7 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveMember,
     ContainerFormat,
+    ExtractionPolicy,
     MemberType,
     StreamFormat,
 )
@@ -83,6 +86,11 @@ _GZIP_MAGIC = b"\x1f\x8b"
 _PBZX_MAGIC = b"pbzx"
 _CPIO_MAGIC = b"0707"
 _SNIFF = 4
+
+# Both separators split a name, and a drive letter roots it, as for
+# ``open_nested(under=)``'s folder.
+_SEPARATORS = re.compile(r"[\\/]")
+_DRIVE = re.compile(r"[A-Za-z]:")
 
 # Names only an installer package's table of contents holds, for detection.
 _PACKAGE_NAMES = re.compile(rb"<name>(?:Distribution|PackageInfo)</name>")
@@ -128,10 +136,14 @@ def _payload_folder(member: ArchiveMember) -> bool:
     """Whether ``member`` is a payload this reader lists as its files."""
     if member.type is not MemberType.FILE:
         return False
-    parts = member.name.split("/")
-    if any(part in ("", ".", "..") for part in parts):
-        # Not a folder of the package (``../Payload``): the file it is, which the
-        # listing's name checks refuse or rewrite.
+    name = member.name
+    parts = name.split("/")
+    if _DRIVE.match(name) or any(
+        part in ("", ".", "..") for part in _SEPARATORS.split(name)
+    ):
+        # Not a folder of the package (``../Payload``, ``x\\..\\y/Payload``,
+        # ``C:/Payload``): the file it is, which the listing's name checks refuse or
+        # rewrite. ``open_nested(under=)`` takes only a folder that is one.
         return False
     if len(parts) == 1:
         return parts[0] in _PACKAGE_PAYLOADS or parts[0] == _XIP_PAYLOAD
@@ -146,6 +158,10 @@ def _inner_format(head: bytes) -> ArchiveFormat | None:
     if head.startswith(_CPIO_MAGIC):
         return ArchiveFormat.CPIO
     return None
+
+
+def _key(segments: list[str]) -> list[str]:
+    return [collision_key(s, ExtractionPolicy.STANDARD) for s in segments]
 
 
 class _Payload(io.RawIOBase):
@@ -196,11 +212,38 @@ class PkgReader(XarReader):
 
     @override
     def iter_members(self) -> Iterator[MemberRecord[_Location]]:
-        for record in super().iter_members():
+        # The table of contents is parsed already: every payload folder is known
+        # before anything is listed, so no other XAR member may land in one, before
+        # the payload or after it.
+        records = list(super().iter_members())
+        folders = [
+            _key(extracted_segments(record.member.name))
+            for record in records
+            if record.locator.data is not None and _payload_folder(record.member)
+        ]
+        for record in records:
             if record.locator.data is None or not _payload_folder(record.member):
+                self._check_outside_payloads(record.member, folders)
                 yield record
                 continue
             yield from self._expand(record)
+
+    @staticmethod
+    def _check_outside_payloads(
+        member: ArchiveMember, folders: list[list[str]]
+    ) -> None:
+        """Refuse a XAR member that can land in a payload's folder: only the payload's
+        own files, which ``open_nested(under=)`` checks against its symlinks, may."""
+        if not folders:
+            return
+        key = _key(extracted_segments(member.name))
+        for folder in folders:
+            if key[: len(folder)] == folder:
+                raise CorruptionError(
+                    f"macOS package has a member in {quoted(member.name)}, inside "
+                    "the folder of a payload's files",
+                    member_name=member.name,
+                )
 
     def _expand(
         self, record: MemberRecord[_Location]

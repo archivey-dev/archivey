@@ -95,7 +95,8 @@ that holds no CPIO, or is stored with a XAR encoding archivey does not read or t
 configuration turns off, SHALL be listed as it is. The listing SHALL check each expanded
 payload's XAR checksum and raise `CorruptionError` when it fails. A payload file, or a
 hard link's target, that extracts outside its folder SHALL raise `CorruptionError`, and
-so SHALL a payload file under a symlink of its payload.
+so SHALL a payload file under a symlink of its payload and any other XAR member that can
+land in a payload's folder.
 `format=ArchiveFormat.XAR` SHALL list the XAR members as they are. Detection SHALL
 answer `PKG` for XAR magic when the name ends in `.pkg`, `.mpkg` or `.xip`, or, for any
 name but `.xar`, when the start of the table of contents names a `Distribution` or
