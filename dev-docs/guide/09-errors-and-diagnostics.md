@@ -188,6 +188,8 @@ A ZIP member whose CRC-32 does not match:
 5. `member.verified` stays below `CHECKSUM`.
 6. `extract_all()` on the same archive writes the member to a temporary name, the same
    error is raised during the write, and the temporary file is discarded, so nothing
-   half-written appears under the real name. Under the default `OnError.STOP` the error
-   propagates and extraction stops there, after every earlier member was written. Under
-   `OnError.CONTINUE` the member's result is `FAILED` and extraction goes on.
+   half-written appears under the real name. The member's result is `FAILED`. Under the
+   default `on_problem="finish"` extraction goes on, and the call raises this error at
+   its end, with the whole report on `e.report`. Under `on_problem="stop"` the error
+   propagates at once, after every earlier member was written. Under `"continue"` the
+   call returns the report.

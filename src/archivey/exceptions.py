@@ -114,9 +114,10 @@ class ArchiveyError(Exception):
 
     report: ExtractionReport | None = None
     """The :class:`~archivey.ExtractionReport` of the whole call, when
-    ``extract_all(on_problem="finish")`` raised this error at its end, after trying
-    every member: what happened to each one, the failed and refused ones included.
-    ``None`` on an error any other call raised."""
+    ``extract_all()`` raised this error at its end, after trying every member (under
+    the default ``on_problem="finish"``, or the deprecated ``on_blocked="raise"``):
+    what happened to each one, the failed and refused ones included. ``None`` on an
+    error raised any other way."""
 
     def __init__(
         self,
@@ -296,8 +297,9 @@ class FilterRejectionError(ExtractionError):
     isolate). The member is ``BLOCKED`` whichever check fired, and the message says which.
 
     ``report`` is the :class:`~archivey.ExtractionReport` of the whole call when
-    ``extract_all()`` raised this at its end under ``on_problem="finish"``, after
-    extracting every member it could: every refused member is in it as ``BLOCKED``.
+    ``extract_all()`` raised this at its end, after extracting every member it could
+    (under the default ``on_problem="finish"``, or the deprecated
+    ``on_blocked="raise"``): every refused member is in it as ``BLOCKED``.
     It is ``None`` when the error stopped the call at the first refusal
     (``on_problem="stop"``), and on the error a ``BLOCKED`` result holds.
     """

@@ -1742,7 +1742,13 @@ def run_extract(
                 with member_skips_reported_elsewhere(), warnings.catch_warnings():
                     # --abort-on name-* still passes the deprecated keywords until
                     # 0.7.0; the command printed its own deprecation line for it.
-                    warnings.simplefilter("ignore", DeprecationWarning)
+                    # Only that warning is hidden, and only on that path.
+                    if on_problem is None:
+                        warnings.filterwarnings(
+                            "ignore",
+                            message=r"extract_all\((on_error|on_blocked|abort_on)=",
+                            category=DeprecationWarning,
+                        )
                     report = reader.extract_all(
                         target,
                         members=pred,

@@ -341,7 +341,7 @@ class ExtractionLimits:
     it crosses a device boundary or goes past the filesystem's link-count limit. Only
     the link-count copies also count toward the archive-wide ``max_ratio``, so this is
     the one guard that bounds a cross-device copy.
-    Crossing it stops the whole extraction, even under ``on_error="continue"``.
+    Crossing it stops the whole extraction, even under ``on_problem="continue"``.
     """
 
     # Keyword-only, so a second positional argument raises rather than setting an
@@ -350,7 +350,7 @@ class ExtractionLimits:
     max_entries: int | None = 262_144
     """Most entries one extraction may create: files, directories and links.
 
-    Crossing it stops the whole extraction, even under ``on_error="continue"``.
+    Crossing it stops the whole extraction, even under ``on_problem="continue"``.
 
     It also bounds, separately, how many times one extraction rechecks a symlink
     because a later member changed a path the link resolves through. Only a hostile
@@ -739,7 +739,7 @@ class DecoderLimits:
     - **Per member**, against the member's recorded compressed size. A member over it
       fails on its own: a read of it raises
       :class:`~archivey.exceptions.ResourceLimitError`, and an extraction under
-      ``on_error="continue"`` moves on. Where the format or access mode gives no
+      ``on_problem="continue"`` moves on. Where the format or access mode gives no
       compressed size, only the archive-wide check applies. Where the archive records
       both sizes, extraction refuses a member over it before writing any of it; a
       member's output never passes the size the archive records for it.
@@ -1167,7 +1167,7 @@ class ArchiveyConfig:
     HTTP about once per MiB of the answer as it comes in. Detection's reads count. It
     runs on the thread that read, and an exception it raises propagates out of that
     read: raising is how a caller stops a slow read. Every later read of the
-    file raises it again, and ``extract_all(on_error="continue")`` stops on it rather
+    file raises it again, and ``extract_all(on_problem="continue")`` stops on it rather
     than counting it as one member's failure. A read on a thread archivey started (the
     RAR volume feeder) does not call it: the latest such report is kept and delivered on
     the caller's next read of the archive or of the member being read. Reports in
