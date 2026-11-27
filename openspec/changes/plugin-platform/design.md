@@ -38,7 +38,7 @@ Checked on main `2b66e25` (2026-11-24).
 - **Diagnostic codes are nearly all generic.** No moving reader needs a code of its
   own, but three of the 49 are reported only by readers that move:
   `ARCHIVE_STRUCTURE_INCONSISTENT` (DMG), `ARCHIVE_UNREAD_SESSION` (ISO and CD
-  images) and `MEMBER_NAME_DUPLICATE_UNEXPECTED` (CAB). Open Question 12.
+  images) and `MEMBER_NAME_DUPLICATE_UNEXPECTED` (CAB). R23 keeps them as general codes.
 
 ### How other projects do it
 
@@ -1044,7 +1044,7 @@ What it cannot undo is a published package name, which is why DMG is split now.
 ## Decisions
 
 All ten were put to the maintainer and agreed on 2026-11-24. Decisions 5, 6 and 7 were
-revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R22 below).
+revised by the maintainer on 2026-11-26, after review round A (rulings R1 to R23 below).
 
 1. **Installed plugins load by themselves, behind the guardrails of §3.** This replaces
    the 2026-10-25 rule (explicit `register_format()` only), which the maintainer
@@ -1206,6 +1206,16 @@ and the evidence in front of him (review round A):
   on `FormatPolicy` (a new public name; it could not be called `replace`, which is
   a field), and a recipe that copies each field by hand.
 
+- **R23. The three codes only packages report stay in core as general codes**
+  (§Context; maintainer, 2026-11-27, after the diagnostic-code audit).
+  `ARCHIVE_STRUCTURE_INCONSISTENT`, `ARCHIVE_UNREAD_SESSION` and
+  `MEMBER_NAME_DUPLICATE_UNEXPECTED` each name a problem another format could
+  have. Their docstrings describe the problem and stop naming a format, and any
+  reader may report them. No reader that moves needs a code of its own, so codes
+  declared by a plugin stay a Non-Goal until a format needs one. Rejected: folding
+  them into broader codes (less precise reports), and package-declared codes (new
+  public surface with no reader that needs it).
+
 - **R13. Core keeps the binary CPIO check** (§4). A hint may carry a small check that
   core runs when the format has no signature strong enough to be data and a wrapper
   would otherwise read the file differently. Rejected: a weak two-byte signature that
@@ -1336,11 +1346,3 @@ For the next rounds of this plan. None blocks the start of step 0.
 11. The public names and exact shape of the richer decoder of R15, and the wording
     of its rule that every pass offers the same restart points. Settled by the first
     port that uses it (`.Z`), in step 0.
-12. Whether a plugin may define diagnostic codes of its own (a Non-Goal above for
-    now). Decided after the diagnostic-code audit of R21, which shows which codes
-    survive and whether a moved reader loses one it needs (maintainer, 2026-11-27).
-    The audit found the three codes named in §Context. After the split they would
-    be members of core's closed enum that only a package reports, against the goal
-    that core holds no enum member that exists only for plugins. The choices: keep
-    them as general codes any reader may report, fold them into broader codes, or
-    let a package declare them.
