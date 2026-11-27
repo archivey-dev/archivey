@@ -1132,7 +1132,9 @@ class ReaderContext:
         xz streams and their padding, zstd and LZ4 frames) still read. It takes
         ``ZLIB``, ``BZIP2``, ``XZ``, ``LZMA_ALONE``, ``ZSTD``, ``LZ4`` and ``BROTLI``;
         any other stream format raises ``UnsupportedFeatureError``. For a method it
-        changes nothing.
+        changes nothing. One exception, as for a ZIP member: under rapidgzip, several
+        zlib streams whose last trailer matches the Adler-32 of them all read as one
+        (``openspec/specs/seekable-decompressor-streams``).
 
         ``size`` is the decoded length when the format stores it. Raw LZMA1 may have
         no end marker and needs it then.

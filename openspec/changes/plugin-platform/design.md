@@ -684,7 +684,7 @@ becomes a public call or goes:
 
 - `context._spanning_check`, `_spanning_pass` (makeself digests, DMG `verify_all()`).
 - `context._decompress_coder` (xar: one stream, bytes after it are damage): an option
-  of `ReaderContext.decompress` (§6).
+  of `ReaderContext.decompress` (§6), `one_stream=True` (done, pull request 1855).
 - `context._nest`, `_track_decoded`, `_usage` (decoded-byte and decoder-use accounting
   in CAB, ARJ, SquashFS, DMG, makeself).
 - `context._listing_draw`, `_keep_metadata` (DMG, UDIF, APFS listing budgets).

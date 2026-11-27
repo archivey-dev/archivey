@@ -56,6 +56,7 @@ from archivey.formats import (
     MemberData,
     MemberDigest,
     MemberRecord,
+    PluginStream,
     ReaderArchiveInfo,
     ReaderContext,
     ReaderSource,
@@ -1184,7 +1185,7 @@ _PLAIN = b"plugin member data " * 200
 
 
 def _compressed_plugin(
-    method: CompressionAlgorithm | StreamFormat,
+    method: CompressionAlgorithm | StreamFormat | PluginStream,
     properties: bytes | None = None,
     translated: list[Exception] | None = None,
     *,
@@ -1518,16 +1519,74 @@ def test_decompress_stream_format_reads_as_its_files_do(
         assert reader.read("m.bin") == _PLAIN
 
 
-@pytest.mark.parametrize("method", [StreamFormat.ZLIB, StreamFormat.XZ])
+def _one_stream_data(method: StreamFormat, data: bytes) -> bytes:
+    if method is StreamFormat.ZSTD:
+        return _compress(CompressionAlgorithm.ZSTD, data)
+    if method is StreamFormat.LZ4:
+        return _compress(CompressionAlgorithm.LZ4, data)
+    if method is StreamFormat.BROTLI:
+        return _compress(CompressionAlgorithm.BROTLI, data)
+    return _stream(method, data)
+
+
+# Every stream format ``one_stream=True`` takes (``_ONE_STREAM_FORMATS``).
+_ONE_STREAM_PARAMS = [
+    StreamFormat.ZLIB,
+    StreamFormat.BZIP2,
+    StreamFormat.XZ,
+    StreamFormat.LZMA_ALONE,
+    pytest.param(StreamFormat.ZSTD, marks=requires_zstd()),
+    pytest.param(StreamFormat.LZ4, marks=requires("lz4")),
+    pytest.param(StreamFormat.BROTLI, marks=requires("brotli")),
+]
+
+
+def test_the_one_stream_list_is_the_tested_list() -> None:
+    from archivey.internal.format_adapter import _ONE_STREAM_FORMATS
+
+    tested = {
+        p if isinstance(p, StreamFormat) else p.values[0] for p in _ONE_STREAM_PARAMS
+    }
+    assert tested == _ONE_STREAM_FORMATS
+
+
+@pytest.mark.parametrize("tail", [b"junk", b"\x01"], ids=["junk", "one-byte"])
+@pytest.mark.parametrize("method", _ONE_STREAM_PARAMS)
 def test_one_stream_refuses_data_after_the_end(
-    clean_registry: None, tmp_path: Path, method: StreamFormat
+    clean_registry: None, tmp_path: Path, method: StreamFormat, tail: bytes
 ) -> None:
     """``one_stream=True``: the data is the stream and nothing else, as a XAR member's
     is, so a byte after its end is damage, refused as after a ZIP member."""
     register_format(_compressed_plugin(method, one_stream=True))
-    path = _compressed_archive(tmp_path, _stream(method, _PLAIN) + b"junk")
+    path = _compressed_archive(tmp_path, _one_stream_data(method, _PLAIN) + tail)
     with open_archive(path) as reader, pytest.raises(CorruptionError):
         reader.read("m.bin")
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        StreamFormat.XZ,
+        pytest.param(StreamFormat.ZSTD, marks=requires_zstd()),
+        pytest.param(StreamFormat.LZ4, marks=requires("lz4")),
+    ],
+)
+def test_one_stream_reads_the_continuations_its_format_defines(
+    clean_registry: None, tmp_path: Path, method: StreamFormat
+) -> None:
+    """A second xz stream (after stream padding), zstd frame or LZ4 frame is part of
+    the stream, as in a ZIP member: it reads."""
+    half = len(_PLAIN) // 2
+    padding = b"\0" * 4 if method is StreamFormat.XZ else b""
+    stored = (
+        _one_stream_data(method, _PLAIN[:half])
+        + padding
+        + _one_stream_data(method, _PLAIN[half:])
+        + padding
+    )
+    register_format(_compressed_plugin(method, one_stream=True))
+    with open_archive(_compressed_archive(tmp_path, stored)) as reader:
+        assert reader.read("m.bin") == _PLAIN
 
 
 @pytest.mark.parametrize("method", [StreamFormat.BZIP2, StreamFormat.LZMA_ALONE])
@@ -1554,10 +1613,20 @@ def test_one_stream_reads_a_whole_stream(clean_registry: None, tmp_path: Path) -
         assert not reader.diagnostics.counts
 
 
-def test_one_stream_refuses_gzip(clean_registry: None, tmp_path: Path) -> None:
-    """gzip's decoders skip what follows its last member, so they cannot keep the
-    promise: refused before any byte is decoded, not read leniently."""
-    register_format(_compressed_plugin(StreamFormat.GZIP, one_stream=True))
+class _OneStreamPluginStream(PluginStream):
+    NOT_ONE = "one-stream-test"
+
+
+@pytest.mark.parametrize(
+    "method", [StreamFormat.GZIP, _OneStreamPluginStream.NOT_ONE], ids=["gz", "plugin"]
+)
+def test_one_stream_refuses_a_format_it_cannot_hold_to_it(
+    clean_registry: None, tmp_path: Path, method: StreamFormat | PluginStream
+) -> None:
+    """gzip's decoders skip what follows its last member, and a registered codec
+    promises nothing about it, so either is refused before any byte is decoded, not
+    read leniently."""
+    register_format(_compressed_plugin(method, one_stream=True))
     path = _compressed_archive(tmp_path, _stream(StreamFormat.GZIP, _PLAIN) + b"junk")
     with (
         open_archive(path) as reader,

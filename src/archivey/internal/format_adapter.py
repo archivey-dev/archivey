@@ -3746,10 +3746,9 @@ def _plugin_bug(error: _ErrorT) -> _ErrorT:
 # The ``MemberDigest`` names archivey computes itself, with its own hasher.
 _ALGORITHMS = {str(algorithm): algorithm for algorithm in HashAlgorithm}
 
-# The methods ``ReaderContext.decompress`` decodes. PPMd, the branch filters and RAR
-# need parameters or framing a plain method name cannot carry.
 # The stream formats ``ReaderContext.decompress(one_stream=True)`` reads: those whose
-# decoder refuses a byte after its end, as a ZIP or 7z member's does. gzip, whose
+# decoder refuses a byte after its end, as a ZIP or 7z member's does (under rapidgzip,
+# zlib streams with a forged last trailer read as one, as in a ZIP member). gzip, whose
 # decoders skip what follows its last member, and the others are refused there.
 _ONE_STREAM_FORMATS = frozenset(
     {
@@ -3763,6 +3762,8 @@ _ONE_STREAM_FORMATS = frozenset(
     }
 )
 
+# The methods ``ReaderContext.decompress`` decodes. PPMd, the branch filters and RAR
+# need parameters or framing a plain method name cannot carry.
 _PLUGIN_CODECS: dict[CompressionAlgorithm, Codec] = {
     CompressionAlgorithm.STORED: Codec.STORED,
     CompressionAlgorithm.DEFLATE: Codec.DEFLATE,
