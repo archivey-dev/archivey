@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from archivey.config import DecoderLimits, ProcessIsolation
+from archivey.detection import DetectionConfidence
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.config import StreamConfig
 from archivey.internal.excluded_libraries import (
@@ -142,11 +143,14 @@ def codec_call(params: CodecParams, config: StreamConfig) -> CodecCall:
     )
 
 
-def _content_probe(probe: Callable[[bytes], bool]) -> Callable[..., bool]:
+def _content_probe(
+    probe: Callable[[bytes], DetectionConfidence],
+) -> Callable[..., DetectionConfidence]:
     """A handler's ``probe(prefix)`` as :meth:`StreamCodec.content_probe`.
 
     A format plugin's probe wrapper (``format_adapter.prefix_probe``) does the work:
-    the probe gets the peeked prefix only, and one that raises is no match, logged.
+    the probe gets the peeked prefix only, and one that raises or answers no verdict
+    is no match, logged.
     """
     check = prefix_probe(probe)
 
@@ -159,7 +163,7 @@ def _content_probe(probe: Callable[[bytes], bool]) -> Callable[..., bool]:
         charge_decode: object = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
         decoder_limits: DecoderLimits = DecoderLimits(),
-    ) -> bool:
+    ) -> DetectionConfidence:
         del self, source_length, read_at, charge_decode, isolation, decoder_limits
         return check(prefix)
 

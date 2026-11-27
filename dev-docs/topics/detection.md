@@ -99,16 +99,21 @@ extension is the last step, and it is used only when every content signal declin
 | 3. Far magic | Exact magic past 4 KiB (ISO `CD001` at 32 769) | `CERTAIN` | `magic` | 32 774 bytes, once |
 | 4. Trailer magic | Exact magic at the start of a fixed block at EOF (UDIF `koly`, 512 bytes) | `CERTAIN` | `magic` | 512 bytes, on a cheap seek |
 | 5. Self-checking header | A first block that proves its format with no magic (a v7 TAR header's checksum) | `PROBABLE` | `content_probe` | nothing more read |
-| 6. Content probes | LZMA Alone, zlib, Brotli decoders accept the bytes; by default only the probe the extension names runs | `PROBABLE`, or `GUESS` for weak Brotli | `content_probe` | 1 MiB of decode input for the call |
+| 6. Content probes | LZMA Alone, zlib, Brotli decoders accept the bytes, or a plugin's probe matches; by default only the probe the extension names runs. A probe answers `REJECTED`, `GUESS` or `PROBABLE`; when the whole source is in reach the probe runs again on it and that answer stands | The probe's grade, a `GUESS` raised to `PROBABLE` when the extension names the format; `GUESS` for weak Brotli | `content_probe` | 1 MiB of decode input for the call |
 | 7. Leading-bytes scan | Step 2's window, needles and validators, with no prefix cue: run only when steps 1-6 declined, the prefix has no executable cue and no non-archive signature, and the name has no known extension (the readers find a prefixed archive under a name that names them). Every needle needs its validator | `PROBABLE` | `sfx_scan` | `min(size, 2 MiB)` read |
 | 8. Extension | Longest matching suffix in the aggregated map | `GUESS` | `extension` | nothing read |
 
 A near-magic or content-probe match on a single-file compressor is then offered to the
 **inner-TAR probe**, which decodes up to 512 bytes and looks for `ustar` at offset 257, or
-a first header that passes the TAR header check (§2.5). A hit reports the TAR combination
-(`TAR_GZ`, and so on) as `PROBABLE` / `content_probe`. It reads at most 1 MiB of
-compressed input and draws on the same decode allowance as the content probes (§4.1). A
-trailer hit is not a compressor, so it is not offered.
+a first header that passes the TAR header check (§2.5), then runs the probes of the
+containers read inside a stream (binary CPIO, a sequential plugin), not an indexed
+format's. A hit reports the combination (`TAR_GZ`, and so on) as `PROBABLE` /
+`content_probe`. A probe's weak match (`GUESS`) the name does not raise is no hit: the
+source stays the compressor, which surely opens, rather than a guessed container that
+may not. No inner container's probe answers `GUESS` today; revisit this rule when one
+does, ours or a third party's. It reads at most 1 MiB of compressed input and draws on
+the same decode allowance as the content probes (§4.1). A trailer hit is not a
+compressor, so it is not offered.
 
 The tables that drive steps 1, 2, 4, 5 and 6 come from the backends and the codec
 descriptors as data: `MAGIC`, `TRAILER`, `EXTENSIONS`, `SFX_MAGIC`, `SFX_HIT_VALIDATOR`,

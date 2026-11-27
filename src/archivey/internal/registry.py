@@ -52,6 +52,7 @@ from archivey.internal.excluded_libraries import (
     is_excluded_module,
 )
 from archivey.internal.format_args import coerce_archive_format
+from archivey.internal.probe_verdict import ProbeVerdict
 from archivey.internal.sfx import HitValidator
 from archivey.internal.streams.codecs import (
     Codec,
@@ -84,7 +85,8 @@ if TYPE_CHECKING:
 
 
 class ContentProbe(Protocol):
-    """Callable shape for registry content probes.
+    """Callable shape for registry content probes, which answer a
+    :data:`~archivey.internal.probe_verdict.ProbeVerdict`.
 
     ``source_length`` is optional: when detection knows a cheap byte size it is passed
     through so a probe can reject declared framing that cannot fit, or an incomplete
@@ -110,7 +112,7 @@ class ContentProbe(Protocol):
         charge_decode: Callable[[int], bool] | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
         decoder_limits: DecoderLimits = DecoderLimits(),
-    ) -> bool: ...
+    ) -> ProbeVerdict: ...
 
 
 __all__ = [

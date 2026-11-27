@@ -109,6 +109,7 @@ from archivey.internal.plugin_passwords import (
     SavedWinner,
     resolve_request,
 )
+from archivey.internal.probe_verdict import PROBE_REJECTED, PROBE_VERDICTS, ProbeVerdict
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.resource_usage import handler_name
@@ -3830,7 +3831,10 @@ def prefix_probe(probe: object) -> ContentProbe:
     """Adapt a plugin's ``probe(prefix)`` to the registry's probe shape.
 
     The plugin gets the peeked prefix only: no ``read_at`` and no decode allowance, so
-    it cannot make detection read more of an untrusted source.
+    it cannot make detection read more of an untrusted source. Its answer must be a
+    verdict (``REJECTED``, ``GUESS`` or ``PROBABLE``). Any other answer, ``None``, a
+    bool or ``CERTAIN`` among them, is a plugin bug and taken as no match, logged as a
+    probe that raises is.
     """
     assert callable(probe)
     # Per registration, so the probe need not be hashable and nothing outlives it.
@@ -3845,13 +3849,13 @@ def prefix_probe(probe: object) -> ContentProbe:
         charge_decode: Callable[[int], bool] | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
         decoder_limits: DecoderLimits = DecoderLimits(),
-    ) -> bool:
+    ) -> ProbeVerdict:
         nonlocal warned
         # A probe that raises (a struct.unpack past a short prefix, say) is no match:
         # one plugin must not change how unrelated input fails to be detected. Out of
         # memory and OS errors are not the probe's parsing, and propagate as everywhere.
         try:
-            return bool(probe(prefix))
+            verdict = probe(prefix)
         except (MemoryError, OSError):
             raise
         except Exception:  # noqa: BLE001 — any parsing error is a plugin bug, logged
@@ -3864,7 +3868,19 @@ def prefix_probe(probe: object) -> ContentProbe:
                 exc_info=True,
             )
             warned = True
-            return False
+            return PROBE_REJECTED
+        # By identity, so an unhashable answer is a plugin bug too, not a TypeError.
+        for known in PROBE_VERDICTS:
+            if verdict is known:
+                return known
+        detection_logger.log(
+            logging.DEBUG if warned else logging.WARNING,
+            "plugin probe %r answered %r, not REJECTED, GUESS or PROBABLE; taken as no match",
+            probe,
+            verdict,
+        )
+        warned = True
+        return PROBE_REJECTED
 
     return content_probe
 
