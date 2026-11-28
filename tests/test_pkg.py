@@ -345,7 +345,7 @@ def test_a_payload_file_outside_its_folder_is_refused(
 ) -> None:
     blob = _product(_component(odc_cpio(entries, links=links)))
     with (
-        pytest.raises(CorruptionError, match="outside its folder"),
+        pytest.raises(CorruptionError, match=r"outside app0\.pkg/Payload/"),
         open_archive(io.BytesIO(blob)) as archive,
     ):
         archive.members()
@@ -355,10 +355,110 @@ def test_a_hard_link_to_a_path_outside_its_folder_is_refused() -> None:
     payload = odc_cpio([("./../x", b"x"), ("./b", b"")], links={"./b": "./../x"})
     blob = _product(_component(payload))
     with (
-        pytest.raises(CorruptionError, match="outside its folder"),
+        pytest.raises(CorruptionError, match=r"outside app0\.pkg/Payload/"),
         open_archive(io.BytesIO(blob)) as archive,
     ):
         archive.members()
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        [("./l", b".."), ("./l/Bom", b"x")],
+        [("./l", b"../.."), ("./l/Distribution", b"x")],
+    ],
+    ids=["sibling", "package-top"],
+)
+def test_a_payload_file_that_leaves_its_folder_through_a_symlink_is_refused(
+    entries: list[tuple[str, bytes | None]],
+) -> None:
+    """A payload symlink ``l -> ..`` makes ``l/Bom`` the package's own ``Bom`` for a
+    caller that writes the listed files itself (archivey's extraction refuses a path
+    through a symlink it made)."""
+    blob = _product(_component(odc_cpio(entries, modes={"./l": 0o120777})))
+    with (
+        pytest.raises(CorruptionError, match="under a symlink"),
+        open_archive(io.BytesIO(blob)) as archive,
+    ):
+        archive.members()
+
+
+@pytest.mark.parametrize("folder", ["../app0.pkg", "x\\..\\y", "..\\x", "a\\..", "C:"])
+def test_a_payload_in_a_folder_that_is_no_folder_is_listed_as_it_is(
+    folder: str,
+) -> None:
+    """A component folder named so that it is not a folder of the package: its
+    ``Payload`` is the file it is, and the listing's name checks take it from there,
+    never a usage error."""
+    blob = write_xar(
+        [
+            XarFile("Distribution", b"<installer-gui-script/>"),
+            XarFile(folder, type="directory", children=_component()),
+        ]
+    )
+    with open_archive(io.BytesIO(blob), format=ArchiveFormat.PKG) as archive:
+        payloads = [m for m in archive.members() if m.name.endswith("Payload")]
+    assert [m.type for m in payloads] == [MemberType.FILE]
+
+
+@pytest.mark.parametrize("before", [False, True], ids=["after", "before"])
+def test_a_xar_member_inside_a_payload_folder_is_refused(before: bool) -> None:
+    """Only the payload's own files, checked against its symlinks, may land in its
+    folder: a XAR directory ``Payload/`` beside the payload file, holding ``l/Bom``
+    under the payload's ``l -> ..``, would write into the package's ``Bom``."""
+    payload = odc_cpio([("./l", b"..")], modes={"./l": 0o120777})
+    intruder = XarFile(
+        "Payload",
+        type="directory",
+        children=[XarFile("l", type="directory", children=[XarFile("Bom", b"x")])],
+    )
+    files = _component(payload)
+    files.insert(0 if before else len(files), intruder)
+    with (
+        pytest.raises(CorruptionError, match="inside the folder of a payload"),
+        open_archive(io.BytesIO(_product(files))) as archive,
+    ):
+        archive.members()
+
+
+def _two_payloads(nested: bool) -> bytes:
+    """A flat package whose second payload lands under the first one's symlink to
+    ``..``: a XAR file ``Payload`` with a child payload ``Scripts``, or two files
+    named ``Payload``."""
+    if nested:
+        link, inner = "./Scripts", odc_cpio([("./Bom", b"x")])
+        children = [XarFile("Scripts", make_pbzx(inner), encoding="none")]
+    else:
+        link, inner = "./l", odc_cpio([("./l/Bom", b"x")])
+        children = []
+    outer = make_pbzx(odc_cpio([(link, b"..")], modes={link: 0o120777}))
+    files = [
+        XarFile("PackageInfo", b"<pkg-info/>"),
+        XarFile("Payload", outer, encoding="none", children=children),
+    ]
+    if not nested:
+        files.append(XarFile("Payload", make_pbzx(inner), encoding="none"))
+    return write_xar(files)
+
+
+@pytest.mark.parametrize("nested", [True, False], ids=["inside", "twice"])
+def test_a_payload_in_another_payloads_folder_is_refused(nested: bool) -> None:
+    """Each payload's symlinks are checked against its own files only, so no payload
+    folder may be another one's or lie inside it."""
+    with (
+        pytest.raises(CorruptionError, match="in the folder of another payload"),
+        open_archive(io.BytesIO(_two_payloads(nested))) as archive,
+    ):
+        archive.members()
+
+
+def test_a_payload_symlink_that_stays_in_its_folder_is_listed() -> None:
+    entries: list[tuple[str, bytes | None]] = [("./a", b"x"), ("./l", b"a")]
+    payload = odc_cpio(entries, modes={"./l": 0o120777})
+    with open_archive(io.BytesIO(_product(_component(payload)))) as archive:
+        link = archive.get("app0.pkg/Payload/l")
+        assert link.type is MemberType.SYMLINK
+        assert link.link_target == "a"
 
 
 def test_a_hard_link_inside_a_payload_names_its_prefixed_target() -> None:

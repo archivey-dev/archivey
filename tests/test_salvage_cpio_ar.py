@@ -1636,3 +1636,27 @@ def test_deb_overlapping_unconfirmed_control_tars_list_once(tmp_path: Path) -> N
     assert names == ["DEBIAN/p0", *(f"DEBIAN/t{j}" for j in range(20))]
     assert isinstance(error, CorruptionError)
     assert error.raw_message.startswith("No ar member header at offset 72")  # type: ignore[attr-defined]
+
+
+def test_the_deb_reader_s_ar_search_is_the_ar_reader_s() -> None:
+    """The deb reader keeps its own copy of the ar salvage search (it uses public
+    names only, so it does not import the ar reader). The two accept the same
+    headers at the same positions."""
+    import random
+
+    from archivey.internal.backends import ar_reader, deb_reader
+
+    rng = random.Random(0)
+    good = _ar_header(b"a.o/", 12)
+    pieces = [good, b"`\n", b" " * 58 + b"`\n", good.replace(b"100644", b"100694")]
+    pieces += [good.replace(b"12 ", b"x2 "), good[:59], b"J"]
+    for _ in range(300):
+        window = b"".join(rng.choice(pieces) for _ in range(rng.randrange(1, 12)))
+        for at in range(len(window)):
+            assert deb_reader._ar_passes(window, at) == ar_reader._passes(window, at)
+        for start in range(0, len(window), 7):
+            for stop in (start + 1, len(window)):
+                assert deb_reader._find_ar_header(
+                    window, start, stop
+                ) == ar_reader.AR_HEADER_SEARCH.find_header(window, start, stop)
+    assert deb_reader._AR_HEADER_SEARCH.step == ar_reader.AR_HEADER_SEARCH.step

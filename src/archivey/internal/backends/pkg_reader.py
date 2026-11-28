@@ -19,8 +19,12 @@ magic, or one whose first CPIO header cannot be read.
 
 The payloads are read through :meth:`ReaderContext.open_nested`, so listing decodes
 each one, and the XAR checksum of a payload is checked as the listing reads it. A
-payload file that extracts outside its folder (``../Bom``), or a hard link whose target
-does, is refused: it would replace another member of the package.
+payload file that extracts outside its folder (``../Bom``), a hard link whose target
+does, and a file under a symlink of the payload (``l -> ..``, then ``l/Bom``) are
+refused (``ReaderContext.open_nested(under=)``): the first two would replace another
+member of the package, and the last would for a caller that writes files from the
+listing itself. So is any other XAR member that can land in a payload's folder,
+another payload among them: two payloads at one folder, or one inside another's.
 
 Handbook page: ``dev-docs/formats/xar.md``.
 """
@@ -84,6 +88,11 @@ _PBZX_MAGIC = b"pbzx"
 _CPIO_MAGIC = b"0707"
 _SNIFF = 4
 
+# Both separators split a name, and a drive letter roots it, as for
+# ``open_nested(under=)``'s folder.
+_SEPARATORS = re.compile(r"[\\/]")
+_DRIVE = re.compile(r"[A-Za-z]:")
+
 # Names only an installer package's table of contents holds, for detection.
 _PACKAGE_NAMES = re.compile(rb"<name>(?:Distribution|PackageInfo)</name>")
 _PACKAGE_EXTENSIONS = (".pkg", ".mpkg", ".xip")
@@ -128,7 +137,15 @@ def _payload_folder(member: ArchiveMember) -> bool:
     """Whether ``member`` is a payload this reader lists as its files."""
     if member.type is not MemberType.FILE:
         return False
-    parts = member.name.split("/")
+    name = member.name
+    parts = name.split("/")
+    if _DRIVE.match(name) or any(
+        part in ("", ".", "..") for part in _SEPARATORS.split(name)
+    ):
+        # Not a folder of the package (``../Payload``, ``x\\..\\y/Payload``,
+        # ``C:/Payload``): the file it is, which the listing's name checks refuse or
+        # rewrite. ``open_nested(under=)`` takes only a folder that is one.
+        return False
     if len(parts) == 1:
         return parts[0] in _PACKAGE_PAYLOADS or parts[0] == _XIP_PAYLOAD
     return len(parts) == 2 and parts[1] in _PACKAGE_PAYLOADS
@@ -196,11 +213,62 @@ class PkgReader(XarReader):
 
     @override
     def iter_members(self) -> Iterator[MemberRecord[_Location]]:
-        for record in super().iter_members():
+        # The table of contents is parsed already: every payload folder is known
+        # before anything is listed, so no other XAR member may land in one, before
+        # the payload or after it.
+        records = list(super().iter_members())
+        folders = self._payload_folders(records)
+        for record in records:
             if record.locator.data is None or not _payload_folder(record.member):
+                self._check_outside_payloads(record.member, folders)
                 yield record
                 continue
             yield from self._expand(record)
+
+    @staticmethod
+    def _payload_folders(
+        records: list[MemberRecord[_Location]],
+    ) -> set[tuple[str, ...]]:
+        """The folders of the payloads in ``records``, folded. Each payload's own
+        symlinks are checked against its own files only, so refuse a payload whose
+        folder is another one's or lies inside it."""
+        folders: dict[tuple[str, ...], str] = {}
+        for record in records:
+            member = record.member
+            if record.locator.data is None or not _payload_folder(member):
+                continue
+            key = tuple(_key(extracted_segments(member.name)))
+            if key in folders:
+                raise CorruptionError(
+                    f"macOS package has two payloads at {quoted(member.name)}: "
+                    "one is in the folder of another payload",
+                    member_name=member.name,
+                )
+            folders[key] = member.name
+        for key, name in folders.items():
+            if any(key[:i] in folders for i in range(1, len(key))):
+                raise CorruptionError(
+                    f"macOS package has the payload {quoted(name)} in the folder "
+                    "of another payload",
+                    member_name=name,
+                )
+        return set(folders)
+
+    @staticmethod
+    def _check_outside_payloads(
+        member: ArchiveMember, folders: set[tuple[str, ...]]
+    ) -> None:
+        """Refuse a XAR member that can land in a payload's folder: only the payload's
+        own files, which ``open_nested(under=)`` checks against its symlinks, may."""
+        if not folders:
+            return
+        key = tuple(_key(extracted_segments(member.name)))
+        if any(key[:i] in folders for i in range(1, len(key) + 1)):
+            raise CorruptionError(
+                f"macOS package has a member in {quoted(member.name)}, inside "
+                "the folder of a payload's files",
+                member_name=member.name,
+            )
 
     def _expand(
         self, record: MemberRecord[_Location]
@@ -235,41 +303,27 @@ class PkgReader(XarReader):
                 digest = hashlib.new(algorithm.value, usedforsecurity=False)
             data = _Payload(head, stream, digest)
             folder = payload.name
-            folder_key = _key(extracted_segments(folder))
             inner_location = _Inner(payload, location, fmt)
-            spans = iter(self._context.open_nested(data, fmt))
+            # archivey lists the payload's files under its folder and refuses one
+            # that leaves it, by name, hard link or the payload's own symlinks.
+            spans = iter(self._context.open_nested(data, fmt, under=f"{folder}/"))
             try:
                 first = next(spans, None)
-            except CorruptionError:
+            except CorruptionError as error:
+                if error.member_name is not None:
+                    # Its first file leaves the folder.
+                    raise
                 # It starts like a CPIO but none follows: the file it is. A payload
                 # that fails after its first member has listed files, and raises.
                 yield record
                 return
             for span in itertools.chain(() if first is None else (first,), spans):
-                member = span.member
-                inner = member.name
-                member.name = folder if inner in (".", "./") else f"{folder}/{inner}"
-                self._check_inside(folder, folder_key, member.name, member)
-                if member.type is MemberType.HARDLINK and member.link_target:
-                    member.link_target = f"{folder}/{member.link_target}"
-                    self._check_inside(folder, folder_key, member.link_target, member)
-                yield MemberRecord(member, _Location(None, inner_location))
+                yield MemberRecord(span.member, _Location(None, inner_location))
             data.drain()
             if digest is not None and digest.digest() != expected:
                 raise CorruptionError(
                     f"XAR file {quoted(folder)} fails its {digest.name} checksum"
                 )
-
-    @staticmethod
-    def _check_inside(
-        folder: str, folder_key: list[str], path: str, member: ArchiveMember
-    ) -> None:
-        if _key(extracted_segments(path)[: len(folder_key)]) != folder_key:
-            raise CorruptionError(
-                f"macOS package payload {quoted(folder)} has a member that extracts "
-                "outside its folder",
-                member_name=member.name,
-            )
 
     @override
     def open_member(self, member: ArchiveMember, locator: _Location) -> MemberData:

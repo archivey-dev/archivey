@@ -599,14 +599,20 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
   member first: rename it (and a hard link's `link_target` with it: the inner listing
   has normalized it already, and archivey normalizes the renamed one again), or add
   `MemberSpan.digests` from a checksum list the outer archive keeps.
-- **Keep a renamed member in its folder.** A walk that puts the inner members under
-  a folder (`Payload/` of a macOS package) checks that each one extracts there:
-  `extracted_segments(name)` gives the segments of the furthest-reaching path a name
-  can extract to (root dropped, `..` resolved as `sanitize_names` resolves it), and
-  `collision_key(segment, ExtractionPolicy.STANDARD)` folds each segment at least as
-  much as any case-insensitive filesystem would. Compare the member's first segments
-  with the folder's, both folded. A member named `Payload/../Bom` would otherwise
-  replace the outer `Bom`.
+- **Borders between trees.** A walk that joins several trees into one listing names
+  the borders between them, and archivey checks each inner member against them.
+  `open_nested(data, fmt, under="Payload/")` lists the inner members in that folder and
+  refuses one that extracts outside it (`Payload/../Bom` would replace the outer
+  `Bom`). `keep_out=("DEBIAN/",)` names folders no inner member may reach, under any
+  spelling a filesystem takes for the same folder, by a hard link or through the inner
+  archive's own symlinks (`d -> .`, then `d/DEBIAN/control`). With either, a member
+  under a symlink of the inner archive is refused, since where it lands depends on
+  which members are extracted.
+- **Data read whole.** A walk that reads an inner member's data itself, as a `.deb`
+  reads `control` for the archive info, calls `data, span = context.read_nested(span)`
+  and yields the returned span. Its data is served from the bytes read, which count
+  once toward `max_decoded_bytes`, not twice. Charge them with `charge_metadata`
+  first.
 - **Cost.** Inner members are decoded data, so the rules of the next section hold: a
   pass reads them once, and `open()` of one afterwards walks the archive again to it.
   Have `archive_info()` return `ReaderArchiveInfo(is_solid=True)`.

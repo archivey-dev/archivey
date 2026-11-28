@@ -105,7 +105,9 @@ members, and hands each tar to `open_nested` through `stream.take(size)`:
   against #1531: "Refuse those symlinks too"). Extraction writes a member through a
   symlink the archive made, so `foo -> DEBIAN` then `foo/control` overwrote
   `DEBIAN/control` under `overwrite="replace"`, and a read of `x -> DEBIAN/control`
-  returned the control file. `deb_reader._DataTree` keeps the data tar's symlinks in a
+  returned the control file. Core makes these checks for any reader that asks
+  (`ReaderContext.open_nested(under=, keep_out=)`, `internal/nested_borders.py`; the
+  deb port, plugin plan step 0). Its `LinkTree` keeps the data tar's symlinks in a
   trie of folded names and resolves each path one segment at a time: `..` climbs, a
   segment that names a symlink is replaced by its target (from the symlink's directory,
   or from the root when the target is rooted), and at most 40 targets are followed, as

@@ -1896,12 +1896,27 @@ class SpanningCheck:
         self._adapter._note_spanning_unreachable(self._key, self._covers, cause)
 
 
-class HeldInnerData(io.BytesIO):
+class _HeldInnerData(io.BytesIO):
     """Bytes of an inner archive's member (``ReaderContext.open_nested``) that a
     reader read whole and hands out again as the span's data (a ``.deb``'s
-    ``control``). The inner reader's decode stages charged them to the listing as
-    they decoded them, so the outer walk does not charge them again
-    (``_PluginAdapter._decoded_stream``)."""
+    ``control``, ``ReaderContext.read_nested``). The inner reader's decode stages
+    charged them to the listing as they decoded them, so the outer walk does not
+    charge them again (``_PluginAdapter._decoded_stream``)."""
+
+
+def read_nested(span: MemberSpan) -> tuple[bytes, MemberSpan]:
+    """``ReaderContext.read_nested``: the whole data of a span ``open_nested``
+    yielded, and the span with its data served from those bytes."""
+    data = span.data
+    if data is None:
+        return b"", span._replace(data=_HeldInnerData(b""))
+    if not isinstance(data, _NestedData):
+        raise ArchiveyUsageError(
+            "ReaderContext.read_nested() takes a span with the data open_nested() "
+            "gave it"
+        )
+    held = data.read()
+    return held, span._replace(data=_HeldInnerData(held))
 
 
 class _NestedData(io.RawIOBase):
@@ -3573,7 +3588,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             self._track_decompressed(
                 _full_count(data),
                 draw_budget=not drawn,
-                listing=not isinstance(data, (_NestedData, HeldInnerData)),
+                listing=not isinstance(data, (_NestedData, _HeldInnerData)),
             ),
             self._decoded_ratio_tally,
             index,

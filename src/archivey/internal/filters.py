@@ -86,9 +86,9 @@ def is_rooted(name: str) -> bool:
     """Whether ``name`` starts at a filesystem root: a leading ``/`` or ``\\`` (POSIX
     root, UNC share) or a drive letter followed by a separator (``C:/``, ``C:\\``).
 
-    Narrower than :func:`_is_absolute`, on purpose. A drive-relative ``C:x`` is also an
-    ordinary POSIX name (``a:b``), so it has no root to drop: rewriting it to ``x``
-    would put the member where another member named ``x`` belongs. It stays refused.
+    A drive-relative ``C:x`` is not rooted, on purpose: it is also an ordinary POSIX
+    name (``a:b``), so it has no root to drop, and rewriting it to ``x`` would put the
+    member where another member named ``x`` belongs. Extraction refuses it.
     """
     if name[:1] in ("/", "\\"):
         return True

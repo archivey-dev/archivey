@@ -10,8 +10,8 @@ Two users share it, each with its own walk and its own keys:
 
 - extraction's :class:`~archivey.internal.link_watch.LinkWatch`, which walks the
   destination with ``lstat`` and keys components NFC-normalized and case-folded, and
-- the Debian reader's data tree (``deb_reader._DataTree``), which walks the data tar's
-  symlinks in memory and keys segments as the extraction collision key folds them.
+- ``open_nested``'s borders (``nested_borders.LinkTree``), which walk an inner archive's
+  symlinks in memory and key segments as the extraction collision key folds them.
 
 A walk records every path it appends a component to. So the recorded set of a link is
 closed under prefixes from where the walk starts: a change at ``d`` finds every link

@@ -412,6 +412,9 @@ Choices made while building PR 3, and where it departs from the decisions above:
   `control.tar*` or `data.tar*` is read as the walk reads one, each inner member
   flagged with the ar header's offset. A found header with another name is passed
   over. Damage to `debian-binary`'s own header is not searched: detection needs it.
+  The deb reader keeps its own copy of the ar search and confirmation: it uses public
+  names only (#1860), so it does not import the ar reader, and a test checks that the
+  copies agree.
   At most one control tar that nothing confirms is listed, and a confirmed one is
   still read after it: a later unconfirmed one may lie inside the data of the one
   listed and list the same members again, so the listing would grow with the square
