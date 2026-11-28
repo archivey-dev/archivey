@@ -164,9 +164,13 @@ class LeasedDecompressor:
         return self._plugin.decompress(data, max_length)
 
     def __getattr__(self, name: str) -> Any:
-        # Only names this object lacks come here: its own unset slots (a copy being
-        # made) must not look themselves up again.
-        if name in LeasedDecompressor.__slots__:
+        # Only names this object lacks come here. Its own unset slots (a copy being
+        # made) must not look themselves up again, and a special name is this
+        # object's, not the plugin's: PyPy looks ``__getstate__`` up on the instance,
+        # and passing it through made a copy take the plugin's state as its own.
+        if name in LeasedDecompressor.__slots__ or (
+            name.startswith("__") and name.endswith("__")
+        ):
             raise AttributeError(name)
         return getattr(self._plugin, name)
 

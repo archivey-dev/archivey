@@ -559,7 +559,11 @@ def test_the_codec_wrapper_copies_without_recursing() -> None:
     from archivey.internal.kernels import KernelLease
 
     wrapper = LeasedDecompressor(ToyDecompressor(), KernelLease())  # type: ignore[arg-type]
-    assert copy.copy(wrapper).eof is False
+    copied = copy.copy(wrapper)
+    assert copied.eof is False
+    # The copy is a wrapper of the same decompressor, not one holding its state.
+    assert copied._plugin is wrapper._plugin
+    assert copied._lease is wrapper._lease
 
 
 # --- review round 5 ---
