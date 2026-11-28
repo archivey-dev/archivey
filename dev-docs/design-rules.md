@@ -935,7 +935,8 @@ too niche for root" (2026-09-25). The CLI escaping helpers became a public submo
 re-exported at the root (2026-09-24). `dry_run=` is public (2026-10-01, PR 531).
 `MemberStreams` was demoted (PR 479). The root keeps 30 names and the other 67 left it
 for their submodules in 0.6.0, with a deprecation release for the old spelling of 65
-of them (the two experimental plugin names left at once) (2026-11-27): the entry
+of them (the two experimental plugin names left at once) (2026-11-27); `OnProblem`,
+new in 0.6.0 beside `on_problem=`, makes 31: the entry
 functions, the reader, member, format, policy and report types, and the nine errors
 the docs catch most (`ArchiveyError`, `ArchiveyUsageError`, `FormatDetectionError`,
 `CorruptionError`, `TruncatedError`, `EncryptionError`, `ResourceLimitError`,
