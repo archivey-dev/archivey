@@ -517,8 +517,9 @@ _NOT_ON_API_PAGE = {
 }
 # Whole groups with no blocks of their own: the typed diagnostic contexts, which the
 # ``DiagnosticContext`` block and the diagnostics table describe, and the plugin API of
-# ``archivey.formats``, which docs/adding-a-format.md describes.
-_NOT_ON_API_PAGE_GROUPS = ("archivey.formats.",)
+# ``archivey.formats`` and ``archivey.speedups``, which docs/adding-a-format.md
+# describes.
+_NOT_ON_API_PAGE_GROUPS = ("archivey.formats.", "archivey.speedups.")
 
 
 def _off_the_page_by_group(spelling: str) -> bool:
