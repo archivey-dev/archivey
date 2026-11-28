@@ -1235,6 +1235,7 @@ field archivey.formats.CodecCall.limits: DecoderLimits = <factory>
 field archivey.formats.CodecCall.probe_bound: int | None = None
 field archivey.formats.CodecCall.properties: bytes | None = None
 field archivey.formats.CodecCall.size: int | None = None
+method archivey.formats.CodecCall.speedup(self, name: SpeedupName) -> object | None
 class archivey.formats.CodecHandler(ABC)
 attribute archivey.formats.CodecHandler.checks_content = False
 attribute archivey.formats.CodecHandler.concatenated = True
@@ -1346,7 +1347,7 @@ method archivey.formats.ReaderContext.charge_key_derivation(self, rounds: int) -
 method archivey.formats.ReaderContext.charge_metadata(self, nbytes: int, *, what: str) -> None
 property archivey.formats.ReaderContext.config: ArchiveyConfig
 method archivey.formats.ReaderContext.decode_name(self, raw: bytes) -> str
-method archivey.formats.ReaderContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm | StreamFormat | PluginStream, *, size: int | None = None, properties: bytes | None = None) -> BinaryIO
+method archivey.formats.ReaderContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm | StreamFormat | PluginStream, *, size: int | None = None, properties: bytes | None = None, one_stream: bool = False) -> BinaryIO
 property archivey.formats.ReaderContext.encoding: str | None
 method archivey.formats.ReaderContext.hold(self, member: ArchiveMember, *, reason: str | None = None) -> None
 method archivey.formats.ReaderContext.link_target_unavailable(self, member: ArchiveMember, *, reason: str, message: str, target_in_archive: bool) -> None
@@ -1355,6 +1356,7 @@ method archivey.formats.ReaderContext.open_nested(self, data: BinaryIO | io.RawI
 method archivey.formats.ReaderContext.report(self, code: DiagnosticCode, message: str, details: DiagnosticContext, *, member: ArchiveMember | None = None) -> None
 method archivey.formats.ReaderContext.set_dos_time(self, member: ArchiveMember, field: TimeField, stamp: int, *, source: str) -> None
 method archivey.formats.ReaderContext.set_unix_time(self, member: ArchiveMember, field: TimeField, seconds: int, *, nanoseconds: int = 0, source: str) -> None
+method archivey.formats.ReaderContext.speedup(self, name: SpeedupName) -> object | None
 class archivey.formats.ReaderSource()
 property archivey.formats.ReaderSource.path: Path | None
 method archivey.formats.ReaderSource.read_at(self, offset: int, n: int) -> bytes
@@ -1383,7 +1385,42 @@ function archivey.formats.block_stream(size: int, block_size: int, read_block: C
 function archivey.formats.buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO
 function archivey.formats.register_codec(handler: type[CodecHandler]) -> None
 function archivey.formats.register_format(handler: type[IndexedFormatHandler | SequentialFormatHandler]) -> None
+function archivey.formats.str_retained_bytes(value: str) -> int
 function archivey.formats.unix_member_type(mode: int, *, has_data: bool) -> tuple[MemberType, SpecialFileType | None]
+module archivey.speedups
+class archivey.speedups.BlockDecompress(Protocol)
+init archivey.speedups.BlockDecompress(*args, **kwargs)
+class archivey.speedups.Crc16(Protocol)
+init archivey.speedups.Crc16(*args, **kwargs)
+class archivey.speedups.LzwDecompressor(Protocol)
+init archivey.speedups.LzwDecompressor(*args, **kwargs)
+property archivey.speedups.LzwDecompressor.clear_offsets: list[tuple[int, int]]
+method archivey.speedups.LzwDecompressor.close(self) -> None
+method archivey.speedups.LzwDecompressor.decompress(self, data: bytes | bytearray | memoryview, max_length: int = -1) -> bytes
+property archivey.speedups.LzwDecompressor.eof: bool
+method archivey.speedups.LzwDecompressor.flush(self, max_length: int = -1) -> bytes
+property archivey.speedups.LzwDecompressor.header_params: tuple[int, bool] | None
+property archivey.speedups.LzwDecompressor.needs_input: bool
+property archivey.speedups.LzwDecompressor.nine_bit_widens: bool | None
+property archivey.speedups.LzwDecompressor.total_in: int
+property archivey.speedups.LzwDecompressor.total_out: int
+property archivey.speedups.LzwDecompressor.truncation: str | None
+property archivey.speedups.LzwDecompressor.unused_data: bytes
+class archivey.speedups.LzwFactory(Protocol)
+init archivey.speedups.LzwFactory(*args, **kwargs)
+class archivey.speedups.LzxDecompressor(Protocol)
+init archivey.speedups.LzxDecompressor(*args, **kwargs)
+method archivey.speedups.LzxDecompressor.close(self) -> None
+method archivey.speedups.LzxDecompressor.decompress(self, data: bytes | bytearray | memoryview, max_length: int = -1) -> bytes
+property archivey.speedups.LzxDecompressor.eof: bool
+method archivey.speedups.LzxDecompressor.flush(self, max_length: int = -1) -> bytes
+property archivey.speedups.LzxDecompressor.needs_input: bool
+property archivey.speedups.LzxDecompressor.output_size: int | None
+method archivey.speedups.LzxDecompressor.set_output_size(self, output_size: int, /) -> None
+property archivey.speedups.LzxDecompressor.total_out: int
+class archivey.speedups.LzxFactory(Protocol)
+init archivey.speedups.LzxFactory(*args, **kwargs)
+alias archivey.speedups.SpeedupName = Literal['crc16_arc', 'lzfse', 'lzo1x', 'lzvn', 'lzw', 'lzx']
 module archivey.terminal
 function archivey.terminal.display_path(path: str | os.PathLike[str]) -> str
 function archivey.terminal.escape_control_chars(text: str) -> str

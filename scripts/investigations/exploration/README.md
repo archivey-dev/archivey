@@ -21,7 +21,7 @@ python3 scripts/investigations/exploration/rar_decompressor_matrix.py --json /tm
 member's own FILE header and packed bytes (signature, made-up MAIN and ENDARC), for
 RAR4 and RAR5, plain, `-p` and `-hp`, solid chains and split members, and times it
 against today's `-n` masked read of the original. Evidence for
-`openspec/changes/rar-synthetic-archives/design.md`.
+`openspec/changes/archive/2026-11-27-rar-synthetic-archives/design.md`.
 
 Needs `rar` and `unrar` on PATH and the repo venv (it reuses archivey's KDF helpers).
 RAR4 rows need a `rar` that still writes `-ma4`; `scripts/fixtures/gen_rar_fixtures.py` fetches

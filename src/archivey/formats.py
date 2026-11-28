@@ -54,7 +54,7 @@ import struct
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -67,6 +67,7 @@ from typing import (
     Protocol,
     TypeVar,
     cast,
+    overload,
 )
 
 from archivey.config import ArchiveyConfig, DecoderLimits
@@ -78,6 +79,7 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, TruncatedError
 from archivey.internal.arg_checks import check_bool
+from archivey.internal.listing_limits import str_retained_bytes
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.overrides import override
 from archivey.internal.password import PasswordConfirmVerdict
@@ -85,6 +87,13 @@ from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.streamtools import ensure_bufferedio
 from archivey.internal.timestamps import dos_to_datetime, unix_to_datetime
 from archivey.internal.unix_mode import special_file_type
+from archivey.speedups import (
+    BlockDecompress,
+    Crc16,
+    LzwFactory,
+    LzxFactory,
+    SpeedupName,
+)
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -98,6 +107,7 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from archivey.internal.kernels import KernelLease
     from archivey.internal.nesting import NestDraws
     from archivey.internal.resource_usage import ResourceUsageRecorder
     from archivey.internal.salvage import WalkSalvage
@@ -130,6 +140,7 @@ __all__ = [
     "buffered_stream",
     "register_codec",
     "register_format",
+    "str_retained_bytes",
     "unix_member_type",
 ]
 
@@ -748,16 +759,6 @@ class ReaderContext:
     # (each run, each slice), so a close() stops it within one of them. Internal,
     # set by the adapter; not for plugins.
     _checkpoint: Callable[[], None] | None = None
-    # ``_decompress_coder(data, stream_format, size)`` decodes ``data``, a container
-    # coder's whole data in ``stream_format``, as ``decompress`` does, except that a
-    # byte after the end raises ``CorruptionError`` (as for a ZIP member) instead of
-    # being reported as trailing data, and bzip2 and LZMA Alone end at their first
-    # stream, as a ZIP or 7z member's bzip2 does. Continuations the codec's data
-    # defines for a member (further xz streams and their padding, zstd and LZ4
-    # frames) still read. Internal, set by the adapter; not for plugins.
-    _decompress_coder: (
-        Callable[[BinaryIO, StreamFormat, int | None], BinaryIO] | None
-    ) = None
     # What the reader draws decoded bytes from on its nest's account, for a built-in
     # reader that decodes past members itself (CAB's folder skip). Internal, set by
     # the adapter; not for plugins.
@@ -784,6 +785,8 @@ class ReaderContext:
     # unlike ``charge_metadata`` the charge outlives the walk. Internal, set by the
     # adapter; not for plugins.
     _keep_metadata: Callable[[int, str], None] | None = None
+    # The kernel objects ``speedup()`` handed out, given back at close. Internal.
+    _kernel_lease: KernelLease
 
     def __init__(
         self,
@@ -797,6 +800,7 @@ class ReaderContext:
                 CompressionAlgorithm | StreamFormat | PluginStream,
                 int | None,
                 bytes | None,
+                bool,
             ],
             BinaryIO,
         ],
@@ -826,6 +830,11 @@ class ReaderContext:
         self._hold = hold
         self._charge_metadata = charge_metadata
         self._open_nested = open_nested
+        from archivey.internal.kernels import KernelLease
+
+        # Made here, not on first use: two threads asking at once would each make one,
+        # and what the lost one tracked would never be given back.
+        self._kernel_lease = KernelLease()
 
     @property
     def encoding(self) -> str | None:
@@ -1028,6 +1037,47 @@ class ReaderContext:
             )
         return self._open_nested(cast(BinaryIO, data), format)
 
+    @overload
+    def speedup(self, name: Literal["crc16_arc"]) -> Crc16 | None: ...
+    @overload
+    def speedup(
+        self, name: Literal["lzfse", "lzo1x", "lzvn"]
+    ) -> BlockDecompress | None: ...
+    @overload
+    def speedup(self, name: Literal["lzw"]) -> LzwFactory | None: ...
+    @overload
+    def speedup(self, name: Literal["lzx"]) -> LzxFactory | None: ...
+    @overload
+    def speedup(self, name: SpeedupName) -> object | None: ...
+    def speedup(self, name: SpeedupName) -> object | None:
+        """archivey-speedups' fast decoder ``name``, or ``None`` when it can't run here, so
+        the reader falls back to a Python decoder of its own with the same interface::
+
+            crc = context.speedup("crc16_arc") or my_crc16
+
+        ``None`` when archivey-speedups is not installed, too old for this speedup, or
+        excluded by the caller's library policy, and, for a decoder (every name but the
+        ``"crc16_arc"`` checksum, which runs in this process under every setting),
+        under ``ProcessIsolation.NATIVE_DECODERS`` when no decoder child can run it. The
+        names and their interfaces are in :mod:`archivey.speedups`. archivey gives
+        back the decoder child of every object made from the result when the
+        reader closes. Another name raises ``ArchiveyUsageError``."""
+        from archivey.internal import kernels
+        from archivey.internal.config import ProcessIsolation
+
+        config = self._config
+        return kernels.for_plugin(
+            name,
+            config.formats._libraries_off,
+            isolated=config.process_isolation is ProcessIsolation.NATIVE_DECODERS,
+            lease=self._kernel_lease,
+        )
+
+    def _release_kernels(self) -> None:
+        """Give back the decoder children of the kernel objects :meth:`speedup` handed
+        out. The adapter calls it when the reader closes."""
+        self._kernel_lease.release()
+
     def normalize_name(self, name: str, member_type: MemberType) -> str:
         """The name archivey gives a member: ``./a//b`` becomes ``a/b``, and a
         directory's name ends in ``/``.
@@ -1128,6 +1178,7 @@ class ReaderContext:
         *,
         size: int | None = None,
         properties: bytes | None = None,
+        one_stream: bool = False,
     ) -> BinaryIO:
         """Decode one member's compressed bytes with archivey's own decoders.
 
@@ -1172,10 +1223,21 @@ class ReaderContext:
         and bytes after that end are reported as ``ARCHIVE_TRAILING_DATA``, as for a
         file of that format; under ``DiagnosticPolicy.STRICT`` that report raises.
 
+        ``one_stream=True`` says ``data`` is one stream of a stream format and nothing
+        else, as a XAR member's data is: bytes after the end raise ``CorruptionError``,
+        as for a method, and ``BZIP2`` and ``LZMA_ALONE`` end at their first stream, so
+        a second one is such bytes. Continuations the format itself defines (further
+        xz streams and their padding, zstd and LZ4 frames) still read. It takes
+        ``ZLIB``, ``BZIP2``, ``XZ``, ``LZMA_ALONE``, ``ZSTD``, ``LZ4`` and ``BROTLI``;
+        any other stream format raises ``UnsupportedFeatureError``. For a method it
+        changes nothing. One exception, as for a ZIP member: under rapidgzip, several
+        zlib streams whose last trailer matches the Adler-32 of them all read as one
+        (``openspec/specs/seekable-decompressor-streams``).
+
         ``size`` is the decoded length when the format stores it. Raw LZMA1 may have
         no end marker and needs it then.
         """
-        return self._decompress(data, method, size, properties)
+        return self._decompress(data, method, size, properties, one_stream)
 
 
 class FormatReader(ABC):
@@ -1526,6 +1588,51 @@ class CodecCall:
     output it reads. A decoder that would reserve much more than this for a size the
     data declares may raise ``ResourceLimitError`` instead, which detection reads as
     "can't tell". ``None`` for every other read."""
+
+    # What ``speedup()`` needs, set by archivey (``codec_adapter``): the caller's
+    # excluded libraries and isolation, and the lease of what it hands out. Internal.
+    # An init-only argument, kept on the instance by ``__post_init__``: not a field,
+    # so ``fields()`` and ``asdict()`` show the documented four, while
+    # ``dataclasses.replace`` still passes it on (it reads an init-only argument with
+    # a default from the instance). A copied call asks with the caller's policy, and
+    # what it hands out is given back with the stream.
+    _speedups: InitVar[object] = None
+
+    def __post_init__(self, _speedups: object) -> None:
+        object.__setattr__(self, "_speedups", _speedups)
+
+    @overload
+    def speedup(self, name: Literal["crc16_arc"]) -> Crc16 | None: ...
+    @overload
+    def speedup(
+        self, name: Literal["lzfse", "lzo1x", "lzvn"]
+    ) -> BlockDecompress | None: ...
+    @overload
+    def speedup(self, name: Literal["lzw"]) -> LzwFactory | None: ...
+    @overload
+    def speedup(self, name: Literal["lzx"]) -> LzxFactory | None: ...
+    @overload
+    def speedup(self, name: SpeedupName) -> object | None: ...
+    def speedup(self, name: SpeedupName) -> object | None:
+        """archivey-speedups' fast decoder ``name``, or ``None`` when it can't run for
+        this call, as :meth:`ReaderContext.speedup` gives it::
+
+            make = call.speedup("lzw") or my_lzw.Decompressor
+
+        archivey gives back the decoder child of every object made from the
+        result when the stream closes, or when ``decompressor()`` raises. The
+        decompressor it returns may compare equal to another, or have no hash: each
+        one gives back only its own."""
+        from archivey.internal import kernels
+
+        # A call built by hand, as a plugin's own tests do, asks with the defaults.
+        state = self.__dict__.get("_speedups")  # set by ``__post_init__``
+        if not isinstance(state, kernels.CallSpeedups):
+            state = kernels.CallSpeedups(frozenset(), isolated=False)
+            object.__setattr__(self, "_speedups", state)
+        return kernels.for_plugin(
+            name, state.excluded, isolated=state.isolated, lease=state.lease
+        )
 
 
 class CodecHandler(ABC):

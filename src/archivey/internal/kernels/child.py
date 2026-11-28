@@ -154,7 +154,8 @@ class ChildLzwDecompressor(_Counted):
 
     @property
     def clear_offsets(self) -> list[tuple[int, int]]:
-        return cast("Any", self._child.reported("clear_offsets"))
+        # A fresh list, as the Rust getter and the twin give: the report is reused.
+        return list(cast("Any", self._child.reported("clear_offsets")))
 
     @property
     def unused_data(self) -> bytes:

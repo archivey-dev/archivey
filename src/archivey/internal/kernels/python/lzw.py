@@ -141,6 +141,9 @@ class Decompressor:
         self._clear_offsets = first + self._clear_offsets
         return out
 
+    def close(self) -> None:
+        """Nothing to give back: this decoder runs in this process."""
+
     def flush(self, max_length: int = -1) -> bytes:
         """Mark the end of the input and return the rest of the output, at most
         ``max_length`` bytes a call; ``eof`` is true once all of it is returned."""

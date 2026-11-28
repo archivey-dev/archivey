@@ -180,4 +180,5 @@ Compress corpus harnesses compare the reader with those libraries.
   dialects; binutils `bfd/archive.c` is GNU's.
 - llvm-ar's [`--format`](https://llvm.org/docs/CommandGuide/llvm-ar.html) options and its
   darwin padding.
-- `openspec/changes/plugin-api/tasks.md` §3a, the reader's history as a plugin.
+- `openspec/changes/archive/2026-11-27-plugin-api/tasks.md` §3a, the reader's history as
+  a plugin.

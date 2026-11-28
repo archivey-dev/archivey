@@ -133,9 +133,10 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
      an intact end, and what follows it is hidden content (later step).
    - **What passes:** a 512-byte block whose checksum passes and whose magic is
      `ustar\0` or `ustar  \0` (POSIX, GNU, PAX), searched at **every 512-byte block**
-     relative to the archive start. A v7 header (no magic) passes only when every header
-     the walk listed before the damage was v7, and only at 512-byte blocks. The checksum
-     is a byte sum (≈2⁻¹⁷); the magic adds 48 bits.
+     relative to the archive start. A v7 header (no magic) passes too, at 512-byte
+     blocks, when its checksum field is octal text in range and its five number fields
+     are octal numbers (below). The checksum is a byte sum (≈2⁻¹⁷); the magic adds 48
+     bits.
    - **Unaligned search** (any byte offset) runs only on a layer whose offsets are not
      known after a gap (stream segments, step 6). In this step every layer keeps its
      offsets, so the search is aligned. The driver takes the step as a parameter.
@@ -144,9 +145,9 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
      plain header whose name field is full and has no record before it gets `"name"` in
      `unchecked`.
    - **Confirmed:** the block after the found member's data (its chain's last header
-     included) is a header that passes checksum and magic, or the clean end. Otherwise
-     unconfirmed; the search resumes at the next block after the found header (its data
-     is searched).
+     included) is a header that passes the search's checks (either kind), or the clean
+     end. Otherwise unconfirmed; the search resumes at the next block after the found
+     member header (its data is searched; its chain is not).
    - **Compressed TAR** (`.tar.gz` etc.): the search runs on the decoded stream, which
      the reader reads forward; a random-access TAR reader over a decoded stream already
      seeks forward by decoding. Damage in the codec itself stops the decode as today
@@ -227,6 +228,114 @@ Choices the decisions above left open, made while building PR 1:
   format calls `SalvageState.finish()` at the end of its walk to record it, and
   `SalvageState.restart()` when its listing walk starts over.
 
+## Notes from the TAR PR
+
+Choices made while building PR 2, where decisions 6 and 9 left them open:
+
+- **Every added member is flagged.** The archive-reading delta says each member the
+  default does not list carries `MEMBER_FOUND_BY_SCAN`. So a member the normal walk
+  reaches after a confirmed found member is flagged too, with `offset` at its own chain
+  and `confirmed` from the block after its data. Only a member the search found starts
+  a search inside its data when it is unconfirmed; a walked member's next damage starts
+  a search where that damage is, as for any walk.
+- **The default's zero-block end starts no search**, even when non-zero bytes follow the
+  marker. The default reads that end without an error, and the archive-reading delta
+  says such an archive reads the same with `salvage=True` in this step. A run of zero
+  blocks from a header's start (4 KiB zeroed at a header) therefore looks like an intact
+  end with hidden content after it, which is step 5b. GNU tar stops there too ("A lone
+  zero block"), unless `--ignore-zeros`. Past the default's damage, a zero-block end
+  that is not the clean end (a nested tar's marker, with the outer members after it)
+  does start a search.
+- **The search takes v7 and ustar headers everywhere** (davi, 2026-11-26). A block with
+  no magic passes wherever the search runs, a lost start included, whatever the walk
+  listed before, when it is a plausible v7 header: its checksum field is octal text in
+  a spelling writers use (an optional NUL, spaces or zeros, digits, then a NUL or a
+  space; never base-256) with a value from 0o400 to 0o377000, its mode, uid, gid, size
+  and mtime fields are octal numbers with at least one digit, and its checksum matches.
+  A found member is unconfirmed unless the block after its data passes the same checks
+  (either kind) or is the clean end. To keep the cost near the ustar search, the
+  search first marks the blocks whose eight checksum bytes are all digits, NULs or
+  spaces with at least one digit, with one strided slice per byte over the window, and
+  checks only those (measured 2026-11-26: 1.07x the ustar-only search on random data,
+  1.03x on Python source, 1.18x on digit-heavy text; no false find in 240 MiB of
+  searched member data). This replaces the v7 rule of 2026-11-09, which took a v7
+  block only when every header listed before it was v7.
+- **A found chain is provisional until its member is confirmed.** One rule covers every
+  walk (a file, a codec stream, a deb's forward-only `data.tar`, a `stream_members()`
+  pass): a found chain whose member is not confirmed changes nothing that outlives it.
+  The search's start puts back what the chain changed (the PAX global records), and a
+  confirmation keeps it. A member is confirmed only when the block after its data passes
+  the search's own checks, or is the clean end. A member a forward-only walk trusts
+  (below) is confirmed when the walk reads that block, on the same checks. So a found
+  `g` header counts for later members only once its member is confirmed (davi,
+  2026-11-26). The `g` header still applies to its own unconfirmed member, and that
+  member's `MEMBER_FOUND_BY_SCAN` message says so. This departs from GNU tar on purpose:
+  GNU tar `--ignore-zeros` applies such a header to later members, but a chain with no
+  confirmed member is noise. A `g` header the walk itself reaches applies to later
+  members as in GNU tar.
+- **A found chain hits a limit only for what the archive can hold.** A found header's
+  numbers may be noise. When a charge against `max_metadata_bytes` fails for data a
+  found header claims (an extended header's data, a PAX 1.0 sparse map's entry count)
+  and the walk knows the archive cannot hold that data (a file shorter than the claim,
+  or a map that does not fit its member's data area), the chain makes no member and is
+  passed over like any found header whose chain does not parse: the search goes on at
+  the block after it. When the archive holds it, or the walk cannot tell without
+  reading it (a codec stream, a forward-only walk), it stays a `ResourceLimitError`,
+  as in the default walk.
+- **A found header whose chain makes no member** (it does not parse, or it raises
+  `CorruptionError`) is passed over: the search goes on at the block after it. **An
+  unconfirmed found member's next search starts after its member header**, not
+  inside its chain, so that a member with extended headers before it is listed once.
+  Past the default's end, `CorruptionError` inside a walked chain ends that chain as a
+  rejected header does, and the search starts at the chain. Damage in the codec stream
+  during a search ends the walk; the pass ends in the default's error.
+- **The damage error's message** adds that salvage searched past it, and names the
+  search limit when it stopped the search. Its code and context are the default's.
+- **Lost start in core is a flag, not a format choice.** Detection already falls back
+  to the name's extension (`detected_by="extension"`), and `format=` skips detection, so
+  both already pick the reader. Core sets `SalvageRequest.lost_start` /
+  `SalvageState.lost_start` (`core._start_may_be_lost`: salvage requested and the
+  format came from `format=` or the extension), for a format whose search depends on
+  it (CPIO's variant). TAR does not read it: a first header that does not parse is
+  damage at offset 0 under salvage, whatever the detection said, and the search runs at
+  open, so a file with no header still fails at open.
+- **A forward-only walk** (a nested reader such as a deb's `data.tar`) reads through a
+  window that, from the first search on, keeps the last 4 MiB (the pipe span) it
+  read, so the search inside an unconfirmed member's data reads that data again and
+  the walk goes back to the found header. Bytes it read past and no longer keeps (the
+  damaged block itself, data read further than the span) read as zeros, which never
+  pass. A compressed TAR's walk reads its codec stream through the same window from
+  the first search on, because a seek back on a codec stream decodes again from a
+  restart point.
+- **Confirmation is bounded on a layer that is costly to go back on.** A plain file
+  seeks, so any size is confirmed. A forward-only walk looks at the block after a
+  member's data only when it is within the 4 MiB span of where the walk stands (the pipe
+  span). Past that span, a found member's size is trusted, as GNU tar reads a pipe: it
+  is listed unconfirmed, its data reads in full through the walk, and the walk goes on
+  from where the size points. When the block there does not confirm it, or the stream
+  ends before it (the data then ends quietly there, as a held read does), the search
+  goes back inside the member's data, from the first byte the walk's window still keeps,
+  which is at most 4 MiB before where the read ended. So a real member bigger than the
+  span reads whole and a tar stored in it is not listed, and a size that lies by more
+  than the span loses the members whose headers are in all but the last 4 MiB of the
+  read. This fallback stays for forward-only walks: such a walk cannot see the block
+  after the data, so it trusts the size and reads on. A codec stream confirms past the
+  span by decoding forward to the block, which the walk decodes next anyway when the
+  member is confirmed. That look is free for a member the
+  walk reached, whose walk goes on from the block whatever it holds, and for a found
+  member that it confirms. When it fails for a found member, the search goes back into
+  the data and decodes again from a restart point, so the failed looks share a budget:
+  their offsets may add up to the furthest offset the walk has decoded, and past that a
+  found member's look is capped at the span. The clean-end check reads each byte once
+  per walk: an end more than the 1 MiB scan away answers without a read, and the zeros
+  before the end are scanned once.
+- **An unconfirmed found member's data, on a forward-only walk,** when the block
+  after it is within the span and does not confirm it, is read from the window
+  without moving the walk, and ends quietly where the stream ends: its size is not
+  trusted. A deb's pass drains each member's data, so a
+  lying size no longer runs the walk into the stream's end, and the bytes it hands
+  out count once against `max_decoded_bytes`, however many found members cover them.
+
 ## Notes from the CPIO and ar PR
 
 Choices made while building PR 3, and where it departs from the decisions above:
@@ -237,13 +346,15 @@ Choices made while building PR 3, and where it departs from the decisions above:
   is checked as a found one is, so a member whose next header fails is unconfirmed,
   and the search goes on inside its data (decision 4 resumed the normal walk; the
   next header's failure would start a search there anyway, after the member's data).
-- **How a sequential reader reaches the driver.** `ReaderContext._salvage(stream)`
-  (internal, set by the adapter) gives a `WalkSalvage` for the layer the walk reads:
+- **How a sequential reader reaches the driver.** `walk_salvage(context, stream)`
+  (`internal.salvage`, the one place a reader reads the adapter's internal
+  `ReaderContext._salvage` hook) gives a `WalkSalvage` for the layer the walk reads:
   `search()`, `read_at()`, `seek()` (moves the walk's `ForwardStream` back to the
   found header), `holds()`, `found()` and `ending()` (finish, and the damage error,
   its message noting the search limit when that stopped the search). The CPIO and ar
-  readers import `HeaderSearch` and `WalkSalvage` from `internal.salvage` until the
-  plugin hook (step 11); `tests/public_names.py` allows those two names.
+  readers import `HeaderSearch`, `WalkSalvage` and `walk_salvage` from
+  `internal.salvage` until the plugin hook (step 11); `tests/public_names.py` allows
+  those three names.
 - **Where the flag is set.** Core registers ar, CPIO and deb from its format table
   (`internal/format_table.py`, #1853), so `HandlerEntry(salvage=True)` declares
   `SUPPORTS_SALVAGE` for them, beside the other data a handler cannot declare yet.

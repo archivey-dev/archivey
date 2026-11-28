@@ -1,8 +1,8 @@
 """Where the filesystems are on a UDIF image's disk: GPT, Apple partition map, or none.
 
-Design §5 of ``openspec/changes/dmg-reader``. The run tables together are the index of
-the disk, and every byte comes from it. Which ranges are probed for a filesystem comes
-from the first of these that is valid:
+Design §5 of ``openspec/changes/archive/2026-11-27-dmg-reader``. The run tables together
+are the index of the disk, and every byte comes from it. Which ranges are probed for a
+filesystem comes from the first of these that is valid:
 
 1. the partition map on the disk: a GPT whose header and entry array pass their CRCs
    and whose geometry is sound (primary, else the backup at the last sector), or an

@@ -1,6 +1,7 @@
 # LZFSE: the `lzfse` package against archivey's own decoder
 
-This is Part A0 of the DMG reader plan (`openspec/changes/dmg-reader/`, design §11). It
+This is Part A0 of the DMG reader plan
+(`openspec/changes/archive/2026-11-27-dmg-reader/`, design §11). It
 checks whether the `lzfse` package from PyPI can be the optional fast LZFSE decoder of
 Part H, next to the pure-Python decoder that Part A ports from the prototype.
 

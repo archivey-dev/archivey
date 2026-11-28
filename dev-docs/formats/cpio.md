@@ -210,4 +210,5 @@ the Commons Compress harness compare the reader with those libraries.
 - The Linux kernel's
   [initramfs buffer format](https://docs.kernel.org/driver-api/early-userspace/buffer-format.html).
 - libarchive `archive_read_support_format_cpio.c` for afio's large header.
-- `openspec/changes/plugin-api/tasks.md` §3, the reader's history as a plugin.
+- `openspec/changes/archive/2026-11-27-plugin-api/tasks.md` §3, the reader's history as
+  a plugin.

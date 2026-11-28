@@ -2,7 +2,7 @@
 
 Current maintainer truth for Apple's disk images. archivey reads UDIF images that hold
 HFS+, HFSX or APFS volumes, encrypted ones (`hdiutil -encryption`) included with their
-password; the plan is `openspec/changes/dmg-reader/`. Detection's
+password; the plan is `openspec/changes/archive/2026-11-27-dmg-reader/`. Detection's
 trailer step is on [`topics/detection.md`](../topics/detection.md) §2.4. This page is
 the format.
 
@@ -405,8 +405,9 @@ one encrypted image.
 
 ## 6. Decisions
 
-The plan's decisions D1 to D8 are in `openspec/changes/dmg-reader/design.md` §2.
-Choices made in Part B that the plan left open:
+The plan's decisions D1 to D8 are in
+`openspec/changes/archive/2026-11-27-dmg-reader/design.md` §2. Choices made in Part B
+that the plan left open:
 
 - **One generic diagnostic for structure disagreements.**
   `ARCHIVE_STRUCTURE_INCONSISTENT` with `ArchiveStructureContext.structure` naming
@@ -523,5 +524,5 @@ after a merge that touches the DMG code; the table is its job summary.
 - 7-Zip `CPP/7zip/Archive/DmgHandler.cpp`, `HfsHandler.cpp`, `ApfsHandler.cpp`,
   `ApmHandler.cpp`, `GptHandler.cpp`.
 - UEFI 2.10 §5 (GPT).
-- The plan: `openspec/changes/dmg-reader/`.
+- The plan: `openspec/changes/archive/2026-11-27-dmg-reader/`.
 - User docs: `docs/formats.md` §Disk images.

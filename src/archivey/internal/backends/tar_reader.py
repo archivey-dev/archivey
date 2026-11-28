@@ -63,6 +63,7 @@ import re
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, nullcontext
+from dataclasses import dataclass
 from datetime import datetime
 from typing import BinaryIO, Literal, assert_never, cast
 
@@ -83,6 +84,7 @@ from archivey.diagnostics import (
     MemberHeaderDamageContext,
     MemberHeaderRecordContext,
     ReaderDisagreementContext,
+    SalvageScanContext,
     UnknownMemberTypeContext,
 )
 from archivey.exceptions import (
@@ -97,6 +99,7 @@ from archivey.internal.backends.tar_parser import (
     SPARSE_ENTRY_BYTES,
     Ambiguity,
     Budget,
+    GlobalRecords,
     LinkData,
     NameSource,
     PaxValue,
@@ -126,16 +129,19 @@ from archivey.internal.naming import (
     emit_member_name_normalized,
     normalize_member_name,
 )
+from archivey.internal.nesting import NestDraws
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
+from archivey.internal.salvage import ARCHIVE_LAYER
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
     MemberStreamParts,
 )
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.checked_spans import find_checked_spans
 from archivey.internal.streams.decompressor_stream import StreamChecksumError
 from archivey.internal.streams.resume import (
@@ -602,7 +608,10 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
     count: rapidgzip indexes only output its prefetch has decoded, so that seek would
     skip no decoding and would lose the proof (``restarts_follow_decoding``). Reading
     those bytes is also faster than asking the child for a restart point at every
-    member. Any other seek passes through.
+    member. Any other seek passes through. A forward read-through that meets the
+    stream's end stops there and returns where it stopped: a seek past the end
+    would count bytes no decoder produced (a member size that lies past the end),
+    and the ratio guard would refuse the archive for them.
 
     Borrows the codec stream: the reader closes it, never this handle.
     """
@@ -637,8 +646,8 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
         while remaining > 0:
             chunk = read_blocking(inner, min(remaining, _SKIP_READ))
             if not chunk:
-                # Past the end: the codec stream's own seek says where.
-                return inner.seek(offset, whence)
+                # The stream ends first: stay at its end.
+                return inner.tell()
             remaining -= len(chunk)
         return offset
 
@@ -652,6 +661,70 @@ class _DecodeThroughSkips(ReadOnlyIOStream):
 
     def nearest_resume_offset(self, target: int) -> int | None:
         return ask_resume_offset(self._inner, target)
+
+
+@dataclass(frozen=True)
+class _Provisional:
+    """What a found chain may change for the rest of the walk, as it stood before
+    the search found it (:meth:`_SalvageWalk.search_starts`): the PAX global
+    records."""
+
+    records: GlobalRecords
+
+
+@dataclass
+class _SalvageWalk:
+    """One walk's salvage mode (``open_archive(salvage=True)``): where the default
+    walk ended, and what the searches past it have found.
+
+    ``default_end`` is the end the walk would stop on without salvage, with the last
+    member and the member count at that point: the pass ends in its error once the
+    searches are done (Q3). ``found_at`` is where the chain of the entry about to be
+    listed starts, when a search found it. ``trusted`` is, for the member
+    just listed, its member header's offset, when a forward-only walk trusted its
+    size (``TarWalker.salvage_confirms``).
+
+    A found chain is provisional until its member is confirmed: what it changes for
+    the rest of the walk (``_Provisional``) is kept as it stood before the search
+    found it, put back when the next search starts (:meth:`search_starts`), and
+    dropped when the member is confirmed (:meth:`confirm`). Every way a found member
+    ends up unconfirmed (its chain makes no member, the block after its data does
+    not confirm it, or nothing confirms the size a forward-only walk trusted) leads
+    to a next search, so that one point puts the state back on every path.
+    """
+
+    default_end: TarEnd | None = None
+    default_last: ArchiveMember | None = None
+    default_count: int = 0
+    found_at: int | None = None
+    provisional: _Provisional | None = None
+    trusted: int | None = None
+    limit_reached: bool = False
+
+    def search_starts(self, walker: TarWalker) -> None:
+        """Before a search: the found chain before it, if not confirmed, changed
+        nothing that outlives it. Its member was not confirmed, so the PAX global
+        records go back to where they stood before it."""
+        before, self.provisional = self.provisional, None
+        if before is not None:
+            walker.restore_global_records(before.records)
+        self.trusted = None
+
+    def chain_found(self, walker: TarWalker) -> None:
+        """A search found a chain: what it changes is provisional from here."""
+        self.provisional = _Provisional(walker.global_records())
+
+    def confirm(self) -> None:
+        """The found member is confirmed: what its chain changed stands."""
+        self.provisional = None
+        self.trusted = None
+
+    def begin(self, end: TarEnd, last: ArchiveMember | None, count: int) -> None:
+        """Keep the default walk's end, the first time the walk ends on damage."""
+        if self.default_end is None:
+            self.default_end = end
+            self.default_last = last
+            self.default_count = count
 
 
 class TarReader(BaseArchiveReader):
@@ -731,6 +804,14 @@ class TarReader(BaseArchiveReader):
             else None
         )
 
+        # The data offsets of the members a salvage search found and nothing
+        # confirms, on a forward-only walk: their data reads from the walk's window
+        # and does not move the walk (TarWalker.open_held_data).
+        self._held_spans: set[int] = set()
+        # The data offsets of found members whose size a forward-only walk trusted
+        # (``_SalvageWalk.trusted``): their data ends quietly where the stream ends
+        # (TarWalker.open_data, ``quiet_end``).
+        self._trusted_spans: set[int] = set()
         try:
             self._stream = self._open_byte_stream(
                 source, format, streaming, member_streams=member_streams
@@ -738,16 +819,16 @@ class TarReader(BaseArchiveReader):
             # The first member's headers are parsed at open, so a file that is not a
             # tar fails here (DR-15b).
             self._walker = self._new_walker()
+            salvage = _SalvageWalk()
             # Part of the first listing pass: what it decodes counts toward the cap.
             with self._listing_work():
-                first = self._step(self._walker)
+                first = self._first_entry(self._walker, salvage)
             self._check_first(first)
             # The walk that hands out ``first`` is the open-time one; a random-access
             # walk started over after a discarded failure builds its own.
-            self._open_walk: tuple[TarWalker, TarEntry | TarEnd] | None = (
-                self._walker,
-                first,
-            )
+            self._open_walk: (
+                tuple[TarWalker, TarEntry | TarEnd, _SalvageWalk] | None
+            ) = (self._walker, first, salvage)
         except ArchiveyError as exc:
             # Release before re-raising: the exception traceback keeps this frame alive
             # and would otherwise pin the owned stream until the caller drops the
@@ -875,7 +956,9 @@ class TarReader(BaseArchiveReader):
         # ends, so a walk started over replaces the last one's view.
         self._close_walker_view()
         self._walker_view = view
-        return TarWalker(view, seekable=True, end=end)
+        # A codec stream seeks back by decoding again from a restart point, so a
+        # salvage walk reads it through a window (TarWalker.salvage_search).
+        return TarWalker(view, seekable=True, end=end, rewind_costly=self._compressed)
 
     def _io_guard(self) -> AbstractContextManager[object]:
         return self._handle_lock if self._handle_lock is not None else nullcontext()
@@ -888,6 +971,25 @@ class TarReader(BaseArchiveReader):
     def _step(self, walker: TarWalker) -> TarEntry | TarEnd:
         with self._walk_guard():
             return walker.next_entry(self._header_budget())
+
+    def _first_entry(
+        self, walker: TarWalker, salvage: _SalvageWalk
+    ) -> TarEntry | TarEnd:
+        """The walk's first entry. In salvage mode a first header that does not
+        parse is damage at the archive's start, such as a lost start (design
+        decision 9): the search runs from there at once, so a file in which it finds
+        no header fails at open as it does without salvage."""
+        first = self._step(walker)
+        if (
+            self._salvage_mode.enabled
+            and isinstance(first, TarEnd)
+            and first.kind is TarEndKind.REJECTED
+        ):
+            salvage.begin(first, None, 0)
+            found = self._salvage_next(walker, first.offset, salvage)
+            if found is not None:
+                return found
+        return first
 
     def _check_first(self, first: TarEntry | TarEnd) -> None:
         """Refuse a file whose first block is not a member header or a zero block."""
@@ -1051,26 +1153,306 @@ class TarReader(BaseArchiveReader):
         the start with a walker of its own.
         """
         if self._open_walk is not None:
-            walker, entry = self._open_walk
+            walker, first, salvage = self._open_walk
             self._open_walk = None
         else:
             walker = self._new_walker()
+            salvage = _SalvageWalk()
+            # Only a listing walk started over after a discarded failure gets here
+            # (the base's ``_abandon_walk``): it searches and records again from zero,
+            # and the base replays each position's records, so each is kept once. A
+            # member read after the listing reads its data area by offset
+            # (``_independent_data``) and walks nothing, so no walk for data needs a
+            # quiet state of its own.
+            self._salvage_mode.restart()
             with self._translated_errors():
-                entry = self._step(walker)
+                first = self._first_entry(walker, salvage)
         # A pass reads the data of the member the walk is at through this walker.
         self._walker = walker
         index = 0
         last_member: ArchiveMember | None = None
-        while isinstance(entry, TarEntry):
-            last_member = self._to_member(entry, index)
-            yield last_member
-            index += 1
-            with self._translated_errors():
-                entry = self._step(walker)
-            # The step decoded through the member's data: its blocks may cover it.
-            self._refresh_member_levels()
+        # ``None`` once the salvage searches have found nothing more.
+        entry: TarEntry | TarEnd | None = first
+        if salvage.default_end is not None and isinstance(first, TarEnd):
+            entry = None
+        while entry is not None:
+            if isinstance(entry, TarEntry):
+                if salvage.trusted is not None:
+                    # The block after a trusted member's data made this entry, and
+                    # passed the checks a confirmation makes
+                    # (TarWalker.salvage_confirms): the member is confirmed.
+                    salvage.confirm()
+                last_member = self._to_member(entry, index)
+                search_from = None
+                if salvage.default_end is not None:
+                    # Past the default walk's end every member is an added one.
+                    search_from = self._report_found(
+                        walker, last_member, entry, index, salvage
+                    )
+                yield last_member
+                index += 1
+                if search_from is not None:
+                    entry = self._salvage_next(walker, search_from, salvage)
+                else:
+                    entry = self._salvage_step(walker, salvage)
+                # The step decoded through the member's data: its blocks may cover it.
+                self._refresh_member_levels()
+                continue
+            start = self._salvage_start(walker, entry, salvage)
+            trusted = salvage.trusted
+            if (
+                trusted is not None
+                and not salvage.limit_reached
+                and (start is not None or entry.kind is not TarEndKind.ZERO_BLOCK)
+            ):
+                # Nothing confirms the size a forward-only walk trusted (the block at
+                # its claimed end, or the stream's end before that): search back
+                # inside the member's data, as far as the walk's window still
+                # keeps it (design.md, "Notes from the TAR PR").
+                start = walker.search_floor(trusted + BLOCKSIZE)
+            if start is None:
+                break
+            salvage.begin(entry, last_member, index)
+            entry = self._salvage_next(walker, start, salvage)
+        if self._salvage_mode.enabled:
+            self._salvage_mode.finish()
+        if salvage.default_end is not None:
+            # The pass ends in the default walk's error (Q3), whatever the searches
+            # found after it.
+            self._verify_tar_eof(
+                walker,
+                salvage.default_end,
+                last_member=salvage.default_last,
+                member_count=salvage.default_count,
+                salvage=salvage,
+            )
+            raise AssertionError("a salvaged TAR walk ended without its error")
+        assert isinstance(entry, TarEnd)
         self._verify_tar_eof(walker, entry, last_member=last_member, member_count=index)
         self._raise_members_the_codec_checked()
+
+    # Salvage (open_archive(salvage=True)) --------------------------------------------
+
+    @property
+    def _salvage_layer(self) -> str:
+        """The layer the search runs on: the archive's bytes, or the codec's decoded
+        stream for a compressed tar (``RegionSkippedContext.layer``)."""
+        if not self._compressed:
+            return ARCHIVE_LAYER
+        return self._format.stream.name.lower()
+
+    def _salvage_step(
+        self, walker: TarWalker, salvage: _SalvageWalk
+    ) -> TarEntry | TarEnd:
+        """The walk's next entry. Past the default walk's end (a salvage walk after
+        a found member), damage inside a chain ends the chain as a header that does
+        not parse ends it, so the search runs on from there; before it, every error
+        is the default's own."""
+        try:
+            with self._translated_errors():
+                return self._step(walker)
+        except CorruptionError as exc:
+            if salvage.default_end is None or from_source_callback(exc):
+                raise
+            return TarEnd(TarEndKind.REJECTED, walker.position, reason=str(exc))
+
+    def _salvage_start(
+        self, walker: TarWalker, end: TarEnd, salvage: _SalvageWalk
+    ) -> int | None:
+        """Where a search starts after the walk ended on ``end``, or ``None`` when
+        the walk is over.
+
+        A header that does not parse starts one at its block (design decision 6). A
+        zero block does only past the default walk's end, and only when it is no
+        clean end: a nested tar's end marker, with the outer archive's members
+        after it. The default walk's own clean end, and any end of the stream, start
+        none.
+        """
+        if not self._salvage_mode.enabled or salvage.limit_reached:
+            return None
+        if end.kind is TarEndKind.REJECTED:
+            return end.offset
+        if end.kind is not TarEndKind.ZERO_BLOCK or salvage.default_end is None:
+            return None
+        try:
+            with self._translated_errors(), self._walk_guard():
+                walker.resume_after_zero_end()
+                clean = walker.zeros_to_end(end.offset + BLOCKSIZE)
+        except CorruptionError as exc:
+            if from_source_callback(exc):
+                raise
+            return None
+        return None if clean else end.offset
+
+    def _salvage_next(
+        self, walker: TarWalker, start: int, salvage: _SalvageWalk
+    ) -> TarEntry | None:
+        """Search from ``start`` and parse what the search finds, as the walk parses
+        any header. Return the first found member's entry, with
+        ``salvage.found_at`` set to where its chain starts, or ``None`` when the
+        search finds no more.
+
+        A found header whose chain does not make a member (it does not parse, or
+        names data past the end) is passed over: the search goes on at the block
+        after it. Each search first puts back what the found chain before it
+        changed (:meth:`_SalvageWalk.search_starts`). Damage to a codec stream
+        around the tar ends the search, as it ends the default walk.
+        """
+        while True:
+            salvage.search_starts(walker)
+            try:
+                with self._translated_errors(), self._walk_guard():
+                    result = walker.salvage_search(
+                        self._salvage_mode,
+                        start,
+                        layer=self._salvage_layer,
+                    )
+            except CorruptionError as exc:
+                if from_source_callback(exc):
+                    raise
+                return None
+            if result.found is None:
+                salvage.limit_reached = result.limit_reached
+                return None
+            found = result.found
+            salvage.chain_found(walker)
+            try:
+                with self._translated_errors():
+                    entry = self._step(walker)
+            except CorruptionError as exc:
+                if from_source_callback(exc):
+                    raise
+                entry = None
+            if isinstance(entry, TarEntry):
+                salvage.found_at = found
+                return entry
+            start = found + BLOCKSIZE
+
+    def _report_found(
+        self,
+        walker: TarWalker,
+        member: ArchiveMember,
+        entry: TarEntry,
+        index: int,
+        salvage: _SalvageWalk,
+    ) -> int | None:
+        """Record ``MEMBER_FOUND_BY_SCAN`` for a member listed past the default walk's
+        end, and return where the next search starts.
+
+        Every such member is flagged (the add-only rule): one a search found, and one
+        the normal walk reached after a confirmed found member. For a member a search
+        found, the next search starts at the block after its header when nothing
+        confirms it (design decision 6); ``None`` lets the normal walk go on. A
+        member the normal walk reached is followed by the normal walk either way, and
+        its next damage starts a search where that damage is.
+        """
+        searched = salvage.found_at is not None
+        found = salvage.found_at if searched else entry.header_offset
+        assert found is not None
+        salvage.found_at = None
+        try:
+            with self._translated_errors(), self._walk_guard():
+                looked = walker.salvage_confirms(searched=searched)
+        except CorruptionError as exc:
+            if from_source_callback(exc):
+                raise
+            looked = False
+        # ``None``: a forward-only walk cannot see the block after the data within
+        # the span it holds. A found member's size is then trusted: the walk reads
+        # on through its data. When the block there does not confirm the member, or
+        # the stream ends first, the search goes back through the bytes the window
+        # still holds. This fallback stays for forward-only walks.
+        trusted = searched and looked is None
+        confirmed = bool(looked)
+        provisional = salvage.provisional
+        # Whether a g header in the found chain changed the global records.
+        global_in_chain = (
+            searched
+            and provisional is not None
+            and walker.global_records().records is not provisional.records.records
+        )
+        if confirmed and searched:
+            salvage.confirm()
+        # Otherwise the chain stays provisional: an unconfirmed member's next search
+        # puts back what it changed, and a trusted member's waits for the block
+        # after its data.
+        if trusted:
+            # The member header, not the chain's start: a search back starts after
+            # it, so the chain before it is not found again.
+            salvage.trusted = entry.header.offset
+            if self._streaming:
+                span = member._raw
+                assert isinstance(span, TarSpan)
+                self._trusted_spans.add(span.data_offset)
+        if searched and looked is False and self._streaming:
+            span = member._raw
+            assert isinstance(span, TarSpan)
+            self._held_spans.add(span.data_offset)
+        unchecked: tuple[str, ...] = ("position",)
+        if searched and entry.header.offset == found and walker.found_name_full:
+            unchecked += ("name",)
+        if not searched:
+            how = "the walk reached it from a member the search found" + (
+                ", and the header after its data passes the same checks"
+                if confirmed
+                else ""
+            )
+        elif confirmed:
+            how = (
+                "the header after its data passes the same checks, so its size is "
+                "confirmed"
+            )
+        elif trusted:
+            how = (
+                "its data runs past the bytes a forward-only read holds, so its size "
+                "is trusted and the walk reads on through it; if the header after "
+                "its data does not pass the same checks, the search goes back "
+                "inside the last of its data"
+            )
+        else:
+            how = (
+                "nothing after its data confirms its size, so the search goes on "
+                "inside its data"
+            )
+        if searched and not confirmed and global_in_chain:
+            how += (
+                "; a global PAX header in its chain applies to later members only "
+                "if the header after its data passes the same checks"
+                if trusted
+                else "; a global PAX header in its chain applies to it alone, "
+                "because nothing confirms it"
+            )
+        # A repeat reader (an inner tar built again to reach member data) finds the
+        # members the listing's reader found and flagged (``SalvageRequest.repeat``).
+        if not self._salvage_mode.repeat:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_FOUND_BY_SCAN,
+                message=(
+                    f"TAR member {quoted(member.name)} was found by salvage's header "
+                    f"search at offset {found}, past damage: {how}. Nothing says it "
+                    "belongs at this level of the archive (it may be a member of an "
+                    "archive stored inside another member)."
+                ),
+                context=SalvageScanContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    format=ArchiveFormat.TAR.display_name,
+                    method="header_search",
+                    offset=found,
+                    confirmed=confirmed,
+                    unchecked=unchecked,
+                ),
+                member=member,
+                logger=backends_logger,
+            )
+        # The next search starts after the member's own header: its data is
+        # searched, and the chain before it is not found again.
+        return (
+            None
+            if confirmed or trusted or not searched
+            else entry.header.offset + BLOCKSIZE
+        )
 
     def _raise_members_the_codec_checked(self) -> None:
         """Raise every listed file to ``CHECKSUM`` when the codec's checksum covered it.
@@ -1125,7 +1507,7 @@ class TarReader(BaseArchiveReader):
                 self._member_body(member, in_walk=True),
                 member.name,
                 size=member.size,
-                draw_budget=not self._compressed,
+                draw_budget=self._member_draws(member),
             )
 
     @override
@@ -1159,6 +1541,7 @@ class TarReader(BaseArchiveReader):
         *,
         last_member: ArchiveMember | None,
         member_count: int,
+        salvage: _SalvageWalk | None = None,
     ) -> None:
         """Check the end-of-archive marker from where the walk stopped.
 
@@ -1210,6 +1593,7 @@ class TarReader(BaseArchiveReader):
                 "rejected_header",
                 observed_bytes=BLOCKSIZE,
                 rejected=end,
+                salvage=salvage,
             )
             return
         if (
@@ -1491,6 +1875,7 @@ class TarReader(BaseArchiveReader):
         *,
         observed_bytes: int,
         rejected: TarEnd | None = None,
+        salvage: _SalvageWalk | None = None,
     ) -> None:
         """Report a missing or damaged two-zero-block end-of-archive marker.
 
@@ -1501,10 +1886,11 @@ class TarReader(BaseArchiveReader):
         which must not open as an empty tar. The other three follow the policy.
         For ``"rejected_header"``, ``rejected`` is the walker's end: where the header
         sits and why it was refused. The message quotes both, as the report on a bad
-        first header does.
-        ``"damaged_second_block"`` gets its own ``expected_marker``,
-        ``"second_zero_block"``, so a caller can tell a whole listing from a
-        shortened one by the context, not the message.
+        first header does. ``salvage`` is the walk's salvage state when salvage mode
+        searched past that header; the message then says so, and names the search limit
+        when it stopped the search. ``"damaged_second_block"`` gets its own
+        ``expected_marker``, ``"second_zero_block"``, so a caller can tell a whole
+        listing from a shortened one by the context, not the message.
         """
         expected_marker = "two_zero_blocks"
         expected_bytes = 1024
@@ -1521,11 +1907,22 @@ class TarReader(BaseArchiveReader):
         elif end == "rejected_header":
             assert rejected is not None
             why = f" ({rejected.reason})" if rejected.reason else ""
+            if salvage is None:
+                after = "so the members after it are not listed."
+            else:
+                after = (
+                    "and salvage mode searched past it: the members it found are "
+                    "flagged with MEMBER_FOUND_BY_SCAN."
+                )
+                if salvage.limit_reached:
+                    after += (
+                        " SalvageLimits.max_search_bytes stopped the search, so "
+                        "nothing after that point is listed."
+                    )
             message = (
                 f"TAR archive is corrupt: the member header at offset "
                 f"{rejected.offset} does not parse{why}. It sits where the next header "
-                "or the end-of-archive marker was expected, so the members after it "
-                "are not listed."
+                f"or the end-of-archive marker was expected, {after}"
             )
             escalate_as = CorruptionError
         elif end == "no_member":
@@ -2057,7 +2454,7 @@ class TarReader(BaseArchiveReader):
                 self._member_body(member, in_walk=False),
                 member.name,
                 size=member.size,
-                draw_budget=not self._compressed,
+                draw_budget=self._member_draws(member),
             )
 
     def _track_member_level(self, member: ArchiveMember) -> None:
@@ -2145,8 +2542,12 @@ class TarReader(BaseArchiveReader):
             if sparse_error is not None:
                 raise sparse_error
         stream: BinaryIO
-        if self._streaming:
-            stream = self._walker.open_data(span)
+        if self._streaming and span.data_offset in self._held_spans:
+            stream = self._walker.open_held_data(span, self._held_drawer())
+        elif self._streaming:
+            stream = self._walker.open_data(
+                span, quiet_end=span.data_offset in self._trusted_spans
+            )
         elif in_walk:
             with self._walk_lock:
                 stream = self._walk_data(span)
@@ -2164,6 +2565,38 @@ class TarReader(BaseArchiveReader):
             assert self._handle_lock is not None
             stream = LockedStream(stream, self._handle_lock)
         return stream
+
+    def _member_draws(self, member: ArchiveMember) -> bool:
+        """Whether ``member``'s data stream draws what it delivers from the budget.
+
+        Not on a compressed tar, whose codec stream draws every byte it decodes, and
+        not for the data of a member a salvage search found and nothing confirms on
+        a forward-only walk, which draws each byte of the stream once itself
+        (:meth:`_held_drawer`)."""
+        if self._compressed:
+            return False
+        span = member._raw
+        return not (
+            self._streaming
+            and isinstance(span, TarSpan)
+            and span.data_offset in self._held_spans
+        )
+
+    def _held_drawer(self) -> Callable[[int], object] | None:
+        """What draws the bytes of a held member's data (``open_held_data``), as
+        ``_track_decompressed`` would draw them, but each byte of the stream once:
+        overlapping found members share their bytes. ``None`` on a compressed tar,
+        whose codec stream drew them as it decoded them."""
+        if self._compressed:
+            return None
+        count = self._listing_decode
+        stage = count is not None and count.room() is not None
+        budget = self._stage_draws if stage else self._nest
+        if budget is None or (
+            isinstance(budget, NestDraws) and budget.max_decoded_bytes is None
+        ):
+            return None
+        return budget._draw_bytes
 
     def _hole_drawer(self) -> Callable[[int], int] | None:
         """Draws a sparse member's holes from the budget when its stored bytes are
@@ -2247,7 +2680,7 @@ class TarReader(BaseArchiveReader):
                 self._member_body(member, in_walk=False),
                 member.name,
                 size=member.size,
-                draw_budget=not self._compressed,
+                draw_budget=self._member_draws(member),
             )
         )
 
@@ -2312,6 +2745,8 @@ class TarReadBackend(ReadBackend):
     # TAR is walkable front-to-back, so pipe=True works on a non-seekable source
     # (random access always needs a seekable one — that side is format-independent).
     SUPPORTS_STREAMING_NON_SEEKABLE = True
+    # Salvage mode searches past damage for the next header (TarWalker.salvage_search).
+    SUPPORTS_SALVAGE = True
     USES_ENCODING = True  # the fallback codec for names that are not valid UTF-8
 
     @override
