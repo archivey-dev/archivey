@@ -557,7 +557,7 @@ def test_a_directory_with_data_is_reported(
         ("d/", MemberType.DIRECTORY, 4, b"junk"),
         ("f", MemberType.FILE, 2, b"ok"),
     ]
-    assert counts[archivey.DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+    assert counts[archivey.DiagnosticCode.MEMBER_DATA_IGNORED] == 1
 
 
 class _SizedEmptyDirectoryReader(ToysReader):

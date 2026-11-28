@@ -150,7 +150,7 @@ TRIAGE: dict[str, str] = {
         "for CVE-2026-5704 (a member injected past a directory's data). The patched "
         "GNU tar 1.35 (Ubuntu 1.35+dfsg-3ubuntu0.4, measured 2026-10-30) skips the "
         "blocks the PAX size declares and writes the directory alone, and so does "
-        "Archivey, reporting MEMBER_DIRECTORY_DATA_IGNORED. Listing and extraction "
+        "Archivey, reporting MEMBER_DATA_IGNORED. Listing and extraction "
         "agree on one member either way"
     ),
     "F16-type-unknown": (
@@ -176,7 +176,7 @@ TRIAGE: dict[str, str] = {
         "Not the corpus's GNU tar column, which reads the header after the link "
         "as smuggled: Archivey skips the blocks the PAX size declares, as the "
         "CVE-2026-5704-patched GNU tar 1.35 does (F15), and reports "
-        "MEMBER_LINK_DATA_IGNORED"
+        "MEMBER_DATA_IGNORED"
     ),
     "K01-kind-trailing-slash-file": (
         f"{_AS_GNU}: a regular file named a/ is a directory, as GNU tar's "

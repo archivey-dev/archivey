@@ -1702,7 +1702,7 @@ def test_old_style_directory_with_data_is_a_directory(
 @pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
 def test_old_style_directory_data_is_reported(typeflag: bytes, streaming: bool) -> None:
     # The directory keeps the size its header declares and
-    # MEMBER_DIRECTORY_DATA_IGNORED names the bytes extraction drops, on both walks.
+    # MEMBER_DATA_IGNORED names the bytes extraction drops, on both walks.
     data = _tar_entry_with_data(typeflag)
     with open_archive(
         NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
@@ -1717,7 +1717,7 @@ def test_old_style_directory_data_is_reported(typeflag: bytes, streaming: bool) 
         diags = [
             d
             for d in ar.diagnostics.retained
-            if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+            if d.code is DiagnosticCode.MEMBER_DATA_IGNORED
         ]
         assert [d.context.to_dict() if d.context else None for d in diags] == [
             {
@@ -1760,7 +1760,7 @@ def test_old_style_directory_data_is_refused_by_strict_policy(
         ) as ar,
     ):
         list(ar.stream_members())
-    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DATA_IGNORED
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -1783,7 +1783,7 @@ def test_old_style_slash_name_without_data_is_a_plain_directory(
         directory = next(m for m, _ in ar.stream_members())
         assert directory.size is None
         assert directory.extra["tar.type"] == typeflag
-        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED not in ar.diagnostics.counts
+        assert DiagnosticCode.MEMBER_DATA_IGNORED not in ar.diagnostics.counts
     # Random access only: open() takes a member by name, which a streaming walk has
     # no index for.
     with (
@@ -1994,7 +1994,7 @@ def test_dirtype_zero_span_is_reported(payload: bytes, streaming: bool) -> None:
     # end-of-archive marker and after.txt behind it is not listed. Nothing in the file
     # tells that from a header whose blocks were never written before a trailer and
     # appended data, so the directory is listed with no size and reported with
-    # MEMBER_DIRECTORY_DATA_IGNORED, the weight a directory's declared data has in
+    # MEMBER_DATA_IGNORED, the weight a directory's declared data has in
     # every format; the marker checks report the trailer as after a file. GNU tar 1.35
     # lists d/ with "A lone zero block" for one block and with no word for more.
     data = _tar_entry_with_data(tarfile.DIRTYPE, data=payload)
@@ -2002,15 +2002,15 @@ def test_dirtype_zero_span_is_reported(payload: bytes, streaming: bool) -> None:
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         member = ar.members()[0]
         assert member.size is None
-        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DATA_IGNORED] == 1
         # Attached to the member, as the old-style directory's report is.
         assert [d.code for d in member.diagnostics] == [
-            DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+            DiagnosticCode.MEMBER_DATA_IGNORED
         ]
         diags = [
             d
             for d in ar.diagnostics.retained
-            if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+            if d.code is DiagnosticCode.MEMBER_DATA_IGNORED
         ]
         assert [d.context.to_dict() if d.context else None for d in diags] == [
             {
@@ -2039,7 +2039,7 @@ def test_dirtype_zero_span_is_refused_by_strict_policy(streaming: bool) -> None:
         ) as ar,
     ):
         list(ar.stream_members())
-    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DATA_IGNORED
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -2065,7 +2065,7 @@ def test_dirtype_with_size_before_concatenated_archive_is_reported(
     assert _stream_all(data, streaming) == [("d/", MemberType.DIRECTORY, None)]
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         assert [m.name for m in ar.members()] == ["d/"]
-        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DATA_IGNORED] == 1
         assert ar.diagnostics.counts[DiagnosticCode.ARCHIVE_TRAILING_DATA] == 1
         assert DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING not in ar.diagnostics.counts
 
@@ -2083,7 +2083,7 @@ def test_dirtype_with_size_and_no_blocks_lists_whole(streaming: bool) -> None:
     ]
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         assert ar.members()[0].size is None
-        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED not in ar.diagnostics.counts
+        assert DiagnosticCode.MEMBER_DATA_IGNORED not in ar.diagnostics.counts
         assert DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING not in ar.diagnostics.counts
 
 
@@ -2105,7 +2105,7 @@ def test_dirtype_with_size_before_damaged_trailer_is_the_trailer_warning(
         assert ar.diagnostics.counts[DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING] == 1
         # The walk ended on the zero block right after the directory, so its declared
         # size is reported too: these bytes are also a one-block zero span then junk.
-        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DATA_IGNORED] == 1
 
 
 _LINK_TYPEFLAGS = [tarfile.SYMTYPE, tarfile.LNKTYPE]
@@ -2178,7 +2178,7 @@ def test_link_data_is_skipped_and_reported(
     # the blocks are skipped, so a zero block among them does not end the listing
     # and after.txt stays. GNU tar 1.35 and tarfile stop at a zero block (GNU tar
     # exits 0) and GNU tar reports "Skipping to next header" for bytes; 7-Zip skips
-    # a symlink's blocks only. MEMBER_LINK_DATA_IGNORED names the link.
+    # a symlink's blocks only. MEMBER_DATA_IGNORED names the link.
     data = _tar_link_with_data(typeflag, payload)
     assert _stream_all(data, streaming) == [
         ("a.txt", MemberType.FILE, b"hello"),
@@ -2195,9 +2195,9 @@ def test_link_data_is_skipped_and_reported(
         link = members[1]
         assert link.size is None
         assert link.link_target == "a.txt"
-        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1}
+        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_DATA_IGNORED: 1}
         assert [d.code for d in link.diagnostics] == [
-            DiagnosticCode.MEMBER_LINK_DATA_IGNORED
+            DiagnosticCode.MEMBER_DATA_IGNORED
         ]
         (diag,) = ar.diagnostics.retained
         assert diag.context is not None
@@ -2308,7 +2308,7 @@ def test_link_with_size_before_the_trailer_is_reported_not_truncated(
         pipe=streaming,
     ) as ar:
         assert [m.name for m in ar] == ["a.txt", "l"]
-        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1}
+        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_DATA_IGNORED: 1}
         (diag,) = ar.diagnostics.retained
         assert "end-of-archive marker" in diag.message
 
@@ -2335,7 +2335,7 @@ def test_link_with_size_inside_the_trailer_keeps_the_trailer_whole(
         pipe=streaming,
     ) as ar:
         assert [m.name for m in ar] == ["a.txt", "l"]
-        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1}
+        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_DATA_IGNORED: 1}
         (diag,) = ar.diagnostics.retained
         # The report is made at the link, before the walk reads past the span, so
         # it names both readings.
@@ -2370,7 +2370,7 @@ def test_link_zero_span_in_a_large_tar_gz_does_not_rewind(declared: int) -> None
         io.BytesIO(gzip.compress(raw)), format=ArchiveFormat.TAR_GZ
     ) as ar:
         assert [m.name for m in ar.members()] == ["f0", "f1", "f2", "f3", "a.txt", "l"]
-        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1}
+        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_DATA_IGNORED: 1}
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -2388,7 +2388,7 @@ def test_link_with_size_inside_the_trailer_before_junk_is_trailing_data(
     ) as ar:
         assert [m.name for m in ar] == ["a.txt", "l"]
         assert ar.diagnostics.counts == {
-            DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1,
+            DiagnosticCode.MEMBER_DATA_IGNORED: 1,
             DiagnosticCode.ARCHIVE_TRAILING_DATA: 1,
         }
 
@@ -2407,7 +2407,7 @@ def test_link_with_size_before_a_one_block_trailer_misses_the_marker(
     ) as ar:
         assert [m.name for m in ar] == ["a.txt", "l"]
         assert ar.diagnostics.counts == {
-            DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1,
+            DiagnosticCode.MEMBER_DATA_IGNORED: 1,
             DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: 1,
         }
 
@@ -2463,7 +2463,7 @@ def test_link_data_in_a_compressed_tar(
         pipe=streaming,
     ) as ar:
         assert [m.name for m in ar] == names
-        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1}
+        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_DATA_IGNORED: 1}
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -2482,7 +2482,7 @@ def test_link_data_is_refused_by_strict_policy(
         ) as ar,
     ):
         list(ar.stream_members())
-    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_LINK_DATA_IGNORED
+    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DATA_IGNORED
 
 
 def _can_symlink(tmp_path: Path) -> bool:
@@ -2555,12 +2555,12 @@ def test_dirtype_zero_block_inside_span_after_header_chain_is_reported(
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         member = ar.members()[0]
         assert member.size is None
-        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DATA_IGNORED] == 1
         # The L chain right after the header is a header, so the size is also
         # reported as naming no data.
         assert [d.code for d in member.diagnostics] == [
             DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
-            DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
+            DiagnosticCode.MEMBER_DATA_IGNORED,
         ]
 
 
@@ -2609,7 +2609,7 @@ def test_old_style_directory_with_data_before_lone_zero_block_lists(
     ]
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         assert ar.members()[0].size == 15
-        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DATA_IGNORED] == 1
         assert ar.diagnostics.counts[DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING] == 1
         assert ar.diagnostics.counts[DiagnosticCode.ARCHIVE_TRAILING_DATA] == 1
 
@@ -4831,7 +4831,7 @@ def test_dirtype_with_a_pax_size_holds_its_blocks_as_data(
             (m.name, m.type, m.size, stream.read() if stream is not None else None)
             for m, stream in ar.stream_members()
         ]
-        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DATA_IGNORED] == 1
     assert [row[:3] for row in listed] == [
         ("d/", MemberType.DIRECTORY, 1024),
         ("after", MemberType.FILE, 1),
@@ -4856,7 +4856,7 @@ def test_link_with_a_pax_size_skips_its_blocks(
         pipe=streaming,
     ) as ar:
         names = [m.name for m, _ in ar.stream_members()]
-        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_LINK_DATA_IGNORED] == 1
+        assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DATA_IGNORED] == 1
     assert names == ["t", "lnk", "after"]
 
 
@@ -4932,7 +4932,7 @@ def test_a_pax_framed_link_span_ending_the_archive_has_no_end_marker(
     ) as ar:
         names = [m.name for m, _ in ar.stream_members()]
         counts = ar.diagnostics.counts
-        assert counts[DiagnosticCode.MEMBER_LINK_DATA_IGNORED] == 1
+        assert counts[DiagnosticCode.MEMBER_DATA_IGNORED] == 1
         assert counts[DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING] == 1
     assert names == ["lnk"]
 

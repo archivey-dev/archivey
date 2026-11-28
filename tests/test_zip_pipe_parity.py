@@ -787,7 +787,7 @@ def test_a_directory_offset_past_the_directory_reads_the_stored_offsets_either_w
     refused. Each member's stored offset holds a local header with its name, method,
     CRC-32 and sizes, so a file read reads it from there, and the pass places the
     local header it walked there: both write every member, the same bytes, and report
-    ``MEMBER_LOCAL_OFFSET_SHIFTED`` for each. Info-ZIP unzip makes the same second try
+    ``MEMBER_LOCAL_HEADER_DIFFERS`` for each. Info-ZIP unzip makes the same second try
     but then refuses the archive as overlapped; 7-Zip reports header errors."""
     data = bytearray(_members_zip(pipe=False))
     eocd = data.rindex(b"PK\x05\x06")
@@ -811,7 +811,7 @@ def test_a_directory_offset_past_the_directory_reads_the_stored_offsets_either_w
                 if stream is not None:
                     stream.read()
             codes = [d.code for d in reader.diagnostics.retained]
-        shifted = DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED
+        shifted = DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
         assert codes.count(shifted) == len(tree), (piped, codes)
 
 

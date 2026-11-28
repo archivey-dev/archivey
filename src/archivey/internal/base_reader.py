@@ -572,7 +572,7 @@ def pass_has_data(member: ArchiveMember) -> bool:
     """Whether a data pass yields a stream for ``member``: the members ``open()`` reads.
 
     A ``FILE``, and a ``DIRECTORY`` whose header declares data (a non-zero ``size``):
-    the bytes ``MEMBER_DIRECTORY_DATA_IGNORED`` reports and extraction does not write
+    the bytes ``MEMBER_DATA_IGNORED`` reports and extraction does not write
     (DR-25). Every other member has no data of its own, so the pass yields ``None``.
     ``open()`` applies the same test to the member a link resolves to, so a pass and
     a random-access read deliver the same bytes and refuse the same members, except
@@ -3516,7 +3516,7 @@ class BaseArchiveReader(ArchiveReader):
     def _emit_directory_data_ignored(
         self, member: ArchiveMember, member_id: int, *, reach: str | None = None
     ) -> None:
-        """Report one ``MEMBER_DIRECTORY_DATA_IGNORED`` finding, attached to ``member``.
+        """Report one ``MEMBER_DATA_IGNORED`` finding, attached to ``member``.
 
         ``member`` is a ``DIRECTORY`` whose header declares a non-zero size, or whose
         body is larger than an empty one (a declared size of 0 over real bytes; the
@@ -3542,7 +3542,7 @@ class BaseArchiveReader(ArchiveReader):
             what = f"declares no data but stores a {member.compressed_size}-byte body"
             reach = "a declared size of 0 leaves nothing to read"
         self._diagnostics_collector.emit(
-            code=DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
+            code=DiagnosticCode.MEMBER_DATA_IGNORED,
             message=(
                 f"Directory {quoted(member.name)} {what}; extraction creates the "
                 f"directory and does not write them ({reach})."
@@ -5331,7 +5331,7 @@ class BaseArchiveReader(ArchiveReader):
         # A tombstone and a special entry are refused by type: there is nothing to
         # deliver for them even where a header declares a size. A directory is
         # refused by data: it has none unless its header declares some, and one that
-        # does (``MEMBER_DIRECTORY_DATA_IGNORED`` reported it at listing, in ZIP, TAR
+        # does (``MEMBER_DATA_IGNORED`` reported it at listing, in ZIP, TAR
         # and RAR) opens here. ``stream_members()`` decides by ``pass_has_data``,
         # which says where the two differ; extraction creates the directory and does
         # not write the bytes. Both messages end in "(not a file)", which ``archivey

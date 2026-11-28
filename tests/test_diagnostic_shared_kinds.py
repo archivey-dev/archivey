@@ -1,6 +1,6 @@
 """``validate_code_context`` on codes that share a context kind.
 
-Seven context kinds each serve more than one code, told apart by one context field
+Six context kinds each serve more than one code, told apart by one context field
 (``diagnostics`` §"Complete initial warning taxonomy": "typed context distinguishes
 variants"). The kind match alone accepts a mismatched pairing, so every such code
 must also check its field.
@@ -21,7 +21,6 @@ from archivey.diagnostics import (
     LocalHeaderContext,
     MemberNameControlsContext,
     NameEncodingContext,
-    ScanRaceContext,
     UnconfirmedFormatContext,
     UnusedArgumentContext,
     validate_code_context,
@@ -40,8 +39,6 @@ _MATCHED: list[tuple[DiagnosticCode, DiagnosticContext]] = [
         DiagnosticCode.MEMBER_NAME_INVISIBLE_CHARACTER,
         MemberNameControlsContext(category="invisible"),
     ),
-    (DiagnosticCode.SCAN_DIRECTORY_VANISHED, ScanRaceContext(entry_kind="directory")),
-    (DiagnosticCode.SCAN_ENTRY_VANISHED, ScanRaceContext(entry_kind="entry")),
     (
         DiagnosticCode.ENCODING_ARGUMENT_UNUSED,
         UnusedArgumentContext(argument="encoding"),
@@ -78,13 +75,10 @@ _MATCHED: list[tuple[DiagnosticCode, DiagnosticContext]] = [
         DiagnosticCode.ARCHIVE_TRAILING_DATA,
         ArchiveEofContext(expected_marker="end_of_stream"),
     ),
-    (DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS, LocalHeaderContext(field="name")),
-    (DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS, LocalHeaderContext(field="method")),
+    (DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS, LocalHeaderContext(field="name")),
+    (DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS, LocalHeaderContext(field="method")),
+    (DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS, LocalHeaderContext(field="offset")),
     (DiagnosticCode.MEMBER_LOCAL_CRC_USED, LocalHeaderContext(field="crc32")),
-    (
-        DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED,
-        LocalHeaderContext(field="offset"),
-    ),
     (
         DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING,
         NameEncodingContext(fallback_encoding="cp437"),
@@ -135,11 +129,10 @@ def test_sibling_context_is_rejected(
     assert getattr(context, field_name) not in allowed
 
 
-def test_mismatches_cover_all_seven_shared_kinds() -> None:
+def test_mismatches_cover_all_six_shared_kinds() -> None:
     kinds = {context.kind for _, context in _MISMATCHED}
     assert kinds == {
         "member_name_controls",
-        "scan_race",
         "unused_argument",
         "unconfirmed_format",
         "archive_eof",

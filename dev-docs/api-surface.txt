@@ -223,7 +223,6 @@ value archivey.DiagnosticCode.DETECTION_DECODER_LIMITED = 'detection_decoder_lim
 value archivey.DiagnosticCode.EMPTY_ARCHIVE = 'empty_archive'
 value archivey.DiagnosticCode.ENCODING_ARGUMENT_UNUSED = 'encoding_argument_unused'
 value archivey.DiagnosticCode.PASSWORD_ARGUMENT_UNUSED = 'password_argument_unused'
-value archivey.DiagnosticCode.SCAN_DIRECTORY_VANISHED = 'scan_directory_vanished'
 value archivey.DiagnosticCode.SCAN_ENTRY_VANISHED = 'scan_entry_vanished'
 value archivey.DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING = 'archive_eof_marker_missing'
 value archivey.DiagnosticCode.ARCHIVE_TRAILING_DATA = 'archive_trailing_data'
@@ -235,8 +234,7 @@ value archivey.DiagnosticCode.MEMBER_HEADER_DAMAGED = 'member_header_damaged'
 value archivey.DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED = 'member_header_record_skipped'
 value archivey.DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE = 'symlink_target_unavailable'
 value archivey.DiagnosticCode.DIGEST_UNVERIFIABLE = 'digest_unverifiable'
-value archivey.DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED = 'member_directory_data_ignored'
-value archivey.DiagnosticCode.MEMBER_LINK_DATA_IGNORED = 'member_link_data_ignored'
+value archivey.DiagnosticCode.MEMBER_DATA_IGNORED = 'member_data_ignored'
 value archivey.DiagnosticCode.MEMBER_HEADER_AMBIGUOUS = 'member_header_ambiguous'
 value archivey.DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED = 'encrypted_member_unverified'
 value archivey.DiagnosticCode.SEEK_INDEX_DEGRADED = 'seek_index_degraded'
@@ -244,10 +242,8 @@ value archivey.DiagnosticCode.STREAM_REWIND_REDECOMPRESSES = 'stream_rewind_rede
 value archivey.DiagnosticCode.SOLID_OPEN_REDECOMPRESSES = 'solid_open_redecompresses'
 value archivey.DiagnosticCode.MEMBER_SELECTOR_UNMATCHED = 'member_selector_unmatched'
 value archivey.DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA = 'member_special_file_has_data'
-value archivey.DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS = 'member_local_name_differs'
-value archivey.DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS = 'member_local_method_differs'
+value archivey.DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS = 'member_local_header_differs'
 value archivey.DiagnosticCode.MEMBER_LOCAL_CRC_USED = 'member_local_crc_used'
-value archivey.DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED = 'member_local_offset_shifted'
 value archivey.DiagnosticCode.ARCHIVE_OFFSET_WRAPPED = 'archive_offset_wrapped'
 value archivey.DiagnosticCode.MEMBER_SIZE_WRAPPED = 'member_size_wrapped'
 value archivey.DiagnosticCode.MEMBER_TYPE_UNKNOWN = 'member_type_unknown'
@@ -783,21 +779,17 @@ item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_UNLISTE
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_UNREAD_SESSION
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.DIGEST_UNVERIFIABLE
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
-item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_DATA_IGNORED
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_HEADER_AMBIGUOUS
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_HEADER_DAMAGED
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
-item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LINK_DATA_IGNORED
-item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS
-item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS
-item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED
+item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_BIDI_CONTROL
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_ENCODING_MISMATCH
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_NORMALIZED
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_TIMESTAMP_INVALID
-item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.SCAN_DIRECTORY_VANISHED
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.SCAN_ENTRY_VANISHED
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.SEEK_INDEX_DEGRADED
 item archivey.diagnostics.ARCHIVE_INTEGRITY_CODES DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
@@ -856,8 +848,6 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'encoding_argument_unused'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'encoding-argument-unused'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'password_argument_unused'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'password-argument-unused'
-code-literal archivey.diagnostics.DiagnosticCodeStr 'scan_directory_vanished'
-code-literal archivey.diagnostics.DiagnosticCodeStr 'scan-directory-vanished'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'scan_entry_vanished'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'scan-entry-vanished'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_eof_marker_missing'
@@ -892,20 +882,14 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'member_selector_unmatched'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-selector-unmatched'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_special_file_has_data'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-special-file-has-data'
-code-literal archivey.diagnostics.DiagnosticCodeStr 'member_local_name_differs'
-code-literal archivey.diagnostics.DiagnosticCodeStr 'member-local-name-differs'
-code-literal archivey.diagnostics.DiagnosticCodeStr 'member_local_method_differs'
-code-literal archivey.diagnostics.DiagnosticCodeStr 'member-local-method-differs'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_local_header_differs'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-local-header-differs'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_local_crc_used'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-local-crc-used'
-code-literal archivey.diagnostics.DiagnosticCodeStr 'member_directory_data_ignored'
-code-literal archivey.diagnostics.DiagnosticCodeStr 'member-directory-data-ignored'
-code-literal archivey.diagnostics.DiagnosticCodeStr 'member_link_data_ignored'
-code-literal archivey.diagnostics.DiagnosticCodeStr 'member-link-data-ignored'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_data_ignored'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-data-ignored'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_header_ambiguous'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-header-ambiguous'
-code-literal archivey.diagnostics.DiagnosticCodeStr 'member_local_offset_shifted'
-code-literal archivey.diagnostics.DiagnosticCodeStr 'member-local-offset-shifted'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_offset_wrapped'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-offset-wrapped'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_size_wrapped'
@@ -930,6 +914,18 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_region_skipped'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-region-skipped'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'salvage_unavailable'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'salvage-unavailable'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'scan_directory_vanished'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'scan-directory-vanished'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_local_name_differs'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-local-name-differs'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_local_method_differs'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-local-method-differs'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_local_offset_shifted'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-local-offset-shifted'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_directory_data_ignored'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-directory-data-ignored'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_link_data_ignored'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-link-data-ignored'
 alias archivey.diagnostics.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | DetectionDecoderLimitContext | ScanRaceContext | ArchiveEofContext | ArchiveStructureContext | UnlistedDataContext | UnreadSessionContext | MemberTimestampContext | MemberHeaderDamageContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | PathRefusedContext | NameDuplicateContext | UnexpectedNameDuplicateContext | ReaderDisagreementContext | SalvageScanContext | RegionSkippedContext | SalvageUnavailableContext
 reexport archivey.diagnostics.DiagnosticPolicy = archivey.DiagnosticPolicy
 class archivey.diagnostics.DiagnosticSummary()

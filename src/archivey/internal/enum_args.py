@@ -156,6 +156,11 @@ def coerce_enum(
         member = _lookup(enum_cls).get(normalize_spelling(value))
         if member is not None:
             return member
+        # A spelling the enum still converts with a deprecation warning, such as a
+        # diagnostic code merged in 0.6.0. ``Enum._missing_`` returns ``None``.
+        member = enum_cls._missing_(value)
+        if isinstance(member, enum_cls):
+            return member
         raise _UsageValueError(
             f"{call} got {value!r} for {param}, which is not a valid "
             f"{enum_cls.__name__} value. Accepted: {_accepted(enum_cls)}."

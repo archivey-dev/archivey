@@ -306,8 +306,8 @@ def _local_header_reports(blob: bytes, *, pipe: bool) -> list[LocalHeaderContext
         for diagnostic in member.diagnostics
         if diagnostic.code
         in (
-            DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
-            DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS,
+            DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS,
+            DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS,
             DiagnosticCode.MEMBER_LOCAL_CRC_USED,
         )
         and isinstance(diagnostic.context, LocalHeaderContext)
@@ -315,7 +315,7 @@ def _local_header_reports(blob: bytes, *, pipe: bool) -> list[LocalHeaderContext
 
 
 # Case 1 and 2 of the maintainer's ruling (2026-10-10, ``native-zip-reader`` design.md,
-# question A): read. Case 1 reports ``MEMBER_LOCAL_NAME_DIFFERS``, which STRICT refuses;
+# question A): read. Case 1 reports ``MEMBER_LOCAL_HEADER_DIFFERS``, which STRICT refuses;
 # case 2 reports ``MEMBER_LOCAL_CRC_USED``, which STRICT reads (2026-10-15).
 
 
@@ -367,9 +367,9 @@ def test_local_name_with_a_backslash_names_a_directory_without_a_report(
     # a policy that raises on the code, and even when ``read()`` has gone through
     # declared data.
     blob = _one_member_zip(data, central_name=b"crack/", local_name=b"crack\\")
-    policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS})
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS})
     codes = _directory_codes(blob, pipe=pipe, policy=policy)
-    assert codes == ([] if not data else ["member_directory_data_ignored"])
+    assert codes == ([] if not data else ["member_data_ignored"])
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
@@ -379,13 +379,13 @@ def test_zero_central_crc_over_directory_data_reads_alike(pipe: bool) -> None:
     # does not count the local value against the directory's 0.
     blob = _one_member_zip(b"x" * 22, central_name=b"crack/", central_crc=0)
     codes = _directory_codes(blob, pipe=pipe, policy=DiagnosticPolicy())
-    assert codes == ["digest_unverifiable", "member_directory_data_ignored"]
+    assert codes == ["digest_unverifiable", "member_data_ignored"]
 
 
 # The local header and the directory name different compression methods. The member
 # decodes by the local method, which sits next to the data and is the one a pipe has, so
 # a file and a pipe read the same bytes (maintainer ruling 2026-10-21: the local header
-# is the likelier to be right). It reports ``MEMBER_LOCAL_METHOD_DIFFERS``, which STRICT
+# is the likelier to be right). It reports ``MEMBER_LOCAL_HEADER_DIFFERS``, which STRICT
 # refuses. The CRC-32 still checks the bytes. The listing keeps the directory's method,
 # as it keeps every field. unzip, 7-Zip and stdlib ``zipfile`` differ on this shape.
 
@@ -437,7 +437,7 @@ def test_a_method_difference_is_reported_once_per_member() -> None:
     """A second open reports nothing more by default, and still raises under STRICT,
     as the name report does."""
     blob = _one_member_zip(_METHOD_TEXT, central_method=8)
-    code = DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS
+    code = DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
     with archivey.open_archive(io.BytesIO(blob)) as ar:
         (member,) = ar.members()
         ar.read(member)
@@ -459,9 +459,9 @@ def test_a_directory_whose_headers_name_different_methods_reports_nothing(
     # As for the name: extraction reads no directory's data, so neither read reports
     # it, even under a policy that raises on the code.
     blob = _one_member_zip(data, central_name=b"crack/", central_method=8)
-    policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS})
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS})
     codes = _directory_codes(blob, pipe=pipe, policy=policy)
-    assert codes == ([] if not data else ["member_directory_data_ignored"])
+    assert codes == ([] if not data else ["member_data_ignored"])
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
@@ -495,7 +495,7 @@ def test_a_method_difference_is_reported_on_a_member_that_fails_its_crc(
                     ar.read("member.bin")
         finally:
             counts = ar.diagnostics.counts
-    assert counts[DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS] == 1
+    assert counts[DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS] == 1
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
@@ -522,7 +522,7 @@ def test_a_method_difference_beside_an_overlapping_size_differs_by_read(
                     ar.read("member.bin")
         finally:
             counts = ar.diagnostics.counts
-    assert counts.get(DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS, 0) == (
+    assert counts.get(DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS, 0) == (
         1 if pipe else 0
     )
 
@@ -553,7 +553,7 @@ def _drain_aes(blob: bytes, *, pipe: bool) -> None:
                 ar.read("a.txt")
         finally:
             counts = ar.diagnostics.counts
-            assert DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS not in counts
+            assert DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS not in counts
 
 
 def _aes_record_method_offsets(blob: bytes) -> list[int]:

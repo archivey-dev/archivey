@@ -191,7 +191,7 @@ Where a member's data ends and which headers belong to it. A shape no real write
 
 [F15](https://stoppels.ch/tar/F15.html), reject: GNU tar ❌ other, tar-codec ✅ rejected, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected, Corpus bar ✅ rejected.
 
-- **TRUSTED**: Not the corpus's GNU tar column, which reads the header after the directory as dir/smuggled: that is upstream GNU tar 1.35, before the fix for CVE-2026-5704 (a member injected past a directory's data). The patched GNU tar 1.35 (Ubuntu 1.35+dfsg-3ubuntu0.4, measured 2026-10-30) skips the blocks the PAX size declares and writes the directory alone, and so does Archivey, reporting MEMBER_DIRECTORY_DATA_IGNORED. Listing and extraction agree on one member either way
+- **TRUSTED**: Not the corpus's GNU tar column, which reads the header after the directory as dir/smuggled: that is upstream GNU tar 1.35, before the fix for CVE-2026-5704 (a member injected past a directory's data). The patched GNU tar 1.35 (Ubuntu 1.35+dfsg-3ubuntu0.4, measured 2026-10-30) skips the blocks the PAX size declares and writes the directory alone, and so does Archivey, reporting MEMBER_DATA_IGNORED. Listing and extraction agree on one member either way
 
 #### F19-pax-global-between-extended-and-member
 
@@ -233,7 +233,7 @@ Where a member's data ends and which headers belong to it. A shape no real write
 
 [F35](https://stoppels.ch/tar/F35.html), reject: GNU tar ❌ other, tar-codec ❌ other, TRUSTED ❌ other, Defaults (STRICT) ❌ other, Safest ✅ rejected, Corpus bar ✅ rejected.
 
-- **TRUSTED**: Not the corpus's GNU tar column, which reads the header after the link as smuggled: Archivey skips the blocks the PAX size declares, as the CVE-2026-5704-patched GNU tar 1.35 does (F15), and reports MEMBER_LINK_DATA_IGNORED
+- **TRUSTED**: Not the corpus's GNU tar column, which reads the header after the link as smuggled: Archivey skips the blocks the PAX size declares, as the CVE-2026-5704-patched GNU tar 1.35 does (F15), and reports MEMBER_DATA_IGNORED
 
 ### Names
 
@@ -383,7 +383,7 @@ Why links to the case's entry above, for a case where any run fails the verdict 
 | [F12](https://stoppels.ch/tar/F12.html) `number-size-gap` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | ✅ rejected | `member_header_ambiguous` | [why](#f12-number-size-gap) |
 | [F13](https://stoppels.ch/tar/F13.html) `pax-newline-in-path` | reject | ❌ other | ✅ rejected | ❌ other | ✅ rejected ≠GNU | ✅ rejected | ✅ rejected | `member_header_ambiguous` | [why](#f13-pax-newline-in-path) |
 | [F14](https://stoppels.ch/tar/F14.html) `pax-size-disagrees` | tolerate | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
-| [F15](https://stoppels.ch/tar/F15.html) `pax-size-on-dir` | reject | ❌ other | ✅ rejected | ❌ other ≠GNU | ❌ other ≠GNU | ✅ rejected | ✅ rejected | `member_directory_data_ignored` | [why](#f15-pax-size-on-dir) |
+| [F15](https://stoppels.ch/tar/F15.html) `pax-size-on-dir` | reject | ❌ other | ✅ rejected | ❌ other ≠GNU | ❌ other ≠GNU | ✅ rejected | ✅ rejected | `member_data_ignored` | [why](#f15-pax-size-on-dir) |
 | [F16](https://stoppels.ch/tar/F16.html) `type-unknown` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ❌ other | ✅ rejected | `member_type_unknown` | [why](#f16-type-unknown) |
 | [F17](https://stoppels.ch/tar/F17.html) `pax-global-comment` | accept | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [F18](https://stoppels.ch/tar/F18.html) `pax-global-comment-after-members` | tolerate | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
@@ -403,7 +403,7 @@ Why links to the case's entry above, for a case where any run fails the verdict 
 | [F32](https://stoppels.ch/tar/F32.html) `checksum-leading-space` | tolerate | ✅ expected | ✅ rejected | ✅ expected | ✅ expected | ✅ expected | ✅ expected | nothing |  |
 | [F33](https://stoppels.ch/tar/F33.html) `size-on-dir` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ✅ rejected | ✅ rejected | `member_header_ambiguous` | [why](#f33-size-on-dir) |
 | [F34](https://stoppels.ch/tar/F34.html) `size-on-hardlink` | reject | ❌ other | ❌ other | ❌ other | ❌ other | ✅ rejected | ✅ rejected | `member_header_ambiguous` | [why](#f34-size-on-hardlink) |
-| [F35](https://stoppels.ch/tar/F35.html) `pax-size-on-hardlink` | reject | ❌ other | ❌ other | ❌ other ≠GNU | ❌ other ≠GNU | ✅ rejected | ✅ rejected | `member_link_data_ignored` | [why](#f35-pax-size-on-hardlink) |
+| [F35](https://stoppels.ch/tar/F35.html) `pax-size-on-hardlink` | reject | ❌ other | ❌ other | ❌ other ≠GNU | ❌ other ≠GNU | ✅ rejected | ✅ rejected | `member_data_ignored` | [why](#f35-pax-size-on-hardlink) |
 | [F36](https://stoppels.ch/tar/F36.html) `pax-record-length-short` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | `error: CorruptionError` |  |
 | [F37](https://stoppels.ch/tar/F37.html) `number-size-not-octal` | reject | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | ✅ rejected | `error: CorruptionError` |  |
 | [K01](https://stoppels.ch/tar/K01.html) `kind-trailing-slash-file` | reject | ❌ other | ✅ rejected | ❌ other | ❌ other | ❌ other | ✅ rejected | `member_readers_disagree` | [why](#k01-kind-trailing-slash-file) |

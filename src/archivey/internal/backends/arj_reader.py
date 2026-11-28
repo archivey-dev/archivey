@@ -480,7 +480,7 @@ class ArjReader(_Headers, IndexedReader[_Location]):
             member_type = MemberType.OTHER
         method = header.method
         # A directory whose header declares data keeps it: listing reports it
-        # (MEMBER_DIRECTORY_DATA_IGNORED), a read delivers it, extraction drops it.
+        # (MEMBER_DATA_IGNORED), a read delivers it, extraction drops it.
         has_data = is_file or (
             member_type is MemberType.DIRECTORY and bool(header.size or header.stored)
         )

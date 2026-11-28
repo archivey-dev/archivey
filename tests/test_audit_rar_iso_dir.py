@@ -1143,7 +1143,7 @@ def test_directory_data_is_reported_and_the_directory_created(
     tmp_path: Path, stored: bool
 ) -> None:
     """unrar creates the directory and skips its data silently; archivey does the same
-    on extraction and reports ``MEMBER_DIRECTORY_DATA_IGNORED`` at listing."""
+    on extraction and reports ``MEMBER_DATA_IGNORED`` at listing."""
     payloads = _hostile_argv_payloads()
     path = _rar_with_directory_data(tmp_path, stored=stored)
     with open_archive(path, config=_UNRAR_ONLY) as archive:
@@ -1158,7 +1158,7 @@ def test_directory_data_is_reported_and_the_directory_created(
         diags = [
             d
             for d in archive.diagnostics.retained
-            if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+            if d.code is DiagnosticCode.MEMBER_DATA_IGNORED
         ]
         assert len(diags) == 1
         assert diags[0].context is not None
@@ -1185,7 +1185,7 @@ def test_declared_empty_directory_with_a_body_is_reported(tmp_path: Path) -> Non
         [diag] = [
             d
             for d in archive.diagnostics.retained
-            if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+            if d.code is DiagnosticCode.MEMBER_DATA_IGNORED
         ]
         assert diag.context is not None
         assert diag.context.to_dict()["size"] == 0
@@ -1217,7 +1217,7 @@ def test_encrypted_stored_directory_data_is_refused_as_unsupported(
         assert member.size == 14
         assert member.is_encrypted
         codes = [d.code for d in archive.diagnostics.retained]
-        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED in codes
+        assert DiagnosticCode.MEMBER_DATA_IGNORED in codes
         with pytest.raises(UnsupportedFeatureError, match="unencrypted"):
             archive.read(member)
 

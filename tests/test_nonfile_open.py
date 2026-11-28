@@ -121,7 +121,7 @@ def _tar_directory_data(tmp_path: Path, shape: str) -> Path:
     elif shape == "tar-dirtype-before-trailer":
         # The same header as the last member, the walk ending on a zero block inside
         # the declared span: the blocks cannot be told from the trailer, so it lists
-        # with no size, MEMBER_DIRECTORY_DATA_IGNORED reports it, and nothing reads.
+        # with no size, MEMBER_DATA_IGNORED reports it, and nothing reads.
         data = _tar_entry_with_data(
             tarfile.DIRTYPE,
             data=b"",
@@ -278,7 +278,7 @@ _SHAPES: dict[str, tuple[Callable[[Path, str], Path], dict[str, _Outcome]]] = {
 # The one shape where a pass from a source that cannot seek differs: a bit-3 entry
 # declares its size in the data descriptor after its data, so the pass meets the
 # directory before it can know the directory declares data, and yields no stream.
-# The listing still reports MEMBER_DIRECTORY_DATA_IGNORED once the central directory
+# The listing still reports MEMBER_DATA_IGNORED once the central directory
 # arrives (``format-zip``, "Two shapes read differently from a pipe").
 _PIPE_DIFFERS: dict[str, dict[str, _Outcome]] = {"zip-bit3": {"d/": None}}
 
@@ -346,7 +346,7 @@ def test_zip_directory_data_digest_unverifiable_in_a_pass(
     assert data == b"hidden data!"
     assert directory.hashes == {}
     codes = {d.code for d in directory.diagnostics}
-    assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED in codes
+    assert DiagnosticCode.MEMBER_DATA_IGNORED in codes
     assert DiagnosticCode.DIGEST_UNVERIFIABLE in codes
 
 
@@ -365,7 +365,7 @@ def test_zip_bit3_directory_from_a_pipe_says_it_has_no_stream(tmp_path: Path) ->
             [diag] = [
                 d
                 for d in reader.diagnostics.retained
-                if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+                if d.code is DiagnosticCode.MEMBER_DATA_IGNORED
             ]
             messages[label] = diag.message
     assert (

@@ -526,10 +526,10 @@ _WINZIP_AES_METHOD = 99
 _METHOD_DEFLATE = 8
 #: The code each ``LocalHeaderContext.field`` reports under.
 _LOCAL_HEADER_CODES: dict[str, DiagnosticCode] = {
-    "name": DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
-    "method": DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS,
+    "name": DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS,
+    "method": DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS,
     "crc32": DiagnosticCode.MEMBER_LOCAL_CRC_USED,
-    "offset": DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED,
+    "offset": DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS,
 }
 
 
@@ -2669,7 +2669,7 @@ class ZipReader(BaseArchiveReader):
 
     def _directory_data_reach(self, entry: CentralEntry) -> str | None:
         """Where the data of the directory ``entry`` describes can be read, for the
-        ``MEMBER_DIRECTORY_DATA_IGNORED`` message, or ``None`` for the shared wording.
+        ``MEMBER_DATA_IGNORED`` message, or ``None`` for the shared wording.
 
         ``None`` here: this reader lists from the central directory before any pass,
         so a pass knows the size and yields the bytes. The pipe reader overrides it.
@@ -3284,7 +3284,7 @@ class ZipReader(BaseArchiveReader):
         """
         if member.type not in (MemberType.FILE, MemberType.SYMLINK):
             return
-        code = DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS
+        code = DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
         with self._lock:
             first = loc.index not in self._local_names_reported
             self._local_names_reported.add(loc.index)
@@ -3313,7 +3313,7 @@ class ZipReader(BaseArchiveReader):
         """
         if member.type not in (MemberType.FILE, MemberType.SYMLINK):
             return
-        code = DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS
+        code = DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
         with self._lock:
             first = loc.index not in self._local_methods_reported
             self._local_methods_reported.add(loc.index)
@@ -3345,7 +3345,7 @@ class ZipReader(BaseArchiveReader):
         """
         if member.type not in (MemberType.FILE, MemberType.SYMLINK):
             return
-        code = DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED
+        code = DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
         with self._lock:
             first = loc.index not in self._local_offsets_reported
             self._local_offsets_reported.add(loc.index)
@@ -3597,7 +3597,7 @@ class ZipReader(BaseArchiveReader):
         shares a byte with another corrected member, and a byte is read by at most
         two members, one at its listed offset and one at its stored offset.
 
-        The correction is reported once per member (``MEMBER_LOCAL_OFFSET_SHIFTED``,
+        The correction is reported once per member (``MEMBER_LOCAL_HEADER_DIFFERS``,
         which ``STRICT`` refuses: the archive has lost or gained bytes).
         """
         base = self._end.base
@@ -3630,7 +3630,7 @@ class ZipReader(BaseArchiveReader):
         The local header sits next to the data, and a read from a pipe decodes by it,
         having nothing else; a file read does the same, so both read the same bytes,
         which the CRC-32 still checks. A method that differs from the directory's is
-        reported (``MEMBER_LOCAL_METHOD_DIFFERS``, which ``STRICT`` refuses: a tool that
+        reported (``MEMBER_LOCAL_HEADER_DIFFERS``, which ``STRICT`` refuses: a tool that
         trusts the directory decodes other bytes or fails). WinZip AES (method 99) on
         one side only is refused: its record is read from the central extra field, so
         the two headers disagree on how the data is encrypted. So is AES on both sides

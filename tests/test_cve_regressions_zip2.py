@@ -177,7 +177,7 @@ def test_ghsa_m665_v7pm_7grj_local_name_differs(mode: str, tmp_path: Path) -> No
     # (read last) gives the name the extraction above used (docs/formats.md).
     name = "cron_worker.sh" if mode == "pipe" else "doc_report.pdf"
     assert seen == [(name, b"payload")]
-    assert counts[DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS] == 1
+    assert counts[DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS] == 1
 
 
 @_MODES

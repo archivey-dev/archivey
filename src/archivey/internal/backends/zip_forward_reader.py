@@ -252,7 +252,7 @@ def _header_disagreements(
     counts only when a read checks it (``crc_used``: not WinZip AE-2). The method does
     not count: the data the pass decoded matched the CRC and size the directory gives,
     and a file read decodes by the local method too, reporting
-    ``MEMBER_LOCAL_METHOD_DIFFERS`` as the pass does. WinZip AES (method 99) on one side
+    ``MEMBER_LOCAL_HEADER_DIFFERS`` as the pass does. WinZip AES (method 99) on one side
     only counts, as a file read refuses it: the two headers disagree on the encryption.
     So do two AES records that differ in any field, or a missing or unparseable record
     on one side (:func:`aes_record_differences`): the pass decoded by the local record, and a file
@@ -2221,7 +2221,7 @@ class ZipForwardReader(ZipReader):
         reported (``ARCHIVE_UNLISTED_DATA``). Of two members with the same name, the
         later in the directory is current (``_listed_in_index_order``). A member whose
         local header names it differently takes the directory's name and is reported
-        (``MEMBER_LOCAL_NAME_DIFFERS``), as a file read reports it when it reads that
+        (``MEMBER_LOCAL_HEADER_DIFFERS``), as a file read reports it when it reads that
         local header. A member whose data descriptor or local header the directory
         contradicts fails (``_failed_at_end``): the pass raises for the first, after a
         directory entry with no local entry and two entries for one local entry.

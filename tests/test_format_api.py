@@ -2678,7 +2678,7 @@ def test_a_directory_with_data_is_reported(
         ]
         reader.members()
         counts = reader.diagnostics.counts
-        assert counts[archivey.DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1
+        assert counts[archivey.DiagnosticCode.MEMBER_DATA_IGNORED] == 1
         assert reader.read("d/") == b"junk"
 
 

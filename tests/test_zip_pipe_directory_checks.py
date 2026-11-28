@@ -95,10 +95,10 @@ def test_a_method_the_two_headers_disagree_on_does_not_fail_a_member_its_crc_che
     None
 ):
     """The data matched the CRC and size the directory gives. A file read decodes by
-    the local method too, and both report ``MEMBER_LOCAL_METHOD_DIFFERS``."""
+    the local method too, and both report ``MEMBER_LOCAL_HEADER_DIFFERS``."""
     raw = _zip(b"hello world" * 20, zipfile.ZIP_DEFLATED)
     struct.pack_into("<H", raw, 8, 9)  # Deflate64 decodes this Deflate stream too
-    code = archivey.DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS
+    code = archivey.DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
     with archivey.open_archive(NonSeekableBytesIO(bytes(raw)), pipe=True) as pipe:
         read = [stream.read() for _, stream in pipe.stream_members() if stream]
         assert read == [b"hello world" * 20]

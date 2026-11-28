@@ -805,7 +805,9 @@ def test_a_name_that_differs_between_the_two_headers_takes_the_directory_name() 
     with archivey.open_archive(io.BytesIO(bytes(data))) as reader:
         member = reader.get("c.txt")
         assert reader.read(member) == b"two"
-        assert reader.diagnostics.counts[DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS] == 1
+        assert (
+            reader.diagnostics.counts[DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS] == 1
+        )
     (from_file,) = member.diagnostics
     with archivey.open_archive(_pipe(bytes(data)), pipe=True) as reader:
         names = []
@@ -813,7 +815,9 @@ def test_a_name_that_differs_between_the_two_headers_takes_the_directory_name() 
             assert stream is not None
             names.append((member.name, stream.read()))
         report = reader.members_report()
-        assert reader.diagnostics.counts[DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS] == 1
+        assert (
+            reader.diagnostics.counts[DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS] == 1
+        )
     assert names == [("a.txt", b"one"), ("b.txt", b"two")]
     assert report.error is None
     assert [m.name for m in report.members] == ["a.txt", "c.txt"]

@@ -330,7 +330,7 @@ class DirectoryReader(BaseArchiveReader):
         except FileNotFoundError:
             relative = rel_prefix.rstrip("/") or "."
             self._diagnostics_collector.emit(
-                code=DiagnosticCode.SCAN_DIRECTORY_VANISHED,
+                code=DiagnosticCode.SCAN_ENTRY_VANISHED,
                 message=f"Directory vanished during scan, skipping: {quoted(str(directory))}",
                 context=ScanRaceContext(
                     archive_name=self._archive_name,

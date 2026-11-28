@@ -1553,7 +1553,7 @@ def test_non_utf8_local_header_name_is_reported_as_another_name() -> None:
         assert member.diagnostics == ()
         assert ar.read(member) == b"A" * 200
     (reported,) = member.diagnostics
-    assert reported.code is DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS
+    assert reported.code is DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
     assert reported.context.field == "name"
     assert reported.context.local_raw_name_base64 == raw_name_to_base64(b"\xffata.txt")
     assert r"'\xffata.txt'" in reported.message
@@ -1682,7 +1682,7 @@ def test_an_overlapping_entry_with_another_name_reports_only_the_overlap(
     strict: bool,
 ) -> None:
     # The overlap guard refuses the read before the name check runs: no
-    # MEMBER_LOCAL_NAME_DIFFERS for a read that does not go ahead, and STRICT
+    # MEMBER_LOCAL_HEADER_DIFFERS for a read that does not go ahead, and STRICT
     # raises the overlap, not the name difference.
     policy = DiagnosticPolicy.STRICT if strict else DiagnosticPolicy()
     config = ArchiveyConfig(diagnostic_policy=policy)
@@ -1692,7 +1692,7 @@ def test_an_overlapping_entry_with_another_name_reports_only_the_overlap(
         assert m1.name == "m1.txt"
         with raises_corruption_not_truncation(match="Overlapped entries"):
             ar.read(m1)
-        assert DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS not in ar.diagnostics.counts
+        assert DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS not in ar.diagnostics.counts
 
 
 def test_an_overlapping_entry_fails_alone_under_strict_and_continue(
@@ -2919,7 +2919,7 @@ def test_directory_data_is_reported_and_readable_but_not_extracted(
     tmp_path: Path, compress_type: int
 ) -> None:
     """The entry stays a directory (every official tool creates one) with its declared
-    size, ``MEMBER_DIRECTORY_DATA_IGNORED`` names the bytes extraction drops, and
+    size, ``MEMBER_DATA_IGNORED`` names the bytes extraction drops, and
     ``read()`` still delivers them, so nothing in the archive is out of reach."""
     path = tmp_path / "dirdata.zip"
     _zip_with_directory_data(path, compress_type)
@@ -2933,7 +2933,7 @@ def test_directory_data_is_reported_and_readable_but_not_extracted(
         diags = [
             d
             for d in ar.diagnostics.retained
-            if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+            if d.code is DiagnosticCode.MEMBER_DATA_IGNORED
         ]
         assert [d.context.to_dict() if d.context else None for d in diags] == [
             {
@@ -2990,7 +2990,7 @@ def test_ae2_directory_data_is_checked_by_its_hmac(tmp_path: Path) -> None:
         assert member.size == 12 and member.is_encrypted
         assert member.hashes == {}
         codes = [d.code for d in member.diagnostics]
-        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED in codes
+        assert DiagnosticCode.MEMBER_DATA_IGNORED in codes
         assert DiagnosticCode.DIGEST_UNVERIFIABLE not in codes
         assert ar.read("d/") == b"hidden data!"
     tampered = tmp_path / "ae2-dir-bad.zip"
@@ -3021,7 +3021,7 @@ def test_ae2_directory_data_is_checked_by_its_hmac(tmp_path: Path) -> None:
         member = ar.get("d/")
         assert member.hashes == {}
         codes = [d.code for d in member.diagnostics]
-        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED in codes
+        assert DiagnosticCode.MEMBER_DATA_IGNORED in codes
         assert DiagnosticCode.DIGEST_UNVERIFIABLE not in codes
         assert ar.read("d/") == b"hidden data!"
     tampered_ae1 = build_aes_zip(
@@ -3057,7 +3057,7 @@ def test_directory_data_with_a_zero_crc_reads_unchecked(tmp_path: Path) -> None:
         member = ar.get("d/")
         assert member.hashes == {}
         codes = [d.code for d in member.diagnostics]
-        assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED in codes
+        assert DiagnosticCode.MEMBER_DATA_IGNORED in codes
         [diag] = [
             d
             for d in member.diagnostics
@@ -3131,7 +3131,7 @@ def test_declared_empty_directory_with_a_body_is_reported(tmp_path: Path) -> Non
         [diag] = [
             d
             for d in ar.diagnostics.retained
-            if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+            if d.code is DiagnosticCode.MEMBER_DATA_IGNORED
         ]
         assert diag.context is not None
         assert diag.context.to_dict()["size"] == 0
@@ -3146,7 +3146,7 @@ def test_declared_empty_directory_with_a_body_is_reported(tmp_path: Path) -> Non
         pytest.raises(DiagnosticRaisedError) as excinfo,
     ):
         ar.members()
-    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DATA_IGNORED
 
 
 @pytest.mark.parametrize(
@@ -3188,7 +3188,7 @@ def test_directory_data_is_refused_by_strict(tmp_path: Path) -> None:
         pytest.raises(DiagnosticRaisedError) as excinfo,
     ):
         ar.members()
-    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+    assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DATA_IGNORED
 
     jar_only = tmp_path / "jar.zip"
     with zipfile.ZipFile(jar_only, "w") as z:
