@@ -628,12 +628,19 @@ What the ten readers import from `archivey.internal` today, and how each is reso
 - AES and key-derivation primitives and the password error, used by makeself, DMG, ARJ:
   a small public crypto facade beside `charge_key_derivation` and `NeedsPassword`.
 - Nested-archive helpers (`HeldInnerData`, `DependencyIndex`), used by deb and pkg:
-  folded into `ReaderContext.open_nested`.
+  folded into `ReaderContext.open_nested` (done, the deb port). `read_nested(span)`
+  reads an inner member whole and serves it again, counted once. The borders deb drew
+  itself are options of `open_nested`, checked in core (davi, 2026-11-27): `under=`
+  lists the inner members in a folder they must stay in, `keep_out=` names folders
+  they must not reach, and with either, core follows the inner archive's own symlinks
+  (deb's data tree, now `internal/nested_borders.py`, which shares `DependencyIndex`
+  with extraction's `LinkWatch`). pkg moves onto `under=` in its own pull request.
 - Path helpers (`collision_key`, `extracted_segments`, `is_rooted`,
   `strip_absolute_root` and their kin), used by deb and pkg for the layout rules of
   `dpkg-deb` and `pkgutil`: public as they are. They are path rules, not nesting.
   pkg's two, `collision_key` and `extracted_segments`, are public in
-  `archivey.formats` (done, the pkg port).
+  `archivey.formats` (done, the pkg port). deb needs none of them since its checks
+  moved into `open_nested`, and pkg's go too once pkg uses `under=`.
 - Limit checks (`refuse_past_archive_ratio`, `check_decoder_memory`), used by DMG and
   CAB: public, beside `charge_metadata`.
 - `override`: a three-line shim in each package (Python 3.11 has none in `typing`).

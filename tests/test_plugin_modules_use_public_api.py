@@ -29,6 +29,7 @@ PUBLIC_ONLY_MODULES = (
     "archivey.internal.backends.rpm_reader",
     "archivey.internal.backends.xar_reader",
     "archivey.internal.backends.pkg_reader",
+    "archivey.internal.backends.deb_reader",
 )
 
 # Modules that leave core in one package, as the plan's packages group them. A module

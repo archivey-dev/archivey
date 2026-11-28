@@ -70,6 +70,47 @@ outermost), SHALL be refused with `UnsupportedFeatureError`.
 | An `open_nested` archive inside a reader opened with `parent=` 8 levels below the outermost | `UnsupportedFeatureError` |
 | A `take` stream read after the walk moved on, one byte read before | `ArchiveyUsageError` |
 
+### Requirement: A reader names the borders between the trees it joins
+
+`ReaderContext.open_nested(data, format, under=..., keep_out=...)` SHALL check each
+inner member against the borders the call names before it yields the member's span,
+and raise `CorruptionError` naming the member for one that crosses a border. With
+`under="F/"` it SHALL list each inner member under `F/` (`.` as `F/` itself) and a hard
+link's `link_target` with it, and refuse a member whose name, or a hard link whose
+target, extracts outside `F/` under any policy or filter, compared spelled as `F` is.
+With `keep_out=("K/", ...)` it SHALL refuse a member that can reach `K/` under any
+spelling that extraction or a filesystem takes for `K` (`collision_key`): by its name,
+by a hard link's target, by a symlink whose target lands there, read lexically or
+through the inner archive's earlier symlinks, or through a later symlink that redirects
+an earlier one. With either option it SHALL refuse a member under a symlink of the
+inner archive, a symlink at the path of a directory or of another symlink, and a
+directory at a symlink's path. With `keep_out`, the path steps taken inside symlink
+targets and in re-resolving earlier targets SHALL count against
+`ListingLimits.max_members` (`ResourceLimitError`); with `under` alone no target is
+resolved. A rooted folder, one with `..`, an empty one, or a single `str` for
+`keep_out` SHALL raise `ArchiveyUsageError`.
+
+`ReaderContext.read_nested(span)` SHALL return the whole data of a span `open_nested`
+yielded and the span with its data served from those bytes, which count once toward
+`ListingLimits.max_decoded_bytes`. A span whose data `open_nested` did not make SHALL
+raise `ArchiveyUsageError`.
+
+#### Scenario: borders
+
+- **WHEN** a walk calls `open_nested` as each row says
+- **THEN** the listing behaves as the row's Expected column says
+
+| Case | Expected |
+| --- | --- |
+| `under="Payload/"`, inner `.`, `a`, a hard link `h` to `a`, a symlink `l -> a` | `Payload/`, `Payload/a`, `Payload/h` linked to `Payload/a`, `Payload/l -> a` |
+| `under="Payload/"`, inner `../Bom`, `a\..\..\Bom` or `../payload/x` | `CorruptionError` |
+| `under="Payload/"`, inner `l -> ..`, then `l/Bom` | `CorruptionError` naming `l/Bom` |
+| `under="Payload/"`, 20 chained symlinks, `max_members=100` | Lists |
+| `keep_out=("DEBIAN/",)`, inner `debian/control`, `d -> .` then `d/DEBIAN/control`, `x -> y/DEBIAN/control` then `y -> .` | `CorruptionError` |
+| `keep_out=("DEBIAN/",)`, inner `usr/share/DEBIAN`, `usr/lib/libfoo.so -> libfoo.so.1` | Lists |
+| `under="/Payload"`, `under="a/../b"`, `keep_out="DEBIAN/"` | `ArchiveyUsageError` |
+| `read_nested` of each span of a 50 kB `.tar.xz` file, `max_decoded_bytes` 80 000 | Lists; the same bytes in a `BytesIO` raise `ResourceLimitError` |
+
 ### Requirement: An indexed reader reads an archive stored inside its archive
 
 `ReaderContext.open_nested(data, format)` SHALL also be callable from
