@@ -154,7 +154,7 @@ class DiagnosticCode(StrEnum):
     but the sector addresses of a later data track start another one: the listing
     follows the sheet, and the image read without it lists that session."""
     ARCHIVE_STRUCTURE_INCONSISTENT = "archive_structure_inconsistent"
-    """A disk image's structures are damaged or disagree with each other in a way the
+    """An archive's structures are damaged or disagree with each other in a way the
     read works around, and the context's ``structure`` says which: a UDIF code signature
     outside the file (ignored), a primary GPT that fails its checks (the backup is
     read), a partition map that fails its checks (the run tables' ranges are read), a
@@ -162,8 +162,9 @@ class DiagnosticCode(StrEnum):
     holds (the filesystem decides), an HFS+ file whose mode and Finder type disagree on
     whether it is a symlink (the mode decides), an APFS directory entry whose type
     disagrees with its inode's mode (the mode decides), a newest APFS checkpoint that
-    is incomplete (an older one is read). The listing comes from what the
-    read could check; another tool may read the damaged structure."""
+    is incomplete (an older one is read), a 7z start header that is zero (the end
+    header is found by its position, as 7-Zip finds it). The listing comes from what
+    the read could check; another tool may read the damaged structure."""
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
     """A stored timestamp could not be used, so that time is left unset."""
     MEMBER_HEADER_DAMAGED = "member_header_damaged"
@@ -288,10 +289,11 @@ class DiagnosticCode(StrEnum):
     write another tree or refuse it. Advisory: the shapes come from real archives."""
     MEMBER_FOUND_BY_SCAN = "member_found_by_scan"
     """A reader opened with ``open_archive(salvage=True)`` found this member by
-    searching past damage, not by the format's normal walk. Its header passed the
-    format's own checks, but nothing says it belongs at this level of the archive: a
-    header of an archive stored inside a member passes too. The context says which
-    fields no check covers. Reported once per member, at listing. Salvage only."""
+    searching past damage, or listed it from a header it repaired (a 7z start or
+    end header), not by the format's normal walk. Its header passed the format's own
+    checks, but nothing says it belongs at this level of the archive: a header of an
+    archive stored inside a member passes too. The context says which fields no check
+    covers. Reported once per member, at listing. Salvage only."""
     ARCHIVE_REGION_SKIPPED = "archive_region_skipped"
     """A salvage search (``open_archive(salvage=True)``) stepped over a range of the
     archive in which no header passed the format's checks, or stopped at a
@@ -302,6 +304,12 @@ class DiagnosticCode(StrEnum):
     the format has none, or its search cannot run on this reader (an archive inside
     another one, read forward only). The archive is read as it is without
     ``salvage=True``. The context's ``reason`` says which. Reported once, at open."""
+    MEMBER_NAME_UNKNOWN = "member_name_unknown"
+    """archivey made up this member's name: salvage (``open_archive(salvage=True)``)
+    found its content where no header names it. The name is under ``__salvaged__/``.
+    The context (``SalvageScanContext``, ``method="content"``) says where the
+    content starts and which fields no check covers. Reported once per member, at
+    listing, in place of ``MEMBER_FOUND_BY_SCAN``. Salvage only."""
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -408,6 +416,8 @@ DiagnosticCodeStr = Literal[
     "archive-region-skipped",
     "salvage_unavailable",
     "salvage-unavailable",
+    "member_name_unknown",
+    "member-name-unknown",
 ]
 
 
@@ -714,10 +724,10 @@ class UnreadSessionContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class ArchiveStructureContext(_JsonSafeContext):
-    """A structure of a disk image that is damaged or disagrees with another, which
-    the read worked around (``ARCHIVE_STRUCTURE_INCONSISTENT``).
+    """A structure of a disk image or archive that is damaged or disagrees with
+    another, which the read worked around (``ARCHIVE_STRUCTURE_INCONSISTENT``).
 
-    ``format`` is ``"dmg"``. ``structure`` names it:
+    ``format`` is ``"dmg"`` or ``"7z"``. ``structure`` names it:
 
     - ``"code_signature"``: the UDIF code signature's range is outside the file or
       overlaps another structure. It is ignored; ``offset`` is where it says it starts.
@@ -749,6 +759,11 @@ class ArchiveStructureContext(_JsonSafeContext):
     - ``"folder_thread"``: HFS+ folders whose thread record is missing, unreadable, or
       names another parent or name than the folder record. Reported once per volume; the folder
       records decide the paths, and ``offset`` is the first such folder's catalog id.
+    - ``"start_header"`` (7z): the start header is zero, as 7-Zip leaves it when a
+      write stops before it fills it in, so the end header was found by its position,
+      as 7-Zip finds it: from the last pair of its first two bytes in the file's last
+      512 bytes, to the end of the file. ``offset`` is where that end header starts in
+      the source.
     """
 
     kind: Literal["archive_structure"] = "archive_structure"
@@ -1398,22 +1413,39 @@ class ReaderDisagreementContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class SalvageScanContext(_JsonSafeContext):
-    """A salvage search found a member past damage (``MEMBER_FOUND_BY_SCAN``).
+    """A salvage search found a member past damage (``MEMBER_FOUND_BY_SCAN``), or
+    content no header names (``MEMBER_NAME_UNKNOWN``).
 
     ``format`` is the archive format's name. ``method`` says how the member was
-    found: ``"header_search"``, a forward search for a header that passes the
-    format's checks. ``offset`` is where the member's header starts, counted from the
-    start of its layer (``RegionSkippedContext.layer``).
+    found:
+
+    - ``"header_search"``: a search for a header that passes the format's checks (for
+      7z, an end header found by a search of the file's tail, or a copy of the header
+      found in the packed area);
+    - ``"header_repair"``: a header whose stored fields salvage corrected under a CRC,
+      or used although it fails its own CRC (7z: the start header, or the end header
+      when its parse and decode check it);
+    - ``"content"`` (``MEMBER_NAME_UNKNOWN``): content found where no header names it,
+      listed under a name archivey made (for 7z, a packed stream with no usable
+      header). ``unchecked`` then always holds ``"name"``; 7z adds ``"filters"`` (a
+      filter that followed the codec is not known) and ``"size"`` when the size is not
+      known.
+
+    ``offset`` is where the member's header starts, counted from the start of its
+    layer (``RegionSkippedContext.layer``); for 7z, where the end header used starts,
+    and for ``"content"``, where the content starts.
 
     ``confirmed`` is ``True`` when the header after the member's data passes the same
-    checks, or is the format's clean end. An unconfirmed member's sizes are checked by
-    nothing, so its data may run into other members' bytes.
+    checks, or is the format's clean end; for 7z, when a CRC-32 confirmed the end
+    header used. An unconfirmed member's sizes are checked by nothing, so its data may
+    run into other members' bytes.
 
-    ``unchecked`` names the fields no check covers. It always holds ``"position"``:
-    nothing says the member belongs at this level of the archive, since a header of an
-    archive stored inside a member passes the checks too. A format adds the fields its
-    damage could leave wrong, such as ``"name"`` when a long name may have been in
-    the lost region.
+    ``unchecked`` names the fields no check covers. For a format that searches for
+    member headers it always holds ``"position"``: nothing says the member belongs at
+    this level of the archive, since a header of an archive stored inside a member
+    passes the checks too. A format adds the fields its damage could leave wrong, such
+    as ``"name"`` when a long name may have been in the lost region. A 7z member
+    listed from an end header a CRC-32 confirmed has it empty.
     """
 
     kind: Literal["salvage_scan"] = "salvage_scan"
@@ -1421,7 +1453,7 @@ class SalvageScanContext(_JsonSafeContext):
     member_name: str = ""
     member_id: int | None = None
     format: str = ""
-    method: Literal["header_search"] = "header_search"
+    method: Literal["header_search", "header_repair", "content"] = "header_search"
     offset: int = 0
     confirmed: bool = False
     unchecked: tuple[str, ...] = ("position",)
@@ -1565,6 +1597,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_FOUND_BY_SCAN: "salvage_scan",
         DiagnosticCode.ARCHIVE_REGION_SKIPPED: "region_skipped",
         DiagnosticCode.SALVAGE_UNAVAILABLE: "salvage_unavailable",
+        DiagnosticCode.MEMBER_NAME_UNKNOWN: "salvage_scan",
     }
 )
 
@@ -1600,7 +1633,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-four codes are deliberately
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-five codes are deliberately
 **out**, and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -1678,10 +1711,11 @@ The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-four codes are delib
   Their sibling ``MEMBER_NAME_DUPLICATE_UNEXPECTED`` is **in** the set: it reports a
   repeated name only in a format with no way to repeat one (CAB), where no writer
   makes the shape (maintainer, 2026-11-11).
-- ``MEMBER_FOUND_BY_SCAN``, ``ARCHIVE_REGION_SKIPPED`` and ``SALVAGE_UNAVAILABLE`` —
-  recorded only when the caller asked for ``salvage=True``, which lists past damage on
-  purpose. ``STRICT`` would stop the salvage listing at its first found member. The
-  damage itself still raises at the end of the listing, as without salvage.
+- ``MEMBER_FOUND_BY_SCAN``, ``MEMBER_NAME_UNKNOWN``, ``ARCHIVE_REGION_SKIPPED`` and
+  ``SALVAGE_UNAVAILABLE`` — recorded only when the caller asked for ``salvage=True``,
+  which lists past damage on purpose. ``STRICT`` would stop the salvage listing at its
+  first found member. The damage itself still raises at the end of the listing, as
+  without salvage.
 
 ``ARCHIVE_UNREAD_SESSION`` is **in** the set, as ``ARCHIVE_UNLISTED_DATA`` is: the
 listing leaves out a filesystem the file holds, which another reading of the same file
@@ -1740,6 +1774,11 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                 frozenset({"directory"}),
             ),
             DiagnosticCode.SCAN_ENTRY_VANISHED: ("entry_kind", frozenset({"entry"})),
+            DiagnosticCode.MEMBER_FOUND_BY_SCAN: (
+                "method",
+                frozenset({"header_search", "header_repair"}),
+            ),
+            DiagnosticCode.MEMBER_NAME_UNKNOWN: ("method", frozenset({"content"})),
             DiagnosticCode.ENCODING_ARGUMENT_UNUSED: (
                 "argument",
                 frozenset({"encoding"}),

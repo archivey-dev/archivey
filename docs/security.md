@@ -198,8 +198,8 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   tools and archivey's default reading don't list. A header of an archive stored inside a member
   passes too, and a crafted file can put one anywhere. Extraction checks every found member as it
   checks any other, so the guarantees at the top of this page still hold. TAR, compressed or not,
-  has salvage support; every other format reads as it does without `salvage=True` and records
-  `SALVAGE_UNAVAILABLE`.
+  and 7z have salvage support; every other format reads as it does without `salvage=True`
+  and records `SALVAGE_UNAVAILABLE`.
 
 ## Decoders in a child process
 

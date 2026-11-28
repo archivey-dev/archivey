@@ -1142,6 +1142,7 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         # Recorded only under salvage=True, which lists past damage on purpose; the
         # damage still raises at the end of the listing.
         DiagnosticCode.MEMBER_FOUND_BY_SCAN,
+        DiagnosticCode.MEMBER_NAME_UNKNOWN,
         DiagnosticCode.ARCHIVE_REGION_SKIPPED,
         DiagnosticCode.SALVAGE_UNAVAILABLE,
     }

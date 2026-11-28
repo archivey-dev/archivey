@@ -39,6 +39,7 @@ from archivey.internal.salvage import SalvageState, emit_salvage_unavailable
 
 SALVAGE_CODES = {
     DiagnosticCode.MEMBER_FOUND_BY_SCAN,
+    DiagnosticCode.MEMBER_NAME_UNKNOWN,
     DiagnosticCode.ARCHIVE_REGION_SKIPPED,
     DiagnosticCode.SALVAGE_UNAVAILABLE,
 }
@@ -242,6 +243,19 @@ def test_config_refuses_a_salvage_limits_that_is_not_one() -> None:
                 archive_name="x.cpio", format="CPIO", reason="forward_only_reader"
             ),
         ),
+        (
+            DiagnosticCode.MEMBER_NAME_UNKNOWN,
+            SalvageScanContext(
+                archive_name="x.7z",
+                member_name="__salvaged__/7z-stream-0001.bin",
+                member_id=0,
+                format="7z",
+                method="content",
+                offset=32,
+                confirmed=True,
+                unchecked=("name", "filters"),
+            ),
+        ),
     ],
 )
 def test_salvage_contexts_pair_with_their_codes_and_are_json_safe(
@@ -317,6 +331,23 @@ def test_a_nested_reader_archivey_opens_inherits_the_flag() -> None:
     with open_archive(io.BytesIO(_deb())) as reader:
         reader.members()
         assert not SALVAGE_CODES & set(reader.diagnostics.counts)
+
+
+def test_7z_salvages_and_records_no_unavailable(tmp_path: Path) -> None:
+    """7z has a salvage search (``openspec/changes/salvage-7z``): an intact archive
+    reads as without salvage and records none of the salvage codes. Its repairs are
+    tested in ``tests/test_sevenzip_salvage.py``."""
+    from tests.sevenzip_salvage_util import source_files, write_7z
+
+    path = tmp_path / "a.7z"
+    path.write_bytes(write_7z(source_files(3)))
+    assert _listing(path, salvage=True) == _listing(path)
+    with open_archive(path, salvage=True) as reader:
+        reader.members()
+        list(reader.stream_members())
+        assert not SALVAGE_CODES & set(reader.diagnostics.counts)
+        assert isinstance(reader, BaseArchiveReader)
+        assert reader._salvage_mode.enabled
 
 
 def test_a_reader_built_again_opens_its_own_inner_readers_as_repeats() -> None:
