@@ -1541,6 +1541,12 @@ class CodecCall:
     data declares may raise ``ResourceLimitError`` instead, which detection reads as
     "can't tell". ``None`` for every other read."""
 
+    # What ``speedup()`` needs, set by archivey (``codec_adapter``): the caller's
+    # excluded libraries and isolation, and the lease of what it hands out. A field,
+    # so that ``dataclasses.replace`` keeps it: a copied call asks with the caller's
+    # policy, and what it hands out is given back with the stream. Internal.
+    _speedups: object = field(default=None, repr=False, compare=False)
+
     @overload
     def speedup(self, name: Literal["crc16_arc"]) -> Crc16 | None: ...
     @overload
@@ -1565,10 +1571,9 @@ class CodecCall:
         one gives back only its own."""
         from archivey.internal import kernels
 
-        # archivey attaches the caller's policy to the calls it builds
-        # (``codec_adapter``); a call built by hand asks with the defaults.
-        state = self.__dict__.get("_speedups")
-        if state is None:
+        # A call built by hand, as a plugin's own tests do, asks with the defaults.
+        state = self._speedups
+        if not isinstance(state, kernels.CallSpeedups):
             state = kernels.CallSpeedups(frozenset(), isolated=False)
             object.__setattr__(self, "_speedups", state)
         return kernels.for_plugin(

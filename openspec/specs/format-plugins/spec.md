@@ -491,14 +491,16 @@ decoder of archivey-speedups when it can run: the package is installed and recen
 enough, the caller's library policy allows it, and, for the five decoders, under
 `ProcessIsolation.NATIVE_DECODERS`, a decoder child can run it. The `"crc16_arc"`
 checksum SHALL follow the in-process checksum rule under every isolation setting.
-Otherwise they SHALL return `None`. A name that is not a speedup SHALL raise `ArchiveyUsageError`.
-`archivey.speedups` SHALL name the interface of each speedup. archivey SHALL give back
-the decoder child of each object it handed out when the member stream (for a codec) or
-the reader closes, and when the codec's `decompressor()` or the reader's open raises.
-Each decompressor SHALL own what its call handed out, whatever its equality or hash.
-`CodecCall` SHALL keep only its documented fields. The lookup SHALL check what can
-run; under `NATIVE_DECODERS`, making a decoder or decoding a block SHALL raise
-`ResourceUnavailableError` when no decoder child can start then.
+Otherwise they SHALL return `None`. A name that is not a speedup SHALL raise
+`ArchiveyUsageError`. `archivey.speedups` SHALL name the interface of each speedup.
+archivey SHALL give back the decoder child of each object it handed out when the member
+stream (for a codec) or the reader closes, and when the codec's `decompressor()` or the
+reader's open raises. Each decompressor SHALL own what its call handed out, whatever its
+equality or hash. `CodecCall` SHALL pickle, resolve its type hints and convert as a
+plain dataclass, and a call copied with `dataclasses.replace` SHALL ask with the
+caller's policy. The lookup SHALL check what can run; under `NATIVE_DECODERS`, making a
+decoder or decoding a block SHALL raise `ResourceUnavailableError` when no decoder child
+can start then.
 
 #### Scenario: asking for a speedup
 

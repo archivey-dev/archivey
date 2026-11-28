@@ -426,18 +426,11 @@ def test_crc16_runs_in_process_when_no_decoder_child_can_run(
 def test_codec_call_stays_a_plain_record() -> None:
     call = CodecCall(size=5)
     assert pickle.loads(pickle.dumps(call)) == call
-    assert set(get_type_hints(CodecCall)) == {
-        "size",
-        "properties",
-        "limits",
-        "probe_bound",
-    }
-    assert set(dataclasses.asdict(call)) == {
-        "size",
-        "properties",
-        "limits",
-        "probe_bound",
-    }
+    # The documented fields, and one internal one: archivey's state for
+    # ``speedup()``, a field so that ``dataclasses.replace`` keeps it.
+    names = {"size", "properties", "limits", "probe_bound", "_speedups"}
+    assert set(get_type_hints(CodecCall)) == names
+    assert set(dataclasses.asdict(call)) == names
 
 
 def test_a_stream_whose_setup_fails_closes_the_decoder_it_made() -> None:
@@ -524,3 +517,61 @@ def test_a_childs_clear_offsets_is_a_fresh_list() -> None:
     proxy = ChildLzwDecompressor(Child())  # type: ignore[arg-type]
     proxy.clear_offsets.append((3, 4))
     assert proxy.clear_offsets == [(1, 2)]
+
+
+# --- review round 3 ---
+
+
+class _CopyingToyHandler(ToyHandler):
+    def decompressor(self, call: CodecCall) -> ToyDecompressor:
+        inner = dataclasses.replace(call, properties=call.properties)
+        make = inner.speedup("lzw")
+        assert make is not None
+        make()
+        return super().decompressor(call)
+
+
+def test_a_copied_call_keeps_the_callers_isolation_and_lease(
+    isolation_seen: list[bool],
+) -> None:
+    _FakeChild.made = []
+    with registration_scope():
+        register_codec(_CopyingToyHandler)
+        with open_stream(
+            io.BytesIO(_toy_stream()), format=TOY, config=_ISOLATED
+        ) as stream:
+            assert stream.read() == b"hello"
+    assert isolation_seen == [True]
+    assert [c.closed for c in _FakeChild.made] == [1]
+
+
+class _ChildHolding(ToyDecompressor):
+    holds_decoder_child = True
+    closed = 0
+
+    def close(self) -> None:
+        type(self).closed += 1
+
+
+class _ChildHoldingToyHandler(ToyHandler):
+    def decompressor(self, call: CodecCall) -> ToyDecompressor:
+        return _ChildHolding()
+
+
+def test_a_decompressor_holding_a_child_is_still_closed() -> None:
+    _ChildHolding.closed = 0
+    with registration_scope():
+        register_codec(_ChildHoldingToyHandler)
+        with open_stream(io.BytesIO(_toy_stream()), format=TOY) as stream:
+            assert stream.read() == b"hello"
+    assert _ChildHolding.closed == 1
+
+
+def test_the_codec_wrapper_copies_without_recursing() -> None:
+    import copy
+
+    from archivey.internal.codec_adapter import LeasedDecompressor
+    from archivey.internal.kernels import KernelLease
+
+    wrapper = LeasedDecompressor(ToyDecompressor(), KernelLease())  # type: ignore[arg-type]
+    assert copy.copy(wrapper).eof is False

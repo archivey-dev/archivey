@@ -36,6 +36,7 @@ from archivey.internal.streams.codecs.base import (
     StreamCodec,
 )
 from archivey.internal.streams.codecs.registry import add_stream_codec, stream_codecs
+from archivey.internal.streams.decompressor_stream import release_decoder
 from archivey.types import (
     ArchiveFormat,
     BackendKindStr,
@@ -126,8 +127,7 @@ class PluginCodec(StreamCodec):
         speedups = CallSpeedups(
             config.excluded_libraries, isolated=config.natives.isolated
         )
-        call = codec_call(params, config)
-        object.__setattr__(call, "_speedups", speedups)
+        call = codec_call(params, config, speedups)
         try:
             decompressor = self.handler.decompressor(call)
         except BaseException:
@@ -164,14 +164,25 @@ class LeasedDecompressor:
         return self._plugin.decompress(data, max_length)
 
     def __getattr__(self, name: str) -> Any:
+        # Only names this object lacks come here: its own unset slots (a copy being
+        # made) must not look themselves up again.
+        if name in LeasedDecompressor.__slots__:
+            raise AttributeError(name)
         return getattr(self._plugin, name)
 
     def close(self) -> None:
-        """Give back the decoder children of the speedups the handler took."""
-        self._lease.release()
+        """Release the plugin's decompressor as the stream releases its own (a child
+        it holds, an in-process liblzma decoder), then give back the decoder children
+        of the speedups the handler took."""
+        try:
+            release_decoder(self._plugin)
+        finally:
+            self._lease.release()
 
 
-def codec_call(params: CodecParams, config: StreamConfig) -> CodecCall:
+def codec_call(
+    params: CodecParams, config: StreamConfig, speedups: CallSpeedups | None = None
+) -> CodecCall:
     """The :class:`CodecCall` a handler's decoder is given for ``params`` and
     ``config``."""
     # Imported here: archivey.formats imports this module's neighbours.
@@ -182,6 +193,7 @@ def codec_call(params: CodecParams, config: StreamConfig) -> CodecCall:
         properties=params.properties,
         limits=config.decoder_limits,
         probe_bound=config.probe_read_bound,
+        _speedups=speedups,
     )
 
 
