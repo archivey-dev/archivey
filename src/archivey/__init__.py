@@ -271,9 +271,10 @@ def _pin_public_module() -> None:
 
     Public classes are defined in public modules (:mod:`archivey.reader`,
     :mod:`archivey.types`, :mod:`archivey.detection`, …), so their ``__module__`` is
-    already a stable path and this leaves them alone. Five public functions are still
-    defined under ``archivey.internal``: ``detect_format``, the three registry queries
-    and ``sanitize_names``. ``pickle`` records a function's ``__module__``, so a
+    already a stable path and this leaves them alone. Some public functions are still
+    defined under ``archivey.internal``: ``detect_format``, the three registry queries,
+    ``sanitize_names`` and plugin helpers of ``archivey.formats`` such as
+    ``collision_key``. ``pickle`` records a function's ``__module__``, so a
     persisted reference to one would otherwise name an internal path that could then
     never move without breaking the caller's data. Pinned here, it names the public
     module that exports it, the root first, and ``repr()``, ``help()`` and
@@ -282,8 +283,9 @@ def _pin_public_module() -> None:
     reference 0.5 pickled loads in 0.6 with a warning and not in 0.7.0. The internal
     layout stays free to change; ``internal`` imports still see the same objects.
 
-    Computed over the ``__all__`` of the root, ``archivey.core`` and ``archivey.paths``,
-    the modules that export functions defined under ``internal``, rather than listed, so
+    Computed over the ``__all__`` of the root, ``archivey.core``, ``archivey.paths`` and
+    ``archivey.formats``, the modules that export functions defined under ``internal``,
+    rather than listed, so
     a function added to one of them later is covered too; for any other public module,
     ``tests/test_public_api.py`` fails on such a function. Classes are not pinned: a
     class's string annotations and ``inspect.getsource`` both go through its
@@ -295,9 +297,11 @@ def _pin_public_module() -> None:
     from types import FunctionType
 
     import archivey.core
+    import archivey.formats
     import archivey.paths
 
-    for module in (sys.modules[__name__], archivey.core, archivey.paths):
+    modules = (sys.modules[__name__], archivey.core, archivey.paths, archivey.formats)
+    for module in modules:
         for name in module.__all__:
             if name == "__version__":
                 continue  # a str, and not bound until first access (``__getattr__``)

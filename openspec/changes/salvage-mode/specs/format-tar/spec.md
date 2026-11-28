@@ -8,19 +8,21 @@ With `salvage=True`, where the default walk ends on damage (a header that fails 
 checksum and is not followed, a block that is not a header, a chain that does not
 confirm), the walk SHALL search forward from the damaged block, one 512-byte block at a
 time relative to the start of the archive, for a block whose checksum passes and whose
-magic is `ustar\0` or `ustar  \0`. A block without magic (v7) SHALL pass only when every
-header listed before the damage was v7. A clean end (the end marker, then zeros or the
+magic is `ustar\0` or `ustar  \0`, or, with no magic, that is a plausible v7 header: its
+checksum field octal text (not base-256) with a value from 0o400 to 0o377000, and its
+mode, uid, gid, size and mtime fields octal numbers. The search SHALL take both kinds
+wherever it runs, a lost start included. A clean end (the end marker, then zeros or the
 end of the source) SHALL NOT start a search.
 
 A found header SHALL be parsed and walked as any header, extended headers and their
 chain included, and its member listed with `MEMBER_FOUND_BY_SCAN`. It is **confirmed**
-when the block after its data is a header that passes checksum and magic, or the clean
-end; a confirmed member's walk SHALL go on as the normal walk, and later damage SHALL
-start a new search. An unconfirmed member SHALL be listed with `confirmed=False`, and
-the search SHALL go on at the block after its header. A found header with a full name
-field and no long-name record before it SHALL list `"name"` in `unchecked`. Each range
-with no passing header SHALL be one `ARCHIVE_REGION_SKIPPED`. The pass SHALL end in the
-default's error.
+when the block after its data is a header that passes the search's checks (either kind),
+or the clean end; a confirmed member's walk SHALL go on as the normal walk, and later
+damage SHALL start a new search. An unconfirmed member SHALL be listed with
+`confirmed=False`, and the search SHALL go on at the block after its header. A found
+header with a full name field and no long-name record before it SHALL list `"name"` in
+`unchecked`. Each range with no passing header SHALL be one `ARCHIVE_REGION_SKIPPED`.
+The pass SHALL end in the default's error.
 
 On a compressed TAR the search SHALL run on the decoded stream; damage in the codec
 SHALL end the walk as today.

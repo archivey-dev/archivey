@@ -762,3 +762,42 @@ def test_the_moved_script_finds_the_repository_only_from_its_own_folder(
 
     assert "tier: " in run("scripts/review/.review_prep_base.py").stdout
     assert run("scripts/.review_prep_base.py").returncode != 0
+
+
+_SURFACE_BEFORE = """\
+# header
+module archivey
+class archivey.Thing()
+field archivey.Thing.size: int
+module archivey.formats
+class archivey.formats.Magic(NamedTuple)
+field archivey.formats.Magic.data: bytes
+function archivey.formats.register_format(handler) -> None
+"""
+
+
+def test_the_surface_count_names_each_module_whose_public_names_changed() -> None:
+    """The tier report says how many public names a module had and has, so a pull
+    request that grows ``archivey.formats`` shows by how much ("28 to 31")."""
+    after = _SURFACE_BEFORE + (
+        "function archivey.formats.str_retained_bytes(value: str) -> int\n"
+        "method archivey.formats.Magic.extra(self) -> None\n"
+    )
+    assert prep.public_name_counts(_SURFACE_BEFORE) == {
+        "archivey": 1,
+        "archivey.formats": 2,
+    }
+    assert prep.surface_count_lines(_SURFACE_BEFORE, after) == [
+        "  archivey.formats: 2 to 3 public names"
+    ]
+    assert prep.surface_count_lines(_SURFACE_BEFORE, _SURFACE_BEFORE) == []
+    # A module the base lacks counts from 0.
+    assert prep.surface_count_lines(None, _SURFACE_BEFORE) == [
+        "  archivey: 0 to 1 public names",
+        "  archivey.formats: 0 to 2 public names",
+    ]
+    t = prep.tier([prep.API_SURFACE])
+    t.surface_counts = prep.surface_count_lines(_SURFACE_BEFORE, after)
+    report = prep.tier_report(t)
+    at = report.index(f"public API: changed ({prep.API_SURFACE})")
+    assert report[at + 1] == "  archivey.formats: 2 to 3 public names"
