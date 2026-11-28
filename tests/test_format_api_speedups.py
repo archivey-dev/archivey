@@ -29,6 +29,7 @@ from archivey import (
 )
 from archivey.formats import (
     CodecCall,
+    Magic,
     ReaderContext,
     ReaderSource,
     register_codec,
@@ -458,3 +459,68 @@ def test_a_stream_whose_setup_fails_closes_the_decoder_it_made() -> None:
             make_decoder=lambda point, inner: Decoder(),  # type: ignore[arg-type,return-value]
         )
     assert closed == [True]
+
+
+# A ``.Z`` stream of b"hello hello hello\n" (made with ncompress).
+_DOT_Z = b"\x1f\x9d\x90h\xca\xb0a\xf3\x06D\xc0\x81\x05\x0f\x12T\x00"
+
+
+class _LzwCodecDecompressor:
+    """The adapter the plugin guide shows: an LZW speedup (or its Python twin) as a
+    codec's decompressor, its ``flush()`` behind ``end_input()``."""
+
+    def __init__(self, make: Any) -> None:
+        self._lzw = make()
+        self._ended = False
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        if self._ended:
+            return self._lzw.flush(max_length)
+        return self._lzw.decompress(data, max_length)
+
+    def end_input(self) -> None:
+        self._ended = True
+
+    @property
+    def eof(self) -> bool:
+        return self._lzw.eof
+
+    @property
+    def needs_input(self) -> bool:
+        return self._lzw.needs_input and not self._ended
+
+    @property
+    def unused_data(self) -> bytes:
+        return self._lzw.unused_data
+
+
+class _DotZHandler(ToyHandler):
+    magic = (Magic(0, b"\x1f\x9d"),)
+    checks_content = False
+
+    def decompressor(self, call: CodecCall) -> _LzwCodecDecompressor:  # type: ignore[override]
+        from archivey.internal.kernels.python import lzw as twin
+
+        return _LzwCodecDecompressor(call.speedup("lzw") or twin.Decompressor)
+
+
+def test_the_guides_lzw_adapter_reads_a_whole_stream() -> None:
+    with registration_scope():
+        register_codec(_DotZHandler)
+        with open_stream(io.BytesIO(_DOT_Z), format=TOY) as stream:
+            assert stream.read() == b"hello hello hello\n"
+
+
+def test_a_childs_clear_offsets_is_a_fresh_list() -> None:
+    from archivey.internal.kernels.child import ChildLzwDecompressor
+
+    class Child:
+        def __init__(self) -> None:
+            self.report = {"clear_offsets": [(1, 2)]}
+
+        def reported(self, name: str) -> object:
+            return self.report[name]
+
+    proxy = ChildLzwDecompressor(Child())  # type: ignore[arg-type]
+    proxy.clear_offsets.append((3, 4))
+    assert proxy.clear_offsets == [(1, 2)]

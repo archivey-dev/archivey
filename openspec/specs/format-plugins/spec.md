@@ -496,7 +496,9 @@ Otherwise they SHALL return `None`. A name that is not a speedup SHALL raise `Ar
 the decoder child of each object it handed out when the member stream (for a codec) or
 the reader closes, and when the codec's `decompressor()` or the reader's open raises.
 Each decompressor SHALL own what its call handed out, whatever its equality or hash.
-`CodecCall` SHALL keep only its documented fields.
+`CodecCall` SHALL keep only its documented fields. The lookup SHALL check what can
+run; under `NATIVE_DECODERS`, making a decoder or decoding a block SHALL raise
+`ResourceUnavailableError` when no decoder child can start then.
 
 #### Scenario: asking for a speedup
 

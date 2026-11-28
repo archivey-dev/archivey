@@ -13,6 +13,10 @@ of its own with the same interface::
 
     make = context.speedup("lzw") or my_lzw.Decompressor
 
+``speedup()`` checks what can run: under ``NATIVE_DECODERS`` a decoder child starts
+when a decoder is made or a block decoded, and that call raises
+``ResourceUnavailableError`` if none can start then.
+
 A speedup gives the same bytes and raises the same errors as a correct Python decoder
 of the same interface: the choice changes speed only. A speedup's own fault (a Rust
 panic) raises ``CorruptionError``. archivey gives back the decoder child of every

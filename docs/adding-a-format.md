@@ -1009,6 +1009,45 @@ the child back when the reader closes (for `context.speedup()`) or when the memb
 stream closes (for `call.speedup()`), so the plugin does not close it. It does so too
 when the reader's `open` or the handler's `decompressor()` raises.
 
+`speedup()` checks what can run. Under `NATIVE_DECODERS`, a decoder child is started
+only when a decoder is made or a block is decoded, and if none can start then, that
+call raises `ResourceUnavailableError`, as archivey's own decoders do. The fallback
+happens at the `speedup()` call only.
+
+An `"lzw"` decompressor has its own interface, with a `flush()` that marks the end of
+the input. A codec's decompressor signals the end with `end_input()` (see
+`Decompressor`), so a codec that returns one wraps it:
+
+```python
+class LzwCodecDecompressor:
+    def __init__(self, make):
+        self._lzw = make()
+        self._ended = False
+
+    def decompress(self, data, max_length=-1):
+        if self._ended:
+            return self._lzw.flush(max_length)
+        return self._lzw.decompress(data, max_length)
+
+    def end_input(self):
+        self._ended = True
+
+    @property
+    def eof(self):
+        return self._lzw.eof
+
+    @property
+    def needs_input(self):
+        return self._lzw.needs_input and not self._ended
+
+    @property
+    def unused_data(self):
+        return self._lzw.unused_data
+```
+
+An `"lzx"` decompressor ends at its output size and has no `unused_data`: it decodes
+a CAB folder inside a format reader, not a codec's stream.
+
 ## Replacing a built-in reader
 
 A plugin can also read a format archivey already reads, in place of the built-in
