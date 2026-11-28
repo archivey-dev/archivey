@@ -598,7 +598,9 @@ What the ten readers import from `archivey.internal` today, and how each is reso
 - Own decoders (LZX, LZH, LArc, ARJ fast, ADC, LZFSE), used by CAB, LHA, ARJ, DMG: move
   with the format.
 - Own helper modules (CD sectors, cue sheets, UDF, UDIF, HFS+, APFS, the xar reader),
-  used by ISO, DMG, pkg: move with the format.
+  used by ISO, DMG, pkg: move with the format. The public-names test lists the modules that move
+  in one package (`SAME_PACKAGE`), and a module may use what the others of its
+  package define, private names too.
 - The Rust or Python kernel switch (`kernels`), used by CAB, LHA and DMG: a public
   kernel helper (§6, "Kernels"). It is not the codec registry.
 - The child-process decoder switch (`Natives`), codec requirements and excluded
@@ -630,6 +632,8 @@ What the ten readers import from `archivey.internal` today, and how each is reso
 - Path helpers (`collision_key`, `extracted_segments`, `is_rooted`,
   `strip_absolute_root` and their kin), used by deb and pkg for the layout rules of
   `dpkg-deb` and `pkgutil`: public as they are. They are path rules, not nesting.
+  pkg's two, `collision_key` and `extracted_segments`, are public in
+  `archivey.formats` (done, the pkg port).
 - Limit checks (`refuse_past_archive_ratio`, `check_decoder_memory`), used by DMG and
   CAB: public, beside `charge_metadata`.
 - `override`: a three-line shim in each package (Python 3.11 has none in `typing`).

@@ -28,7 +28,25 @@ PUBLIC_ONLY_MODULES = (
     "archivey.internal.backends.cpio_reader",
     "archivey.internal.backends.rpm_reader",
     "archivey.internal.backends.xar_reader",
+    "archivey.internal.backends.pkg_reader",
 )
+
+# Modules that leave core in one package, as the plan's packages group them. A module
+# may use what the others of its package define, private names too, since they ship
+# and change together: pkg's reader extends xar's.
+SAME_PACKAGE = (
+    (
+        "archivey.internal.backends.xar_reader",
+        "archivey.internal.backends.pkg_reader",
+    ),
+)
+
+
+def _siblings(module_name: str) -> tuple[str, ...]:
+    for package in SAME_PACKAGE:
+        if module_name in package:
+            return tuple(m for m in package if m != module_name)
+    return ()
 
 
 def _source(module_name: str) -> Path:
@@ -39,16 +57,67 @@ def _source(module_name: str) -> Path:
 
 @pytest.mark.parametrize("module_name", PUBLIC_ONLY_MODULES)
 def test_the_module_imports_only_public_names(module_name: str) -> None:
-    assert_only_public_archivey(str(_source(module_name)))
+    assert_only_public_archivey(
+        str(_source(module_name)), siblings=_siblings(module_name)
+    )
 
 
 @pytest.mark.parametrize("module_name", PUBLIC_ONLY_MODULES)
 def test_the_module_reads_no_private_archivey_attribute(module_name: str) -> None:
-    assert foreign_private_reads(_source(module_name)) == []
+    siblings = [_source(sibling) for sibling in _siblings(module_name)]
+    assert foreign_private_reads(_source(module_name), siblings=siblings) == []
 
 
 def test_the_list_holds_each_module_once() -> None:
     assert len(set(PUBLIC_ONLY_MODULES)) == len(PUBLIC_ONLY_MODULES)
+
+
+def test_a_package_holds_only_ported_modules_each_in_one_package() -> None:
+    """A sibling's names are allowed because the sibling is held to public names
+    too; a module in no package's list, or in two, would let that slip."""
+    grouped = [module for package in SAME_PACKAGE for module in package]
+    assert len(set(grouped)) == len(grouped)
+    assert set(grouped) <= set(PUBLIC_ONLY_MODULES)
+
+
+def test_the_import_guard_admits_a_sibling_and_nothing_else_internal(
+    tmp_path: Path,
+) -> None:
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "from archivey.internal.backends.xar_reader import _HEADER, XarReader\n",
+        encoding="utf-8",
+    )
+    assert_only_public_archivey(
+        str(probe), siblings=("archivey.internal.backends.xar_reader",)
+    )
+    with pytest.raises(AssertionError):
+        assert_only_public_archivey(
+            str(probe), siblings=("archivey.internal.backends.cpio_reader",)
+        )
+
+
+def test_the_attribute_guard_admits_the_private_names_a_sibling_defines(
+    tmp_path: Path,
+) -> None:
+    """pkg's reader reads ``self._context``, which xar's reader, its base, sets."""
+    base = tmp_path / "base.py"
+    base.write_text(
+        "class Base:\n    def __init__(self, context):\n        self._context = context\n",
+        encoding="utf-8",
+    )
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "def f(reader, source):\n    return reader._context, source._origin\n",
+        encoding="utf-8",
+    )
+    assert foreign_private_reads(probe, siblings=[base]) == [
+        "probe.py:2 source._origin"
+    ]
+    assert foreign_private_reads(probe) == [
+        "probe.py:2 reader._context",
+        "probe.py:2 source._origin",
+    ]
 
 
 def test_the_import_guard_sees_an_internal_import(tmp_path: Path) -> None:
