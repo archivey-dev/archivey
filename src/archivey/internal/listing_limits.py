@@ -24,12 +24,14 @@ if TYPE_CHECKING:
 
 
 def str_retained_bytes(value: str) -> int:
-    """Cheap upper bound on UTF-8 size for listing bomb accounting.
+    """What archivey counts a kept ``str`` as, toward
+    ``ListingLimits.max_metadata_bytes``: its length when it is ASCII, else four bytes
+    per character, the most UTF-8 takes for one.
 
-    ``max_metadata_bytes`` is a safety cap, not a precise allocator — encoding
-    every field on the open+list hot path is wasted work. UTF-8 is at most 4
-    bytes per Unicode code point, so ``4 * len(s)`` never under-counts a
-    Unicode name bomb; ASCII uses ``len(s)`` (exact, the common case).
+    A reader that keeps text beyond its members (a table of paths it looks names up
+    in) passes this to :meth:`~archivey.formats.ReaderContext.charge_metadata`, so the
+    text counts as archivey counts a member's name. The bound is cheap on purpose: the
+    limit is a safety cap, and encoding every name would cost more than it saves.
     """
     n = len(value)
     return n if value.isascii() else n * 4
