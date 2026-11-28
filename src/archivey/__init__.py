@@ -274,24 +274,23 @@ def _pin_public_module() -> None:
     already a stable path and this leaves them alone. Some public functions are still
     defined under ``archivey.internal``: ``detect_format``, the three registry queries,
     ``sanitize_names`` and plugin helpers of ``archivey.formats`` such as
-    ``collision_key``. ``pickle`` records a function's ``__module__``, so a
-    persisted reference to one would otherwise name an internal path that could then
-    never move without breaking the caller's data. Pinned here, it names the public
-    module that exports it, the root first, and ``repr()``, ``help()`` and
-    ``inspect.getmodule`` say the same. That path moves only with the public spelling,
-    under the deprecation rule: 0.6.0 moved three of these functions off the root, so a
-    reference 0.5 pickled loads in 0.6 with a warning and not in 0.7.0. The internal
-    layout stays free to change; ``internal`` imports still see the same objects.
+    ``collision_key``. ``pickle`` records a function's ``__module__``, so a persisted
+    reference to one would otherwise name an internal path that could then never move
+    without breaking the caller's data. Pinned here, it names the public module that
+    exports it, the root first, and ``repr()``, ``help()`` and ``inspect.getmodule``
+    say the same. That path moves only with the public spelling, under the deprecation
+    rule: 0.6.0 moved three of these functions off the root, so a reference 0.5
+    pickled loads in 0.6 with a warning and not in 0.7.0. The internal layout stays
+    free to change; ``internal`` imports still see the same objects.
 
     Computed over the ``__all__`` of the root, ``archivey.core``, ``archivey.paths`` and
     ``archivey.formats``, the modules that export functions defined under ``internal``,
-    rather than listed, so
-    a function added to one of them later is covered too; for any other public module,
-    ``tests/test_public_api.py`` fails on such a function. Classes are not pinned: a
-    class's string annotations and ``inspect.getsource`` both go through its
-    ``__module__``, and a pin would send them to the wrong namespace. A public class
-    belongs in a public module, and ``tests/test_public_api.py`` fails on one defined
-    under ``internal``.
+    rather than listed, so a function added to one of them later is covered too; for
+    any other public module, ``tests/test_public_api.py`` fails on such a function.
+    Classes are not pinned: a class's string annotations and ``inspect.getsource``
+    both go through its ``__module__``, and a pin would send them to the wrong
+    namespace. A public class belongs in a public module, and
+    ``tests/test_public_api.py`` fails on one defined under ``internal``.
     """
     import sys
     from types import FunctionType
