@@ -132,6 +132,7 @@ MOVED = {
 #: and the submodule each is imported from now.
 CORE_MOVED = {
     "AcceleratorMode": "archivey.config",
+    "DEFAULT_ARCHIVEY_CONFIG": "archivey.config",
     "ExtractionLimits": "archivey.config",
     "ListingLimits": "archivey.config",
     "DetectionConfidence": "archivey.detection",
@@ -179,7 +180,6 @@ def test_from_import_of_a_moved_name_warns_at_the_import_line() -> None:
 #: because ``archivey.core``'s signatures name them (``core._MOVED_IN_0_6``'s comment).
 CORE_STILL_BOUND = {
     "ArchiveyConfig": "archivey.config",
-    "DEFAULT_ARCHIVEY_CONFIG": "archivey.config",
     "FormatInfo": "archivey.detection",
 }
 

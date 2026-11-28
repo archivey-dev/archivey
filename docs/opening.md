@@ -148,8 +148,8 @@ noted in the diagnostics.
 
 `member.name` is the decoded name, and `member.raw_name` is the bytes as stored. A name with an
 escaped byte, like `'caf\udce9.txt'`, can't be encoded as UTF-8, so printing or logging it can raise
-`UnicodeEncodeError`. `archivey.terminal.escape_control_chars(member.name)` gives a version that's
-safe to show.
+`UnicodeEncodeError`. `escape_control_chars(member.name)`, from `archivey.terminal`, gives a
+version that's safe to show.
 
 ## Members with the same name
 
