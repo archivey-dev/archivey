@@ -19,8 +19,9 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveStream, Verification, open_archive, open_stream
+from archivey import ArchiveStream, open_archive, open_stream
 from archivey.exceptions import CorruptionError
+from archivey.types import Verification
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.streams_util import seekable_zstd_table
 

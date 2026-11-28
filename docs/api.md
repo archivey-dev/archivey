@@ -4,6 +4,14 @@ This page lists archivey's public API, grouped by what you use it for. Each entr
 full name to import, such as `archivey.open_archive` or `archivey.terminal.quoted`, and each group
 links to the page that explains it, where there is one.
 
+The most used names come straight from `archivey`: `open_archive`, the reader, member, format
+and policy types, and the errors you are most likely to catch. Every other name comes from its
+submodule, such as `from archivey.config import DecoderLimits`. Until 0.6.0, 67 of those names
+also came from `archivey`. For 65 of them that spelling still works in the 0.6 releases, with a
+`DeprecationWarning` that names the new import. The other two, the experimental
+`PluginContainer` and `PluginStream`, left `archivey` at once: import them from
+`archivey.types`.
+
 ## Opening
 
 See [Opening an archive](opening.md).
@@ -11,17 +19,17 @@ See [Opening an archive](opening.md).
 ::: archivey.open_archive
 ::: archivey.open_stream
 ::: archivey.detect_format
-::: archivey.FormatInfo
-::: archivey.DetectionConfidence
+::: archivey.detection.FormatInfo
+::: archivey.detection.DetectionConfidence
 ::: archivey.format_availability
-::: archivey.FormatAvailability
-::: archivey.FormatSupport
-::: archivey.MissingComponent
-::: archivey.OptionalLibrary
-::: archivey.BackendUse
-::: archivey.BackendKindStr
-::: archivey.list_supported_formats
-::: archivey.list_known_formats
+::: archivey.types.FormatAvailability
+::: archivey.types.FormatSupport
+::: archivey.types.MissingComponent
+::: archivey.types.OptionalLibrary
+::: archivey.types.BackendUse
+::: archivey.types.BackendKindStr
+::: archivey.core.list_supported_formats
+::: archivey.core.list_known_formats
 
 ## Readers and streams
 
@@ -35,11 +43,11 @@ calls raise `ArchiveyUsageError`. `stream_members()` is the way to read members.
 ::: archivey.ForwardArchiveReader
 ::: archivey.ArchiveReader
 ::: archivey.ArchiveStream
-::: archivey.Verification
-::: archivey.VerifyReport
-::: archivey.MemberPass
-::: archivey.MemberSelector
-::: archivey.MemberListReport
+::: archivey.types.Verification
+::: archivey.diagnostics.VerifyReport
+::: archivey.reader.MemberPass
+::: archivey.reader.MemberSelector
+::: archivey.diagnostics.MemberListReport
 
 ## Members and archive details
 
@@ -48,14 +56,12 @@ name](opening.md#members-with-the-same-name).
 
 ::: archivey.ArchiveMember
 ::: archivey.ArchiveInfo
-::: archivey.HashAlgorithm
-
-::: archivey.MemberExtra
+::: archivey.types.HashAlgorithm
+::: archivey.types.MemberExtra
     options:
       members:
         - __getitem__
-
-::: archivey.ArchiveInfoExtra
+::: archivey.types.ArchiveInfoExtra
     options:
       members:
         - __getitem__
@@ -66,30 +72,30 @@ See [Format](opening.md#format).
 
 ::: archivey.ArchiveFormat
 ::: archivey.ContainerFormat
-::: archivey.PluginContainer
+::: archivey.types.PluginContainer
 ::: archivey.StreamFormat
-::: archivey.PluginStream
+::: archivey.types.PluginStream
 ::: archivey.MemberType
-::: archivey.CompressionMethod
-::: archivey.CompressionAlgorithm
-::: archivey.CreateSystem
+::: archivey.types.CompressionMethod
+::: archivey.types.CompressionAlgorithm
+::: archivey.types.CreateSystem
 
 ## Extraction
 
 See [Extracting](extracting.md).
 
 ::: archivey.ExtractionReport
-::: archivey.ExtractionResult
-::: archivey.ExtractionStatus
-::: archivey.NameRewrite
-::: archivey.ExtractionProgress
+::: archivey.types.ExtractionResult
+::: archivey.types.ExtractionStatus
+::: archivey.types.NameRewrite
+::: archivey.types.ExtractionProgress
 ::: archivey.ExtractionPolicy
-::: archivey.OverwritePolicy
-::: archivey.OnError
-::: archivey.AbortOn
-::: archivey.OnBlocked
-::: archivey.MemberFilter
-::: archivey.sanitize_names
+::: archivey.types.OverwritePolicy
+::: archivey.types.OnError
+::: archivey.types.AbortOn
+::: archivey.types.OnBlocked
+::: archivey.types.MemberFilter
+::: archivey.paths.sanitize_names
 
 ## Configuration and passwords
 
@@ -97,33 +103,34 @@ See [Configuration](opening.md#configuration), [Passwords](opening.md#passwords)
 [Hardening](security.md#hardening).
 
 ::: archivey.ArchiveyConfig
-::: archivey.DEFAULT_ARCHIVEY_CONFIG
-::: archivey.SourceProgress
+::: archivey.config.DEFAULT_ARCHIVEY_CONFIG
+::: archivey.types.SourceProgress
+::: archivey.types.OnSourceRead
 ::: archivey.FormatPolicy
-::: archivey.ExtractionLimits
-::: archivey.ListingLimits
-::: archivey.DecoderLimits
-::: archivey.SpoolLimits
-::: archivey.SalvageLimits
-::: archivey.AcceleratorMode
-::: archivey.ProcessIsolation
-::: archivey.RarDecompressor
-::: archivey.PartialDataRecovery
-::: archivey.PasswordInput
-::: archivey.PasswordRequest
-::: archivey.PasswordProvider
+::: archivey.config.ExtractionLimits
+::: archivey.config.ListingLimits
+::: archivey.config.DecoderLimits
+::: archivey.config.SpoolLimits
+::: archivey.config.SalvageLimits
+::: archivey.config.AcceleratorMode
+::: archivey.config.ProcessIsolation
+::: archivey.config.RarDecompressor
+::: archivey.config.PartialDataRecovery
+::: archivey.config.PasswordInput
+::: archivey.config.PasswordRequest
+::: archivey.config.PasswordProvider
 
 ## Diagnostics
 
 See [Diagnostics](errors-and-diagnostics.md#diagnostics).
 
 ::: archivey.Diagnostic
-::: archivey.DiagnosticContext
+::: archivey.diagnostics.DiagnosticContext
 ::: archivey.DiagnosticCode
 ::: archivey.DiagnosticPolicy
-::: archivey.ARCHIVE_INTEGRITY_CODES
-::: archivey.DiagnosticSummary
-::: archivey.OnDiagnostic
+::: archivey.diagnostics.ARCHIVE_INTEGRITY_CODES
+::: archivey.diagnostics.DiagnosticSummary
+::: archivey.diagnostics.OnDiagnostic
 
 ## Errors
 
@@ -137,48 +144,44 @@ has a subclass, `ResourceUnavailableError`, listed after it.
 [Errors and diagnostics](errors-and-diagnostics.md) explains which one to catch.
 
 ::: archivey.ArchiveyError
-
-::: archivey.OpenError
+::: archivey.exceptions.OpenError
 ::: archivey.FormatDetectionError
-::: archivey.StreamNotSeekableError
-
-::: archivey.ReadError
+::: archivey.exceptions.StreamNotSeekableError
+::: archivey.exceptions.ReadError
 ::: archivey.CorruptionError
 ::: archivey.TruncatedError
 ::: archivey.EncryptionError
-::: archivey.LinkTargetNotFoundError
-::: archivey.LinkTargetNotFoundReason
-::: archivey.SourceChangedError
-
-::: archivey.ExtractionError
-::: archivey.FilterRejectionError
-::: archivey.NameCollisionError
-::: archivey.NameRewrittenError
+::: archivey.exceptions.LinkTargetNotFoundError
+::: archivey.exceptions.LinkTargetNotFoundReason
+::: archivey.exceptions.SourceChangedError
+::: archivey.exceptions.ExtractionError
+::: archivey.exceptions.FilterRejectionError
+::: archivey.exceptions.NameCollisionError
+::: archivey.exceptions.NameRewrittenError
 
 ::: archivey.ResourceLimitError
-::: archivey.ResourceUnavailableError
+::: archivey.exceptions.ResourceUnavailableError
 ::: archivey.UnsupportedFeatureError
 ::: archivey.PackageNotInstalledError
-::: archivey.DiagnosticRaisedError
+::: archivey.exceptions.DiagnosticRaisedError
 
 ::: archivey.ArchiveyUsageError
 
 ## Access cost
 
 See [Solid archives](reading.md#solid-archives) for what these mean for your reads.
-
-::: archivey.CostReceipt
-::: archivey.ListingCost
-::: archivey.AccessCost
-::: archivey.StreamCapability
+::: archivey.cost.CostReceipt
+::: archivey.cost.ListingCost
+::: archivey.cost.AccessCost
+::: archivey.cost.StreamCapability
 
 ## Detection budgets
 
 These live in the `archivey.detection_cost` module and are not re-exported from `archivey`. A budget
 bounds what [`detect_format`][archivey.detect_format] and `open_archive` may read and decode before
 they answer. You set it with `ArchiveyConfig(detection_budget=...)`, and `BALANCED_BUDGET` is the
-default. The receipt on [`FormatInfo.cost_receipt`][archivey.FormatInfo] says what detection
-actually did.
+default. The receipt on [`FormatInfo.cost_receipt`][archivey.detection.FormatInfo] says what
+detection actually did.
 
 ::: archivey.detection_cost.DetectionBudget
 ::: archivey.detection_cost.DetectionBudgetPreset

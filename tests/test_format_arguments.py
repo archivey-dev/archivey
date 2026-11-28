@@ -32,7 +32,6 @@ from archivey import (
     ArchiveFormat,
     ArchiveyError,
     ArchiveyUsageError,
-    FormatSupport,
     StreamFormat,
     format_availability,
     open_archive,
@@ -48,7 +47,7 @@ from archivey.internal.format_args import (
     coerce_archive_format,
     coerce_stream_or_archive_format,
 )
-from archivey.types import _FORMAT_NAMES, ContainerFormat
+from archivey.types import _FORMAT_NAMES, ContainerFormat, FormatSupport
 
 CONTENT = b"the quick brown fox jumps over the lazy dog\n"
 

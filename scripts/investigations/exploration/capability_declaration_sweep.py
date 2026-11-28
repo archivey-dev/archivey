@@ -48,15 +48,11 @@ if str(_REPO) not in sys.path:
 
 import pytest  # noqa: E402
 
-from archivey import (  # noqa: E402
-    ArchiveyUsageError,
-    StreamNotSeekableError,
-    format_availability,
-    list_supported_formats,
-    open_archive,
-)
+from archivey import ArchiveyUsageError, format_availability, open_archive  # noqa: E402
 from archivey.config import PasswordInput  # noqa: E402
+from archivey.core import list_supported_formats  # noqa: E402
 from archivey.cost import AccessCost, ListingCost, StreamCapability  # noqa: E402
+from archivey.exceptions import StreamNotSeekableError  # noqa: E402
 from archivey.internal.measurement import enable_measurement  # noqa: E402
 from archivey.types import (  # noqa: E402
     ArchiveFormat,

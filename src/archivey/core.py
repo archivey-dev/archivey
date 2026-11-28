@@ -41,15 +41,15 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Literal, NoReturn, cast, overload
 
+# ``ArchiveyConfig`` and ``FormatInfo`` are imported ``X as X``: this module's signatures
+# name them, so they stay bound here (see ``_MOVED_IN_0_6``), and the alias tells a type
+# checker that ``from archivey.core import ArchiveyConfig`` still works.
 from archivey.config import (
-    DEFAULT_ARCHIVEY_CONFIG,
-    AcceleratorMode,
-    ArchiveyConfig,
-    ExtractionLimits,
-    ListingLimits,
+    DEFAULT_ARCHIVEY_CONFIG as _DEFAULT_CONFIG,
+    ArchiveyConfig as ArchiveyConfig,  # noqa: PLC0414
     PasswordInput,
 )
-from archivey.detection import DetectionConfidence, FormatInfo
+from archivey.detection import FormatInfo as FormatInfo  # noqa: PLC0414
 from archivey.diagnostics import (
     DiagnosticCode,
     UnusedArgumentContext,
@@ -145,10 +145,7 @@ from archivey.terminal import display_path, escape_control_chars
 from archivey.types import (
     ArchiveFormat,
     ContainerFormat,
-    FormatAvailability,
-    FormatSupport,
     MemberStreams,
-    MissingComponent,
     PluginStream,
     StreamFormat,
 )
@@ -156,23 +153,56 @@ from archivey.types import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from archivey.config import DecoderLimits
+    # ``X as X`` re-exports the names in ``_MOVED_IN_0_6`` below for type checkers,
+    # which do not run ``__getattr__``.
+    from archivey.config import (
+        DEFAULT_ARCHIVEY_CONFIG as DEFAULT_ARCHIVEY_CONFIG,  # noqa: PLC0414
+        AcceleratorMode as AcceleratorMode,  # noqa: PLC0414
+        DecoderLimits,
+        ExtractionLimits as ExtractionLimits,  # noqa: PLC0414
+        ListingLimits as ListingLimits,  # noqa: PLC0414
+    )
+    from archivey.detection import (
+        DetectionConfidence as DetectionConfidence,  # noqa: PLC0414
+    )
     from archivey.formats import FormatHandler
     from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
     from archivey.internal.diagnostics_collector import DiagnosticCollector
     from archivey.internal.streams.archive_stream import ArchiveStreamImpl
+    from archivey.types import (
+        FormatAvailability as FormatAvailability,  # noqa: PLC0414
+        FormatSupport as FormatSupport,  # noqa: PLC0414
+        MissingComponent as MissingComponent,  # noqa: PLC0414
+    )
+
+#: The names this module's ``__all__`` listed until 0.6.0 that it does not define, and
+#: the module each is imported from now. ``__getattr__`` below still serves them, with
+#: a ``DeprecationWarning``, for the 0.6 series (DR-12a); 0.7.0 deletes this table.
+#: Two more left ``__all__`` and are not here: ``ArchiveyConfig`` and ``FormatInfo``.
+#: This module's signatures name them, so they stay bound here
+#: (``typing.get_type_hints`` reads the module's globals) and ``__getattr__`` never sees
+#: them; they import with no warning through 0.6, and ``tests/test_root_tiers.py`` holds
+#: them there.
+_MOVED_IN_0_6: dict[str, str] = {
+    "AcceleratorMode": "archivey.config",
+    "DEFAULT_ARCHIVEY_CONFIG": "archivey.config",
+    "ExtractionLimits": "archivey.config",
+    "ListingLimits": "archivey.config",
+    "DetectionConfidence": "archivey.detection",
+    "FormatAvailability": "archivey.types",
+    "FormatSupport": "archivey.types",
+    "MissingComponent": "archivey.types",
+}
+
+
+def __getattr__(name: str) -> object:
+    """Serve the names that left this module in 0.6.0, with a ``DeprecationWarning``."""
+    from archivey.internal.moved_names import moved_name
+
+    return moved_name(__name__, _MOVED_IN_0_6, name)
+
 
 __all__ = [
-    "DEFAULT_ARCHIVEY_CONFIG",
-    "AcceleratorMode",
-    "ArchiveyConfig",
-    "DetectionConfidence",
-    "ExtractionLimits",
-    "FormatAvailability",
-    "FormatInfo",
-    "FormatSupport",
-    "ListingLimits",
-    "MissingComponent",
     "detect_format",
     "format_availability",
     "list_known_formats",
@@ -519,7 +549,7 @@ def open_archive(
     ``config`` supplies library tuning knobs (accelerator modes, the diagnostic
     policy, default extraction limits, and listing resource limits via
     ``listing_limits``). ``None`` selects the module default
-    :data:`~archivey.DEFAULT_ARCHIVEY_CONFIG`. A config holds settings only, so one
+    :data:`~archivey.config.DEFAULT_ARCHIVEY_CONFIG`. A config holds settings only, so one
     config can serve every call.
 
     ``parent`` is the reader this archive was read from, when the caller found it
@@ -541,7 +571,7 @@ def open_archive(
     unchanged, and the listing still ends in the error that ends it without salvage. A
     found member's header passed its checks, but nothing proves it belongs to this
     archive, so do not use ``salvage=True`` to decide what an archive holds or whether
-    it is safe. :class:`~archivey.SalvageLimits` (``config.salvage_limits``) caps the
+    it is safe. :class:`~archivey.config.SalvageLimits` (``config.salvage_limits``) caps the
     search. Salvage needs a seekable source, so ``streaming=True`` is refused. A format
     without a salvage search, or whose search cannot run on a nested archive read
     forward only, is read as without it and records ``SALVAGE_UNAVAILABLE``. An archive
@@ -641,8 +671,8 @@ def open_archive(
         PackageNotInstalledError: The format needs an optional package that is not
             installed, such as a plugin's own package.
         ResourceLimitError: The archive exceeds a limit that is checked at open, such as
-            :class:`~archivey.ListingLimits` ``max_members`` while a ZIP, 7z, RAR or ISO
-            index is parsed, or :class:`~archivey.DecoderLimits` for data the open
+            :class:`~archivey.config.ListingLimits` ``max_members`` while a ZIP, 7z, RAR or ISO
+            index is parsed, or :class:`~archivey.config.DecoderLimits` for data the open
             decodes.
         DiagnosticRaisedError: A diagnostic that the :class:`~archivey.DiagnosticPolicy`
             in the config raises on, recorded while the archive is detected or opened.
@@ -715,7 +745,7 @@ def open_archive(
     elif parent is not None:
         effective_config = cast("BaseArchiveReader", parent)._config
     else:
-        effective_config = DEFAULT_ARCHIVEY_CONFIG
+        effective_config = _DEFAULT_CONFIG
     # Collector is created before detection so open + detect share one budget /
     # occurrence order, and reader.diagnostics covers both.
     collector = collector_from_config(effective_config)
@@ -1542,7 +1572,7 @@ def open_stream(
             an archive container (ZIP, 7z, RAR, ISO, an uncompressed tar).
         StreamNotSeekableError: ``seekable=True`` and the source cannot seek.
         ResourceLimitError: The stream asks a decoder for more memory than
-            :class:`~archivey.DecoderLimits` allows, raised by the read of the returned
+            :class:`~archivey.config.DecoderLimits` allows, raised by the read of the returned
             stream that starts the decoder; or it decodes past
             ``DecoderLimits.max_ratio`` of the compressed bytes, raised by the read or
             seek that crosses it, as a member read of the same bytes through
@@ -1578,7 +1608,7 @@ def open_stream(
     check_bool(seekable, call="open_stream(seekable=…)")
     check_config(config, call="open_stream(config=…)")
 
-    effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
+    effective_config = config if config is not None else _DEFAULT_CONFIG
     collector = collector_from_config(effective_config)
 
     if is_open_file(source):

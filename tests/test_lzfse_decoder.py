@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import CompressionAlgorithm, CompressionMethod, FormatPolicy
+from archivey import FormatPolicy
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.streams.codecs import lzfse_decoder
 from archivey.internal.streams.codecs.adc_decoder import adc_decompress
@@ -28,6 +28,7 @@ from archivey.internal.streams.codecs.lzfse_decoder import (
     lzfse_decompress,
     lzvn_decompress,
 )
+from archivey.types import CompressionAlgorithm, CompressionMethod
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "external" / "dmg_hdiutil"
 _IMAGES = ("hfs-ULFO.dmg", "apfs-ULFO.dmg")

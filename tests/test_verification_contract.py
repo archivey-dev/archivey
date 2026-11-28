@@ -37,8 +37,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import Verification, open_archive
-from archivey.types import ArchiveMember
+from archivey import open_archive
+from archivey.types import ArchiveMember, Verification
 from tests.conftest import requires, requires_binary
 from tests.streams_util import CountingBytesIO
 from tests.test_audit_sevenzip import _crc

@@ -12,12 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ArchiveFormat,
-    DetectionConfidence,
-    detect_format,
-)
+from archivey import ArchiveFormat, detect_format
 from archivey.config import ArchiveyConfig
+from archivey.detection import DetectionConfidence
 from archivey.exceptions import FormatDetectionError
 from archivey.internal.detection_workspace import DETECTION_LIMIT
 from archivey.internal.probe_verdict import PROBE_MATCH

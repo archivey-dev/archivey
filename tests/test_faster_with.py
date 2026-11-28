@@ -4,18 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from archivey import (
-    ArchiveFormat,
-    ArchiveyConfig,
-    FormatSupport,
-    format_availability,
-    list_known_formats,
-)
+from archivey import ArchiveFormat, ArchiveyConfig, format_availability
+from archivey.core import list_known_formats
 from archivey.format_policy import FormatPolicy
 from archivey.internal.excluded_libraries import EXCLUDED_REASON
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.deps import LazyOptional
-from archivey.types import OptionalLibrary
+from archivey.types import FormatSupport, OptionalLibrary
 
 
 def _absent(monkeypatch: pytest.MonkeyPatch, *names: OptionalLibrary) -> None:

@@ -17,7 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, RarDecompressor, open_archive
+from archivey import ArchiveyConfig, open_archive
+from archivey.config import RarDecompressor
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     CorruptionError,

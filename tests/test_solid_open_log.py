@@ -19,14 +19,9 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ArchiveyConfig,
-    DiagnosticCode,
-    DiagnosticPolicy,
-    RarDecompressor,
-    open_archive,
-)
+from archivey import ArchiveyConfig, DiagnosticCode, DiagnosticPolicy, open_archive
 from archivey.cli.logging_config import cli_logging, cli_opens_members
+from archivey.config import RarDecompressor
 from archivey.cost import AccessCost
 from archivey.diagnostics import SolidReopenContext
 from archivey.exceptions import CorruptionError, DiagnosticRaisedError

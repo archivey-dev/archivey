@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from archivey import ProcessIsolation
+from archivey.config import ProcessIsolation
 from archivey.exceptions import ArchiveyError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams.codecs import (

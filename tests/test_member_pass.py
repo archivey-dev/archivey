@@ -9,8 +9,9 @@ from collections.abc import Generator, Iterator
 
 import pytest
 
-from archivey import ArchiveyUsageError, MemberPass, open_archive
+from archivey import ArchiveyUsageError, open_archive
 from archivey.internal.member_pass import MemberPassImpl
+from archivey.reader import MemberPass
 
 
 def _zip() -> io.BytesIO:

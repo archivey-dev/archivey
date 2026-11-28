@@ -292,8 +292,14 @@ def _walk(obj: Object) -> Iterator[Object]:
 def _public_paths(pkg: Module) -> dict[str, str]:
     """Map the defining path of each top-level re-export to its public path."""
     public: dict[str, str] = {}
+    # Only the names ``__all__`` lists: the root also imports its deprecated names
+    # under ``TYPE_CHECKING`` for type checkers, and those are documented under the
+    # submodule that defines them, not under the root.
+    exports = pkg.exports
     for name, member in pkg.members.items():
         if not member.is_alias or name.startswith("_"):
+            continue
+        if exports is not None and name not in exports:
             continue
         with contextlib.suppress(AliasResolutionError, CyclicAliasError):
             public[member.final_target.path] = f"{pkg.path}.{name}"

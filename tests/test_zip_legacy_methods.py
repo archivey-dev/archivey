@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import CompressionAlgorithm, open_archive
+from archivey import open_archive
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
@@ -28,6 +28,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.streams.codecs.framed_decoder import FramedDecoder
 from archivey.internal.streams.codecs.zip_legacy_decoder import ShrinkDecompressor
+from archivey.types import CompressionAlgorithm
 from tests.conftest import run_7z
 from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO

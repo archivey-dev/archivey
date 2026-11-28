@@ -1,4 +1,4 @@
-"""``FormatPolicy(exclude=)`` with :class:`~archivey.CompressionAlgorithm` entries: member
+"""``FormatPolicy(exclude=)`` with :class:`~archivey.types.CompressionAlgorithm` entries: member
 compression methods a call may not decode.
 
 The ZIP archives come from the test-only encoders in ``tests/zip_legacy_build.py``. The
@@ -22,8 +22,6 @@ from archivey import (
     ArchiveyConfig,
     ArchiveyError,
     ArchiveyUsageError,
-    CompressionAlgorithm,
-    CompressionMethod,
     ContainerFormat,
     CorruptionError,
     DiagnosticCode,
@@ -35,6 +33,7 @@ from archivey import (
 )
 from archivey.format_policy import excluded_method_refusal
 from archivey.internal.streams.codecs import lzma_codec, xz_decoder, zip_legacy_codec
+from archivey.types import CompressionAlgorithm, CompressionMethod
 from tests.streams_util import NonSeekableBytesIO
 from tests.zip_legacy_build import (
     LegacyEntry,

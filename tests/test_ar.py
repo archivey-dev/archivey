@@ -248,9 +248,15 @@ def test_the_cost_follows_the_compression_layer(compressed: bool) -> None:
     with open_archive(io.BytesIO(gzip.compress(data) if compressed else data)) as r:
         cost = r.info.cost
     assert (cost.listing_cost, cost.access_cost) == (
-        (archivey.ListingCost.REQUIRES_DECOMPRESSION, archivey.AccessCost.SOLID)
+        (
+            archivey.cost.ListingCost.REQUIRES_DECOMPRESSION,
+            archivey.cost.AccessCost.SOLID,
+        )
         if compressed
-        else (archivey.ListingCost.REQUIRES_SCANNING, archivey.AccessCost.DIRECT)
+        else (
+            archivey.cost.ListingCost.REQUIRES_SCANNING,
+            archivey.cost.AccessCost.DIRECT,
+        )
     )
 
 
@@ -534,7 +540,7 @@ def test_the_name_table_is_charged_to_max_metadata_bytes(tmp_path: Path) -> None
     path = _archive(tmp_path, data)
 
     def config(limit: int | None) -> archivey.ArchiveyConfig:
-        limits = archivey.ListingLimits(max_metadata_bytes=limit)
+        limits = archivey.config.ListingLimits(max_metadata_bytes=limit)
         return archivey.ArchiveyConfig(listing_limits=limits)
 
     with pytest.raises(ResourceLimitError, match="max_metadata_bytes=10"):

@@ -21,9 +21,10 @@ import pytest
 
 import archivey.internal.dry_run as dry_run_module
 import archivey.internal.filters as filters_module
-from archivey import ExtractionStatus, OverwritePolicy, open_archive
+from archivey import open_archive
 from archivey.internal.dry_run import remove_scratch
 from archivey.internal.long_paths import make_dirs
+from archivey.types import ExtractionStatus, OverwritePolicy
 from tests.stack_util import recursion_limit_above_caller
 
 _DEEP = pytest.mark.skipif(

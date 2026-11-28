@@ -12,7 +12,8 @@ import json
 
 import pytest
 
-from archivey import DiagnosticCode, SalvageLimits
+from archivey import DiagnosticCode
+from archivey.config import SalvageLimits
 from archivey.diagnostics import RegionSkippedContext
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.salvage import (

@@ -15,12 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ExtractionStatus,
-    FilterRejectionError,
-    OnBlocked,
-    open_archive,
-)
+from archivey import open_archive
+from archivey.exceptions import FilterRejectionError
+from archivey.types import ExtractionStatus, OnBlocked
 
 
 def _archive(tmp_path: Path, names: tuple[str, ...]) -> Path:

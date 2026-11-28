@@ -24,11 +24,9 @@ from archivey import (
     ArchiveFormat,
     ArchiveMember,
     ArchiveyConfig,
-    CompressionAlgorithm,
     DiagnosticCode,
     DiagnosticPolicy,
     ExtractionPolicy,
-    ExtractionStatus,
     MemberType,
     open_archive,
 )
@@ -44,7 +42,12 @@ from archivey.exceptions import (
 )
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.reader_state import LifecycleState
-from archivey.types import CreateSystem, HashAlgorithm
+from archivey.types import (
+    CompressionAlgorithm,
+    CreateSystem,
+    ExtractionStatus,
+    HashAlgorithm,
+)
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import NonSeekableBytesIO

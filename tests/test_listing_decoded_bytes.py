@@ -12,7 +12,8 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey import ArchiveyConfig, DecoderLimits, ListingLimits, ResourceLimitError
+from archivey import ArchiveyConfig, ResourceLimitError
+from archivey.config import DecoderLimits, ListingLimits
 
 _MEMBER = 100_000
 

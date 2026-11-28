@@ -28,10 +28,9 @@ from archivey import (
     ArchiveyConfig,
     DiagnosticCode,
     DiagnosticPolicy,
-    ListingLimits,
-    SalvageLimits,
     open_archive,
 )
+from archivey.config import ListingLimits, SalvageLimits
 from archivey.diagnostics import (
     Diagnostic,
     RegionSkippedContext,

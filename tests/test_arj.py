@@ -22,13 +22,11 @@ import archivey
 from archivey import (
     ArchiveFormat,
     ArchiveMember,
-    CompressionAlgorithm,
-    CreateSystem,
     MemberType,
-    PasswordRequest,
     detect_format,
     open_archive,
 )
+from archivey.config import PasswordRequest
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     CorruptionError,
@@ -41,6 +39,7 @@ from archivey.exceptions import (
 from archivey.formats import PasswordConfirmVerdict
 from archivey.internal.backends.arj_reader import ArjReader, _Location
 from archivey.internal.password import is_unverified_data_error
+from archivey.types import CompressionAlgorithm, CreateSystem
 from tests.pe_build import elf_file, pe_file
 from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO
 
@@ -214,7 +213,7 @@ def test_a_garbled_member_over_the_ratio_is_refused_before_any_full_check(
         return original(self, member, locator, password)
 
     monkeypatch.setattr(ArjReader, "_full_check", counting)
-    limits = archivey.DecoderLimits(max_ratio=2, ratio_activation_threshold=0)
+    limits = archivey.config.DecoderLimits(max_ratio=2, ratio_activation_threshold=0)
     config = archivey.ArchiveyConfig(decoder_limits=limits)
     with (
         open_archive(
@@ -231,7 +230,7 @@ def test_the_full_checks_draw_the_decoded_byte_budget(name: str) -> None:
     """Each candidate's full check decodes the member, and those bytes count toward
     the nest's cap as the caller's own read does: one read fits, two do not."""
     size = 15_995  # words.txt
-    limits = archivey.DecoderLimits(max_nest_decoded_bytes=size + 100)
+    limits = archivey.config.DecoderLimits(max_nest_decoded_bytes=size + 100)
     config = archivey.ArchiveyConfig(decoder_limits=limits)
     with open_archive(_FIXTURES / name, password="secret", config=config) as reader:
         assert len(reader.read("words.txt")) == size
@@ -638,7 +637,7 @@ def test_a_directory_that_declares_data_keeps_it_and_says_so() -> None:
 
 
 def test_the_header_crc_is_a_stored_digest() -> None:
-    from archivey import HashAlgorithm
+    from archivey.types import HashAlgorithm
 
     data = _archive((b"a.txt", b"alpha"))
     with open_archive(io.BytesIO(data)) as reader:
@@ -649,7 +648,7 @@ def test_the_header_crc_is_a_stored_digest() -> None:
 
 
 def test_the_listing_is_a_header_walk() -> None:
-    from archivey import ListingCost
+    from archivey.cost import ListingCost
 
     with open_archive(_FIXTURES / "method1.arj") as reader:
         assert reader.cost.listing_cost is ListingCost.REQUIRES_SCANNING

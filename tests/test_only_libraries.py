@@ -14,15 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    AcceleratorMode,
-    ArchiveyConfig,
-    ArchiveyUsageError,
-    ContainerFormat,
-    FormatPolicy,
-    OptionalLibrary,
-)
+from archivey import ArchiveyConfig, ArchiveyUsageError, ContainerFormat, FormatPolicy
+from archivey.config import AcceleratorMode
 from archivey.internal.format_adapter import registration_scope
+from archivey.types import OptionalLibrary
 from tests.test_format_api import _plugin_with
 from tests.test_format_policy import StdlibZipPlugin
 

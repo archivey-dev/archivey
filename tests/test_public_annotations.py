@@ -10,13 +10,14 @@ from collections.abc import Callable, Iterator
 
 import pytest
 
-import archivey
-from archivey import ExtractionReport, MemberListReport
+from archivey import ExtractionReport
+from archivey.diagnostics import MemberListReport
+from tests.public_names import public_objects
 
 
 def _annotated() -> Iterator[tuple[str, Callable[..., object] | type]]:
-    for name in archivey.__all__:
-        obj = getattr(archivey, name)
+    # Every public name: the root's and each public submodule's ``__all__``.
+    for name, obj in public_objects().items():
         if inspect.isclass(obj):
             yield name, obj
             for attr, value in vars(obj).items():

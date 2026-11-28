@@ -17,12 +17,9 @@ import pytest
 
 import archivey
 from archivey import (
-    AccessCost,
     ArchiveyConfig,
     CorruptionError,
     DiagnosticPolicy,
-    ListingCost,
-    ListingLimits,
     MemberType,
     ResourceLimitError,
     TruncatedError,
@@ -30,6 +27,8 @@ from archivey import (
     detect_format,
     open_archive,
 )
+from archivey.config import ListingLimits
+from archivey.cost import AccessCost, ListingCost
 from archivey.diagnostics import (
     DiagnosticCode,
     HeaderAmbiguityContext,
@@ -138,7 +137,7 @@ def test_list_and_read(compressor: str) -> None:
         # The header's SHA-256 file digests are checked.
         with reader.open("usr/share/at/dir/blocks.bin") as stream:
             stream.read()
-            assert stream.verified is archivey.Verification.CHECKSUM
+            assert stream.verified is archivey.types.Verification.CHECKSUM
 
 
 @pytest.mark.parametrize("compressor", ["gzip", "none"])
@@ -640,7 +639,7 @@ def test_the_digest_algorithm(algo: int | None, verified: bool) -> None:
             return
         with reader.open("opt/t/a.txt") as stream:
             stream.read()
-            checked = stream.verified is archivey.Verification.CHECKSUM
+            checked = stream.verified is archivey.types.Verification.CHECKSUM
         assert checked is verified
 
 
@@ -1368,7 +1367,7 @@ def test_no_digest_algorithm_means_md5() -> None:
     )
     with _open(data) as reader, reader.open("opt/a") as stream:
         assert stream.read() == b"alpha\n"
-        assert stream.verified is archivey.Verification.CHECKSUM
+        assert stream.verified is archivey.types.Verification.CHECKSUM
 
 
 def test_a_digest_that_is_not_hexadecimal_names_the_file() -> None:

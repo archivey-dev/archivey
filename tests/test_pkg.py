@@ -21,7 +21,6 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
-    CompressionAlgorithm,
     FormatPolicy,
     MemberType,
     detect_format,
@@ -35,6 +34,7 @@ from archivey.exceptions import (
 )
 from archivey.internal import format_adapter
 from archivey.internal.backends.pkg_reader import is_package
+from archivey.types import CompressionAlgorithm
 from tests import xar_util
 from tests.pbzx_util import make_pbzx, odc_cpio
 from tests.streams_util import NonSeekableBytesIO

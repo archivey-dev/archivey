@@ -12,9 +12,9 @@ import random
 
 import pytest
 
-from archivey import OptionalLibrary
 from archivey.internal.backends import zipcrypto as zip_backend
 from archivey.internal.kernels.python import zipcrypto
+from archivey.types import OptionalLibrary
 from tests.zipcrypto import _encrypt, _Keys
 
 

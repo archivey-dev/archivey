@@ -81,14 +81,8 @@ members comes after the index. All numbers are little-endian.
 ```python
 from collections.abc import Iterator
 
-from archivey import (
-    ArchiveFormat,
-    ArchiveMember,
-    HashAlgorithm,
-    MemberType,
-    PluginContainer,
-    StreamFormat,
-)
+from archivey import ArchiveFormat, ArchiveMember, MemberType, StreamFormat
+from archivey.types import HashAlgorithm, PluginContainer
 from archivey.formats import (
     IndexedFormatHandler,
     IndexedReader,
@@ -1146,7 +1140,8 @@ archivey raises `TruncatedError`.
 ```python
 import lzham  # a stand-in for the library that decodes the format
 
-from archivey import CorruptionError, PluginStream
+from archivey import CorruptionError
+from archivey.types import PluginStream
 from archivey.formats import CodecHandler, Magic, register_codec
 
 

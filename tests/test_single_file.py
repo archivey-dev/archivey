@@ -25,15 +25,8 @@ from typing import Any
 
 import pytest
 
-from archivey import (
-    AcceleratorMode,
-    ArchiveFormat,
-    ArchiveyConfig,
-    CompressionAlgorithm,
-    CompressionMethod,
-    MemberType,
-    open_archive,
-)
+from archivey import ArchiveFormat, ArchiveyConfig, MemberType, open_archive
+from archivey.config import AcceleratorMode
 from archivey.cost import AccessCost, ListingCost
 from archivey.exceptions import (
     ArchiveyError,
@@ -48,7 +41,7 @@ from archivey.exceptions import (
 from archivey.internal.backends.single_file_reader import SingleFileReader
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.source import ArchiveSource, seeks_to_end_are_cheap
-from archivey.types import HashAlgorithm
+from archivey.types import CompressionAlgorithm, CompressionMethod, HashAlgorithm
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.lzop_build import make_lzop

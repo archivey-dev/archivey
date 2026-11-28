@@ -15,7 +15,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from archivey import ArchiveyConfig, FormatPolicy, ProcessIsolation, open_stream  # noqa: E402
+from archivey import ArchiveyConfig, FormatPolicy, open_stream  # noqa: E402
+from archivey.config import ProcessIsolation  # noqa: E402
 from tests.lzop_build import make_lzop  # noqa: E402
 
 SOURCE = b"".join(

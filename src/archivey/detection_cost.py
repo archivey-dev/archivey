@@ -9,7 +9,7 @@ kinds of work; they are never summed together. See the ``detection-cost`` and
 :class:`DetectionBudgetPreset` here, as ``archivey.detection_cost.…``, to set
 :attr:`ArchiveyConfig.detection_budget <archivey.ArchiveyConfig.detection_budget>`.
 The receipt and skip types are what :attr:`FormatInfo.cost_receipt
-<archivey.FormatInfo.cost_receipt>` is made of. All of them are documented on the API
+<archivey.detection.FormatInfo.cost_receipt>` is made of. All of them are documented on the API
 page and stable under the same rule as ``archivey.terminal``; the mutable accumulator
 detectors write into lives under ``internal/``.
 """
@@ -22,6 +22,17 @@ from typing import Literal
 
 from archivey.internal.arg_checks import check_limit_fields
 from archivey.internal.sfx import SFX_MAX
+
+__all__ = [
+    "BALANCED_BUDGET",
+    "FAST_BUDGET",
+    "THOROUGH_BUDGET",
+    "DetectionBudget",
+    "DetectionBudgetPreset",
+    "DetectionCostReceipt",
+    "TierSkip",
+    "TierSkipReason",
+]
 
 
 class DetectionBudgetPreset(Enum):

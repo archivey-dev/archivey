@@ -15,17 +15,12 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    AbortOn,
-    ExtractionPolicy,
-    ExtractionStatus,
-    open_archive,
-    sanitize_names,
-)
+from archivey import ExtractionPolicy, open_archive
 from archivey.exceptions import FilterRejectionError, NameRewrittenError
 from archivey.internal.filters import reroot_absolute, strip_absolute_root
 from archivey.internal.naming import resolve_link_target_name
-from archivey.types import ArchiveMember, MemberType
+from archivey.paths import sanitize_names
+from archivey.types import AbortOn, ArchiveMember, ExtractionStatus, MemberType
 
 
 def _tar(path: Path, specs: list[tuple[str, str, object]]) -> Path:

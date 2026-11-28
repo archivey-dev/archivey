@@ -557,7 +557,7 @@ class _RatioCheck:
 
 class DecodeRatioGuard(_RatioCheck, DelegatingStream):
     """A compressed container's decoded stream (a ``.tar.gz``), refused once it has
-    decoded past :attr:`~archivey.DecoderLimits.max_ratio` of the archive's size.
+    decoded past :attr:`~archivey.config.DecoderLimits.max_ratio` of the archive's size.
 
     Listing such an archive decodes all of it, member data included, before
     extraction counts a byte, so a few hundred bytes of bzip2 could keep ``members()``
@@ -665,7 +665,7 @@ class ReadRatioTally:
 
 class MemberRatioCheck(_RatioCheck):
     """The reads and seeks of a member's decoded stream on ``open()`` or
-    ``stream_members()``, held to :attr:`~archivey.DecoderLimits.max_ratio` as
+    ``stream_members()``, held to :attr:`~archivey.config.DecoderLimits.max_ratio` as
     extraction holds what it writes.
 
     The member stream (``ArchiveStreamImpl``) drives it: its reads, seeks and its

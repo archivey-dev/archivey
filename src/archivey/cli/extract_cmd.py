@@ -30,17 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath
 from typing import TextIO
 
-from archivey import (
-    AbortOn,
-    ExtractionPolicy,
-    ExtractionProgress,
-    ExtractionReport,
-    ExtractionResult,
-    ExtractionStatus,
-    NameRewrite,
-    OnError,
-    OverwritePolicy,
-)
+from archivey import ExtractionPolicy, ExtractionReport
 from archivey.cli.choices import from_cli_choice
 from archivey.cli.common import (
     open_for_cli,
@@ -65,10 +55,17 @@ from archivey.exceptions import ArchiveyError
 from archivey.paths import numbered_name
 from archivey.reader import ForwardArchiveReader
 from archivey.types import (
+    AbortOn,
     ArchiveFormat,
     ArchiveMember,
     ContainerFormat,
+    ExtractionProgress,
+    ExtractionResult,
+    ExtractionStatus,
     MemberType,
+    NameRewrite,
+    OnError,
+    OverwritePolicy,
 )
 
 

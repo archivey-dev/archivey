@@ -9,22 +9,22 @@ import ast
 import importlib
 from collections.abc import Iterable, Iterator
 from pathlib import Path
+from types import FunctionType
 
-import archivey
 
-# The public modules a reader may import from, with the names each makes public.
-# ``archivey.types``, ``archivey.exceptions`` and ``archivey.detection`` hold names
-# ``archivey`` re-exports, and a module inside archivey imports them from there to
-# avoid an import cycle.
-_PUBLIC = {
-    "archivey": archivey.__all__,
-    "archivey.types": archivey.__all__,
-    "archivey.exceptions": archivey.__all__,
-    "archivey.detection": archivey.__all__,
-    "archivey.formats": importlib.import_module("archivey.formats").__all__,
-    "archivey.diagnostics": importlib.import_module("archivey.diagnostics").__all__,
-    "archivey.terminal": importlib.import_module("archivey.terminal").__all__,
-}
+# The public modules a reader may import from, with the names each makes public: the
+# root and every module of ``api_surface.PUBLIC_MODULES``, each with its own
+# ``__all__``. A module inside archivey imports a root name from its defining
+# submodule, to avoid an import cycle.
+def _public_all() -> dict[str, list[str]]:
+    public: dict[str, list[str]] = {}
+    for module_name in _public_modules():
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue  # an optional dependency is missing (``archivey.fsspec``)
+        public[module_name] = list(module.__all__)
+    return public
 
 
 def _imported_names(path: Path) -> Iterator[tuple[str, str]]:
@@ -43,12 +43,13 @@ def assert_only_public_archivey(
     module's handler from its table (``internal/format_table.py``), and the module
     carries its own ``override`` shim, as a format from outside would."""
     assert module_file is not None
+    public = _public_all()
     allowed = frozenset(siblings)
     for module, name in _imported_names(Path(module_file)):
         if module.split(".")[0] != "archivey" or module in allowed:
             continue
-        assert module in _PUBLIC, module
-        assert name in _PUBLIC[module], (module, name)
+        assert module in public, module
+        assert name in public[module], (module, name)
 
 
 # The public API of ``collections.namedtuple``, spelled with an underscore so that it
@@ -110,3 +111,54 @@ def foreign_private_reads(path: Path, *, siblings: Iterable[Path] = ()) -> list[
         ),
         key=lambda hit: int(hit.split(" ")[0].rsplit(":", 1)[1]),
     )
+
+
+def _public_modules() -> tuple[str, ...]:
+    """``PUBLIC_MODULES`` from ``scripts/checks/api_surface.py``: the root and every
+    public submodule, the modules whose ``__all__`` carries the compatibility promise."""
+    script = (
+        Path(__file__).resolve().parents[1] / "scripts" / "checks" / "api_surface.py"
+    )
+    tree = ast.parse(script.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "PUBLIC_MODULES"
+        ):
+            return tuple(ast.literal_eval(node.value))
+    raise AssertionError("scripts/checks/api_surface.py defines no PUBLIC_MODULES")
+
+
+def public_objects() -> dict[str, object]:
+    """Every public name, one entry per object, keyed ``module.name``.
+
+    A name is public when the root's or a public submodule's ``__all__`` lists it
+    (the root docstring's two tiers). An object listed by several modules (a root
+    name its submodule lists too) is keyed by the first module, root first, so a guard
+    that sweeps this checks each object once. A module whose optional dependency is
+    missing (``archivey.fsspec``) is skipped.
+    """
+    return {spellings[0]: obj for obj, spellings in _by_object()}
+
+
+def public_spellings() -> list[list[str]]:
+    """Every ``module.name`` spelling of each public object, root first."""
+    return [spellings for _, spellings in _by_object()]
+
+
+def _by_object() -> list[tuple[object, list[str]]]:
+    # A class or function is the same object under each spelling. Any other value (a
+    # constant, an alias) is matched by its bare name, since two unrelated constants
+    # can be equal and share an ``id``.
+    groups: dict[object, tuple[object, list[str]]] = {}
+    for module_name in _public_modules():
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue
+        for name in getattr(module, "__all__", ()):
+            obj = getattr(module, name)
+            key = id(obj) if isinstance(obj, (type, FunctionType)) else name
+            groups.setdefault(key, (obj, []))[1].append(f"{module_name}.{name}")
+    return list(groups.values())

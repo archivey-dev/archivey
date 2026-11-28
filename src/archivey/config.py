@@ -3,7 +3,7 @@
 A caller builds one :class:`ArchiveyConfig` and passes it as ``config=`` to the
 functions that open, detect or report on archives: :func:`~archivey.open_archive`,
 :func:`~archivey.open_stream`, :func:`~archivey.detect_format`,
-:func:`~archivey.format_availability` and :func:`~archivey.list_supported_formats`. Its
+:func:`~archivey.format_availability` and :func:`~archivey.core.list_supported_formats`. Its
 fields are grouped into the limit classes here (:class:`ExtractionLimits`,
 :class:`ListingLimits`, :class:`DecoderLimits`, :class:`SpoolLimits`,
 :class:`SalvageLimits`), the enums that pick an accelerator, an external program, or
@@ -124,9 +124,10 @@ class ProcessIsolation(Enum):
 
     A decoder in a child process whose process crashes raises
     :class:`~archivey.CorruptionError`; one killed from outside raises
-    :class:`~archivey.ResourceUnavailableError` (SIGKILL, most often the out-of-memory killer)
-    or :class:`~archivey.ReadError`. Checksums and AES decryption always run in the
-    caller's process, and no setting bounds how long a decoder takes.
+    :class:`~archivey.exceptions.ResourceUnavailableError` (SIGKILL, most often the
+    out-of-memory killer) or :class:`~archivey.exceptions.ReadError`. Checksums and AES
+    decryption always run in the caller's process, and no setting bounds how long a
+    decoder takes.
     """
 
     KNOWN_CRASHES = "known_crashes"
@@ -142,8 +143,8 @@ class ProcessIsolation(Enum):
     about 0.1 to 0.35 ms for each 4 KiB member read from it; the decoded bytes cross
     between processes on top of that, at the copying cost ``NATIVE_DECODERS`` gives for
     single streams. Where no child process can be started, a PPMd member or a ``.bz3``
-    file raises :class:`~archivey.ResourceUnavailableError` and rapidgzip under ``AUTO`` falls back
-    to the standard library."""
+    file raises :class:`~archivey.exceptions.ResourceUnavailableError` and rapidgzip
+    under ``AUTO`` falls back to the standard library."""
     NATIVE_DECODERS = "native_decoders"
     """Every native decoder runs in a child process: zlib, bz2, lzma, zstd, lz4, brotli,
     inflate64, pyppmd, libbzip3, rapidgzip and compress-utils, including the trial
@@ -162,7 +163,7 @@ class ProcessIsolation(Enum):
     KiB member read from it, with the copying of larger members on top. An idle process
     holds about 9 MB. Where no child process can be started (a frozen application,
     archivey imported from a zip, a refused spawn), opening a decoder raises
-    :class:`~archivey.ResourceUnavailableError`; nothing is decoded in the caller's
+    :class:`~archivey.exceptions.ResourceUnavailableError`; nothing is decoded in the caller's
     process."""
     NONE = "none"
     """No child process at all: every decoder runs in the caller's process.
@@ -1072,7 +1073,7 @@ class ArchiveyConfig:
     a path that names one part of a multi-volume set (``x.part1.rar``, ``x.7z.001``,
     ``x.r00``, or a self-extracting stub beside ``x.exe.001``) together with the other
     parts in the same directory, whichever part it names. A part found that way that is
-    a symbolic link is refused with :class:`~archivey.OpenError`, as it is found;
+    a symbolic link is refused with :class:`~archivey.exceptions.OpenError`, as it is found;
     swapping a part for a link after that is not caught. Set this to ``False`` to read
     a path as the one file it names: no other file is opened, and a numbered part is not
     reported as a set with parts missing. ``x.7z.001`` is read alone, so the 7z reader
@@ -1160,7 +1161,7 @@ class ArchiveyConfig:
     """
 
     on_source_read: OnSourceRead | None = None
-    """A callback called with a :class:`~archivey.SourceProgress` as archivey reads the
+    """A callback called with a :class:`~archivey.types.SourceProgress` as archivey reads the
     archive's own file, or ``None``.
 
     A local file or stream reports about once per MiB read. A URL source (an
@@ -1175,7 +1176,7 @@ class ArchiveyConfig:
     between are merged, so ``requests`` may skip numbers. Every reader reports to the
     callback in its own config. A reader opened with ``parent=`` (an archive inside a
     member, which uses the parent's config unless given one) reports with
-    :attr:`SourceProgress.nest_level <archivey.SourceProgress.nest_level>` one more than
+    :attr:`SourceProgress.nest_level <archivey.types.SourceProgress.nest_level>` one more than
     its parent's. Each reader reports the bytes it reads from its own source (for a
     nested reader, the member it was opened on), at its own level. A member stream
     passed without ``parent=`` is a file of its own, at level 0. To tell apart nested
@@ -1189,7 +1190,7 @@ class ArchiveyConfig:
     source_read_step: int = 1 << 20
     """Bytes taken from a local file or stream between two ``on_source_read`` calls
     (1 MiB). ``0`` calls it for every read, so :attr:`SourceProgress.read_start
-    <archivey.SourceProgress.read_start>` and ``position`` give the range of each read:
+    <archivey.types.SourceProgress.read_start>` and ``position`` give the range of each read:
     a log of the regions of the file read. The log has gaps where archivey's own thread
     reads (the RAR volume feeder): those reports merge as ``on_source_read`` says, and
     only the latest range is kept, while ``bytes_read`` still counts every byte. A URL
@@ -1547,3 +1548,25 @@ PasswordProvider = Callable[[PasswordRequest], str | bytes | None]
 
 PasswordInput = str | bytes | Sequence[str | bytes] | PasswordProvider | None
 """Accepted ``password=`` shapes: one value, an ordered candidate list, a provider, or None."""
+
+
+#: The public names of this module. The most used of them are also re-exported at
+#: the package root (see archivey.__all__).
+__all__ = [
+    "DEFAULT_ARCHIVEY_CONFIG",
+    "INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE",
+    "RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
+    "AcceleratorMode",
+    "ArchiveyConfig",
+    "DecoderLimits",
+    "ExtractionLimits",
+    "ListingLimits",
+    "PartialDataRecovery",
+    "PasswordInput",
+    "PasswordProvider",
+    "PasswordRequest",
+    "ProcessIsolation",
+    "RarDecompressor",
+    "SalvageLimits",
+    "SpoolLimits",
+]

@@ -27,13 +27,12 @@ import archivey
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
-    CompressionAlgorithm,
-    DetectionConfidence,
     DiagnosticCode,
     DiagnosticPolicy,
     FormatDetectionError,
     MemberType,
 )
+from archivey.detection import DetectionConfidence
 from archivey.diagnostics import LocalHeaderContext, raw_name_to_base64
 from archivey.exceptions import (
     CorruptionError,
@@ -44,7 +43,7 @@ from archivey.exceptions import (
 from archivey.internal import detection
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.streams import codecs as codecs_module
-from archivey.types import HashAlgorithm
+from archivey.types import CompressionAlgorithm, HashAlgorithm
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO
 from tests.zip_aes_fixture import build_aes_zip

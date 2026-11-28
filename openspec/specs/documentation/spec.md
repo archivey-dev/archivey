@@ -28,7 +28,7 @@ group isolated from default lint/test dependencies.
 
 | Case | Expected |
 | --- | --- |
-| `mkdocs build` runs with the `docs` dependency group installed | Site builds and API reference documents public symbols re-exported from top-level `archivey.__all__` |
+| `mkdocs build` runs with the `docs` dependency group installed | Site builds and API reference documents every public name: those in `archivey.__all__` and in each public submodule's `__all__` |
 
 ### Requirement: Render dataclass fields and enum members from their docstrings
 

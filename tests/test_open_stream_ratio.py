@@ -15,12 +15,12 @@ import pytest
 from archivey import (
     ArchiveyConfig,
     CorruptionError,
-    DecoderLimits,
     ResourceLimitError,
     TruncatedError,
     open_archive,
     open_stream,
 )
+from archivey.config import DecoderLimits
 from tests.streams_util import NonSeekableBytesIO
 
 _MIB = 2**20

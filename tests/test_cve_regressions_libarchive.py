@@ -31,13 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ArchiveFormat,
-    ExtractionPolicy,
-    ExtractionReport,
-    ExtractionStatus,
-    open_archive,
-)
+from archivey import ArchiveFormat, ExtractionPolicy, ExtractionReport, open_archive
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -46,6 +40,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.types import ExtractionStatus
 from tests.conftest import requires
 from tests.extract_util import open_and_extract
 

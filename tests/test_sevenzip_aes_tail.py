@@ -312,8 +312,8 @@ def test_a_folder_with_no_crc_confirmed_on_its_tail_is_unlocked(pad: bytes) -> N
     # read is reported, which keeps the first half from passing vacuously.
     import io
 
-    from archivey import Verification
     from archivey.diagnostics import DiagnosticCode
+    from archivey.types import Verification
     from tests.test_audit_sevenzip import (
         _AES,
         _LZMA2,

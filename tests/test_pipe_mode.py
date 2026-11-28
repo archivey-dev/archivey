@@ -17,11 +17,9 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey import (
-    ArchiveyUsageError,
-    StreamCapability,
-    StreamNotSeekableError,
-)
+from archivey import ArchiveyUsageError
+from archivey.cost import StreamCapability
+from archivey.exceptions import StreamNotSeekableError
 from tests.conftest import unrar_reads_from_pipes
 from tests.iso_minimal import minimal_iso
 from tests.streams_util import NonSeekableBytesIO

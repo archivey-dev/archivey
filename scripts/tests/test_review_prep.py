@@ -399,10 +399,10 @@ def test_maintainer_decisions_in_the_api_surface() -> None:
     api = _diff(
         prep.API_SURFACE,
         added=[
-            "class archivey.AbortOn(StrEnum, Flag)",  # same name: not a removal
+            "class archivey.types.AbortOn(StrEnum, Flag)",  # same name: not a removal
             "class archivey.NewThing",
             "init archivey.NewThing(x: int) -> None",  # not top level by kind
-            "method archivey.AbortOn.helper(self) -> None",  # not top level
+            "method archivey.types.AbortOn.helper(self) -> None",  # not top level
             "module archivey.extras",
             "cli-verb verify",
             # A widened type and a new optional parameter take nothing away.
@@ -415,11 +415,11 @@ def test_maintainer_decisions_in_the_api_surface() -> None:
             "method archivey.R.ins(self, new: int, a: int) -> X",
             "method archivey.R.kw(self, a: int, *, new: int = 0) -> X",
             "cli-option extract --overwrite [action=Store choices={error, rename}]",
-            "value archivey.AbortOn.BLOCKED_MEMBER = 'blocked'",
+            "value archivey.types.AbortOn.BLOCKED_MEMBER = 'blocked'",
             "alias archivey.AbortOnStr = Literal['blocked']",
         ],
         removed=[
-            "class archivey.AbortOn(StrEnum)",
+            "class archivey.types.AbortOn(StrEnum)",
             "field archivey.Member.size: int",
             "# a comment",
             "method archivey.R.open(self, name: str) -> X",
@@ -428,7 +428,7 @@ def test_maintainer_decisions_in_the_api_surface() -> None:
             "method archivey.R.ins(self, a: int) -> X",
             "method archivey.R.kw(self, a: int) -> X",
             "cli-option extract --overwrite [action=Store choices={error, rename, skip}]",
-            "value archivey.AbortOn.BLOCKED_MEMBER = 'blocked_member'",
+            "value archivey.types.AbortOn.BLOCKED_MEMBER = 'blocked_member'",
             "alias archivey.AbortOnStr = Literal['blocked_member']",
         ],
     )
@@ -439,7 +439,7 @@ def test_maintainer_decisions_in_the_api_surface() -> None:
         "removes a parameter: method archivey.R.get default",
         "reorders positional parameters: method archivey.R.ins",
         "reorders positional parameters: method archivey.R.swap",
-        "removes a public value: value archivey.AbortOn.BLOCKED_MEMBER 'blocked_member'",
+        "removes a public value: value archivey.types.AbortOn.BLOCKED_MEMBER 'blocked_member'",
         "adds a top-level name: class archivey.NewThing",
         "adds a top-level name: cli-verb verify",
         "adds a top-level name: module archivey.extras",

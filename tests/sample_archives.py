@@ -823,7 +823,8 @@ def skip_unless_runnable(entry: CorpusEntry, key: str) -> None:
 
     import pytest
 
-    from archivey import FormatSupport, format_availability
+    from archivey import format_availability
+    from archivey.types import FormatSupport
     from tests.conftest import _has_zstd_backend, binary_refusal, has_package
 
     availability = format_availability(FORMAT_KEYS[key])

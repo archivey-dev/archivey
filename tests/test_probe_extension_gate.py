@@ -20,8 +20,9 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey import ArchiveFormat, DetectionConfidence, detect_format
+from archivey import ArchiveFormat, detect_format
 from archivey.config import ArchiveyConfig
+from archivey.detection import DetectionConfidence
 from archivey.detection_cost import TierSkip, TierSkipReason
 from archivey.exceptions import FormatDetectionError
 from archivey.types import ContainerFormat, StreamFormat

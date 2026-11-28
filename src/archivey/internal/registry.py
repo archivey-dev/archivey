@@ -5,8 +5,8 @@ Registration is **unconditional**: every known backend — core and optional ali
 is registered when ``archivey.internal.backends`` is imported, from core's format
 table (``internal/format_table.py``). Availability is then derived centrally from the
 optional dependency's module-or-``None`` sentinel, so the registry can report a tri-state,
-compositional :class:`~archivey.FormatSupport` (FULL / PARTIAL / NONE) and produce install-hint
-errors, rather than silently dropping a format whose dependency is absent (see
+compositional :class:`~archivey.types.FormatSupport` (FULL / PARTIAL / NONE) and produce
+install-hint errors, rather than silently dropping a format whose dependency is absent (see
 ``backend-registry``).
 
 Who writes it:
@@ -98,7 +98,7 @@ class ContentProbe(Protocol):
     sample (Brotli's chain decode), before it reads them; ``False`` means not covered,
     and the probe keeps its verdict.
     ``isolation`` is the caller's ``process_isolation``: where the probe's trial decode
-    runs. ``decoder_limits`` is the caller's :class:`~archivey.DecoderLimits`: a trial
+    runs. ``decoder_limits`` is the caller's :class:`~archivey.config.DecoderLimits`: a trial
     decode whose decoder is over its ``max_decoder_memory`` raises
     ``ResourceLimitError``, which detection reads as "can't tell".
     """

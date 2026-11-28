@@ -78,11 +78,11 @@ import pytest
 from archivey import (
     ArchiveyConfig,
     FormatDetectionError,
-    FormatInfo,
     MemberType,
     detect_format,
     open_archive,
 )
+from archivey.detection import FormatInfo
 from archivey.types import ArchiveFormat, ContainerFormat, StreamFormat
 from tests.conftest import ARCHIVEY_TEST_CACHE, binary_refusal, requires
 from tests.sample_archives import publish_cached

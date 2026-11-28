@@ -17,13 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ArchiveyConfig,
-    DiagnosticCode,
-    DiagnosticPolicy,
-    Verification,
-    open_archive,
-)
+from archivey import ArchiveyConfig, DiagnosticCode, DiagnosticPolicy, open_archive
 from archivey.config import PasswordRequest
 from archivey.exceptions import (
     ArchiveyUsageError,
@@ -33,7 +27,7 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.streams.verification import raise_member_level
-from archivey.types import ArchiveMember, MemberType
+from archivey.types import ArchiveMember, MemberType, Verification
 from tests.conftest import requires_binary
 
 NONE = Verification.NONE

@@ -24,10 +24,10 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     Diagnostic,
-    ProcessIsolation,
     open_archive,
     open_stream,
 )
+from archivey.config import ProcessIsolation
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.streams.codecs import deps

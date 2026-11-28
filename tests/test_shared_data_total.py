@@ -30,10 +30,10 @@ from archivey import (
     ArchiveFormat,
     ArchiveReader,
     ArchiveyConfig,
-    DecoderLimits,
     ResourceLimitError,
     open_archive,
 )
+from archivey.config import DecoderLimits
 from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError
 from tests.conftest import binary_refusal, requires
 from tests.test_rpm import _F, _build, _Package

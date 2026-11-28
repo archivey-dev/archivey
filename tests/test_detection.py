@@ -18,14 +18,9 @@ from typing import TYPE_CHECKING, ClassVar
 
 import pytest
 
-from archivey import (
-    ArchiveFormat,
-    DetectionConfidence,
-    FormatInfo,
-    detect_format,
-    open_archive,
-)
+from archivey import ArchiveFormat, detect_format, open_archive
 from archivey.config import ArchiveyConfig
+from archivey.detection import DetectionConfidence, FormatInfo
 from archivey.exceptions import FormatDetectionError
 from archivey.format_policy import FormatPolicy
 from archivey.internal.source import ArchiveSource

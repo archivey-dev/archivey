@@ -94,17 +94,19 @@ import archivey
 from archivey import (
     ArchiveyConfig,
     ArchiveyError,
-    DecoderLimits,
     DiagnosticCode,
     EncryptionError,
-    ExtractionLimits,
-    ExtractionStatus,
     FormatDetectionError,
-    ListingLimits,
     MemberType,
+)
+from archivey.config import (
+    DecoderLimits,
+    ExtractionLimits,
+    ListingLimits,
     PasswordInput,
     SpoolLimits,
 )
+from archivey.types import ExtractionStatus
 
 # --- Per-archive capture ---------------------------------------------------------
 
@@ -369,7 +371,7 @@ def _scan_open_reader(
     member_bytes: dict[int, int] = {}  # id(member) -> bytes written
     total = [0]
 
-    def on_progress(p: archivey.ExtractionProgress) -> None:
+    def on_progress(p: archivey.types.ExtractionProgress) -> None:
         member_bytes[id(p.member)] = p.member_bytes_written
         total[0] = p.bytes_written
 

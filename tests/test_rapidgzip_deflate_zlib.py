@@ -692,7 +692,8 @@ def test_tar_zz_member_damage_raises_under_rapidgzip_on(tmp_path: Path) -> None:
     pytest.importorskip("rapidgzip")
     import tarfile
 
-    from archivey import AcceleratorMode as PublicMode, ArchiveyConfig
+    from archivey import ArchiveyConfig
+    from archivey.config import AcceleratorMode as PublicMode
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:

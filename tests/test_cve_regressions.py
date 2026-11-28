@@ -21,15 +21,9 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ExtractionPolicy,
-    ExtractionReport,
-    ExtractionStatus,
-    MemberType,
-    OnError,
-    OverwritePolicy,
-)
+from archivey import ExtractionPolicy, ExtractionReport, MemberType
 from archivey.exceptions import FilterRejectionError, LinkTargetNotFoundError
+from archivey.types import ExtractionStatus, OnError, OverwritePolicy
 from tests.extract_util import open_and_extract
 
 _POSIX_LINKS = pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")

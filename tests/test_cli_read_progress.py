@@ -11,11 +11,10 @@ from typing import Any
 
 import pytest
 
-from archivey import ExtractionProgress, SourceProgress
 from archivey.cli import cat_cmd, extract_cmd, info_cmd, list_cmd, test_cmd
 from archivey.cli.main import main
 from archivey.cli.progress import STATUS_DELAY, ProgressCallback
-from archivey.types import ArchiveMember, MemberType
+from archivey.types import ArchiveMember, ExtractionProgress, MemberType, SourceProgress
 
 
 @pytest.fixture(autouse=True)

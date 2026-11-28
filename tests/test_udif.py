@@ -23,14 +23,13 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     CorruptionError,
-    StreamCapability,
     UnsupportedFeatureError,
     detect_format,
     format_availability,
-    list_known_formats,
-    list_supported_formats,
     open_archive,
 )
+from archivey.core import list_known_formats, list_supported_formats
+from archivey.cost import StreamCapability
 from archivey.internal.registry import get_registry
 from archivey.types import FormatSupport
 from tests.streams_util import NonSeekableBytesIO

@@ -30,14 +30,7 @@ from typing import get_args
 
 import pytest
 
-from archivey import (
-    AbortOn,
-    ExtractionPolicy,
-    ExtractionStatus,
-    OnBlocked,
-    OnError,
-    OverwritePolicy,
-)
+from archivey import ExtractionPolicy
 from archivey.cli.choices import cli_choices, from_cli_choice
 from archivey.cli.errors import CliError
 from archivey.cli.main import build_parser
@@ -62,14 +55,19 @@ from archivey.internal.enum_args import (
     spelling_table,
 )
 from archivey.types import (
+    AbortOn,
     AbortOnStr,
     ContainerFormat,
     ContainerFormatStr,
     ExtractionPolicyStr,
+    ExtractionStatus,
+    OnBlocked,
     OnBlockedStr,
+    OnError,
     OnErrorStr,
     OptionalLibrary,
     OptionalLibraryStr,
+    OverwritePolicy,
     OverwritePolicyStr,
     StreamFormat,
     StreamFormatStr,

@@ -65,18 +65,15 @@ from random import Random
 import pytest
 
 from archivey import (
-    AcceleratorMode,
     ArchiveFormat,
     ArchiveyConfig,
     ArchiveyError,
-    ExtractionLimits,
-    FormatSupport,
-    OnError,
-    OverwritePolicy,
     detect_format,
     format_availability,
     open_archive,
 )
+from archivey.config import AcceleratorMode, ExtractionLimits
+from archivey.types import FormatSupport, OnError, OverwritePolicy
 from tests.conftest import binary_refusal
 from tests.sample_archives import (
     CORPUS,

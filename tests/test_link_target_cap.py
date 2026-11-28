@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from archivey import ExtractionStatus, open_archive
+from archivey import open_archive
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
 from archivey.exceptions import (
@@ -39,7 +39,7 @@ from archivey.internal.backends import rar_parser
 from archivey.internal.backends.rar_parser import RarArchive
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.reader import ArchiveReader
-from archivey.types import ArchiveMember, MemberType, OnError
+from archivey.types import ArchiveMember, ExtractionStatus, MemberType, OnError
 from tests.conftest import complete_listing, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.memory_util import traced_peak

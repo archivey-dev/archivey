@@ -33,7 +33,7 @@ _PROBE = textwrap.dedent(
     """
     import sys
     import archivey
-    from archivey import list_supported_formats
+    from archivey.core import list_supported_formats
 
     list_supported_formats()
     print("imported=" + ",".join(m for m in {names!r} if m in sys.modules))

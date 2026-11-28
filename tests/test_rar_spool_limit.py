@@ -18,7 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, RarDecompressor, SpoolLimits, open_archive
+from archivey import ArchiveyConfig, open_archive
+from archivey.config import RarDecompressor, SpoolLimits
 from archivey.exceptions import (
     ArchiveyUsageError,
     ResourceLimitError,

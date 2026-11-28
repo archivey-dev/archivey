@@ -187,7 +187,7 @@ def test_the_measure_stops_at_the_decode_allowance() -> None:
 
 
 def test_fast_records_the_completion_skip_without_a_known_size() -> None:
-    from archivey import DEFAULT_ARCHIVEY_CONFIG
+    from archivey.config import DEFAULT_ARCHIVEY_CONFIG
     from archivey.format_policy import FormatPolicy
     from archivey.internal.detection import _detect_format_body
     from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt

@@ -12,13 +12,12 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     CorruptionError,
-    DecoderLimits,
-    ProcessIsolation,
     ResourceLimitError,
     TruncatedError,
     detect_format,
     open_archive,
 )
+from archivey.config import DecoderLimits, ProcessIsolation
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO
 

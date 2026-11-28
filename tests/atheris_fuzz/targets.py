@@ -10,19 +10,18 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from archivey import (
-    AcceleratorMode,
     ArchiveFormat,
     ArchiveReader,
     ArchiveyConfig,
     ArchiveyError,
     ContainerFormat,
-    DecoderLimits,
     ForwardArchiveReader,
     StreamFormat,
     detect_format,
     format_availability,
     open_archive,
 )
+from archivey.config import AcceleratorMode, DecoderLimits
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.backends.rar_detect import validate_rar_main_header
 from archivey.internal.backends.rar_parser import parse_rar_archive

@@ -30,12 +30,9 @@ from archivey import (
     ArchiveyUsageError,
     CorruptionError,
     EncryptionError,
-    HashAlgorithm,
     MemberType,
-    PluginContainer,
     ResourceLimitError,
     StreamFormat,
-    Verification,
     open_archive,
 )
 from archivey.config import ArchiveyConfig, DecoderLimits, PasswordRequest
@@ -60,6 +57,7 @@ from archivey.formats import (
 )
 from archivey.internal.format_adapter import registration_scope
 from archivey.internal.password import is_unverified_data_error
+from archivey.types import HashAlgorithm, PluginContainer, Verification
 
 CONFIRMED = PasswordConfirmVerdict.CONFIRMED
 INCONCLUSIVE = PasswordConfirmVerdict.INCONCLUSIVE

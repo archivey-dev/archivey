@@ -27,17 +27,17 @@ from archivey import (
     ArchiveyConfig,
     CorruptionError,
     DiagnosticCode,
-    LinkTargetNotFoundError,
-    ListingLimits,
     MemberType,
     ResourceLimitError,
     UnsupportedFeatureError,
-    Verification,
     open_archive,
 )
+from archivey.config import ListingLimits
+from archivey.exceptions import LinkTargetNotFoundError
 from archivey.formats import ReaderSource
 from archivey.internal.backends import apfs
 from archivey.terminal import escape_control_chars, quoted
+from archivey.types import Verification
 from tests import apfs_build as a, dmg_build as d
 from tests.conftest import CPYTHON, requires
 

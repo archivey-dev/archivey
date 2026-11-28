@@ -18,12 +18,11 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
-    DetectionConfidence,
-    FormatInfo,
     MemberType,
     detect_format,
     open_archive,
 )
+from archivey.detection import DetectionConfidence, FormatInfo
 from archivey.detection_cost import BALANCED_BUDGET, TierSkip, TierSkipReason
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import ArchiveyError, FormatDetectionError

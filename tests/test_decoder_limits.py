@@ -29,7 +29,8 @@ from typing import Any, BinaryIO
 import pytest
 
 import archivey
-from archivey import ArchiveyConfig, DecoderLimits, open_archive
+from archivey import ArchiveyConfig, open_archive
+from archivey.config import DecoderLimits
 from archivey.exceptions import (
     CorruptionError,
     ResourceLimitError,
@@ -79,8 +80,8 @@ def test_decoder_limits_is_frozen() -> None:
 
 
 def test_public_api_exports_decoder_limits() -> None:
-    assert "DecoderLimits" in archivey.__all__
-    assert archivey.DecoderLimits is DecoderLimits
+    assert "DecoderLimits" in archivey.config.__all__
+    assert archivey.config.DecoderLimits is DecoderLimits
 
 
 def test_stream_config_carries_the_caller_s_limits() -> None:

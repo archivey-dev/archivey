@@ -23,11 +23,11 @@ from archivey import (
     CorruptionError,
     FormatPolicy,
     MemberType,
-    ProcessIsolation,
     TruncatedError,
     open_archive,
     open_stream,
 )
+from archivey.config import ProcessIsolation
 from archivey.formats import (
     CodecCall,
     Magic,

@@ -18,12 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ExtractionPolicy,
-    ExtractionStatus,
-    OnError,
-    OverwritePolicy,
-)
+from archivey import ExtractionPolicy
+from archivey.types import ExtractionStatus, OnError, OverwritePolicy
 from tests.conftest import requires_binary
 from tests.extract_util import open_and_extract
 

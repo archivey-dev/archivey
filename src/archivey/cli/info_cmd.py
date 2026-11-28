@@ -6,7 +6,7 @@ import os
 import sys
 from typing import TextIO
 
-from archivey import FormatInfo, detect_format, open_archive
+from archivey import detect_format, open_archive
 from archivey.cli.common import (
     is_read_once,
     read_once_refusal,
@@ -25,6 +25,7 @@ from archivey.cli.progress import make_progress_callback
 from archivey.cli.sources import is_remote, resolve_archive, url_label
 from archivey.config import ArchiveyConfig, PasswordInput
 from archivey.cost import CostReceipt
+from archivey.detection import FormatInfo
 from archivey.exceptions import ArchiveyError
 from archivey.terminal import escape_control_chars
 from archivey.types import ArchiveFormat

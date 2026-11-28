@@ -294,29 +294,39 @@ cached.
 
 ### Requirement: Source package layout separates public API from implementation
 
-The installable `archivey` package SHALL keep the supported public API at the
-package root. Only public API modules appear in `archivey.__all__`: `core.py`,
-`types.py`, `detection.py`, `config.py`, `diagnostics.py`, `exceptions.py`, `cost.py`,
-and `reader.py`.
-`archivey.__init__.py` SHALL re-export the public API so supported callers do not
-import from `archivey.internal.*`. Every attribute of the package root SHALL be in
-`archivey.__all__`, be a real submodule of `archivey` (`internal` included: importing
-a submodule binds it on its parent package), or be private. A niche name stays in its public
-submodule and is not also imported at the root: the diagnostic context payloads
-(`NameNormalizationContext` and the others) come from `archivey.diagnostics`, and
-`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` from `archivey.config`.
+The installable `archivey` package SHALL keep its public API in two tiers. The
+package root SHALL list in `archivey.__all__` the names most callers need: the entry
+functions, the reader, member, format, policy and report types, and the most-caught
+errors. Every other public name SHALL be listed in the `__all__` of the public
+submodule that defines it (`archivey.core`, `reader`, `types`, `detection`, `config`,
+`cost`, `diagnostics`, `exceptions`, `format_policy`, `detection_cost`, `terminal`,
+`paths`, `formats`, and `fsspec`, which needs fsspec installed separately), with the
+same compatibility promise as the root's, except for the names the stability policy
+marks experimental (`EXPERIMENTAL` in `scripts/checks/api_surface.py`: all of
+`archivey.formats`, among others), which may change in a minor release. Supported
+callers SHALL NOT need to import from `archivey.internal.*`. Every attribute of the
+package root SHALL be in `archivey.__all__`, be a real submodule of `archivey`
+(`internal` included: importing a submodule binds it on its parent package), or be
+private.
+
+A name that left the root in 0.6.0 SHALL still work as `archivey.<name>` for the 0.6
+series, with a `DeprecationWarning` that names its submodule and points at the
+caller's line (DR-12a); 0.7.0 removes that spelling. The experimental `PluginContainer`
+and `PluginStream` left the root with no deprecation release. A name that left
+`archivey.core.__all__` follows the same rule, except `ArchiveyConfig` and
+`FormatInfo`, which `archivey.core`'s signatures name and which stay importable from
+it, with no warning, through 0.6.
 
 A public class SHALL be defined in a public module, so its own `__module__` is a
 stable public path, `inspect.getsource` works on it, and data a caller persists does
-not freeze the internal layout. `ArchiveStream` is the one exception: it is an
-implementation class on the internal stream base and is never pickled.
+not freeze the internal layout.
 
-Every class and function in `archivey.__all__` that is still defined under
-`archivey.internal.*` SHALL report `archivey` as its `__module__`, so `pickle`,
-`repr()` and `inspect.getmodule` name the public path. `typing.get_type_hints` SHALL
-still resolve on every such class. `inspect.getsource` on such a class raises
-`OSError`: it locates a class through its module and cannot follow the pin, and it
-SHALL NOT return lines from another file.
+Every public function still defined under `archivey.internal.*` SHALL report as its
+`__module__` the public module that exports it, the root first, so `pickle`, `repr()`
+and `inspect.getmodule` name a public path. A reference that 0.5 pickled to a function
+that left the root in 0.6.0 names `archivey`, so it loads in 0.6 with the warning and
+not in 0.7.0. `typing.get_type_hints` SHALL resolve on every public class and on every
+public function's signature.
 
 Implementation code SHALL live under `archivey.internal.*` without public
 stability guarantees. Format backends SHALL live under
@@ -330,15 +340,16 @@ the public extraction types live on the public surface.
 
 | Case | Expected |
 | --- | --- |
-| Application uses documented API (`open_archive`, `ArchiveMember`, etc.) | `import archivey` or public re-exports suffice; no `archivey.internal` import required |
-| Caller imports `archivey.internal.backends.zip` or old `archivey.formats.zip_reader` | Not documented, not in `__all__`, and not a stability promise |
+| Application uses documented API (`open_archive`, `ArchiveMember`, etc.) | `archivey` and its public submodules suffice; no `archivey.internal` import required |
+| Caller imports `archivey.internal.backends.zip` | Not documented, not in any `__all__`, and not a stability promise |
 | Caller imports `NameNormalizationContext` or `RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` | From `archivey.diagnostics` or `archivey.config`; `from archivey import` raises `ImportError` |
-| `archivey.OverwritePolicy.__module__`, `archivey.FormatInfo.__module__` | `archivey.types`, `archivey.detection`: the defining public module |
-| `pickle.dumps(archivey.OverwritePolicy.SKIP)` | Records `archivey.types`, not `archivey.internal.…`; loads back to the same member |
-| `inspect.getsource(archivey.OverwritePolicy)` | Returns the class source |
-| A class in `__all__` other than `ArchiveStream` defined under `archivey.internal` | Test failure |
-| `archivey.ArchiveStream.__module__` | `archivey` (pinned); `inspect.getsource` raises `OSError` on every supported Python |
-| `typing.get_type_hints` on any class in `__all__` | Resolves |
+| `archivey.types.OverwritePolicy.__module__`, `archivey.detection.FormatInfo.__module__` | `archivey.types`, `archivey.detection`: the defining public module |
+| `OverwritePolicy` read from the package root in 0.6 | The same class, with a `DeprecationWarning` naming `archivey.types.OverwritePolicy` |
+| `pickle.dumps(archivey.types.OverwritePolicy.SKIP)` | Records `archivey.types`, not `archivey.internal.…`; loads back to the same member |
+| `inspect.getsource(archivey.types.OverwritePolicy)` | Returns the class source |
+| A class in the root's or a public submodule's `__all__` defined under `archivey.internal` | Test failure |
+| `archivey.paths.sanitize_names.__module__`, `archivey.core.list_known_formats.__module__` | `archivey.paths`, `archivey.core` (pinned) |
+| `typing.get_type_hints` on any public class or function | Resolves |
 | `import archivey` in a core-only environment | `list_supported_formats()` returns bundled formats without a prior `open_archive()` call |
 
 ### Requirement: archivey console entry points ship with the base package

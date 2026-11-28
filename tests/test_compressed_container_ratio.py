@@ -10,13 +10,8 @@ import tarfile
 
 import pytest
 
-from archivey import (
-    ArchiveyConfig,
-    DecoderLimits,
-    ResourceLimitError,
-    TruncatedError,
-    open_archive,
-)
+from archivey import ArchiveyConfig, ResourceLimitError, TruncatedError, open_archive
+from archivey.config import DecoderLimits
 from archivey.internal.bomb_tracker import DecodeRatioGuard
 from tests.streams_util import NonSeekableBytesIO
 

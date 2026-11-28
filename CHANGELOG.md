@@ -23,8 +23,16 @@ line. How to write the entry: see
   `context.speedup("lzw")` (or `call.speedup()`) returns the speedup, or `None` when it
   can't run. Their interfaces are in the new `archivey.speedups` module.
 
+### Experimental
+
+- `PluginContainer` and `PluginStream` left the package root with no deprecation
+  release; import them from `archivey.types`.
+
 ### Changed
 
+- **Breaking:** `from archivey import *` and `from archivey.core import *` bind only the
+  names their `__all__` lists now, 30 and 6, with no warning about the others. Import a
+  moved name by name, from its submodule (see Deprecated).
 - **Breaking:** a plugin's `probe` (on `FormatHandler` and `CodecHandler`) returns a
   verdict, not a bool: the new `DetectionConfidence.REJECTED` for no,
   `DetectionConfidence.GUESS` for a weak match, `DetectionConfidence.PROBABLE` for a
@@ -54,6 +62,26 @@ line. How to write the entry: see
 - A streaming pass over a format with an index (a ZIP, 7z, RAR, ISO, CAB and others)
   reads the whole index before its first member, so `members_report_if_available()`
   gives the same answer inside the loop as before it.
+
+### Deprecated
+
+- The package root keeps 30 names: `open_archive`, `open_stream`, `detect_format`,
+  `format_availability`, the reader, member, format, policy and report types, and the
+  errors callers catch most. The other 67 come from the submodule that defines them,
+  such as `archivey.config.DecoderLimits`, `archivey.types.OverwritePolicy` and
+  `archivey.exceptions.ReadError`; the [API page](docs/api.md) heads each entry with
+  its full name. `archivey.<name>` still works for 65 of them in 0.6 with a
+  `DeprecationWarning` that names the new import, and 0.7.0 removes it. The other two
+  are experimental (see Experimental). `sanitize_names` moved to `archivey.paths`. A
+  reference to `sanitize_names`, `list_known_formats` or `list_supported_formats`
+  pickled by 0.5 or earlier names `archivey`, so it loads in 0.6 with the warning and
+  not in 0.7.0; load and save it again under 0.6 to record the new module.
+  `archivey.core.__all__` keeps only its six functions. `AcceleratorMode`,
+  `DEFAULT_ARCHIVEY_CONFIG`, `ExtractionLimits`, `ListingLimits`, `DetectionConfidence`,
+  `FormatAvailability`, `FormatSupport` and `MissingComponent` still work from it in 0.6
+  with the same warning. `ArchiveyConfig` and `FormatInfo` still import from
+  `archivey.core` with no warning, because its signatures name them, and stay through
+  0.6; import them from `archivey.config` and `archivey.detection`.
 
 ## [0.5.1] - 2026-11-20
 

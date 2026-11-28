@@ -16,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ExtractionStatus, open_archive
+from archivey import open_archive
+from archivey.types import ExtractionStatus
 
 
 def _zip_with_duplicate(tmp_path: Path, name: str, contents: list[bytes]) -> Path:

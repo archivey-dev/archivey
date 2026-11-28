@@ -25,21 +25,17 @@ from archivey import (
     ArchiveMember,
     ArchiveyConfig,
     ArchiveyUsageError,
-    CompressionAlgorithm,
     ContainerFormat,
     CorruptionError,
-    DecoderLimits,
     FormatPolicy,
-    ListingLimits,
     MemberType,
-    PluginContainer,
-    PluginStream,
     ResourceLimitError,
     StreamFormat,
     TruncatedError,
     UnsupportedFeatureError,
     open_archive,
 )
+from archivey.config import DecoderLimits, ListingLimits
 from archivey.diagnostics import DiagnosticCode
 from archivey.formats import (
     ForwardStream,
@@ -66,6 +62,7 @@ from archivey.internal.format_adapter import (
 )
 from archivey.internal.listing_limits import ListingLimitTracker
 from archivey.internal.nesting import NestAccount, NestDraws
+from archivey.types import CompressionAlgorithm, PluginContainer, PluginStream
 from tests.streams_util import (
     NonSeekableBytesIO,
     hold_views,

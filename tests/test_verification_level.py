@@ -17,9 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from archivey import Verification, open_archive, open_stream
+from archivey import open_archive, open_stream
 from archivey.exceptions import CorruptionError, EncryptionError
-from archivey.types import ArchiveMember
+from archivey.types import ArchiveMember, Verification
 from tests.conftest import requires, requires_binary, run_7z
 
 _FIXTURES = Path(__file__).parent / "fixtures"

@@ -20,6 +20,7 @@ from types import FunctionType
 import pytest
 
 import archivey
+from tests.public_names import public_objects, public_spellings
 
 
 def test_archive_reader_is_an_abstract_public_interface() -> None:
@@ -67,7 +68,8 @@ _OPEN_ARCHIVE_TYPING_SAMPLE = """\
 from typing import assert_type
 
 import archivey
-from archivey import ArchiveReader, ForwardArchiveReader, MemberPass
+from archivey import ArchiveReader, ForwardArchiveReader
+from archivey.reader import MemberPass
 
 
 def check(flag: bool) -> None:
@@ -208,17 +210,9 @@ def test_type_checker_refuses_random_access_on_a_streaming_reader(
 _STRING_SPELLING_TYPING_SAMPLE = """\
 from typing import assert_type
 
-from archivey import (
-    AcceleratorMode,
-    ArchiveFormat,
-    ArchiveyConfig,
-    ContainerFormat,
-    PluginContainer,
-    PluginStream,
-    ProcessIsolation,
-    RarDecompressor,
-    StreamFormat,
-)
+from archivey import ArchiveFormat, ArchiveyConfig, ContainerFormat, StreamFormat
+from archivey.config import AcceleratorMode, ProcessIsolation, RarDecompressor
+from archivey.types import PluginContainer, PluginStream
 from archivey.detection_cost import DetectionBudget
 
 
@@ -412,7 +406,8 @@ def test_niche_names_live_only_in_their_submodule() -> None:
 
 
 def test_no_public_name_reports_an_internal_module() -> None:
-    """Every class and function in ``__all__`` reports a public module, not ``internal``.
+    """Every public class and function, at the root or in a public submodule's
+    ``__all__``, reports a public module, not ``internal``.
 
     ``pickle`` stores ``__module__``, so a name reporting ``archivey.internal.…`` would
     freeze that path into data callers persist. ``__init__`` pins it for every function
@@ -421,21 +416,35 @@ def test_no_public_name_reports_an_internal_module() -> None:
     """
     leaked = {
         name: obj.__module__
-        for name in archivey.__all__
-        if isinstance(obj := getattr(archivey, name), (type, FunctionType))
+        for name, obj in public_objects().items()
+        if isinstance(obj, (type, FunctionType))
         if obj.__module__.startswith("archivey.internal")
     }
     assert leaked == {}
 
 
 @pytest.mark.parametrize(
-    "cls",
+    ("function", "module"),
     [
-        c
-        for c in (getattr(archivey, n) for n in archivey.__all__)
-        if isinstance(c, type)
+        (archivey.core.list_known_formats, "archivey.core"),
+        (archivey.core.list_supported_formats, "archivey.core"),
+        (archivey.paths.sanitize_names, "archivey.paths"),
+        (archivey.formats.collision_key, "archivey.formats"),
+        (archivey.formats.str_retained_bytes, "archivey.formats"),
+        (archivey.detect_format, "archivey"),
     ],
-    ids=lambda c: c.__name__,
+    ids=lambda v: getattr(v, "__name__", v),
+)
+def test_a_function_defined_under_internal_reports_the_module_that_exports_it(
+    function: FunctionType, module: str
+) -> None:
+    assert function.__module__ == module
+
+
+@pytest.mark.parametrize(
+    "cls",
+    [c for c in public_objects().values() if isinstance(c, type)],
+    ids=lambda c: f"{c.__module__}.{c.__qualname__}",
 )
 def test_public_class_type_hints_resolve(cls: type) -> None:
     """``get_type_hints`` works on every public class."""
@@ -445,9 +454,9 @@ def test_public_class_type_hints_resolve(cls: type) -> None:
 @pytest.mark.parametrize(
     "value",
     [
-        archivey.OverwritePolicy.SKIP,
-        archivey.DetectionConfidence.CERTAIN,
-        archivey.FormatSupport.FULL,
+        archivey.types.OverwritePolicy.SKIP,
+        archivey.detection.DetectionConfidence.CERTAIN,
+        archivey.types.FormatSupport.FULL,
     ],
     ids=lambda v: type(v).__name__,
 )
@@ -468,7 +477,11 @@ def test_pinning_leaves_the_internal_objects_shared() -> None:
 
 @pytest.mark.parametrize(
     "cls",
-    [archivey.OverwritePolicy, archivey.ExtractionResult, archivey.FormatInfo],
+    [
+        archivey.types.OverwritePolicy,
+        archivey.types.ExtractionResult,
+        archivey.detection.FormatInfo,
+    ],
     ids=lambda c: c.__name__,
 )
 def test_moved_classes_keep_their_source(cls: type) -> None:
@@ -492,24 +505,51 @@ def test_version_is_computed_on_first_access() -> None:
 # Public names with no entry on the API page, each for a stated reason.
 _NOT_ON_API_PAGE = {
     # The package version string: nothing to document beyond its name.
-    "__version__",
+    "archivey.__version__",
+    # Thresholds of the AUTO accelerator rule, documented in the prose of
+    # ``use_rapidgzip`` rather than as blocks of their own.
+    "archivey.config.INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE",
+    "archivey.config.RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
+    # Helpers a format reader or a diagnostic consumer calls, documented in
+    # docs/adding-a-format.md and on ``DiagnosticContext``.
+    "archivey.diagnostics.DiagnosticCodeStr",
+    "archivey.diagnostics.format_path_name",
+    "archivey.diagnostics.raw_name_to_base64",
+    "archivey.diagnostics.validate_code_context",
 }
+# Whole groups with no blocks of their own: the typed diagnostic contexts, which the
+# ``DiagnosticContext`` block and the diagnostics table describe, and the plugin API of
+# ``archivey.formats`` and ``archivey.speedups``, which docs/adding-a-format.md
+# describes.
+_NOT_ON_API_PAGE_GROUPS = ("archivey.formats.", "archivey.speedups.")
+
+
+def _off_the_page_by_group(spelling: str) -> bool:
+    if spelling.startswith(_NOT_ON_API_PAGE_GROUPS):
+        return True
+    return spelling.startswith("archivey.diagnostics.") and spelling.endswith("Context")
 
 
 def test_every_public_name_is_on_the_api_page() -> None:
-    """The API page carries a ``::: archivey.<Name>`` block for each name in ``__all__``.
+    """The API page carries a ``::: <module>.<Name>`` block for each public name.
 
-    The documentation spec says the API reference documents the public symbols
-    re-exported from ``archivey.__all__``. Nothing in a docs build notices a name that
-    was exported and never documented, and 29 had drifted off the page before this test.
+    A name is public at the root or in a public submodule's ``__all__``; a block under
+    any of its spellings counts. Nothing in a docs build notices a name that was
+    exported and never documented, and 29 had drifted off the page before this test.
     """
     api_page = Path(__file__).resolve().parent.parent / "docs" / "api.md"
     documented = {
-        line.removeprefix("::: archivey.").strip()
+        line.removeprefix(":::").strip()
         for line in api_page.read_text(encoding="utf-8").splitlines()
         if line.startswith("::: archivey.")
     }
-    missing = sorted(set(archivey.__all__) - documented - _NOT_ON_API_PAGE)
+    missing = sorted(
+        spellings[0]
+        for spellings in public_spellings()
+        if not documented.intersection(spellings)
+        and not _NOT_ON_API_PAGE.intersection(spellings)
+        and not any(_off_the_page_by_group(s) for s in spellings)
+    )
     assert not missing, f"public names with no ::: block in docs/api.md: {missing}"
     stale = sorted(_NOT_ON_API_PAGE & documented)
     assert not stale, f"_NOT_ON_API_PAGE entries now documented, remove them: {stale}"

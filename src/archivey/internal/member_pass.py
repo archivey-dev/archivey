@@ -1,4 +1,4 @@
-"""``MemberPassImpl``: archivey's own :class:`~archivey.MemberPass`, over a generator.
+"""``MemberPassImpl``: archivey's own :class:`~archivey.reader.MemberPass`, over a generator.
 
 The reader's pass is a generator (``BaseArchiveReader._iter_pass`` and the
 ``stream_members`` walk); this wraps it so the public type can be closed while the

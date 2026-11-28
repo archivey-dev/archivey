@@ -14,8 +14,9 @@ import zipfile
 
 import pytest
 
-from archivey import Verification, open_archive
+from archivey import open_archive
 from archivey.exceptions import ArchiveyUsageError, TruncatedError
+from archivey.types import Verification
 from tests.conftest import requires
 from tests.test_audit_sevenzip import _archive, _header
 from tests.test_sevenzip_verification_levels import _BIG, _aes_lzma2_folder

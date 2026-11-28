@@ -13,7 +13,6 @@ import pickle
 
 import pytest
 
-import archivey
 import archivey.exceptions as exceptions_module
 from archivey.diagnostics import (
     Diagnostic,
@@ -48,8 +47,8 @@ def _is_archivey_exception(value: object) -> bool:
 _EXCEPTION_CLASSES = sorted(
     {
         value
-        for name in archivey.__all__
-        if _is_archivey_exception(value := getattr(archivey, name))
+        for name in exceptions_module.__all__
+        if _is_archivey_exception(value := getattr(exceptions_module, name))
     }
     # Unexported: the usage errors a wrong argument raises (DR-15). A caller can still
     # receive one from a worker process, so they must round-trip like the rest.

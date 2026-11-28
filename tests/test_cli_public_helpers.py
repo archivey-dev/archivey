@@ -20,20 +20,19 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey import (
-    ExtractionPolicy,
-    ExtractionStatus,
-    LinkTargetNotFoundError,
-    LinkTargetNotFoundReason,
-    NameRewrite,
-    OverwritePolicy,
-    open_archive,
-)
+from archivey import ExtractionPolicy, open_archive
 from archivey.cli.exit_codes import EXIT_OK
 from archivey.cli.main import main
+from archivey.exceptions import LinkTargetNotFoundError, LinkTargetNotFoundReason
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.paths import numbered_name
-from archivey.types import ArchiveMember, MemberType
+from archivey.types import (
+    ArchiveMember,
+    ExtractionStatus,
+    MemberType,
+    NameRewrite,
+    OverwritePolicy,
+)
 
 
 def _tar(path: Path, entries: list[tuple[str, str, bytes | str]]) -> Path:
@@ -96,7 +95,12 @@ def test_numbered_name_spells_a_rename(
 def test_paths_is_public_and_not_re_exported() -> None:
     import archivey.paths
 
-    assert archivey.paths.__all__ == ["match_glob", "match_tar_glob", "numbered_name"]
+    assert archivey.paths.__all__ == [
+        "match_glob",
+        "match_tar_glob",
+        "numbered_name",
+        "sanitize_names",
+    ]
     assert "numbered_name" not in archivey.__all__
     assert not hasattr(archivey, "numbered_name")
 
@@ -126,8 +130,8 @@ def _result_for(
     tmp_path: Path,
     name: str,
     policy: ExtractionPolicy,
-    filter: archivey.MemberFilter | None = None,
-) -> archivey.ExtractionResult:
+    filter: archivey.types.MemberFilter | None = None,
+) -> archivey.types.ExtractionResult:
     archive = _tar(tmp_path / "a.tar", [(name, "file", b"x")])
     with open_archive(archive) as reader:
         report = reader.extract_all(tmp_path / "out", policy=policy, filter=filter)
@@ -327,7 +331,7 @@ def test_reason_says_why_a_link_has_no_member_to_follow(tmp_path: Path) -> None:
         cycle = _open_error(reader, "loop-a")
         assert cycle.reason is LinkTargetNotFoundReason.UNRESOLVED
         # Still a ReadError, as a cycle was before it became this type.
-        assert isinstance(cycle, archivey.ReadError)
+        assert isinstance(cycle, archivey.exceptions.ReadError)
         assert cycle.raw_message == "Link cycle detected"
 
 

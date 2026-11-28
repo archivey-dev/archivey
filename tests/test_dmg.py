@@ -27,21 +27,20 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     CorruptionError,
-    DecoderLimits,
     DiagnosticCode,
     EncryptionError,
-    ListingLimits,
     MemberType,
     ResourceLimitError,
-    StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
-    Verification,
     detect_format,
     open_archive,
 )
+from archivey.config import DecoderLimits, ListingLimits
+from archivey.exceptions import StreamNotSeekableError
 from archivey.internal.backends import dmg_encrypted, udif
 from archivey.internal.backends.dmg_reader import volume_names
+from archivey.types import Verification
 from tests import dmg_build as d
 from tests.conftest import requires
 

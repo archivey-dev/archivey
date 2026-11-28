@@ -30,14 +30,7 @@ from typing import TypeVar
 
 import pytest
 
-from archivey import (
-    ExtractionPolicy,
-    ExtractionResult,
-    ExtractionStatus,
-    OnError,
-    OverwritePolicy,
-    open_archive,
-)
+from archivey import ExtractionPolicy, open_archive
 from archivey.cli.exit_codes import EXIT_OK, EXIT_POLICY
 from archivey.cli.main import main
 from archivey.exceptions import (
@@ -48,6 +41,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.types import ExtractionResult, ExtractionStatus, OnError, OverwritePolicy
 from tests.extract_util import open_and_extract
 from tests.memory_util import traced_peak
 

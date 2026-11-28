@@ -18,7 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import DecoderLimits, open_archive
+from archivey import open_archive
+from archivey.config import DecoderLimits
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ExtractionStatus, open_archive
+from archivey import open_archive
 from archivey.config import (
     REWIND_REDECODE_WARN_BYTES,
     ArchiveyConfig,
@@ -71,6 +71,7 @@ from archivey.types import (
     EXTRA_RAR_EXTRACT_VERSION,
     ArchiveMember,
     CompressionAlgorithm,
+    ExtractionStatus,
     HashAlgorithm,
     MemberType,
 )

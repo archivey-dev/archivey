@@ -148,8 +148,8 @@ noted in the diagnostics.
 
 `member.name` is the decoded name, and `member.raw_name` is the bytes as stored. A name with an
 escaped byte, like `'caf\udce9.txt'`, can't be encoded as UTF-8, so printing or logging it can raise
-`UnicodeEncodeError`. `archivey.terminal.escape_control_chars(member.name)` gives a version that's
-safe to show.
+`UnicodeEncodeError`. `escape_control_chars(member.name)`, from `archivey.terminal`, gives a
+version that's safe to show.
 
 ## Members with the same name
 
@@ -206,7 +206,7 @@ and in a TAR gets the same key:
 ```python
 import zlib
 import archivey
-from archivey import HashAlgorithm
+from archivey.types import HashAlgorithm
 
 def crc32_of(reader, member):
     """The member's CRC-32: stored when the archive has one, computed otherwise."""
@@ -301,7 +301,7 @@ never run on what you're sent. To add a format, build on it:
 `exclude_libraries=` turns off optional packages for the call, even when they're installed:
 
 ```python
-from archivey import OptionalLibrary as L
+from archivey.types import OptionalLibrary as L
 
 NO_PPMD = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={L.PYPPMD, "inflate64"}))
 ```
@@ -310,9 +310,9 @@ archivey then reads as if those packages weren't there. A PPMd member raises
 `PackageNotInstalledError` when you open it, while the other members can still be read; a `.lz4`
 file with `lz4` excluded doesn't open; and an accelerator such as rapidgzip under `AUTO` falls back
 to the standard library. The error's `missing` names the package, and its `reason` says the policy
-turned it off. Each entry is an [`OptionalLibrary`][archivey.OptionalLibrary] member or its value,
-and any other name is refused, so a typo can't leave a package on. The setting only affects calls
-made with that config: other calls in the same program, on any thread, still use the package.
+turned it off. Each entry is an [`OptionalLibrary`][archivey.types.OptionalLibrary] member or its
+value, and any other name is refused, so a typo can't leave a package on. The setting only affects
+calls made with that config: other calls in the same program, on any thread, still use the package.
 `format_availability(fmt, config=...)` and `list_supported_formats(config=...)` answer with the
 excluded packages counted as missing. A plugin reader that imports a package itself honours the setting
 only if it checks `config.formats.allows_library(name)` itself.
@@ -334,9 +334,9 @@ that, so list both to keep zstd on every version.
 `only=` and `exclude=` check the file you open, not what's inside it. `S.XZ` there means a file
 compressed with xz as a whole, such as a `.xz` or `.tar.xz` file, not the xz codec: a ZIP member
 compressed with xz can still be read under `exclude={S.XZ}`, because the file is a ZIP.
-A [`CompressionAlgorithm`][archivey.CompressionAlgorithm] in `exclude=` reaches further: it turns
-that decoder off, for a file compressed with it as a whole and for every member compressed with it.
-`exclude={CompressionAlgorithm.XZ}` refuses a `.xz` or `.tar.xz` file and still lists an
+A [`CompressionAlgorithm`][archivey.types.CompressionAlgorithm] in `exclude=` reaches further: it
+turns that decoder off, for a file compressed with it as a whole and for every member compressed
+with it. `exclude={CompressionAlgorithm.XZ}` refuses a `.xz` or `.tar.xz` file and still lists an
 xz-compressed ZIP member, but opening, reading or extracting that member raises
 `UnsupportedFeatureError` before anything is decoded. Every xz stream holds LZMA2 data, so
 `exclude={CompressionAlgorithm.LZMA2}` refuses all of that too, and a 7z LZMA2 member as well;

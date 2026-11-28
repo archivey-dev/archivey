@@ -18,7 +18,7 @@ import random
 import zlib
 from collections.abc import Callable
 
-from archivey import ArchiveyConfig, FormatPolicy, OptionalLibrary, open_stream
+from archivey import ArchiveyConfig, FormatPolicy, open_stream
 from archivey.internal.streams.codecs.snappy_framed import (
     MAX_CHUNK_DATA,
     NATIVE_DECODERS,
@@ -31,6 +31,7 @@ from archivey.internal.streams.codecs.snappy_framed import (
     decode_raw_python,
     masked_crc,
 )
+from archivey.types import OptionalLibrary
 
 # Each backend's raw decoder alone, without the Python re-check archivey adds to a
 # native refusal, so the comparison sees what the backend itself does.

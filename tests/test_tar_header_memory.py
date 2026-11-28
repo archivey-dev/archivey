@@ -21,11 +21,11 @@ import pytest
 from archivey import (
     ArchiveyConfig,
     CorruptionError,
-    ListingLimits,
     ResourceLimitError,
     TruncatedError,
     open_archive,
 )
+from archivey.config import ListingLimits
 from tests.memory_util import traced_peak
 
 _TRAILER = b"\0" * 1024

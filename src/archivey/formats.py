@@ -1,7 +1,7 @@
 """The shared structures archivey reads formats with, open to formats from outside.
 
 **Experimental.** This interface, and the names that exist only for it
-(:class:`~archivey.PluginContainer`, :class:`~archivey.PluginStream`,
+(:class:`~archivey.types.PluginContainer`, :class:`~archivey.types.PluginStream`,
 ``FormatPolicy.replace`` and ``FormatInfo.from_plugin``), is outside the stability
 policy: any release may change or remove it, a patch release included, with no
 deprecation warning first. Pin the exact archivey version a plugin is tested with.
@@ -57,7 +57,6 @@ from collections.abc import Callable, Generator, Iterator, Mapping
 from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 from typing import (
-    TYPE_CHECKING,
     Any,
     BinaryIO,
     ClassVar,
@@ -82,8 +81,9 @@ from archivey.internal.arg_checks import check_bool
 from archivey.internal.filters import collision_key, extracted_segments
 from archivey.internal.listing_limits import str_retained_bytes
 from archivey.internal.naming import normalize_member_name
+from archivey.internal.nesting import NestDraws
 from archivey.internal.overrides import override
-from archivey.internal.password import PasswordConfirmVerdict
+from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.streamtools import ensure_bufferedio
 from archivey.internal.timestamps import dos_to_datetime, unix_to_datetime
@@ -101,16 +101,12 @@ from archivey.types import (
     ArchiveMember,
     CompressionAlgorithm,
     MemberType,
+    PasswordConfirmVerdict,
     PluginContainer,
     PluginStream,
     SpecialFileType,
     StreamFormat,
 )
-
-if TYPE_CHECKING:
-    from archivey.internal.kernels import KernelLease
-    from archivey.internal.nesting import NestDraws
-    from archivey.internal.resource_usage import ResourceUsageRecorder
 
 __all__ = [
     "CodecCall",
@@ -607,7 +603,7 @@ class ForwardStream:
     def decompress(self, stream_format: StreamFormat | PluginStream) -> ForwardStream:
         """The rest of the archive, from :attr:`offset` on, decoded as a
         ``stream_format`` compression stream (``StreamFormat.GZIP``, ``XZ``, ``ZSTD``,
-        …, or the :class:`~archivey.PluginStream` of a codec added with
+        …, or the :class:`~archivey.types.PluginStream` of a codec added with
         :func:`register_codec`): the payload of an RPM after its headers, say.
 
         Read the archive from the returned stream after this call: this one refuses
@@ -629,7 +625,7 @@ class ForwardStream:
         package the policy turns off (``exclude_libraries`` or ``only_libraries``)
         reads as missing. ``only`` and the
         format entries of ``exclude`` do not apply, since they check only the file the
-        call opens. A :class:`~archivey.CompressionAlgorithm` in ``exclude`` does: a
+        call opens. A :class:`~archivey.types.CompressionAlgorithm` in ``exclude`` does: a
         format whose method it lists (``StreamFormat.XZ`` under
         ``exclude={CompressionAlgorithm.XZ}``) raises ``UnsupportedFeatureError``.
 
@@ -747,8 +743,6 @@ class ReaderContext:
     # unlike ``charge_metadata`` the charge outlives the walk. Internal, set by the
     # adapter; not for plugins.
     _keep_metadata: Callable[[int, str], None] | None = None
-    # The kernel objects ``speedup()`` handed out, given back at close. Internal.
-    _kernel_lease: KernelLease
 
     def __init__(
         self,
@@ -794,8 +788,11 @@ class ReaderContext:
         self._open_nested = open_nested
         from archivey.internal.kernels import KernelLease
 
-        # Made here, not on first use: two threads asking at once would each make one,
-        # and what the lost one tracked would never be given back.
+        # The kernel objects ``speedup()`` handed out, given back at close. Not a
+        # class annotation: the kernels module imports this one, so the name would not
+        # resolve for ``typing.get_type_hints``. Made here, not on first use: two
+        # threads asking at once would each make one, and what the lost one tracked
+        # would never be given back.
         self._kernel_lease = KernelLease()
 
     @property
@@ -981,7 +978,7 @@ class ReaderContext:
         hold, and under
         ``plugins=False`` a plugin format or codec raises ``UnsupportedFeatureError``,
         and so does a format whose compression decodes with a
-        :class:`~archivey.CompressionAlgorithm` ``exclude`` lists. ``only`` and the
+        :class:`~archivey.types.CompressionAlgorithm` ``exclude`` lists. ``only`` and the
         format entries of ``exclude`` check only the file the call opens, and a method
         entry holds for the inner reader's members too. A format that needs a
         seekable source (7z, or RAR without RARLAB ``unrar`` 7.00 or later) raises
@@ -1161,7 +1158,7 @@ class ReaderContext:
         with its own framing, decoded as a file of that format is: ``ZLIB`` (deflate
         with the zlib header and Adler-32), ``GZIP``, ``XZ``, ``LZMA_ALONE``, ``LZIP``
         and the others ``StreamFormat`` names, or a registered codec's
-        :class:`~archivey.PluginStream` member. Any other method raises
+        :class:`~archivey.types.PluginStream` member. Any other method raises
         ``UnsupportedFeatureError``, and one whose optional package is missing raises
         ``PackageNotInstalledError``.
 
@@ -1171,7 +1168,7 @@ class ReaderContext:
         raises ``PackageNotInstalledError``.
         ``only`` and the format entries of ``exclude`` do not apply: they check only the
         file the call opens, so a member stored with ``StreamFormat.XZ`` decodes under
-        ``exclude={StreamFormat.XZ}``. A :class:`~archivey.CompressionAlgorithm` in
+        ``exclude={StreamFormat.XZ}``. A :class:`~archivey.types.CompressionAlgorithm` in
         ``exclude`` does apply: ``exclude={CompressionAlgorithm.XZ}`` refuses that
         call, for ``CompressionAlgorithm.XZ`` or ``StreamFormat.XZ``, with
         ``UnsupportedFeatureError`` before the codec runs.
@@ -1351,7 +1348,7 @@ class FormatHandler(ABC):
 
     format: ClassVar[ArchiveFormat]
     """The format, with ``StreamFormat.UNCOMPRESSED``. A plugin builds it from a
-    :class:`~archivey.PluginContainer` member; a built-in format keeps its
+    :class:`~archivey.types.PluginContainer` member; a built-in format keeps its
     :class:`~archivey.ContainerFormat` member. A handler that replaces a built-in reader
     through ``FormatPolicy(replace=)`` uses the built-in format, such as
     ``ArchiveFormat.ZIP``, and is not registered."""
@@ -1371,10 +1368,10 @@ class FormatHandler(ABC):
     built-in probe. A replacement plugin declares none.
 
     It answers with a verdict: :attr:`DetectionConfidence.REJECTED
-    <archivey.DetectionConfidence.REJECTED>` when the bytes are not the format,
-    :attr:`DetectionConfidence.GUESS <archivey.DetectionConfidence.GUESS>` for a
+    <archivey.detection.DetectionConfidence.REJECTED>` when the bytes are not the format,
+    :attr:`DetectionConfidence.GUESS <archivey.detection.DetectionConfidence.GUESS>` for a
     weak match, :attr:`DetectionConfidence.PROBABLE
-    <archivey.DetectionConfidence.PROBABLE>` for a match. A probe that only tells
+    <archivey.detection.DetectionConfidence.PROBABLE>` for a match. A probe that only tells
     yes from no answers ``PROBABLE`` or ``REJECTED``. archivey reports the verdict as
     the detection's confidence, and reports a ``GUESS`` as ``PROBABLE`` when the
     source's extension names the format. Inside a compressor, a ``GUESS`` the extension
@@ -1611,7 +1608,7 @@ class CodecHandler(ABC):
     """
 
     stream_format: ClassVar[PluginStream]
-    """The format, a member of a :class:`~archivey.PluginStream` subclass. Its value
+    """The format, a member of a :class:`~archivey.types.PluginStream` subclass. Its value
     is the file extension, without the dot."""
 
     extension_aliases: ClassVar[tuple[str, ...]] = ()

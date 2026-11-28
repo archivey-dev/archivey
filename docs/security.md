@@ -142,8 +142,8 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   restart from as it reads, so a seek jumps to the nearest one instead of decompressing from the
   start. rapidgzip can crash on some damaged data, so it runs in a separate process, for bzip2 too,
   and if it crashes, the standard library's decoder takes over and reports what it finds. To avoid
-  it, pass `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.AcceleratorMode.OFF,
-  use_indexed_bzip2=archivey.AcceleratorMode.OFF)`.
+  it, pass `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.config.AcceleratorMode.OFF,
+  use_indexed_bzip2=archivey.config.AcceleratorMode.OFF)`.
 
     rapidgzip gives the same results as the standard library except for three crafted shapes. The
     first is a ZIP member or 7z coder holding two DEFLATE streams, with a size and CRC that cover

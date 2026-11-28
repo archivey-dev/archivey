@@ -19,7 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, SpoolLimits, open_archive
+from archivey import ArchiveyConfig, open_archive
+from archivey.config import SpoolLimits
 from archivey.exceptions import (
     ArchiveyError,
     ReadError,

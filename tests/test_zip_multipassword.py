@@ -19,11 +19,10 @@ from archivey import (
     ArchiveyConfig,
     DiagnosticCode,
     DiagnosticPolicy,
-    HashAlgorithm,
     MemberType,
-    PasswordRequest,
     open_archive,
 )
+from archivey.config import PasswordRequest
 from archivey.diagnostics import EncryptedVerificationContext, SymlinkTargetContext
 from archivey.exceptions import (
     ArchiveyError,
@@ -37,6 +36,7 @@ from archivey.internal import kernels, password as password_module, password_con
 from archivey.internal.backends import zip_reader, zipcrypto
 from archivey.internal.password import is_wrong_password
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_PREFIX_BYTES
+from archivey.types import HashAlgorithm
 from tests.conftest import assert_raised_again, requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import NonSeekableBytesIO

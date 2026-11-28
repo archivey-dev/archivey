@@ -20,14 +20,13 @@ from typing import BinaryIO
 import pytest
 
 from archivey import (
-    AcceleratorMode,
     ArchiveMember,
     ArchiveyConfig,
     DiagnosticCode,
-    ProcessIsolation,
     open_archive,
     open_stream,
 )
+from archivey.config import AcceleratorMode, ProcessIsolation
 from archivey.exceptions import ArchiveyUsageError
 from archivey.types import MemberStreams
 

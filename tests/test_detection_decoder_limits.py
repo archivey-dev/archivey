@@ -25,11 +25,11 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
-    DecoderLimits,
     DiagnosticPolicy,
     detect_format,
     open_archive,
 )
+from archivey.config import DecoderLimits
 from archivey.detection_cost import TierSkip, TierSkipReason
 from archivey.diagnostics import (
     ARCHIVE_INTEGRITY_CODES,

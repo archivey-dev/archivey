@@ -22,7 +22,8 @@ from typing import Any
 
 import pytest
 
-from archivey import ArchiveFormat, ArchiveyConfig, DetectionConfidence, detect_format
+from archivey import ArchiveFormat, ArchiveyConfig, detect_format
+from archivey.detection import DetectionConfidence
 from archivey.detection_cost import TierSkip, TierSkipReason
 from archivey.exceptions import TruncatedError
 from archivey.internal.config import DEFAULT_STREAM_CONFIG, probe_lzma_dictionary

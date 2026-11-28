@@ -17,13 +17,8 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey import (
-    ArchiveFormat,
-    ArchiveyConfig,
-    DecoderLimits,
-    ResourceLimitError,
-    SpoolLimits,
-)
+from archivey import ArchiveFormat, ArchiveyConfig, ResourceLimitError
+from archivey.config import DecoderLimits, SpoolLimits
 from archivey.internal.config import check_decoder_memory
 from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.spool import SpoolBudget

@@ -19,16 +19,10 @@ from collections.abc import Callable, Iterator
 
 import pytest
 
-from archivey import (
-    ArchiveFormat,
-    ArchiveyUsageError,
-    StreamFormat,
-    Verification,
-    open_archive,
-)
+from archivey import ArchiveFormat, ArchiveyUsageError, StreamFormat, open_archive
 from archivey.formats import ForwardStream, MemberDigest, MemberSpan, SequentialReader
 from archivey.internal.format_adapter import registration_scope
-from archivey.types import ArchiveMember
+from archivey.types import ArchiveMember, Verification
 from tests.test_ar import _ar
 from tests.test_format_api_sequential import (
     _DECODED_ENTRIES,

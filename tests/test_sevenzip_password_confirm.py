@@ -491,7 +491,7 @@ def test_the_trial_decodes_draw_the_decoded_byte_budget(tmp_path: Path) -> None:
     archive = _build(tmp_path, "budget", {"a.bin": data}, method="Copy", solid=True)
 
     def config(cap: int) -> archivey.ArchiveyConfig:
-        limits = archivey.DecoderLimits(max_nest_decoded_bytes=cap)
+        limits = archivey.config.DecoderLimits(max_nest_decoded_bytes=cap)
         return archivey.ArchiveyConfig(decoder_limits=limits)
 
     passwords = ["wrong", _PASSWORD]

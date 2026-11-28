@@ -1022,7 +1022,7 @@ def test_a_directory_entry_with_no_local_entry_under_stop_raises(
 def test_a_directory_entry_with_no_local_entry_is_reported_to_on_progress(
     tmp_path: Path,
 ) -> None:
-    seen: list[archivey.ExtractionProgress] = []
+    seen: list[archivey.types.ExtractionProgress] = []
     report = _piped_report(
         _missing_entry(), tmp_path, on_error=OnError.CONTINUE, on_progress=seen.append
     )
@@ -1386,7 +1386,7 @@ def test_progress_reports_each_member_while_staged_then_the_tallies(
     hand.local(b"a.txt", b"one")
     hand.local(b"b.txt", b"two")
     hand.local(b"c.txt", b"three")
-    seen: list[archivey.ExtractionProgress] = []
+    seen: list[archivey.types.ExtractionProgress] = []
     _piped_report(hand.directory(0, 2), tmp_path, on_progress=seen.append)
     assert [(p.member.name, p.members_done, p.members_extracted) for p in seen] == [
         ("a.txt", 1, 0),

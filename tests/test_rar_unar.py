@@ -27,13 +27,8 @@ from typing import BinaryIO
 
 import pytest
 
-from archivey import (
-    ArchiveReader,
-    ArchiveyConfig,
-    RarDecompressor,
-    SpoolLimits,
-    open_archive,
-)
+from archivey import ArchiveReader, ArchiveyConfig, open_archive
+from archivey.config import RarDecompressor, SpoolLimits
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,

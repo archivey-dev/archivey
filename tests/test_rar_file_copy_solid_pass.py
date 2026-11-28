@@ -21,20 +21,15 @@ from pathlib import Path
 
 import pytest
 
-from archivey import (
-    ArchiveyConfig,
-    DecoderLimits,
-    ExtractionLimits,
-    ExtractionProgress,
-    SpoolLimits,
-    open_archive,
-)
+from archivey import ArchiveyConfig, open_archive
+from archivey.config import DecoderLimits, ExtractionLimits, SpoolLimits
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     ResourceLimitError,
 )
 from archivey.internal.backends import rar_copy_sources, rar_reader
+from archivey.types import ExtractionProgress
 from tests.conftest import binary_refusal
 from tests.extract_util import open_and_extract
 from tests.rar_util import flag_size_unknown

@@ -55,21 +55,23 @@ from typing import Any, NamedTuple
 import pytest
 
 from archivey import (
-    AcceleratorMode,
     ArchiveFormat,
     ArchiveReader,
     ArchiveyConfig,
-    DecoderLimits,
     DiagnosticPolicy,
-    ExtractionLimits,
     FormatPolicy,
-    ListingLimits,
-    SalvageLimits,
-    SpoolLimits,
     detect_format,
     format_availability,
     open_archive,
     open_stream,
+)
+from archivey.config import (
+    AcceleratorMode,
+    DecoderLimits,
+    ExtractionLimits,
+    ListingLimits,
+    SalvageLimits,
+    SpoolLimits,
 )
 from archivey.detection_cost import (
     BALANCED_BUDGET,

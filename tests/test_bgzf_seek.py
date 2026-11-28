@@ -396,7 +396,8 @@ def test_bgzf_size_is_known_after_a_walk_or_a_full_read(fill: str) -> None:
 
 
 def test_a_bgzf_member_size_is_cheap_on_an_archive_stream() -> None:
-    from archivey import AcceleratorMode as PublicMode, ArchiveyConfig, open_archive
+    from archivey import ArchiveyConfig, open_archive
+    from archivey.config import AcceleratorMode as PublicMode
 
     data = make_bgzf(_BIG_PARTS)
     source = CountingBytesIO(data)

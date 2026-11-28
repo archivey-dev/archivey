@@ -54,13 +54,8 @@ except ImportError:  # pragma: no cover - [core-only] leg
         raise
     pytest.skip("hypothesis not installed (dev group)", allow_module_level=True)
 
-from archivey import (
-    ExtractionPolicy,
-    OnBlocked,
-    OnError,
-    OverwritePolicy,
-    open_archive,
-)
+from archivey import ExtractionPolicy, open_archive
+from archivey.types import OnBlocked, OnError, OverwritePolicy
 
 pytestmark = pytest.mark.skipif(
     not hasattr(os, "symlink") or os.name == "nt", reason="POSIX symlinks"

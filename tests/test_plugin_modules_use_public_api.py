@@ -129,6 +129,23 @@ def test_the_import_guard_sees_an_internal_import(tmp_path: Path) -> None:
         assert_only_public_archivey(str(probe))
 
 
+def test_the_import_guard_accepts_every_public_module(tmp_path: Path) -> None:
+    """A name a public submodule lists in ``__all__`` is an allowed import, for each
+    module in ``api_surface.PUBLIC_MODULES``: a ported reader that needs a cost type
+    or ``sanitize_names`` imports it from its own module."""
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "from archivey.cost import AccessCost\n"
+        "from archivey.reader import MemberPass\n"
+        "from archivey.paths import sanitize_names\n"
+        "from archivey.core import list_known_formats\n"
+        "from archivey.format_policy import FormatPolicy\n"
+        "from archivey.detection_cost import DetectionBudget\n",
+        encoding="utf-8",
+    )
+    assert_only_public_archivey(str(probe))
+
+
 def test_the_import_guard_sees_a_private_name_of_a_public_module(
     tmp_path: Path,
 ) -> None:

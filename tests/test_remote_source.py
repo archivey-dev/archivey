@@ -38,14 +38,12 @@ from archivey import (  # noqa: E402
     CorruptionError,
     DiagnosticCode,
     DiagnosticPolicy,
-    DiagnosticRaisedError,
     FormatDetectionError,
-    ReadError,
-    SourceChangedError,
     detect_format,
     open_archive,
     open_stream,
 )
+from archivey.exceptions import DiagnosticRaisedError, ReadError, SourceChangedError  # noqa: E402
 from archivey.internal.remote import (  # noqa: E402
     PlannerConstants,
     RangeSource,

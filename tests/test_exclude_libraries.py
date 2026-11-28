@@ -27,26 +27,24 @@ from archivey import (
     ArchiveyConfig,
     ArchiveyUsageError,
     ContainerFormat,
-    DetectionConfidence,
     FormatDetectionError,
     FormatPolicy,
-    FormatSupport,
-    OptionalLibrary,
     PackageNotInstalledError,
     StreamFormat,
     detect_format,
     format_availability,
-    list_supported_formats,
     open_archive,
     open_stream,
 )
 from archivey.config import AcceleratorMode, RarDecompressor
+from archivey.core import list_supported_formats
+from archivey.detection import DetectionConfidence
 from archivey.formats import ReaderContext, ReaderSource
 from archivey.internal.excluded_libraries import EXCLUDED_REASON
 from archivey.internal.format_adapter import registration_scope
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.brotli_codec import BrotliCodec
-from archivey.types import OptionalLibraryStr
+from archivey.types import FormatSupport, OptionalLibrary, OptionalLibraryStr
 from tests.conftest import requires, requires_binary, requires_zstd, run_7z
 from tests.test_format_api import _ENTRIES, _MAGIC, _plugin_with, build_toya
 from tests.test_format_policy import StdlibZipPlugin

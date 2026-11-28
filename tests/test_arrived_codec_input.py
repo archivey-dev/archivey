@@ -35,13 +35,8 @@ from typing import BinaryIO
 
 import pytest
 
-from archivey import (
-    ArchiveFormat,
-    ArchiveyConfig,
-    ProcessIsolation,
-    open_archive,
-    open_stream,
-)
+from archivey import ArchiveFormat, ArchiveyConfig, open_archive, open_stream
+from archivey.config import ProcessIsolation
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import ArchiveyError
 from archivey.types import ContainerFormat

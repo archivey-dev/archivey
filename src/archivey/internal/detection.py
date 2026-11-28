@@ -1,4 +1,4 @@
-"""Format detection: ``detect_format()``, which returns a :class:`~archivey.FormatInfo`.
+"""Format detection: ``detect_format()``, which returns a :class:`~archivey.detection.FormatInfo`.
 
 Why the steps are in this order, what each one guards against, and how the budget bounds
 them is in ``dev-docs/topics/detection.md``; this docstring covers the local path.

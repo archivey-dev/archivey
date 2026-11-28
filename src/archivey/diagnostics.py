@@ -4,7 +4,7 @@ A reader reports something odd but not fatal, such as a renamed member or a miss
 end-of-archive marker, as a :class:`Diagnostic` with a :class:`DiagnosticCode`.
 Readers emit them through ``archivey.internal.diagnostics_collector``, which applies
 the caller's :class:`DiagnosticPolicy` (ignore, collect or raise
-:exc:`~archivey.DiagnosticRaisedError`) and calls ``ArchiveyConfig.on_diagnostic``.
+:exc:`~archivey.exceptions.DiagnosticRaisedError`) and calls ``ArchiveyConfig.on_diagnostic``.
 Callers read the collected records from ``reader.diagnostics``, a stream's
 ``ArchiveStream.diagnostics``, ``ArchiveMember.diagnostics``,
 ``FormatInfo.diagnostics`` after detection, an :class:`ExtractionReport` or a
@@ -270,7 +270,7 @@ class DiagnosticCode(StrEnum):
     """The archive is read by range requests from an ``fsspec`` file system that
     archivey cannot pin to one version of the object, so a replacement of the same
     length, or a longer one, while it reads would go unseen. A shorter one raises
-    :class:`~archivey.SourceChangedError` on the first fetch past its end. An
+    :class:`~archivey.exceptions.SourceChangedError` on the first fetch past its end. An
     ``OpenFile`` with ``compression=`` records it too: it is read through fsspec's
     decompressing file, and archivey checks nothing about the object. Advisory: it
     describes how the archive arrives, not its bytes."""
@@ -295,7 +295,7 @@ class DiagnosticCode(StrEnum):
     ARCHIVE_REGION_SKIPPED = "archive_region_skipped"
     """A salvage search (``open_archive(salvage=True)``) stepped over a range of the
     archive in which no header passed the format's checks, or stopped at a
-    :class:`~archivey.SalvageLimits` limit. The range may hold member data nothing
+    :class:`~archivey.config.SalvageLimits` limit. The range may hold member data nothing
     lists. Reported once per range, at listing. Salvage only."""
     SALVAGE_UNAVAILABLE = "salvage_unavailable"
     """``open_archive(salvage=True)`` opened a format whose salvage search cannot run:
@@ -1440,11 +1440,11 @@ class RegionSkippedContext(_JsonSafeContext):
 
     - ``"no_header"``: no header in the range passes the format's checks.
     - ``"search_limit"``: :attr:`SalvageLimits.max_search_bytes
-      <archivey.SalvageLimits.max_search_bytes>` stopped the search, which started at
+      <archivey.config.SalvageLimits.max_search_bytes>` stopped the search, which started at
       ``offset``. Nothing after it is listed. ``length`` is ``None``.
     - ``"report_limit"``: the record after the last one
       :attr:`SalvageLimits.max_reported_regions
-      <archivey.SalvageLimits.max_reported_regions>` allows. ``offset`` is where the
+      <archivey.config.SalvageLimits.max_reported_regions>` allows. ``offset`` is where the
       first range not reported starts, ``length`` is ``None``, and the message counts
       the ranges not reported.
     """
@@ -1961,7 +1961,7 @@ class DiagnosticPolicy:
     """Codes that are counted but not kept, logged or passed to ``on_diagnostic``."""
 
     raise_on: frozenset[DiagnosticCode]
-    """Codes that raise :class:`~archivey.DiagnosticRaisedError` once recorded."""
+    """Codes that raise :class:`~archivey.exceptions.DiagnosticRaisedError` once recorded."""
 
     # A hand-written __init__ (the decorator has init=False) so the parameters can
     # describe what a caller passes while the fields describe what every reader gets
@@ -2167,7 +2167,7 @@ class VerifyReport:
 
     Diagnostics do not count toward ``ok``: :class:`DiagnosticPolicy` already decides
     which of them are errors, and a code it raises on stops ``verify_all()`` with
-    :class:`~archivey.DiagnosticRaisedError` instead of returning a report.
+    :class:`~archivey.exceptions.DiagnosticRaisedError` instead of returning a report.
 
     Experimental, like ``verify_all()``: any release, a patch included, may change it.
     """

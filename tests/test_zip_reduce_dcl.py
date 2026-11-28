@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import CompressionAlgorithm, open_archive
+from archivey import open_archive
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
@@ -27,6 +27,7 @@ from archivey.internal.streams.codecs.zip_legacy_decoder import (
     DclImplodeDecompressor,
     ReduceDecompressor,
 )
+from archivey.types import CompressionAlgorithm
 from tests.streams_util import NonSeekableBytesIO
 from tests.zip_legacy_build import (
     BitWriter,

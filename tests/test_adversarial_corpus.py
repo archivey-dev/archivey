@@ -14,11 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ExtractionPolicy, ExtractionStatus, open_archive
+from archivey import ExtractionPolicy, open_archive
 from archivey.exceptions import (
     ExtractionError,
     FilterRejectionError,
 )
+from archivey.types import ExtractionStatus
 from tests import create_adversarial as gen
 from tests.create_adversarial import (
     Adversarial,

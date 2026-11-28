@@ -18,21 +18,19 @@ import archivey
 from archivey import (
     ArchiveFormat,
     ArchiveyError,
-    CompressionAlgorithm,
     CorruptionError,
-    CreateSystem,
     DiagnosticCode,
-    ListingCost,
     MemberType,
     TruncatedError,
     UnsupportedFeatureError,
-    Verification,
     detect_format,
     open_archive,
 )
+from archivey.cost import ListingCost
 from archivey.internal.backends import lha_reader
 from archivey.internal.streams.codecs.lharc_decoder import DECODERS
 from archivey.internal.streams.codecs.lzh_decoder import LzhDecoder
+from archivey.types import CompressionAlgorithm, CreateSystem, Verification
 from tests.lha_util import (
     BitWriter,
     Member,
@@ -505,7 +503,7 @@ def test_the_dropped_fork_counts_against_the_ratio_limit(os_id: bytes) -> None:
 def test_the_dropped_fork_honours_the_reader_ratio_limit(os_id: bytes) -> None:
     wrapped = _macbinary(data=b"x", resource=bytes(2_000_000))
     raw = archive([_mac_member(wrapped, os_id=os_id, method="-lh5-")])
-    limits = archivey.DecoderLimits(max_ratio=10, ratio_activation_threshold=0)
+    limits = archivey.config.DecoderLimits(max_ratio=10, ratio_activation_threshold=0)
     config = archivey.ArchiveyConfig(decoder_limits=limits)
     with open_archive(io.BytesIO(raw), config=config) as reader:
         (member,) = reader.members()
@@ -645,7 +643,7 @@ def test_listing_is_a_header_walk() -> None:
 
 
 def test_format_is_listed() -> None:
-    assert ArchiveFormat.LHA in archivey.list_supported_formats()
+    assert ArchiveFormat.LHA in archivey.core.list_supported_formats()
 
 
 def test_a_pipe_is_refused() -> None:
@@ -661,7 +659,7 @@ def test_a_pipe_is_refused() -> None:
             b[: len(chunk)] = chunk
             return len(chunk)
 
-    with pytest.raises(archivey.StreamNotSeekableError):
+    with pytest.raises(archivey.exceptions.StreamNotSeekableError):
         open_archive(Pipe(archive(_members("-lh5-", 2))), format=ArchiveFormat.LHA)
 
 

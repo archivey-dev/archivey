@@ -3,9 +3,9 @@
 One :class:`ProgressCallback` per command shows one line on stderr. It takes two kinds
 of event:
 
-- :class:`~archivey.ExtractionProgress` from ``test`` and ``extract``: output bytes
+- :class:`~archivey.types.ExtractionProgress` from ``test`` and ``extract``: output bytes
   against the selected members' total.
-- :class:`~archivey.SourceProgress` from ``ArchiveyConfig.on_source_read``
+- :class:`~archivey.types.SourceProgress` from ``ArchiveyConfig.on_source_read``
   (:meth:`ProgressCallback.source_read`), for every verb: how far the archive's own file
   has been read. Before the first member (and in ``list``, ``info`` and ``cat``) it is
   a status line that appears only after :data:`STATUS_DELAY` seconds and is cleared at
@@ -26,9 +26,9 @@ import threading
 from collections.abc import Callable
 from typing import Any, Protocol, TextIO, cast
 
-from archivey import ExtractionProgress, SourceProgress
 from archivey.cli.format import escape_member_name
 from archivey.cli.logging_config import log_lines_through
+from archivey.types import ExtractionProgress, SourceProgress
 
 
 class _TqdmBar(Protocol):

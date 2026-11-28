@@ -14,15 +14,10 @@ from typing import Any, BinaryIO, cast
 
 import pytest
 
-from archivey import (
-    ArchiveyConfig,
-    CorruptionError,
-    SourceProgress,
-    SpoolLimits,
-    open_archive,
-    open_stream,
-)
+from archivey import ArchiveyConfig, CorruptionError, open_archive, open_stream
+from archivey.config import SpoolLimits
 from archivey.internal.read_progress import LOCAL_REPORT_STEP, SourceReadReporter
+from archivey.types import SourceProgress
 from tests.conftest import requires, requires_unrar_cli
 
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -1390,7 +1385,7 @@ def test_a_ratio_guard_raises_a_stop_on_the_read_that_met_it() -> None:
     # A large read goes to the decoder in steps. A stop on a later step raises from
     # that read; it is not held behind the steps already gathered, as a decoder
     # error is.
-    from archivey import DecoderLimits
+    from archivey.config import DecoderLimits
     from archivey.internal.bomb_tracker import DecodeRatioGuard
 
     guard = DecodeRatioGuard(

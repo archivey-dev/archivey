@@ -29,14 +29,13 @@ from archivey import (
     CorruptionError,
     EncryptionError,
     FormatPolicy,
-    OptionalLibrary,
-    ProcessIsolation,
     StreamFormat,
     TruncatedError,
     UnsupportedFeatureError,
     open_archive,
     open_stream,
 )
+from archivey.config import ProcessIsolation
 from archivey.internal import kernels
 from archivey.internal.backends import lha_reader, zipcrypto
 from archivey.internal.kernels import _select, child as kernel_child, rust
@@ -73,6 +72,7 @@ from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV
 from archivey.internal.streams.codecs.unix_compress_decoder import (
     UnixCompressDecoder,
 )
+from archivey.types import OptionalLibrary
 from tests.bcj2_util import bcj2_encode
 from tests.cab_util import CabFile, CabFolder, LzxEncoder, write_cab
 from tests.conftest import CPYTHON, requires

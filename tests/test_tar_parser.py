@@ -19,7 +19,6 @@ from archivey import (
     ArchiveyConfig,
     DiagnosticCode,
     DiagnosticPolicy,
-    ExtractionStatus,
     open_archive,
 )
 from archivey.diagnostics import HeaderAmbiguityContext
@@ -56,6 +55,7 @@ from archivey.internal.backends.tar_parser import (
     sparse_map_0_1,
     validate_sparse_map,
 )
+from archivey.types import ExtractionStatus
 from tests.tar_build import (
     END as _END,
     block as _block,

@@ -67,7 +67,7 @@ def test_a_descendant_retains_its_closed_root() -> None:
 def test_streams_keep_the_nest_ratio_after_readers_are_dropped() -> None:
     source = _zip(b"x" * 4096)
     config = archivey.ArchiveyConfig(
-        decoder_limits=archivey.DecoderLimits(
+        decoder_limits=archivey.config.DecoderLimits(
             max_ratio=1.2, ratio_activation_threshold=0
         )
     )
