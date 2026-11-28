@@ -25,6 +25,12 @@ from archivey.internal.detection_workspace import (
     PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE,
 )
 from archivey.internal.overrides import override
+from archivey.internal.probe_verdict import (
+    PROBE_MATCH,
+    PROBE_REJECTED,
+    ProbeVerdict,
+    probe_verdict,
+)
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     Codec,
@@ -189,7 +195,7 @@ class BrotliCodec(StreamCodec):
         charge_decode: ProbeChargeDecode | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
         decoder_limits: DecoderLimits = DecoderLimits(),
-    ) -> bool:
+    ) -> ProbeVerdict:
         """Recognize a raw Brotli stream — which has no magic — by decoding a bounded prefix.
 
         When ``source_length`` is known, reject a first meta-block that *declares* more
@@ -203,7 +209,7 @@ class BrotliCodec(StreamCodec):
         if source_length is not None and first_block_overruns_source(
             prefix, source_length
         ):
-            return False
+            return PROBE_REJECTED
         read_available = (
             read_at.available if isinstance(read_at, ProbeReadAccess) else None
         )
@@ -211,7 +217,7 @@ class BrotliCodec(StreamCodec):
             prefix, source_length, read_at=read_at, read_available=read_available
         )
         if walk.proves_invalid:
-            return False
+            return PROBE_REJECTED
         compressed_at = walk.compressed_at
         if not self._decodes_sample(
             prefix,
@@ -219,18 +225,20 @@ class BrotliCodec(StreamCodec):
             isolation=isolation,
             decoder_limits=decoder_limits,
         ):
-            return False
+            return PROBE_REJECTED
         if compressed_at is None:
-            return True
-        return self._decodes_through(
-            prefix,
-            source_length,
-            compressed_at,
-            read_at=read_at,
-            charge_decode=charge_decode,
-            read_available=read_available,
-            isolation=isolation,
-            decoder_limits=decoder_limits,
+            return PROBE_MATCH
+        return probe_verdict(
+            self._decodes_through(
+                prefix,
+                source_length,
+                compressed_at,
+                read_at=read_at,
+                charge_decode=charge_decode,
+                read_available=read_available,
+                isolation=isolation,
+                decoder_limits=decoder_limits,
+            )
         )
 
     def _decodes_through(

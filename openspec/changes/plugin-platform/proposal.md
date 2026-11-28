@@ -1,0 +1,110 @@
+## Why
+
+The plugin interface (`archivey.formats`) was built beside the built-in path, not in
+place of it. On main today:
+
+- A format registers with `register_reader`, `register_builtin_format` or
+  `register_format`, depending on who wrote it. A built-in is named by a
+  `ContainerFormat` member, a plugin by a `PluginContainer` subclass, and detection
+  ranks the two differently.
+- `CompressionAlgorithm` and `ContainerFormat` are closed enums that already hold names
+  only plugin-shaped readers use (LZX, LZH, ADC, LZFSE; DMG, CAB, LHA and ten more).
+- `backends/__init__.py` imports all 19 reader modules for their side effect, so
+  `import archivey` loads 210 modules, and detection order is import order.
+- `register_codec` adds a whole stream format only. A plugin cannot supply a method that
+  the ZIP or 7z reader uses.
+- 13 readers are written on `archivey.formats`; ten of them still import
+  `archivey.internal`.
+- The plugin guide tells a plugin to pin `archivey==X.Y.Z`, so two plugins tested on
+  different versions cannot be installed together.
+
+The maintainer's direction (2026-11-24): split the non-core formats into a few packages,
+make no distinction between our plugins and other people's, let plugins register codecs
+that other formats use, and solve the import cost with the same mechanism.
+
+## What Changes
+
+- **Manifest.** One entry per format or codec, core's included: a data file that core
+  reads without running the package. Reader modules are imported on first use.
+- **Open names. Breaking.** `ContainerFormat`, `StreamFormat` and `OptionalLibrary`
+  become open string types, and `CompressionAlgorithm` an open value type that is not a
+  string, as today. All four keep constants for core's own names.
+  `PluginContainer`, `PluginStream`, the `Literal` spelling lists and
+  `FormatInfo.from_plugin` are removed; `FormatInfo.provider` is added.
+- **Discovery.** Installed packages announce a manifest through the `archivey.plugins`
+  entry point group. Core reads it without importing the package, and applies a call's
+  policy before it imports any code of an installed package. `register_format()` and
+  `register_codec()` stay and take the same entries. This replaces the 2026-10-25
+  explicit-only rule.
+- **Hint table.** Core lists formats it knows and does not ship, with the package that
+  reads each.
+- **Codec registry.** Codecs by name, method bindings per container, and a second
+  implementation of a name only where its owner or the caller approves it.
+  `archivey-speedups` stays a library that archivey imports; readers in any package reach
+  its kernels through one public helper.
+- **Reader API.** Public helpers replace each `archivey.internal` import of the moved
+  readers. `API_VERSION` replaces the exact version pin. The thread rules are the short ones
+  that the concurrency cut, a separate change archived 2026-11-25, leaves.
+- **Packages.** `archivey-disk-images`, `archivey-dmg`, `archivey-package-formats`,
+  `archivey-legacy-formats` and `archivey-compressors` under `packages/`. The
+  last holds lz4, mozlz4, Brotli, lzop, bzip3 and Snappy; `.Z` goes with the legacy
+  formats. `[recommended]`, `[all]`, `[free-threaded]` and `archivey-cli` include all
+  five. No extra is named after a
+  package.
+- **Typed `extra` keys. Breaking for type checking.** One `ExtraKey` mechanism for
+  every format replaces the per-key overloads in core.
+- **Format options.** A format that has settings of its own ships a frozen options
+  class with plain-value fields, passed in `ArchiveyConfig(format_options=...)` and
+  named on its manifest entry. `ZipOptions` and `RarOptions` replace the four
+  per-format fields of `ArchiveyConfig`, through the config trim of 0.6.0 (R24).
+- **Test kit.** The shared reader checks become a public module with the pilot
+  package, `archivey.testing` unless another name is chosen then (R19).
+- **Process isolation for package codecs.** A codec names its native object, and
+  archivey runs it in the decoder child under `NATIVE_DECODERS`.
+
+## Capabilities
+
+Deltas are written with each implementation step, not in this plan.
+
+### New Capabilities
+
+- `format-manifest`: entries, discovery, the hint table, ownership of names.
+
+### Modified Capabilities
+
+- `format-plugins`: one registration path, the reader contract, the API version.
+- `backend-registry`: lazy loading, providers, refusals.
+- `format-detection`: detection from manifest data, `refines`.
+- `compressed-streams`: codecs by name, method bindings, second implementations.
+- `packaging-and-extras`: the five packages and the extras that include them.
+- `archive-data-model`: open name types.
+- `testing-contract`: the test kit a package runs against an installed core.
+- The format specs of the formats that move: where they live, nothing else.
+
+## Impact
+
+- **Callers.** `ContainerFormat.ZIP` and string comparisons keep working.
+  `list(ContainerFormat)`, exhaustive `match` on the enums and the `Literal` types stop
+  working. The moved constants (13 containers, eight streams, their `ArchiveFormat`
+  constants and the methods only the packages decode) warn for one release, then go.
+  A string-literal `extra` key types as `object`; the typed way is the format's key constant.
+- **Installs.** Bare `archivey` stops reading the moved formats and says which package
+  to install. `archivey[recommended]` and `archivey-cli` read everything as before.
+- **Same archive, same contents.** Extended to installs: an archive reads the same way
+  or is refused with a hint. Installing a package never changes how a file that already
+  opened is read.
+- **Servers that read uploads.** An allow-list policy (`only=`) reads the same
+  formats whatever is installed. On its own it does not keep an installed package's
+  detection code from running; `providers=` does (design.md, R9).
+  `FormatPolicy.COMMON` carries `providers={"archivey"}` (R11), so under it no
+  package code runs.
+  `plugins=False` allows less after the split, because the moved formats are no
+  longer core's: `providers=` replaces it, and the
+  narrowing is a **Breaking:** line. `only_libraries` admits only the libraries it
+  lists, a plugin's too. Under `NATIVE_DECODERS`, a package codec that declares its
+  native object runs in the child.
+- **Plugin authors.** The interface changes shape once more (it is experimental), then
+  gets a version number. A package can declare options of its own and run the test
+  kit from its own tests.
+- **Releases.** Five more distributions published with each archivey release, in the
+  same workflow as `archivey-cli`.

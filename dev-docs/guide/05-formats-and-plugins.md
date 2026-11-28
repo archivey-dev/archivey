@@ -139,21 +139,23 @@ handler's), wraps a member stream that cannot seek in a `RespawnStream`, and dec
 the backend flags (`SUPPORTS_STREAMING_NON_SEEKABLE` is true for a sequential format).
 
 `register_builtin_format(Handler)` builds a `ReadBackend` subclass for a built-in format,
-in the built-in group. `register_format(Handler)`, the public function, calls
-`register_plugin`, which builds the same kind of class and registers it **after** all
-built-in backends.
+in the built-in group. Core calls it for each handler in its format table
+(`internal/format_table.py`), which also carries what a handler cannot declare yet (a
+trailer, a refinement check, a stub scan); a reader module never registers itself.
+`register_format(Handler)`, the public function, calls `register_plugin`, which builds
+the same kind of class and registers it **after** all built-in backends.
 
 ### Why some built-in formats use the public interface
 
 The interface was designed after the maintainer asked for an architecture that carries
 streaming formats like TAR from the first version, not an indexed-only one (2026-10-25,
-`openspec/changes/plugin-api/design.md` §2a), and asked for it
+`openspec/changes/archive/2026-11-27-plugin-api/design.md` §2a), and asked for it
 to be checked against real third-party format libraries (ARJ, CAB and others) before it was
 built. ISO moved onto it first, with a benchmark to catch regressions; then CPIO, ar and
 SquashFS; then the new formats (RPM, CAB, XAR, deb) were written on it from the start.
 Writing built-in formats against the public interface keeps the interface honest: if
-something is missing, a built-in format notices first. The ar and CPIO readers import only
-public names plus `register_builtin_format`, and their tests check that.
+something is missing, a built-in format notices first. The ar, CPIO and RPM readers
+import only public names, and `tests/test_plugin_modules_use_public_api.py` checks that.
 
 The formats that stay internal are the ones whose features are outside the interface's
 first version: passwords, multi-volume sets, self-extractor stubs, member data decoded by

@@ -1,6 +1,7 @@
 # LZFSE: the `lzfse` package against archivey's own decoder
 
-This is Part A0 of the DMG reader plan (`openspec/changes/dmg-reader/`, design §11). It
+This is Part A0 of the DMG reader plan
+(`openspec/changes/archive/2026-11-27-dmg-reader/`, design §11). It
 checks whether the `lzfse` package from PyPI can be the optional fast LZFSE decoder of
 Part H, next to the pure-Python decoder that Part A ports from the prototype.
 
@@ -41,7 +42,7 @@ exception to "accelerators never change the result" for LZFSE blocks whose liter
 counts are inconsistent. With that ruling, Part H can use the package now: in a child
 process, behind the header walk and the length check (§Using it safely).
 
-A third way is the Rust codecs package (`archivey-codecs`, planned separately). It
+A third way is the Rust speedups package (`archivey-speedups`, planned separately). It
 could hold its own LZFSE kernel with archivey's checks. That is more work, and decision
 D3 in the design prefers an established package as an extra.
 

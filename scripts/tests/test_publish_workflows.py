@@ -1,4 +1,4 @@
-"""publish.yml and codecs-publish.yml: which run reaches which index.
+"""publish.yml and speedups-publish.yml: which run reaches which index.
 
 A PyPI upload cannot be taken back, so the ``if:`` of each publish job is evaluated
 here for every kind of run, rather than compared as text. The evaluator knows only the
@@ -40,7 +40,7 @@ def _runs(tag: str) -> dict[str, Run]:
 
 
 # A tag that each workflow's push trigger matches.
-CASES = {"publish.yml": "v1.2.3", "codecs-publish.yml": "codecs-v1.2.3"}
+CASES = {"publish.yml": "v1.2.3", "speedups-publish.yml": "speedups-v1.2.3"}
 
 _TOKEN = re.compile(
     r"\s*(?:(?P<str>'[^']*')|(?P<op>&&|\|\||==|\(|\)|,)"

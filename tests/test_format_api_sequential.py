@@ -9,6 +9,7 @@ their data, as CPIO's do. Each test registers it on a registry restored afterwar
 
 from __future__ import annotations
 
+import binascii
 import bz2
 import dataclasses
 import gzip
@@ -36,6 +37,7 @@ from archivey import (
     ArchiveyUsageError,
     CorruptionError,
     DecoderLimits,
+    DetectionConfidence,
     MemberType,
     PluginContainer,
     PluginStream,
@@ -991,7 +993,13 @@ def test_a_probe_only_format_is_found_inside_a_compression_stream(
     class Probed(SequentialFormatHandler):
         format = fmt
         extensions = (".ptoys",)
-        probe = staticmethod(lambda prefix: prefix.startswith(_MAGIC))
+        probe = staticmethod(
+            lambda prefix: (
+                DetectionConfidence.PROBABLE
+                if prefix.startswith(_MAGIC)
+                else DetectionConfidence.REJECTED
+            )
+        )
 
         def open_sequential(self, context: ReaderContext) -> ToysReader:
             return ToysReader(context)
@@ -1005,6 +1013,87 @@ def test_a_probe_only_format_is_found_inside_a_compression_stream(
         assert detect_format(io.BytesIO(data)).format == ArchiveFormat.GZ
         probing = archivey.ArchiveyConfig(always_probe_content=True)
         assert detect_format(io.BytesIO(data), config=probing).format == pair
+
+
+def test_a_weak_probe_match_inside_a_compression_stream_is_raised_by_the_name(
+    tmp_path: Path,
+) -> None:
+    """Inside a compressor, the extension naming the format raises a weak match to
+    ``PROBABLE``, as on an uncompressed source."""
+    fmt = ArchiveFormat(ToysContainer.PROBED, StreamFormat.UNCOMPRESSED)
+
+    class Probed(SequentialFormatHandler):
+        format = fmt
+        extensions = (".ptoys",)
+        probe = staticmethod(
+            lambda prefix: (
+                DetectionConfidence.GUESS
+                if prefix.startswith(_MAGIC)
+                else DetectionConfidence.REJECTED
+            )
+        )
+
+        def open_sequential(self, context: ReaderContext) -> ToysReader:
+            return ToysReader(context)
+
+    pair = ArchiveFormat(ToysContainer.PROBED, StreamFormat.GZIP)
+    data = _gz(build_toys(_ENTRIES))
+    with registration_scope():
+        register_format(Probed)
+        named = detect_format(_write(tmp_path, data, "t.ptoys.gz"))
+        assert (named.format, named.confidence) == (
+            pair,
+            DetectionConfidence.PROBABLE,
+        )
+        assert named.corroborated
+
+
+_SCRIPT = b'#!/bin/sh\necho "installing"\ntail -n +4 "$0" | tar xz\nexit 0\n'
+
+
+def _uu(data: bytes) -> bytes:
+    lines = [binascii.b2a_uu(data[i : i + 45]) for i in range(0, len(data), 45)]
+    return b"begin 640 stored.bin\n" + b"".join(lines) + b"`\nend\n"
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [_gz, lambda d: _SCRIPT + _gz(d), _uu],
+    ids=["gzip", "script-then-gzip", "uuencode"],
+)
+def test_a_weak_inner_match_keeps_the_wrapper_format(
+    wrap: Callable[[bytes], bytes],
+) -> None:
+    """Behind any wrapper, a weak inner match does not switch formats: the source is
+    reported as it is without the plugin, so it opens as the wrapper it surely is."""
+    fmt = ArchiveFormat(ToysContainer.PROBED, StreamFormat.UNCOMPRESSED)
+
+    class Probed(SequentialFormatHandler):
+        format = fmt
+        extensions = (".ptoys",)
+        probe = staticmethod(
+            lambda prefix: (
+                DetectionConfidence.GUESS
+                if prefix.startswith(_MAGIC)
+                else DetectionConfidence.REJECTED
+            )
+        )
+
+        def open_sequential(self, context: ReaderContext) -> ToysReader:
+            return ToysReader(context)
+
+    data = wrap(build_toys(_ENTRIES))
+    probing = archivey.ArchiveyConfig(always_probe_content=True)
+    without = detect_format(io.BytesIO(data), config=probing)
+    with registration_scope():
+        register_format(Probed)
+        info = detect_format(io.BytesIO(data), config=probing)
+    assert info.format.container is not ToysContainer.PROBED
+    assert (info.format, info.confidence, info.corroborated) == (
+        without.format,
+        without.confidence,
+        without.corroborated,
+    )
 
 
 def test_compressed_bytes_that_are_not_the_format_stay_a_compressed_file(

@@ -58,7 +58,7 @@ from archivey.internal.filters import (
     is_rooted,
     strip_absolute_root,
 )
-from archivey.internal.format_adapter import HeldInnerData, register_builtin_format
+from archivey.internal.format_adapter import HeldInnerData
 from archivey.internal.overrides import override
 from archivey.terminal import quoted
 from archivey.types import (
@@ -790,6 +790,3 @@ class DebHandler(SequentialFormatHandler):
     @override
     def open_sequential(self, context: ReaderContext) -> DebReader:
         return DebReader(context)
-
-
-DebReadBackend = register_builtin_format(DebHandler)

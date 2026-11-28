@@ -1,4 +1,4 @@
-"""Unix ``compress`` (``.Z``) in Python, as ``archivey_codecs.lzw``: the
+"""Unix ``compress`` (``.Z``) in Python, as ``archivey_speedups.lzw``: the
 :class:`lzma.LZMADecompressor` interface plus ``flush()``, since the format has no end
 marker. The decoder is
 :class:`archivey.internal.streams.codecs.unix_compress_decoder.LzwState`; this class
@@ -140,6 +140,9 @@ class Decompressor:
         out = self._produce(max_length)
         self._clear_offsets = first + self._clear_offsets
         return out
+
+    def close(self) -> None:
+        """Nothing to give back: this decoder runs in this process."""
 
     def flush(self, max_length: int = -1) -> bytes:
         """Mark the end of the input and return the rest of the output, at most

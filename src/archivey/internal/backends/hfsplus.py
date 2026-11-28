@@ -3,7 +3,8 @@ Format").
 
 This module parses; it makes no ``ArchiveMember``. :class:`HfsVolume` reads the volume
 header and the journal state when the image opens (design §6.1 of
-``openspec/changes/dmg-reader``), and everything else at the first listing:
+``openspec/changes/archive/2026-11-27-dmg-reader``), and everything else at the first
+listing:
 
 - the B-trees (:class:`_BTree`): a header node, then index and leaf nodes of
   ``nodeSize`` bytes in the tree's fork. The walk follows the leaf chain from
@@ -1047,7 +1048,8 @@ def decmpfs_reader(
         refusal = context.config.formats._codec_refusal(method)
         if refusal is not None:
             raise UnsupportedFeatureError(f"{refusal}.")
-    # The file's LZFSE or LZVN decoder: archivey-codecs' kernel when the call allows it.
+    # The file's LZFSE or LZVN decoder: archivey-speedups' kernel when the call allows
+    # it.
     apple = (
         decoder_for("lzvn" if kind in _LZVN_KINDS else "lzfse", context.config)
         if method is not None

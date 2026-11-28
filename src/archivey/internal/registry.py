@@ -2,7 +2,8 @@
 :class:`ReadBackend` class that reads it.
 
 Registration is **unconditional**: every known backend — core and optional alike —
-registers when its module is imported. Availability is then derived centrally from the
+is registered when ``archivey.internal.backends`` is imported, from core's format
+table (``internal/format_table.py``). Availability is then derived centrally from the
 optional dependency's module-or-``None`` sentinel, so the registry can report a tri-state,
 compositional :class:`~archivey.FormatSupport` (FULL / PARTIAL / NONE) and produce install-hint
 errors, rather than silently dropping a format whose dependency is absent (see
@@ -10,10 +11,10 @@ errors, rather than silently dropping a format whose dependency is absent (see
 
 Who writes it:
 
-* each module in ``archivey.internal.backends`` registers its backend on import: with
-  :func:`register_reader`, or, for a format written against ``archivey.formats``, with
-  ``format_adapter.register_builtin_format``, which calls :func:`register_reader`
-  itself;
+* ``format_table.register_core_formats`` walks core's table: a module written against
+  ``BaseArchiveReader`` registers its backend with :func:`register_reader` when the
+  table imports it, and for a format written against ``archivey.formats`` the table
+  calls ``format_adapter.register_builtin_format``, which calls :func:`register_reader`;
 * ``format_adapter.register_plugin`` (``archivey.formats.register_format``) registers
   a plugin's backend with :meth:`BackendRegistry.register_plugin_backend`, after them.
 
@@ -52,6 +53,7 @@ from archivey.internal.excluded_libraries import (
     is_excluded_module,
 )
 from archivey.internal.format_args import coerce_archive_format
+from archivey.internal.probe_verdict import ProbeVerdict
 from archivey.internal.sfx import HitValidator
 from archivey.internal.streams.codecs import (
     Codec,
@@ -84,7 +86,8 @@ if TYPE_CHECKING:
 
 
 class ContentProbe(Protocol):
-    """Callable shape for registry content probes.
+    """Callable shape for registry content probes, which answer a
+    :data:`~archivey.internal.probe_verdict.ProbeVerdict`.
 
     ``source_length`` is optional: when detection knows a cheap byte size it is passed
     through so a probe can reject declared framing that cannot fit, or an incomplete
@@ -110,7 +113,7 @@ class ContentProbe(Protocol):
         charge_decode: Callable[[int], bool] | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
         decoder_limits: DecoderLimits = DecoderLimits(),
-    ) -> bool: ...
+    ) -> ProbeVerdict: ...
 
 
 __all__ = [

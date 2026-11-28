@@ -1,4 +1,4 @@
-"""archivey-codecs' kernel objects with archivey's errors.
+"""archivey-speedups' kernel objects with archivey's errors.
 
 Each class here wraps one object of the package (or its stand-in in a decoder child,
 :mod:`archivey.internal.kernels.child`) and keeps its API. A method raises the
@@ -25,7 +25,7 @@ from archivey.internal.kernels._select import (
 )
 
 if TYPE_CHECKING:
-    from archivey.internal.kernels import Crc16, Lzo1xDecompress
+    from archivey.internal.kernels import BlockDecompress, Crc16
 
 _T = TypeVar("_T")
 
@@ -34,7 +34,7 @@ class _Guarded:
     """One package object: its calls go through :meth:`_run`. CRC-16, ZipCrypto and
     BCJ2 run in this process only, so they take the package module itself."""
 
-    __slots__ = ("_k", "_latch", "_module")
+    __slots__ = ("__weakref__", "_k", "_latch", "_module")
 
     _label = ""
 
@@ -147,7 +147,7 @@ class RiscvDecoder(BranchDecoder):
 # ── LZO1X ─────────────────────────────────────────────────────────────────────────────
 
 
-def lzo1x_decompress(module: Kernels) -> Lzo1xDecompress:
+def lzo1x_decompress(module: Kernels) -> BlockDecompress:
     """The package's ``lzo1x.decompress(block, *, out_size= | max_size=)``."""
     kernel = module.lzo1x.decompress
 
@@ -176,7 +176,7 @@ def lzo1x_decompress(module: Kernels) -> Lzo1xDecompress:
 _APPLE_LABELS = {"lzfse": "LZFSE", "lzvn": "LZVN"}
 
 
-def apple_lz_decompress(module: Kernels, kernel: str) -> Lzo1xDecompress:
+def apple_lz_decompress(module: Kernels, kernel: str) -> BlockDecompress:
     """The package's ``lzfse.decompress`` or ``lzvn.decompress`` (``kernel``), with
     ``lzo1x.decompress``'s shape."""
     decompress = getattr(module, kernel).decompress

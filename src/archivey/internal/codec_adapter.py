@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from archivey.config import DecoderLimits, ProcessIsolation
+from archivey.detection import DetectionConfidence
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.config import StreamConfig
 from archivey.internal.excluded_libraries import (
@@ -26,6 +27,7 @@ from archivey.internal.format_args import (
     add_plugin_spellings,
     plugin_spelling_clash,
 )
+from archivey.internal.kernels import CallSpeedups, KernelLease
 from archivey.internal.overrides import override
 from archivey.internal.registry import _optional, get_registry
 from archivey.internal.resource_usage import handler_name
@@ -34,6 +36,7 @@ from archivey.internal.streams.codecs.base import (
     StreamCodec,
 )
 from archivey.internal.streams.codecs.registry import add_stream_codec, stream_codecs
+from archivey.internal.streams.decompressor_stream import release_decoder
 from archivey.types import (
     ArchiveFormat,
     BackendKindStr,
@@ -121,14 +124,69 @@ class PluginCodec(StreamCodec):
 
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
-        return self.handler.decompressor(codec_call(params, config))
+        speedups = CallSpeedups(
+            config.excluded_libraries, isolated=config.natives.isolated
+        )
+        call = codec_call(params, config, speedups)
+        try:
+            decompressor = self.handler.decompressor(call)
+        except BaseException:
+            # A traceback can keep what the handler made alive: give it back now.
+            speedups.lease.release()
+            raise
+        # What the handler took through ``call.speedup()``, now or later, is given
+        # back when the stream releases this decompressor (``release_decoder``).
+        return LeasedDecompressor(decompressor, speedups.lease)
 
     @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         return self.handler.translate_exception(exc)
 
 
-def codec_call(params: CodecParams, config: StreamConfig) -> CodecCall:
+class LeasedDecompressor:
+    """A plugin codec's decompressor, and the lease of the speedups its handler took
+    for it. It passes every attribute through to the decompressor. Its
+    ``close()`` gives back those speedups' decoder children, and the stream calls it
+    when it releases its decoder (``release_decoder``, ``release_decoder_children``
+    in decompressor_stream.py look for ``holds_decoder_child``). The lease belongs to
+    this object, so two decompressors that compare equal, or one that cannot be
+    hashed, each give back their own."""
+
+    __slots__ = ("_lease", "_plugin")
+
+    holds_decoder_child = True
+
+    def __init__(self, plugin: Decompressor, lease: KernelLease) -> None:
+        self._plugin = plugin
+        self._lease = lease
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        return self._plugin.decompress(data, max_length)
+
+    def __getattr__(self, name: str) -> Any:
+        # Only names this object lacks come here. Its own unset slots (a copy being
+        # made) must not look themselves up again, and a special name is this
+        # object's, not the plugin's: PyPy looks ``__getstate__`` up on the instance,
+        # and passing it through made a copy take the plugin's state as its own.
+        if name in LeasedDecompressor.__slots__ or (
+            name.startswith("__") and name.endswith("__")
+        ):
+            raise AttributeError(name)
+        return getattr(self._plugin, name)
+
+    def close(self) -> None:
+        """Release the plugin's decompressor as the stream releases its own (a child
+        it holds, an in-process liblzma decoder), then give back the decoder children
+        of the speedups the handler took."""
+        try:
+            release_decoder(self._plugin)
+        finally:
+            self._lease.release()
+
+
+def codec_call(
+    params: CodecParams, config: StreamConfig, speedups: CallSpeedups | None = None
+) -> CodecCall:
     """The :class:`CodecCall` a handler's decoder is given for ``params`` and
     ``config``."""
     # Imported here: archivey.formats imports this module's neighbours.
@@ -139,14 +197,18 @@ def codec_call(params: CodecParams, config: StreamConfig) -> CodecCall:
         properties=params.properties,
         limits=config.decoder_limits,
         probe_bound=config.probe_read_bound,
+        _speedups=speedups,
     )
 
 
-def _content_probe(probe: Callable[[bytes], bool]) -> Callable[..., bool]:
+def _content_probe(
+    probe: Callable[[bytes], DetectionConfidence],
+) -> Callable[..., DetectionConfidence]:
     """A handler's ``probe(prefix)`` as :meth:`StreamCodec.content_probe`.
 
     A format plugin's probe wrapper (``format_adapter.prefix_probe``) does the work:
-    the probe gets the peeked prefix only, and one that raises is no match, logged.
+    the probe gets the peeked prefix only, and one that raises or answers no verdict
+    is no match, logged.
     """
     check = prefix_probe(probe)
 
@@ -159,7 +221,7 @@ def _content_probe(probe: Callable[[bytes], bool]) -> Callable[..., bool]:
         charge_decode: object = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
         decoder_limits: DecoderLimits = DecoderLimits(),
-    ) -> bool:
+    ) -> DetectionConfidence:
         del self, source_length, read_at, charge_decode, isolation, decoder_limits
         return check(prefix)
 

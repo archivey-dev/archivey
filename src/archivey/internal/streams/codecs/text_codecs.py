@@ -58,6 +58,7 @@ from typing import TYPE_CHECKING
 from archivey.config import DecoderLimits, ProcessIsolation
 from archivey.exceptions import CorruptionError
 from archivey.internal.overrides import override
+from archivey.internal.probe_verdict import PROBE_REJECTED, ProbeVerdict, probe_verdict
 from archivey.internal.streams.codecs.base import (
     Codec,
     CodecParams,
@@ -488,12 +489,12 @@ class UuCodec(StreamCodec):
         charge_decode: ProbeChargeDecode | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
         decoder_limits: DecoderLimits = DecoderLimits(),
-    ) -> bool:
+    ) -> ProbeVerdict:
         """For a source named ``.uu``/``.uue``: a ``begin`` line anywhere in the
         sample, after mail or news text, followed by a valid first body line."""
         del source_length, read_at, charge_decode, isolation, decoder_limits
         header = _find_header(prefix, leading=True)
-        return header is not None and _uu_body_starts(prefix, header)
+        return probe_verdict(header is not None and _uu_body_starts(prefix, header))
 
     @override
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
@@ -548,7 +549,7 @@ class Base64Codec(StreamCodec):
         charge_decode: ProbeChargeDecode | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
         decoder_limits: DecoderLimits = DecoderLimits(),
-    ) -> bool:
+    ) -> ProbeVerdict:
         """For a source named ``.b64``/``.base64``: base64 lines of one length, or one
         long line, with no magic needed."""
         del read_at, charge_decode, isolation, decoder_limits
@@ -558,17 +559,21 @@ class Base64Codec(StreamCodec):
         if not lines:
             # One long line still arriving: its characters are all there is.
             body = prefix.strip(_WHITESPACE)
-            return len(body) >= 16 and all(c in _B64_ALPHABET for c in body)
+            return probe_verdict(
+                len(body) >= 16 and all(c in _B64_ALPHABET for c in body)
+            )
         if len(lines) == 1:
             line = lines[0]
             # One line: a word or an identifier is base64 characters too. Encoded
             # bytes mix letter cases and digits, so a line of one kind of character
             # is turned away; under 16 characters it must end in padding as well.
             if not _mixed(line.rstrip(b"=")):
-                return False
+                return PROBE_REJECTED
             if whole:
                 # The whole source: it must decode as it is, padding and all.
                 short_ok = len(line) >= 16 or line.endswith(b"=")
-                return len(line) >= 8 and short_ok and _decodes(line)
-            return len(line) >= 16 and all(c in _B64_ALPHABET for c in line)
-        return _b64_lines_check(lines)
+                return probe_verdict(len(line) >= 8 and short_ok and _decodes(line))
+            return probe_verdict(
+                len(line) >= 16 and all(c in _B64_ALPHABET for c in line)
+            )
+        return probe_verdict(_b64_lines_check(lines))
