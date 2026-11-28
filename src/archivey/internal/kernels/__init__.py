@@ -408,9 +408,9 @@ class KernelLease:
 class CallSpeedups:
     """What :meth:`archivey.formats.CodecCall.speedup` needs for one
     ``decompressor(call)``: the caller's excluded libraries and isolation, and the
-    lease of what it hands out. archivey attaches it to the call it builds, outside
-    the record's fields, so the record pickles, converts and resolves its type hints
-    as a plain dataclass does."""
+    lease of what it hands out. archivey passes it to the call it builds as the
+    internal field ``CodecCall._speedups``, so a ``dataclasses.replace`` copy keeps
+    the caller's policy and lease; :meth:`__reduce__` keeps the record picklable."""
 
     __slots__ = ("excluded", "isolated", "lease")
 
