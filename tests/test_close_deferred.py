@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveMember, ArchiveyConfig, open_archive
+from archivey import ArchiveMember, open_archive
 from archivey.exceptions import ArchiveyUsageError
 from archivey.formats import (
     MemberData,
@@ -182,8 +182,12 @@ def test_info_from_a_callback_under_open_member_does_not_deadlock(
         if _HOOKS.read_in_open and holder:
             seen.append(holder[0].info)  # type: ignore[attr-defined]
 
-    config = ArchiveyConfig(on_source_read=on_read, source_read_step=0)
-    with open_archive(gated, config=config, concurrent_operations=concurrent) as reader:
+    with open_archive(
+        gated,
+        on_source_read=on_read,
+        source_read_step=0,
+        concurrent_operations=concurrent,
+    ) as reader:
         holder.append(reader)
         reader.members()  # the listing asks archive_info() for the comment
         live = reader.info
@@ -226,8 +230,9 @@ def test_close_from_a_callback_under_open_member_leaves_an_idle_sibling(
             _HOOKS.read_in_open = False
             holder[0].close()  # type: ignore[attr-defined]
 
-    config = ArchiveyConfig(on_source_read=on_read, source_read_step=0)
-    reader = open_archive(gated, config=config, concurrent_operations=True)
+    reader = open_archive(
+        gated, on_source_read=on_read, source_read_step=0, concurrent_operations=True
+    )
     holder.append(reader)
     idle = reader.open("b.bin")
     assert idle.read(1) == b"\x00"
@@ -353,11 +358,13 @@ def test_info_from_a_callback_with_nothing_published_does_not_deadlock(
             except Exception as exc:  # noqa: BLE001 - the test inspects it
                 seen.append(exc)
 
-    config = ArchiveyConfig(on_source_read=on_read, source_read_step=0)
     with registration_scope():
         register_format(_Handler)
         with open_archive(
-            path, config=config, concurrent_operations=concurrent
+            path,
+            on_source_read=on_read,
+            source_read_step=0,
+            concurrent_operations=concurrent,
         ) as reader:
             holder.append(reader)
             reader.members()
@@ -452,8 +459,12 @@ def test_a_stream_close_from_a_callback_inside_a_read_raises(
             except BaseException as exc:  # noqa: BLE001 - the test inspects it
                 seen.append(exc)
 
-    config = ArchiveyConfig(on_source_read=on_read, source_read_step=0)
-    with open_archive(gated, config=config, concurrent_operations=concurrent) as reader:
+    with open_archive(
+        gated,
+        on_source_read=on_read,
+        source_read_step=0,
+        concurrent_operations=concurrent,
+    ) as reader:
         a = reader.open("b.bin")
         b = reader.open("docs/a.txt") if which == "sibling" else a
         targets.append(b)
@@ -484,8 +495,9 @@ def test_a_stream_close_from_a_callback_inside_open_raises(gated: Path) -> None:
             except BaseException as exc:  # noqa: BLE001 - the test inspects it
                 seen.append(exc)
 
-    config = ArchiveyConfig(on_source_read=on_read, source_read_step=0)
-    with open_archive(gated, config=config, concurrent_operations=True) as reader:
+    with open_archive(
+        gated, on_source_read=on_read, source_read_step=0, concurrent_operations=True
+    ) as reader:
         idle = reader.open("b.bin")
         targets.append(idle)
         _HOOKS.read_in_open = True
@@ -569,8 +581,12 @@ def test_reader_read_keeps_a_callbacks_own_value_error(
             reader.close()  # type: ignore[attr-defined]
             raise sentinel
 
-    config = ArchiveyConfig(on_source_read=on_read, source_read_step=0)
-    reader = open_archive(gated, config=config, concurrent_operations=concurrent)
+    reader = open_archive(
+        gated,
+        on_source_read=on_read,
+        source_read_step=0,
+        concurrent_operations=concurrent,
+    )
     _HOOKS.read_in_read = True
     with pytest.raises(ValueError) as info:
         reader.read("docs/a.txt")  # type: ignore[attr-defined]
@@ -592,8 +608,9 @@ def test_a_sibling_dropped_inside_a_read_closes_after_the_read(gated: Path) -> N
             gc.collect()
             _HOOKS.events.append("dropped")
 
-    config = ArchiveyConfig(on_source_read=on_read, source_read_step=0)
-    with open_archive(gated, config=config, concurrent_operations=True) as reader:
+    with open_archive(
+        gated, on_source_read=on_read, source_read_step=0, concurrent_operations=True
+    ) as reader:
         a = reader.open("b.bin")
         held.append(reader.open("docs/a.txt"))
         _HOOKS.read_in_read = True
@@ -635,8 +652,9 @@ def test_a_sibling_dropped_inside_a_read_then_reader_closed_closes_once(
             gc.collect()
             reader.close()  # type: ignore[attr-defined]
 
-    config = ArchiveyConfig(on_source_read=on_read, source_read_step=0)
-    reader = open_archive(gated, config=config, concurrent_operations=True)
+    reader = open_archive(
+        gated, on_source_read=on_read, source_read_step=0, concurrent_operations=True
+    )
     a = reader.open("b.bin")  # type: ignore[attr-defined]
     held.append(reader.open("docs/a.txt"))  # type: ignore[attr-defined]
     _HOOKS.read_in_read = True

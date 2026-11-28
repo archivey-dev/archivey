@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from archivey.config import ArchiveyConfig
     from archivey.diagnostics import OnDiagnostic
-    from archivey.types import OnSourceRead
 
 _COPYING: ContextVar[bool] = ContextVar("archivey_copying_config", default=False)
 
@@ -47,7 +46,7 @@ def copy_config_quietly(config: ArchiveyConfig, **changes: Any) -> ArchiveyConfi
 
 
 class CallbackFromCall:
-    """A callback a call passed as a keyword (``open_archive(on_source_read=)``),
+    """A callback a call passed as a keyword (``open_archive(on_diagnostic=)``),
     carried in archivey's copy of the config.
 
     The copy reaches code that may copy it again, such as a plugin reader running
@@ -69,16 +68,15 @@ def config_with_callbacks(
     config: ArchiveyConfig,
     *,
     on_diagnostic: OnDiagnostic | None,
-    on_source_read: OnSourceRead | None,
     inherit_from: ArchiveyConfig | None = None,
 ) -> ArchiveyConfig:
-    """``config`` carrying the callbacks one opening call reports to.
+    """``config`` carrying the ``on_diagnostic`` one opening call reports to.
 
     A callback passed to the call wins over the one in ``config``'s deprecated field.
     A callback neither names comes from ``inherit_from``, the config of the reader an
     ``open_archive(parent=)`` call names, so a nested reader opened with a config of
-    its own still reports where its parent does. The callbacks travel in the config's
-    fields because every reader, stream and collector already reads them there; the
+    its own still reports where its parent does. The callback travels in the config's
+    field because every reader, stream and collector already reads it there; the
     caller's object is never changed.
     """
     if on_diagnostic is not None:
@@ -87,17 +85,6 @@ def config_with_callbacks(
         on_diagnostic = config.on_diagnostic
         if on_diagnostic is None and inherit_from is not None:
             on_diagnostic = inherit_from.on_diagnostic
-    if on_source_read is not None:
-        on_source_read = CallbackFromCall(on_source_read)
-    else:
-        on_source_read = config.on_source_read
-        if on_source_read is None and inherit_from is not None:
-            on_source_read = inherit_from.on_source_read
-    if (
-        on_diagnostic is config.on_diagnostic
-        and on_source_read is config.on_source_read
-    ):
+    if on_diagnostic is config.on_diagnostic:
         return config
-    return copy_config_quietly(
-        config, on_diagnostic=on_diagnostic, on_source_read=on_source_read
-    )
+    return copy_config_quietly(config, on_diagnostic=on_diagnostic)

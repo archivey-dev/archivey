@@ -238,7 +238,7 @@ The callback runs inside the read that called it, on your thread. To stop a slow
 exception there: the call to archivey that read raises it unchanged, and so does every later read
 of the file, also in an `extract_all(on_problem="continue")`. An archive opened from a member with
 `parent=` reports to the same callback with `nest_level` 1, so keep level 0 for the file you
-opened. To log each part of the file archivey reads, set `ArchiveyConfig(source_read_step=0)`:
+opened. To log each part of the file archivey reads, pass `source_read_step=0` to the same call:
 the callback then runs for every read, and `read_start` to `position` is the part of the file that
 read took. For a RAR archive opened from a stream, archivey's own thread may copy the volumes to
 `unrar`; you get only the latest of those reads, so the log has gaps there, though `bytes_read`

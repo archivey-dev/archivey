@@ -1391,7 +1391,7 @@ def test_http_a_session_wrapper_with_only_public_methods(http_base: str) -> None
 
 
 def test_http_a_large_answer_reports_as_it_comes_in(http_base: str) -> None:
-    from archivey import ArchiveyConfig, open_stream
+    from archivey import open_stream
 
     pytest.importorskip("fsspec")
     import fsspec
@@ -1405,8 +1405,9 @@ def test_http_a_large_answer_reports_as_it_comes_in(http_base: str) -> None:
         calls.append(progress)
         threads.add(threading.get_ident())
 
-    config = ArchiveyConfig(on_source_read=record)
-    with open_stream(fsspec.open(f"{http_base}/big.bin.xz"), config=config) as stream:
+    with open_stream(
+        fsspec.open(f"{http_base}/big.bin.xz"), on_source_read=record
+    ) as stream:
         assert stream.read() == data
     # Every report, those inside an answer included, ran on this thread, never on
     # fsspec's event loop thread (a hook called from ``read_chunk`` would).
@@ -1428,7 +1429,7 @@ class _Stop(Exception):
 def test_http_a_stop_inside_an_answer_reaches_the_caller(
     http_base: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from archivey import ArchiveyConfig, open_stream
+    from archivey import open_stream
 
     pytest.importorskip("fsspec")
     import aiohttp
@@ -1460,10 +1461,9 @@ def test_http_a_stop_inside_an_answer_reaches_the_caller(
         if progress.request_done is False and progress.request_received:
             raise _Stop
 
-    config = ArchiveyConfig(on_source_read=stop)
     with (
         pytest.raises(_Stop),
-        open_stream(fsspec.open(f"{http_base}/big.bin.xz"), config=config) as s,
+        open_stream(fsspec.open(f"{http_base}/big.bin.xz"), on_source_read=stop) as s,
     ):
         s.read()
     assert opened

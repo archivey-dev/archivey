@@ -142,7 +142,7 @@ method archivey.ArchiveStream.verify(self, *, password_only: bool = False) -> Ve
 method archivey.ArchiveStream.writable(self) -> bool
 method archivey.ArchiveStream.write(self, b: object, /) -> int
 class archivey.ArchiveyConfig()
-init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode | AcceleratorModeStr = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode | None | AcceleratorModeStr = None, process_isolation: ProcessIsolation | ProcessIsolationStr = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str | None = None, rar_decompressor: RarDecompressor | None | RarDecompressorStr = None, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None, recover_partial_data: PartialDataRecovery | PartialDataRecoveryStr = PartialDataRecovery.BEFORE_DAMAGE, on_source_read: OnSourceRead | None = None, source_read_step: int = 1048576, salvage_limits: SalvageLimits = SalvageLimits(...), format_options: Sequence[object] = (), fallback_encoding: str | None = None) -> None
+init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode | AcceleratorModeStr = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode | None | AcceleratorModeStr = None, process_isolation: ProcessIsolation | ProcessIsolationStr = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str | None = None, rar_decompressor: RarDecompressor | None | RarDecompressorStr = None, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None, recover_partial_data: PartialDataRecovery | PartialDataRecoveryStr = PartialDataRecovery.BEFORE_DAMAGE, salvage_limits: SalvageLimits = SalvageLimits(...), format_options: Sequence[object] = (), fallback_encoding: str | None = None) -> None
 field archivey.ArchiveyConfig.always_probe_content: bool = False
 field archivey.ArchiveyConfig.decoder_limits: DecoderLimits = DecoderLimits(...)
 field archivey.ArchiveyConfig.detection_budget: DetectionBudget = DetectionBudget(...)
@@ -156,13 +156,11 @@ field archivey.ArchiveyConfig.listing_limits: ListingLimits = ListingLimits(...)
 field archivey.ArchiveyConfig.max_read_through: int = 1048576
 field archivey.ArchiveyConfig.max_retained_diagnostic_references: int = 256
 field archivey.ArchiveyConfig.on_diagnostic: OnDiagnostic | None = None
-field archivey.ArchiveyConfig.on_source_read: OnSourceRead | None = None
 field archivey.ArchiveyConfig.process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
 field archivey.ArchiveyConfig.rar_decompressor: RarDecompressor | None = None
 field archivey.ArchiveyConfig.read_link_targets: bool = True
 field archivey.ArchiveyConfig.recover_partial_data: PartialDataRecovery = PartialDataRecovery.BEFORE_DAMAGE
 field archivey.ArchiveyConfig.salvage_limits: SalvageLimits = SalvageLimits(...)
-field archivey.ArchiveyConfig.source_read_step: int = 1048576
 field archivey.ArchiveyConfig.spool_limits: SpoolLimits = SpoolLimits(...)
 field archivey.ArchiveyConfig.unar_path: str | os.PathLike[str] | None = None
 field archivey.ArchiveyConfig.unrar_path: str | os.PathLike[str] | None = None
@@ -355,8 +353,8 @@ init archivey.UnsupportedFeatureError(message: str, *, source_format: ArchiveFor
 field archivey.UnsupportedFeatureError.report: ExtractionReport | None
 function archivey.detect_format(source: SourceItem, *, config: ArchiveyConfig | None = None, on_diagnostic: OnDiagnostic | None = None, follow_stub_volumes: bool = True) -> FormatInfo
 function archivey.format_availability(fmt: ArchiveFormat | str, *, check_programs: bool = True, config: ArchiveyConfig | None = None) -> FormatAvailability
-function archivey.open_archive(source: OpenSourceInput, *, format: ArchiveFormat | str | None = None, streaming: bool = False, pipe: bool = False, seekable_members: bool = False, concurrent_operations: bool = False, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None, on_diagnostic: OnDiagnostic | None = None, on_source_read: OnSourceRead | None = None, parent: ForwardArchiveReader | None = None, salvage: bool = False) -> ForwardArchiveReader
-function archivey.open_stream(source: SourceItem, *, format: StreamFormat | PluginStream | ArchiveFormat | str | None = None, seekable: bool = False, config: ArchiveyConfig | None = None, on_diagnostic: OnDiagnostic | None = None, on_source_read: OnSourceRead | None = None) -> ArchiveStream
+function archivey.open_archive(source: OpenSourceInput, *, format: ArchiveFormat | str | None = None, streaming: bool = False, pipe: bool = False, seekable_members: bool = False, concurrent_operations: bool = False, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None, on_diagnostic: OnDiagnostic | None = None, on_source_read: OnSourceRead | None = None, source_read_step: int | None = None, parent: ForwardArchiveReader | None = None, salvage: bool = False) -> ForwardArchiveReader
+function archivey.open_stream(source: SourceItem, *, format: StreamFormat | PluginStream | ArchiveFormat | str | None = None, seekable: bool = False, config: ArchiveyConfig | None = None, on_diagnostic: OnDiagnostic | None = None, on_source_read: OnSourceRead | None = None, source_read_step: int | None = None) -> ArchiveStream
 module archivey.core
 reexport archivey.core.detect_format = archivey.detect_format
 reexport archivey.core.format_availability = archivey.format_availability

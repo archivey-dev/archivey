@@ -2272,8 +2272,8 @@ system.
 
 The `on_source_read=` callback of `open_archive()` and `open_stream()` SHALL, when
 given, be called with a `SourceProgress` as the call reads the archive's own file,
-detection included. The deprecated `ArchiveyConfig.on_source_read` field SHALL warn when
-set and SHALL still be called when the call passes no `on_source_read=`.
+detection included. A reader opened with `parent=` and no `on_source_read=` SHALL
+report to its parent's.
 
 For a source read by range requests (an `fsspec.core.OpenFile`, alone or in a volume
 list) it SHALL be called once before each request, with `request_received == 0` and

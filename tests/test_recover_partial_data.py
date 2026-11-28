@@ -440,12 +440,13 @@ def test_an_on_source_read_stop_is_never_deferred_at_all(tmp_path: Any) -> None:
             if len(armed) == 3:
                 raise stop
 
-    config = ArchiveyConfig(
-        recover_partial_data=PartialDataRecovery.ALL,
-        on_source_read=callback,
-        source_read_step=0,
-    )
-    with open_archive(path, config=config) as archive, archive.open("big.bin") as f:
+    config = ArchiveyConfig(recover_partial_data=PartialDataRecovery.ALL)
+    with (
+        open_archive(
+            path, config=config, on_source_read=callback, source_read_step=0
+        ) as archive,
+        archive.open("big.bin") as f,
+    ):
         armed.append(0)
         with pytest.raises(CorruptionError) as caught:
             f.read()

@@ -80,21 +80,51 @@ def test_open_stream_calls_both_keywords(tmp_path: Path) -> None:
     assert reads
 
 
-def test_open_stream_source_read_step_still_comes_from_the_config(
-    tmp_path: Path,
-) -> None:
+def test_open_stream_takes_its_source_read_step(tmp_path: Path) -> None:
     path = tmp_path / "d.xz"
     path.write_bytes(lzma.compress(os.urandom(4 * LOCAL_REPORT_STEP), preset=0))
 
-    def reports(config: ArchiveyConfig) -> int:
+    def reports(**step: int) -> int:
         seen: list[SourceProgress] = []
-        with open_stream(path, config=config, on_source_read=seen.append) as stream:
+        with open_stream(path, on_source_read=seen.append, **step) as stream:
             while stream.read(1 << 16):
                 pass
         return len(seen)
 
     # Step 0 reports every read; the default reports about once per MiB.
-    assert reports(ArchiveyConfig(source_read_step=0)) > 2 * reports(ArchiveyConfig())
+    assert reports(source_read_step=0) > 2 * reports()
+
+
+def test_a_nested_reader_takes_its_parents_step_unless_it_passes_one(
+    tmp_path: Path,
+) -> None:
+    import io
+    import zipfile
+
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w", compression=zipfile.ZIP_STORED) as zf:
+        for i in range(4):
+            zf.writestr(f"m{i}.bin", os.urandom(1 << 16))
+    path = tmp_path / "outer.zip"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("inner.zip", inner.getvalue())
+
+    def nested_reports(**step: int) -> int:
+        seen: list[SourceProgress] = []
+        with (
+            open_archive(path, on_source_read=seen.append, source_read_step=0) as outer,
+            outer.open("inner.zip") as member,
+            open_archive(member, parent=outer, pipe=True, **step) as nested,
+            nested.stream_members() as members,
+        ):
+            for _, stream in members:
+                if stream is not None:
+                    stream.read()
+        return sum(1 for report in seen if report.nest_level == 1)
+
+    # The parent's step 0 reports each read; 1 MiB reports the whole inner archive
+    # in a call or two.
+    assert nested_reports() > 2 * nested_reports(source_read_step=1 << 20)
 
 
 def test_detect_format_calls_its_on_diagnostic(tmp_path: Path) -> None:
@@ -105,17 +135,14 @@ def test_detect_format_calls_its_on_diagnostic(tmp_path: Path) -> None:
     assert DiagnosticCode.FORMAT_EXTENSION_CONFLICT in _codes(seen)
 
 
-def test_the_config_fields_warn_and_still_decide(tmp_path: Path) -> None:
+def test_the_config_field_warns_and_still_decides(tmp_path: Path) -> None:
     seen: list[Diagnostic] = []
-    reads: list[SourceProgress] = []
     with pytest.warns(DeprecationWarning, match=r"on_diagnostic=") as caught:
-        config = ArchiveyConfig(on_diagnostic=seen.append, on_source_read=reads.append)
+        config = ArchiveyConfig(on_diagnostic=seen.append)
     assert caught[0].filename == __file__
-    assert "on_source_read=" in str(caught[0].message)
     with open_archive(_empty_zip(tmp_path), config=config) as reader:
         assert list(reader) == []
     assert _codes(seen) == [_EMPTY]
-    assert reads
 
 
 def test_archiveys_copies_of_a_config_do_not_warn_again(
@@ -234,6 +261,6 @@ def test_a_copy_of_the_readers_config_does_not_warn_after_a_keyword_open(
     ) as reader:
         # The config a plugin reader gets as ``ReaderContext.config``.
         carried = cast("Any", reader)._config
-        copy = dataclasses.replace(carried, source_read_step=4096)
+        copy = dataclasses.replace(carried, max_read_through=4096)
     assert not [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
-    assert copy.on_source_read is carried.on_source_read
+    assert copy.on_diagnostic is carried.on_diagnostic

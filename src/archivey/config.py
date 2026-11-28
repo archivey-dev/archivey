@@ -45,7 +45,7 @@ from archivey.internal.arg_checks import (
 from archivey.internal.config_copy import CallbackFromCall, copying_config
 from archivey.internal.enum_args import coerce_enum
 from archivey.terminal import quoted
-from archivey.types import ArchiveMember, OnSourceRead, OptionalLibrary
+from archivey.types import ArchiveMember, OptionalLibrary
 
 
 class AcceleratorMode(Enum):
@@ -1226,22 +1226,6 @@ class ArchiveyConfig:
     and the same error at every level: only the partial bytes before an error differ.
     """
 
-    on_source_read: OnSourceRead | None = None
-    """Deprecated since 0.6.0: pass ``on_source_read=`` to
-    :func:`~archivey.open_archive` or :func:`~archivey.open_stream`. Setting it warns;
-    the call's keyword wins over it. archivey 0.7.0 removes it."""
-
-    source_read_step: int = 1 << 20
-    """Bytes taken from a local file or stream between two ``on_source_read`` calls
-    (1 MiB). ``0`` calls it for every read, so :attr:`SourceProgress.read_start
-    <archivey.types.SourceProgress.read_start>` and ``position`` give the range of each read:
-    a log of the regions of the file read. The log has gaps where archivey's own thread
-    reads (the RAR volume feeder): those reports merge as ``on_source_read`` says, and
-    only the latest range is kept, while ``bytes_read`` still counts every byte. A URL
-    source reports every request whatever this is; over HTTP a request also reports
-    about once per MiB of its answer, a gap this step does not set.
-    """
-
     salvage_limits: SalvageLimits = SalvageLimits()
     """Caps on the search a salvage reader makes past damage
     (``open_archive(salvage=True)``). See :class:`SalvageLimits`."""
@@ -1308,8 +1292,6 @@ class ArchiveyConfig:
             unrar_path: str | os.PathLike[str] | None = ...,
             unar_path: str | os.PathLike[str] | None = ...,
             recover_partial_data: PartialDataRecovery | PartialDataRecoveryStr = ...,
-            on_source_read: OnSourceRead | None = ...,
-            source_read_step: int = ...,
             salvage_limits: SalvageLimits = ...,
             format_options: Sequence[object] = ...,
             fallback_encoding: str | None = ...,
@@ -1346,18 +1328,15 @@ class ArchiveyConfig:
             )
         # A callback a call passed as a keyword travels in archivey's copies of the
         # config wrapped, so a later copy of those does not warn either.
-        callbacks = [
-            name
-            for name in ("on_diagnostic", "on_source_read")
-            if getattr(self, name) is not None
-            and not isinstance(getattr(self, name), CallbackFromCall)
-        ]
-        if callbacks and not copying_config():
-            spelled = ", ".join(f"{name}=" for name in callbacks)
+        if (
+            self.on_diagnostic is not None
+            and not isinstance(self.on_diagnostic, CallbackFromCall)
+            and not copying_config()
+        ):
             warnings.warn(
-                f"ArchiveyConfig({spelled}) is deprecated: pass the callback to "
+                "ArchiveyConfig(on_diagnostic=) is deprecated: pass the callback to "
                 "open_archive(), open_stream() or detect_format(), which a nested "
-                "open_archive(parent=) inherits. archivey 0.7.0 removes the fields.",
+                "open_archive(parent=) inherits. archivey 0.7.0 removes the field.",
                 DeprecationWarning,
                 stacklevel=3,
             )
@@ -1447,13 +1426,6 @@ def _check_guard_switches(config: ArchiveyConfig) -> None:
 def _check_scalar_fields(config: ArchiveyConfig) -> None:
     """Check the callback, the ZIP fallback encoding and the two integer limits."""
     check_callable(config.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
-    check_callable(config.on_source_read, call="ArchiveyConfig(on_source_read=…)")
-    check_limit(
-        config.source_read_step,
-        cls="ArchiveyConfig",
-        field_name="source_read_step",
-        allow_none=False,
-    )
     check_limit(
         config.max_read_through,
         cls="ArchiveyConfig",
