@@ -42,12 +42,15 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Literal, NoReturn, cast, overload
 
+# ``ArchiveyConfig`` and ``FormatInfo`` are imported ``X as X``: this module's signatures
+# name them, so they stay bound here (see ``_MOVED_IN_0_6``), and the alias tells a type
+# checker that ``from archivey.core import ArchiveyConfig`` still works.
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG as _DEFAULT_CONFIG,
-    ArchiveyConfig,
+    ArchiveyConfig as ArchiveyConfig,  # noqa: PLC0414
     PasswordInput,
 )
-from archivey.detection import FormatInfo
+from archivey.detection import FormatInfo as FormatInfo  # noqa: PLC0414
 from archivey.diagnostics import (
     DiagnosticCode,
     OnDiagnostic,

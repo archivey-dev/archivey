@@ -37,6 +37,9 @@ line. How to write the entry: see
 
 ### Changed
 
+- **Breaking:** `from archivey import *` and `from archivey.core import *` bind only the
+  names their `__all__` lists now, 30 and 6, with no warning about the others. Import a
+  moved name by name, from its submodule (see Deprecated).
 - **Breaking:** a plugin's `probe` (on `FormatHandler` and `CodecHandler`) returns a
   verdict, not a bool: the new `DetectionConfidence.REJECTED` for no,
   `DetectionConfidence.GUESS` for a weak match, `DetectionConfidence.PROBABLE` for a
@@ -101,7 +104,8 @@ line. How to write the entry: see
   `DeprecationWarning` that names the new import, and 0.7.0 removes it. The other two
   are experimental (see below). `sanitize_names` moved to `archivey.paths`. A reference to
   `sanitize_names`, `list_known_formats` or `list_supported_formats` pickled by 0.5 or
-  earlier names `archivey`, so it loads in 0.6 with the warning and not in 0.7.0.
+  earlier names `archivey`, so it loads in 0.6 with the warning and not in 0.7.0; load
+  and save it again under 0.6 to record the new module.
   `archivey.core.__all__` keeps only its six functions: `AcceleratorMode`,
   `DEFAULT_ARCHIVEY_CONFIG`, `ExtractionLimits`, `ListingLimits`, `DetectionConfidence`,
   `FormatAvailability`, `FormatSupport` and `MissingComponent` still work from it in 0.6

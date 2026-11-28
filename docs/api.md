@@ -8,7 +8,8 @@ The most used names come straight from `archivey`: `open_archive`, the reader, m
 and policy types, and the errors you are most likely to catch. Every other name comes from its
 submodule, such as `from archivey.config import DecoderLimits`. Until 0.6.0 those names came
 from `archivey` too; that spelling still works in the 0.6 releases, with a `DeprecationWarning`
-that names the new import.
+that names the new import. The experimental `PluginContainer` and `PluginStream` are the
+exception: they come only from `archivey.types`.
 
 ## Opening
 
@@ -17,16 +18,46 @@ See [Opening an archive](opening.md).
 ::: archivey.open_archive
 ::: archivey.open_stream
 ::: archivey.detect_format
+
+<span id="archivey.FormatInfo"></span>
+
 ::: archivey.detection.FormatInfo
+
+<span id="archivey.DetectionConfidence"></span>
+
 ::: archivey.detection.DetectionConfidence
 ::: archivey.format_availability
+
+<span id="archivey.FormatAvailability"></span>
+
 ::: archivey.types.FormatAvailability
+
+<span id="archivey.FormatSupport"></span>
+
 ::: archivey.types.FormatSupport
+
+<span id="archivey.MissingComponent"></span>
+
 ::: archivey.types.MissingComponent
+
+<span id="archivey.OptionalLibrary"></span>
+
 ::: archivey.types.OptionalLibrary
+
+<span id="archivey.BackendUse"></span>
+
 ::: archivey.types.BackendUse
+
+<span id="archivey.BackendKindStr"></span>
+
 ::: archivey.types.BackendKindStr
+
+<span id="archivey.list_supported_formats"></span>
+
 ::: archivey.core.list_supported_formats
+
+<span id="archivey.list_known_formats"></span>
+
 ::: archivey.core.list_known_formats
 
 ## Readers and streams
@@ -41,10 +72,25 @@ calls raise `ArchiveyUsageError`. `stream_members()` is the way to read members.
 ::: archivey.ForwardArchiveReader
 ::: archivey.ArchiveReader
 ::: archivey.ArchiveStream
+
+<span id="archivey.Verification"></span>
+
 ::: archivey.types.Verification
+
+<span id="archivey.VerifyReport"></span>
+
 ::: archivey.diagnostics.VerifyReport
+
+<span id="archivey.MemberPass"></span>
+
 ::: archivey.reader.MemberPass
+
+<span id="archivey.MemberSelector"></span>
+
 ::: archivey.reader.MemberSelector
+
+<span id="archivey.MemberListReport"></span>
+
 ::: archivey.diagnostics.MemberListReport
 
 ## Members and archive details
@@ -54,12 +100,19 @@ name](opening.md#members-with-the-same-name).
 
 ::: archivey.ArchiveMember
 ::: archivey.ArchiveInfo
+
+<span id="archivey.HashAlgorithm"></span>
+
 ::: archivey.types.HashAlgorithm
+
+<span id="archivey.MemberExtra"></span>
 
 ::: archivey.types.MemberExtra
     options:
       members:
         - __getitem__
+
+<span id="archivey.ArchiveInfoExtra"></span>
 
 ::: archivey.types.ArchiveInfoExtra
     options:
@@ -76,8 +129,17 @@ See [Format](opening.md#format).
 ::: archivey.StreamFormat
 ::: archivey.types.PluginStream
 ::: archivey.MemberType
+
+<span id="archivey.CompressionMethod"></span>
+
 ::: archivey.types.CompressionMethod
+
+<span id="archivey.CompressionAlgorithm"></span>
+
 ::: archivey.types.CompressionAlgorithm
+
+<span id="archivey.CreateSystem"></span>
+
 ::: archivey.types.CreateSystem
 
 ## Extraction
@@ -85,14 +147,35 @@ See [Format](opening.md#format).
 See [Extracting](extracting.md).
 
 ::: archivey.ExtractionReport
+
+<span id="archivey.ExtractionResult"></span>
+
 ::: archivey.types.ExtractionResult
+
+<span id="archivey.ExtractionStatus"></span>
+
 ::: archivey.types.ExtractionStatus
+
+<span id="archivey.NameRewrite"></span>
+
 ::: archivey.types.NameRewrite
+
+<span id="archivey.ExtractionProgress"></span>
+
 ::: archivey.types.ExtractionProgress
 ::: archivey.ExtractionPolicy
+
+<span id="archivey.OverwritePolicy"></span>
+
 ::: archivey.types.OverwritePolicy
 ::: archivey.OnProblem
+
+<span id="archivey.MemberFilter"></span>
+
 ::: archivey.types.MemberFilter
+
+<span id="archivey.sanitize_names"></span>
+
 ::: archivey.paths.sanitize_names
 
 ## Configuration and passwords
@@ -101,22 +184,64 @@ See [Configuration](opening.md#configuration), [Passwords](opening.md#passwords)
 [Hardening](security.md#hardening).
 
 ::: archivey.ArchiveyConfig
+
+<span id="archivey.DEFAULT_ARCHIVEY_CONFIG"></span>
+
 ::: archivey.config.DEFAULT_ARCHIVEY_CONFIG
+
+<span id="archivey.SourceProgress"></span>
+
 ::: archivey.types.SourceProgress
 ::: archivey.types.OnSourceRead
 ::: archivey.FormatPolicy
+
+<span id="archivey.ExtractionLimits"></span>
+
 ::: archivey.config.ExtractionLimits
+
+<span id="archivey.ListingLimits"></span>
+
 ::: archivey.config.ListingLimits
+
+<span id="archivey.DecoderLimits"></span>
+
 ::: archivey.config.DecoderLimits
+
+<span id="archivey.SpoolLimits"></span>
+
 ::: archivey.config.SpoolLimits
+
+<span id="archivey.SalvageLimits"></span>
+
 ::: archivey.config.SalvageLimits
 ::: archivey.config.RarOptions
+
+<span id="archivey.AcceleratorMode"></span>
+
 ::: archivey.config.AcceleratorMode
+
+<span id="archivey.ProcessIsolation"></span>
+
 ::: archivey.config.ProcessIsolation
+
+<span id="archivey.RarDecompressor"></span>
+
 ::: archivey.config.RarDecompressor
+
+<span id="archivey.PartialDataRecovery"></span>
+
 ::: archivey.config.PartialDataRecovery
+
+<span id="archivey.PasswordInput"></span>
+
 ::: archivey.config.PasswordInput
+
+<span id="archivey.PasswordRequest"></span>
+
 ::: archivey.config.PasswordRequest
+
+<span id="archivey.PasswordProvider"></span>
+
 ::: archivey.config.PasswordProvider
 
 ## Diagnostics
@@ -124,11 +249,23 @@ See [Configuration](opening.md#configuration), [Passwords](opening.md#passwords)
 See [Diagnostics](errors-and-diagnostics.md#diagnostics).
 
 ::: archivey.Diagnostic
+
+<span id="archivey.DiagnosticContext"></span>
+
 ::: archivey.diagnostics.DiagnosticContext
 ::: archivey.DiagnosticCode
 ::: archivey.DiagnosticPolicy
+
+<span id="archivey.ARCHIVE_INTEGRITY_CODES"></span>
+
 ::: archivey.diagnostics.ARCHIVE_INTEGRITY_CODES
+
+<span id="archivey.DiagnosticSummary"></span>
+
 ::: archivey.diagnostics.DiagnosticSummary
+
+<span id="archivey.OnDiagnostic"></span>
+
 ::: archivey.diagnostics.OnDiagnostic
 
 ## Errors
@@ -144,27 +281,60 @@ has a subclass, `ResourceUnavailableError`, listed after it.
 
 ::: archivey.ArchiveyError
 
+<span id="archivey.OpenError"></span>
+
 ::: archivey.exceptions.OpenError
 ::: archivey.FormatDetectionError
+
+<span id="archivey.StreamNotSeekableError"></span>
+
 ::: archivey.exceptions.StreamNotSeekableError
+
+<span id="archivey.ReadError"></span>
 
 ::: archivey.exceptions.ReadError
 ::: archivey.CorruptionError
 ::: archivey.TruncatedError
 ::: archivey.EncryptionError
+
+<span id="archivey.LinkTargetNotFoundError"></span>
+
 ::: archivey.exceptions.LinkTargetNotFoundError
+
+<span id="archivey.LinkTargetNotFoundReason"></span>
+
 ::: archivey.exceptions.LinkTargetNotFoundReason
+
+<span id="archivey.SourceChangedError"></span>
+
 ::: archivey.exceptions.SourceChangedError
 
+<span id="archivey.ExtractionError"></span>
+
 ::: archivey.exceptions.ExtractionError
+
+<span id="archivey.FilterRejectionError"></span>
+
 ::: archivey.exceptions.FilterRejectionError
+
+<span id="archivey.NameCollisionError"></span>
+
 ::: archivey.exceptions.NameCollisionError
+
+<span id="archivey.NameRewrittenError"></span>
+
 ::: archivey.exceptions.NameRewrittenError
 
 ::: archivey.ResourceLimitError
+
+<span id="archivey.ResourceUnavailableError"></span>
+
 ::: archivey.exceptions.ResourceUnavailableError
 ::: archivey.UnsupportedFeatureError
 ::: archivey.PackageNotInstalledError
+
+<span id="archivey.DiagnosticRaisedError"></span>
+
 ::: archivey.exceptions.DiagnosticRaisedError
 
 ::: archivey.ArchiveyUsageError
@@ -173,9 +343,20 @@ has a subclass, `ResourceUnavailableError`, listed after it.
 
 See [Solid archives](reading.md#solid-archives) for what these mean for your reads.
 
+<span id="archivey.CostReceipt"></span>
+
 ::: archivey.cost.CostReceipt
+
+<span id="archivey.ListingCost"></span>
+
 ::: archivey.cost.ListingCost
+
+<span id="archivey.AccessCost"></span>
+
 ::: archivey.cost.AccessCost
+
+<span id="archivey.StreamCapability"></span>
+
 ::: archivey.cost.StreamCapability
 
 ## Detection budgets
