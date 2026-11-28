@@ -34,8 +34,6 @@ __all__ = [
     "LzxFactory",
 ]
 
-Buffer = bytes | bytearray | memoryview
-
 KernelName = Literal["crc16_arc", "lzfse", "lzo1x", "lzvn", "lzw", "lzx"]
 """The kernels a plugin can ask for, and what each one returns:
 
@@ -51,7 +49,9 @@ class Crc16(Protocol):
     """``crc16_arc(data, value=0)``: the CRC-16/ARC of ``data``, going on from
     ``value``."""
 
-    def __call__(self, data: Buffer, value: int = 0, /) -> int: ...
+    def __call__(
+        self, data: bytes | bytearray | memoryview, value: int = 0, /
+    ) -> int: ...
 
 
 class BlockDecompress(Protocol):
@@ -59,14 +59,18 @@ class BlockDecompress(Protocol):
     decoded size, and ``max_size=``, the most it may decode to."""
 
     @overload
-    def __call__(self, block: Buffer, /, *, out_size: int) -> bytes: ...
+    def __call__(
+        self, block: bytes | bytearray | memoryview, /, *, out_size: int
+    ) -> bytes: ...
 
     @overload
-    def __call__(self, block: Buffer, /, *, max_size: int) -> bytes: ...
+    def __call__(
+        self, block: bytes | bytearray | memoryview, /, *, max_size: int
+    ) -> bytes: ...
 
     def __call__(
         self,
-        block: Buffer,
+        block: bytes | bytearray | memoryview,
         /,
         *,
         out_size: int | None = None,
@@ -86,7 +90,9 @@ class LzwDecompressor(Protocol):
     that stream reported.
     """
 
-    def decompress(self, data: Buffer, max_length: int = -1) -> bytes: ...
+    def decompress(
+        self, data: bytes | bytearray | memoryview, max_length: int = -1
+    ) -> bytes: ...
 
     def flush(self, max_length: int = -1) -> bytes: ...
 
@@ -153,7 +159,9 @@ class LzxDecompressor(Protocol):
 
     def set_output_size(self, output_size: int, /) -> None: ...
 
-    def decompress(self, data: Buffer, max_length: int = -1) -> bytes: ...
+    def decompress(
+        self, data: bytes | bytearray | memoryview, max_length: int = -1
+    ) -> bytes: ...
 
     def flush(self, max_length: int = -1) -> bytes: ...
 

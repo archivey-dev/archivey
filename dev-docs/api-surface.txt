@@ -1395,7 +1395,7 @@ alias archivey.kernels.KernelName = Literal['crc16_arc', 'lzfse', 'lzo1x', 'lzvn
 class archivey.kernels.LzwDecompressor(Protocol)
 init archivey.kernels.LzwDecompressor(*args, **kwargs)
 property archivey.kernels.LzwDecompressor.clear_offsets: list[tuple[int, int]]
-method archivey.kernels.LzwDecompressor.decompress(self, data: Buffer, max_length: int = -1) -> bytes
+method archivey.kernels.LzwDecompressor.decompress(self, data: bytes | bytearray | memoryview, max_length: int = -1) -> bytes
 property archivey.kernels.LzwDecompressor.eof: bool
 method archivey.kernels.LzwDecompressor.flush(self, max_length: int = -1) -> bytes
 property archivey.kernels.LzwDecompressor.header_params: tuple[int, bool] | None
@@ -1409,7 +1409,7 @@ class archivey.kernels.LzwFactory(Protocol)
 init archivey.kernels.LzwFactory(*args, **kwargs)
 class archivey.kernels.LzxDecompressor(Protocol)
 init archivey.kernels.LzxDecompressor(*args, **kwargs)
-method archivey.kernels.LzxDecompressor.decompress(self, data: Buffer, max_length: int = -1) -> bytes
+method archivey.kernels.LzxDecompressor.decompress(self, data: bytes | bytearray | memoryview, max_length: int = -1) -> bytes
 property archivey.kernels.LzxDecompressor.eof: bool
 method archivey.kernels.LzxDecompressor.flush(self, max_length: int = -1) -> bytes
 property archivey.kernels.LzxDecompressor.needs_input: bool

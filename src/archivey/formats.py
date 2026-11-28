@@ -1554,7 +1554,7 @@ class CodecCall:
     )
     _isolated: bool = field(default=False, repr=False, compare=False)
     _lease: KernelLease = field(
-        default_factory=lambda: _new_kernel_lease(), repr=False, compare=False
+        default_factory=_new_kernel_lease, repr=False, compare=False
     )
 
     @overload
