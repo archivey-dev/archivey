@@ -48,7 +48,11 @@ line. How to write the entry: see
   `MEMBER_DATA_IGNORED` (a `DirectoryDataContext` or a `LinkDataContext`). A diagnostic
   carries the new code, so code that compares `diagnostic.code.value` with an old
   string no longer matches; the old spellings themselves still convert (see
-  Deprecated). Each merged code stays in `ARCHIVE_INTEGRITY_CODES`.
+  Deprecated). Each merged code stays in `ARCHIVE_INTEGRITY_CODES`. A policy that names
+  an old code in `ignore=` or `raise_on=`, or subtracts it from
+  `ARCHIVE_INTEGRITY_CODES`, now covers every case merged with it: subtracting
+  `MEMBER_LOCAL_NAME_DIFFERS` from `STRICT`'s set also stops refusing a local header
+  whose method or offset differs.
 - **Breaking:** `from archivey import *` and `from archivey.core import *` bind only the
   names their `__all__` lists now, 31 and 6, with no warning about the others. Import a
   moved name by name, from its submodule (see Deprecated).
@@ -109,8 +113,9 @@ line. How to write the entry: see
 
 - The old names and values of the merged diagnostic codes, such as
   `DiagnosticCode.SCAN_DIRECTORY_VANISHED` and `"scan_directory_vanished"`, still give
-  the new member in 0.6, in a `raise_on=` or `ignore=` set too, with a
-  `DeprecationWarning`. 0.7.0 removes them.
+  the new member in 0.6, with a `DeprecationWarning`, in a `raise_on=` or `ignore=` set
+  too, where they then cover every case merged with them (see Changed). 0.7.0 removes
+  them.
 - The package root keeps 31 names: `open_archive`, `open_stream`, `detect_format`,
   `format_availability`, the reader, member, format, policy and report types, and the
   errors callers catch most. The other 67 come from the submodule that defines them,

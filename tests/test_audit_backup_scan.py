@@ -307,7 +307,6 @@ def _local_header_reports(blob: bytes, *, pipe: bool) -> list[LocalHeaderContext
         if diagnostic.code
         in (
             DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS,
-            DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS,
             DiagnosticCode.MEMBER_LOCAL_CRC_USED,
         )
         and isinstance(diagnostic.context, LocalHeaderContext)

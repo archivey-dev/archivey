@@ -90,9 +90,19 @@ _MATCHED: list[tuple[DiagnosticCode, DiagnosticContext]] = [
 ]
 
 
+def _kinds(code: DiagnosticCode) -> tuple[str, ...]:
+    """The context kinds ``code`` takes (``MEMBER_DATA_IGNORED`` takes two)."""
+    kinds = _CODE_CONTEXT_KINDS[code]
+    return kinds if isinstance(kinds, tuple) else (kinds,)
+
+
 def test_every_shared_kind_code_has_a_discriminator() -> None:
-    per_kind = Counter(_CODE_CONTEXT_KINDS.values())
-    shared = {code for code, kind in _CODE_CONTEXT_KINDS.items() if per_kind[kind] > 1}
+    per_kind = Counter(kind for code in _CODE_CONTEXT_KINDS for kind in _kinds(code))
+    shared = {
+        code
+        for code in _CODE_CONTEXT_KINDS
+        if any(per_kind[kind] > 1 for kind in _kinds(code))
+    }
     assert shared == set(_SHARED_KIND_DISCRIMINATORS)
     assert shared == {code for code, _ in _MATCHED}
 
@@ -111,7 +121,7 @@ _MISMATCHED = [
     (code, other_context)
     for code, _ in _MATCHED
     for other_code, other_context in _MATCHED
-    if other_code is not code and other_context.kind == _CODE_CONTEXT_KINDS[code]
+    if other_code is not code and other_context.kind in _kinds(code)
 ]
 
 

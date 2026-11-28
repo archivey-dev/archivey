@@ -123,14 +123,18 @@ def _pipe(data: bytes) -> NonSeekableBytesIO:
 
 
 def _visible(member: ArchiveMember) -> dict[str, object]:
-    """A member's public fields and the codes of what it reported."""
+    """A member's public fields and what it reported: each code with the context field
+    that tells merged cases apart (a local header's ``field``), or the context kind."""
     out = {
         f.name: getattr(member, f.name)
         for f in dataclasses.fields(member)
         if not f.name.startswith("_") and f.name not in ("link_target_member", "extra")
     }
     out["extra"] = dict(member.extra)
-    out["diagnostics"] = sorted(str(d.code) for d in member._diagnostics)  # type: ignore[attr-defined]
+    out["diagnostics"] = sorted(
+        (str(d.code), getattr(d.context, "field", d.context.kind))
+        for d in member._diagnostics  # type: ignore[attr-defined]
+    )
     return out
 
 

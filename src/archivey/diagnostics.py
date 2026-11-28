@@ -36,7 +36,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, TypeVar, overload
 
 from archivey.exceptions import ArchiveyError, _UsageTypeError, _UsageValueError
-from archivey.internal.enum_args import coerce_enum_collection, normalize_spelling
+from archivey.internal.enum_args import coerce_enum_collection
 from archivey.internal.moved_names import caller_stacklevel
 from archivey.internal.overrides import override
 from archivey.internal.resource_usage import ResourceUsage
@@ -92,7 +92,8 @@ def _warn_merged(old: str, new: str) -> None:
     warnings.warn(
         f"DiagnosticCode.{old} ({old.lower()!r}) is deprecated: it merged into "
         f"DiagnosticCode.{new} in archivey 0.6.0, whose context tells the cases "
-        "apart. Diagnostics carry the new code. The old spelling is removed in 0.7.0.",
+        "apart, so a policy that names it covers every case merged with it. "
+        "Diagnostics carry the new code. The old spelling is removed in 0.7.0.",
         DeprecationWarning,
         stacklevel=caller_stacklevel(),
     )
@@ -130,16 +131,6 @@ class DiagnosticCode(StrEnum, metaclass=_DiagnosticCodeType):
     metadata as anomalous, and ``DiagnosticPolicy.STRICT`` raises them. A diagnostic's
     ``context`` carries the details, such as the member and the field involved.
     """
-
-    if TYPE_CHECKING:
-        # The names merged in 0.6.0, for type checkers; ``_MERGED_IN_0_6`` serves them
-        # at run time, with a warning.
-        SCAN_DIRECTORY_VANISHED = "scan_entry_vanished"
-        MEMBER_LOCAL_NAME_DIFFERS = "member_local_header_differs"
-        MEMBER_LOCAL_METHOD_DIFFERS = "member_local_header_differs"
-        MEMBER_LOCAL_OFFSET_SHIFTED = "member_local_header_differs"
-        MEMBER_DIRECTORY_DATA_IGNORED = "member_data_ignored"
-        MEMBER_LINK_DATA_IGNORED = "member_data_ignored"
 
     MEMBER_NAME_NORMALIZED = "member_name_normalized"
     """A member's stored name was changed to give ``name``, for example its
@@ -224,11 +215,10 @@ class DiagnosticCode(StrEnum, metaclass=_DiagnosticCodeType):
     the context says where the other one starts."""
     ARCHIVE_STRUCTURE_INCONSISTENT = "archive_structure_inconsistent"
     """An archive's structures are damaged or disagree with each other in a way the
-    read works around, and the context's ``structure`` says which: a table that fails
-    its checks where a backup copy or another record is read instead, or two records
-    that disagree on a member's type or contents where one of them decides. The
-    listing comes from what the read could check; another tool may read the damaged
-    structure."""
+    read works around, and the context's ``structure`` says which: a structure that
+    fails its checks, which is ignored or replaced by a backup copy or another record,
+    or two records that disagree, where one of them decides. The listing comes from
+    what the read could check; another tool may read the damaged structure."""
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
     """A stored timestamp could not be used, so that time is left unset."""
     MEMBER_HEADER_DAMAGED = "member_header_damaged"
@@ -367,13 +357,25 @@ class DiagnosticCode(StrEnum, metaclass=_DiagnosticCodeType):
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
 
+    if TYPE_CHECKING:
+        # The names merged in 0.6.0, for type checkers; ``_MERGED_IN_0_6`` serves them
+        # at run time, with a warning. They come after the members, so a type checker
+        # takes them as the aliases and the current names as the members.
+        SCAN_DIRECTORY_VANISHED = "scan_entry_vanished"
+        MEMBER_LOCAL_NAME_DIFFERS = "member_local_header_differs"
+        MEMBER_LOCAL_METHOD_DIFFERS = "member_local_header_differs"
+        MEMBER_LOCAL_OFFSET_SHIFTED = "member_local_header_differs"
+        MEMBER_DIRECTORY_DATA_IGNORED = "member_data_ignored"
+        MEMBER_LINK_DATA_IGNORED = "member_data_ignored"
+
     @classmethod
     @override
     def _missing_(cls, value: object) -> DiagnosticCode | None:
-        """Convert a merged code's old value or name (any case, ``-`` or ``_``)."""
-        if not isinstance(value, str):
+        """Convert a merged code's old value, spelled exactly; ``coerce_enum`` folds the
+        other spellings a policy takes before it asks."""
+        if not isinstance(value, str) or value != value.lower():
             return None
-        old = normalize_spelling(value).upper()
+        old = value.upper()
         new = _MERGED_IN_0_6.get(old)
         if new is None:
             return None

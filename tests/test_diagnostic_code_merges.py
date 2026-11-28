@@ -124,6 +124,14 @@ def test_a_policy_takes_an_old_spelling_with_a_warning(spelling: str) -> None:
     assert w[0].filename == __file__
 
 
+def test_an_old_value_converts_only_as_spelled() -> None:
+    # The enum takes a current code only by its value, so an old one gets no more.
+    # A policy folds case and dashes for both (the test above).
+    for spelling in ("SCAN_DIRECTORY_VANISHED", "scan-directory-vanished"):
+        with pytest.raises(ValueError):
+            DiagnosticCode(spelling)
+
+
 def test_a_current_code_never_warns() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error")
