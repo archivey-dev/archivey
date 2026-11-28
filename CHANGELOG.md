@@ -30,6 +30,12 @@ line. How to write the entry: see
   `FormatPolicy.COMMON`, `DiagnosticPolicy.STRICT`, `NATIVE_DECODERS`, lower listing,
   decoder and extraction limits, and rapidgzip off. Adjust it with
   `dataclasses.replace()`; the upload recipes start from it.
+- `open_archive(on_source_read=)` and `open_stream(on_source_read=)` report how far
+  archivey has read the archive's own file, detection included, as a `SourceProgress`:
+  about once per MiB for a local file or stream (`source_read_step=0` reports every
+  read, with its range), and around each range request for a URL. A reader opened with
+  `parent=` reports to its parent's callback, one `nest_level` deeper. Raising from the
+  callback stops the read.
 - A format or codec plugin can use archivey-speedups' fast decoders:
   `context.speedup("lzw")` (or `call.speedup()`) returns the speedup, or `None` when it
   can't run. Their interfaces are in the new `archivey.speedups` module.
@@ -155,11 +161,10 @@ line. How to write the entry: see
   removes them.
 - `ArchiveyConfig.use_indexed_bzip2` keeps working in 0.6 with a `DeprecationWarning`,
   and decides bzip2 alone while it is set; use `use_rapidgzip`. 0.7.0 removes it.
-- `ArchiveyConfig(on_diagnostic=, on_source_read=)` keep working in 0.6 with a
-  `DeprecationWarning`; pass `on_diagnostic=` and `on_source_read=` to `open_archive`
-  or `open_stream`, and `on_diagnostic=` to `detect_format`. A reader opened with
-  `parent=` reports to its parent's callbacks unless its call passes others, also when
-  it has a `config=` of its own. 0.7.0 removes the fields.
+- `ArchiveyConfig(on_diagnostic=)` keeps working in 0.6 with a `DeprecationWarning`;
+  pass `on_diagnostic=` to `open_archive`, `open_stream` or `detect_format`. A reader
+  opened with `parent=` reports to its parent's callback unless its call passes another,
+  also when it has a `config=` of its own. 0.7.0 removes the field.
 
 ### Removed
 

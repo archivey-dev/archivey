@@ -426,9 +426,10 @@ def test_pipe_keeps_remote_change_checks_and_request_progress() -> None:
 
     def observe(**kwargs: bool) -> tuple[dict, list]:
         events: list = []
-        config = archivey.ArchiveyConfig(on_source_read=events.append)
         source = fsspec.open("memory://pipe-mode/a.zip")
-        with archivey.open_archive(source, config=config, **kwargs) as reader:  # type: ignore[call-overload]  # kwargs vary
+        with archivey.open_archive(
+            source, on_source_read=events.append, **kwargs
+        ) as reader:  # type: ignore[call-overload]  # kwargs vary
             list(reader.stream_members())
             counts = dict(reader.diagnostics.counts)
         return counts, [(e.name, e.size, e.requests, e.request_done) for e in events]

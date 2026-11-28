@@ -610,15 +610,16 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: _with_config(archive, out(), max_read_through=b),
             )
         )
-    for bad in ("x", -1, True, 1.5, None):
-        rows.append(
-            _case(
-                "ArchiveyConfig",
-                "source_read_step",
-                bad,
-                lambda b=bad: _with_config(archive, out(), source_read_step=b),
+    for bad in ("x", -1, True, 1.5):
+        for function in (open_archive, open_stream):
+            rows.append(
+                _case(
+                    function.__name__,
+                    "source_read_step",
+                    bad,
+                    lambda b=bad, f=function: f(archive, source_read_step=b),
+                )
             )
-        )
     for bad in ("x", -1, True, 1.5, None):
         rows.append(
             _case(
@@ -637,14 +638,6 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 "on_diagnostic",
                 bad,
                 lambda b=bad: _with_config(archive, out(), on_diagnostic=b),
-            )
-        )
-        rows.append(
-            _case(
-                "ArchiveyConfig",
-                "on_source_read",
-                bad,
-                lambda b=bad: _with_config(archive, out(), on_source_read=b),
             )
         )
         for function, keyword in (

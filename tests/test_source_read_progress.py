@@ -8,7 +8,6 @@ import lzma
 import os
 import threading
 import zipfile
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 
@@ -43,8 +42,7 @@ def _xz_file(tmp_path: Path, size: int) -> Path:
 def test_local_stream_reports_about_once_per_mib(tmp_path: Path) -> None:
     path = _xz_file(tmp_path, 5 * LOCAL_REPORT_STEP)
     seen = _Recorder()
-    config = ArchiveyConfig(on_source_read=seen)
-    with open_stream(path, config=config) as stream:
+    with open_stream(path, on_source_read=seen) as stream:
         while stream.read(1 << 16):
             pass
     size = path.stat().st_size
@@ -63,7 +61,7 @@ def test_local_archive_reports_its_reads(tmp_path: Path) -> None:
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr("big.bin", os.urandom(3 * LOCAL_REPORT_STEP))
     seen = _Recorder()
-    with open_archive(path, config=ArchiveyConfig(on_source_read=seen)) as reader:
+    with open_archive(path, on_source_read=seen) as reader:
         reader.read("big.bin")
     assert len(seen.calls) >= 3
     assert seen.calls[-1].bytes_read >= 3 * LOCAL_REPORT_STEP
@@ -77,8 +75,10 @@ def test_a_nested_reader_reports_at_its_nest_level(tmp_path: Path) -> None:
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
         zf.writestr("inner.zip", inner.getvalue())
     seen = _Recorder()
-    config = ArchiveyConfig(on_source_read=seen)
-    with open_archive(path, config=config) as outer, outer.open("inner.zip") as member:
+    with (
+        open_archive(path, on_source_read=seen) as outer,
+        outer.open("inner.zip") as member,
+    ):
         before = len(seen.calls)
         with (
             open_archive(member, parent=outer, pipe=True) as nested,
@@ -104,9 +104,8 @@ def test_a_nested_reader_reports_the_member_size(tmp_path: Path) -> None:
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
         zf.writestr("inner.zip", inner.getvalue())
     seen = _Recorder()
-    config = ArchiveyConfig(on_source_read=seen)
     with (
-        open_archive(path, config=config, seekable_members=True) as outer,
+        open_archive(path, on_source_read=seen, seekable_members=True) as outer,
         outer.open("inner.zip") as member,
         open_archive(member, parent=outer) as nested,
     ):
@@ -150,9 +149,10 @@ def test_a_size_hint_is_reported_but_does_not_set_the_report_step(
 
     def reports(size: int | None) -> list[SourceProgress]:
         seen = _Recorder()
-        config = ArchiveyConfig(on_source_read=seen)
         with (
-            open_archive(_HintedPipe(data, size), config=config, pipe=True) as reader,
+            open_archive(
+                _HintedPipe(data, size), on_source_read=seen, pipe=True
+            ) as reader,
             reader.stream_members() as members,
         ):
             for _, stream in members:
@@ -177,12 +177,12 @@ def test_a_nested_reader_with_its_own_callback_reports_there(tmp_path: Path) -> 
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
         zf.writestr("inner.zip", inner.getvalue())
     outer_seen, inner_seen = _Recorder(), _Recorder()
-    config = ArchiveyConfig(on_source_read=outer_seen)
-    inner_config = ArchiveyConfig(on_source_read=inner_seen)
     with (
-        open_archive(path, config=config) as outer,
+        open_archive(path, on_source_read=outer_seen) as outer,
         outer.open("inner.zip") as member,
-        open_archive(member, parent=outer, config=inner_config, pipe=True) as nested,
+        open_archive(
+            member, parent=outer, on_source_read=inner_seen, pipe=True
+        ) as nested,
         nested.stream_members() as members,
     ):
         for _, stream in members:
@@ -216,13 +216,13 @@ def _bz2_file(tmp_path: Path, size: int) -> Path:
     return path
 
 
-def _read_zip(path: Path, config: ArchiveyConfig) -> None:
-    with open_archive(path, config=config) as reader:
+def _read_zip(path: Path, **options: Any) -> None:
+    with open_archive(path, **options) as reader:
         reader.read("big.bin")
 
 
-def _read_stream(path: Path, config: ArchiveyConfig) -> None:
-    with open_stream(path, config=config) as stream:
+def _read_stream(path: Path, **options: Any) -> None:
+    with open_stream(path, **options) as stream:
         stream.read()
 
 
@@ -239,16 +239,15 @@ def test_the_callback_s_exception_propagates_unchanged(
         if calls == 2:
             raise stop_type("stop from callback")
 
-    config = ArchiveyConfig(on_source_read=stop)
     size = 3 * LOCAL_REPORT_STEP
     if shape == "zip":
         path = _zip_deflated(tmp_path, size)
         with pytest.raises(stop_type) as caught:
-            _read_zip(path, config)
+            _read_zip(path, on_source_read=stop)
     else:
         path = _bz2_file(tmp_path, size) if shape == "bz2" else _xz_file(tmp_path, size)
         with pytest.raises(stop_type) as caught:
-            _read_stream(path, config)
+            _read_stream(path, on_source_read=stop)
     assert type(caught.value) is stop_type
 
 
@@ -257,14 +256,13 @@ def test_accelerated_members_still_report_every_mib(tmp_path: Path, shape: str) 
     # A deflate or bzip2 member of a ZIP is handed to an accelerator as a file region,
     # and while reporting the accelerator notes its reads of it.
     seen = _Recorder()
-    config = ArchiveyConfig(on_source_read=seen)
     size = 6 * LOCAL_REPORT_STEP
     if shape == "zip":
         path = _zip_deflated(tmp_path, size)
-        _read_zip(path, config)
+        _read_zip(path, on_source_read=seen)
     else:
         path = _bz2_file(tmp_path, size)
-        _read_stream(path, config)
+        _read_stream(path, on_source_read=seen)
     assert seen.calls[-1].bytes_read >= path.stat().st_size - LOCAL_REPORT_STEP
     assert len(seen.calls) >= 5
 
@@ -272,7 +270,7 @@ def test_accelerated_members_still_report_every_mib(tmp_path: Path, shape: str) 
 def test_detection_reads_are_reported(tmp_path: Path) -> None:
     path = _xz_file(tmp_path, 1000)
     seen = _Recorder()
-    with open_archive(path, config=ArchiveyConfig(on_source_read=seen)):
+    with open_archive(path, on_source_read=seen):
         pass
     # Detection read the start of the file (and the xz index at its end) through
     # the source: a file this small reports at its end.
@@ -286,7 +284,7 @@ def test_unset_installs_no_reporter(tmp_path: Path) -> None:
         source: Any = reader._source  # type: ignore[attr-defined]
         assert source._progress is None
         assert source.codec_path == path
-    with open_archive(path, config=ArchiveyConfig(on_source_read=print)) as reader:
+    with open_archive(path, on_source_read=print) as reader:
         source = reader._source  # type: ignore[attr-defined]
         assert source._progress is not None
         assert source.codec_path is None
@@ -294,7 +292,7 @@ def test_unset_installs_no_reporter(tmp_path: Path) -> None:
 
 def test_a_non_callable_is_refused() -> None:
     with pytest.raises(TypeError, match="on_source_read"):
-        ArchiveyConfig(on_source_read=1)  # type: ignore[arg-type]
+        open_stream(io.BytesIO(), on_source_read=1)  # type: ignore[arg-type]
 
 
 def test_url_source_reports_each_request() -> None:
@@ -307,8 +305,9 @@ def test_url_source_reports_each_request() -> None:
     fs.pipe("/progress/a.zip", buf.getvalue())
     try:
         seen = _Recorder()
-        config = ArchiveyConfig(on_source_read=seen)
-        with open_archive(fsspec.open("memory://progress/a.zip"), config=config) as r:
+        with open_archive(
+            fsspec.open("memory://progress/a.zip"), on_source_read=seen
+        ) as r:
             for m in r.members():
                 r.read(m)
         calls = seen.calls
@@ -341,9 +340,8 @@ def test_compressed_tar_reports_to_the_end(tmp_path: Path) -> None:
         info.size = len(data)
         tf.addfile(info, io.BytesIO(data))
     seen = _Recorder()
-    config = ArchiveyConfig(on_source_read=seen)
     with (
-        open_archive(path, config=config, streaming=True) as reader,
+        open_archive(path, on_source_read=seen, streaming=True) as reader,
         reader.stream_members() as members,
     ):
         for _, stream in members:
@@ -371,7 +369,7 @@ def test_url_volume_list_reports_offsets_in_the_set() -> None:
             fsspec.open("memory://vol/a.zip.001"),
             fsspec.open("memory://vol/a.zip.002"),
         ]
-        with open_archive(parts, config=ArchiveyConfig(on_source_read=seen)) as r:
+        with open_archive(parts, on_source_read=seen) as r:
             for m in r.members():
                 r.read(m)
         assert seen.calls[0].size == len(data)
@@ -404,9 +402,8 @@ def test_a_pipe_reports_its_last_bytes(size: int) -> None:
         zf.writestr("x.bin", os.urandom(size))
     data = buf.getvalue()
     seen = _Recorder()
-    config = ArchiveyConfig(on_source_read=seen)
     with (
-        open_archive(_Pipe(data), config=config, pipe=True) as reader,
+        open_archive(_Pipe(data), on_source_read=seen, pipe=True) as reader,
         reader.stream_members() as members,
     ):
         for _, stream in members:
@@ -457,13 +454,13 @@ def test_a_stop_on_the_first_call_is_not_lost(
     tmp_path: Path, stop_type: type[BaseException], shape: str
 ) -> None:
     # The first report on a .gz comes from a probe that catches broad types.
-    config = ArchiveyConfig(on_source_read=_stop_on(1, stop_type))
+    stop = _stop_on(1, stop_type)
     with pytest.raises(stop_type) as caught:
         if shape == "gz":
-            _read_stream(_gz_file(tmp_path, 3 * LOCAL_REPORT_STEP), config)
+            _read_stream(_gz_file(tmp_path, 3 * LOCAL_REPORT_STEP), on_source_read=stop)
         else:
             path = _tar_gz(tmp_path, 2, 2 * LOCAL_REPORT_STEP)
-            with open_archive(path, config=config) as reader:
+            with open_archive(path, on_source_read=stop) as reader:
                 reader.extract_all(tmp_path / "out")
     assert type(caught.value) is stop_type
 
@@ -479,10 +476,9 @@ def test_a_stop_ends_an_extraction_that_continues_on_errors(
                 zf.writestr(f"m{i}.bin", os.urandom(2 * LOCAL_REPORT_STEP))
     else:
         path = _tar_gz(tmp_path, 3, 2 * LOCAL_REPORT_STEP)
-    config = ArchiveyConfig(on_source_read=_stop_on(2, _StopOS))
     with (
         pytest.raises(_StopOS),
-        open_archive(path, config=config) as reader,
+        open_archive(path, on_source_read=_stop_on(2, _StopOS)) as reader,
     ):
         reader.extract_all(tmp_path / "out", on_problem="continue")
 
@@ -521,15 +517,14 @@ def test_a_stop_during_the_re_decode_of_a_damaged_member_is_not_lost(
     path = _bad_crc_gz(tmp_path, seed, random_size, run)
 
     def go(callback: Any) -> None:
-        config = ArchiveyConfig(
-            on_source_read=callback, source_read_step=0, use_rapidgzip="off"
-        )
+        config = ArchiveyConfig(use_rapidgzip="off")
+        reads: dict[str, Any] = {"on_source_read": callback, "source_read_step": 0}
         if call == "extract_all":
-            with open_archive(path, config=config) as reader:
+            with open_archive(path, config=config, **reads) as reader:
                 reader.extract_all(tmp_path / "out", on_problem="continue")
             return
         size = 1 << 20 if call == "read_bounded_twice" else -1
-        with open_stream(path, config=config) as stream:
+        with open_stream(path, config=config, **reads) as stream:
             if call == "read":
                 stream.read()
                 return
@@ -578,10 +573,10 @@ def test_a_retry_raises_the_caller_s_own_stop_instance(tmp_path: Path) -> None:
     # The stream keeps the stop to raise it again. For the callback's stop that is
     # the caller's own instance, with its own fields, not a copy.
     path = _bad_crc_gz(tmp_path, 0, 1 << 16, 1 << 18)
-    config = ArchiveyConfig(source_read_step=0, use_rapidgzip="off")
+    config = ArchiveyConfig(use_rapidgzip="off")
     recorder = _Recorder()
     with pytest.raises(CorruptionError):
-        _read_stream(path, replace(config, on_source_read=recorder))
+        _read_stream(path, config=config, on_source_read=recorder, source_read_step=0)
     stopped = 0
     for n in range(1, len(recorder.calls) + 1):
         raised: list[_StopWithSlots] = []
@@ -601,7 +596,9 @@ def test_a_retry_raises_the_caller_s_own_stop_instance(tmp_path: Path) -> None:
                 raise exc
 
         try:
-            stream = open_stream(path, config=replace(config, on_source_read=stop))
+            stream = open_stream(
+                path, config=config, on_source_read=stop, source_read_step=0
+            )
         except _StopWithSlots:
             continue
         with stream:
@@ -633,12 +630,12 @@ def test_retries_after_a_stop_do_not_grow_its_traceback(
         path.write_bytes(_small_zip({"a.bin": os.urandom(2 << 20)}))
 
     @contextlib.contextmanager
-    def stream(config: ArchiveyConfig) -> Any:
+    def stream(**options: Any) -> Any:
         if shape == "gz":
-            with open_stream(path, config=config) as s:
+            with open_stream(path, **options) as s:
                 yield s
         else:
-            with open_archive(path, config=config) as reader, reader.open("a.bin") as s:
+            with open_archive(path, **options) as reader, reader.open("a.bin") as s:
                 yield s
 
     # Stop on the third report after the stream is open, so the stop comes from a
@@ -652,11 +649,9 @@ def test_retries_after_a_stop_do_not_grow_its_traceback(
             if armed == 4:
                 raise _StopValue("stop")
 
-    config = ArchiveyConfig(
-        on_source_read=stop, source_read_step=0, use_rapidgzip="off"
-    )
+    config = ArchiveyConfig(use_rapidgzip="off")
     lengths = []
-    with stream(config) as s:
+    with stream(config=config, on_source_read=stop, source_read_step=0) as s:
         armed = 1
         with pytest.raises(_StopValue) as caught:
             while s.read(1 << 16):
@@ -723,8 +718,10 @@ def _check_stop_holds(
 def _stream_reads(path: Path, **config: Any) -> Any:
     @contextlib.contextmanager
     def open_reads(callback: Any) -> Any:
-        cfg = ArchiveyConfig(on_source_read=callback, source_read_step=0, **config)
-        with open_stream(path, config=cfg) as stream:
+        cfg = ArchiveyConfig(**config)
+        with open_stream(
+            path, config=cfg, on_source_read=callback, source_read_step=0
+        ) as stream:
             yield stream.read
 
     return open_reads
@@ -787,10 +784,10 @@ def test_a_read_after_a_stop_does_not_touch_the_caller_s_source() -> None:
             source.stopped = True
             raise _StopValue("stop")
 
-    config = ArchiveyConfig(
-        on_source_read=stop, source_read_step=0, use_rapidgzip="off"
-    )
-    with open_stream(source, seekable=True, config=config) as stream:
+    config = ArchiveyConfig(use_rapidgzip="off")
+    with open_stream(
+        source, seekable=True, config=config, on_source_read=stop, source_read_step=0
+    ) as stream:
         with pytest.raises(_StopValue):
             while stream.read(1 << 20):
                 pass
@@ -893,8 +890,9 @@ def test_an_interrupt_on_a_read_the_decoder_makes_is_kept(tmp_path: Path) -> Non
 
     @contextlib.contextmanager
     def seekable_reads(callback: Any) -> Any:
-        cfg = ArchiveyConfig(on_source_read=callback, source_read_step=0)
-        with open_stream(path, seekable=True, config=cfg) as stream:
+        with open_stream(
+            path, seekable=True, on_source_read=callback, source_read_step=0
+        ) as stream:
             yield stream.read
 
     sizes = [1 << 16] * 40 + [1, 1]
@@ -910,16 +908,18 @@ def test_a_stop_holds_after_a_seek_to_a_seek_point(tmp_path: Path) -> None:
     block = random.Random(0).randbytes(1 << 20) + b"a" * (1 << 20)
     path = tmp_path / "points.gz"
     path.write_bytes(gzip.compress(block * 2, 1))
-    config = ArchiveyConfig(source_read_step=0, use_rapidgzip="off")
+    config = ArchiveyConfig(use_rapidgzip="off")
     recorder = _Recorder()
-    _read_stream(path, replace(config, on_source_read=recorder))
+    _read_stream(path, config=config, on_source_read=recorder, source_read_step=0)
     stopped = 0
     for n in range(1, len(recorder.calls) + 1):
         try:
             stream = open_stream(
                 path,
                 seekable=True,
-                config=replace(config, on_source_read=_stop_on(n, _StopValue)),
+                config=config,
+                on_source_read=_stop_on(n, _StopValue),
+                source_read_step=0,
             )
         except _StopValue:
             continue
@@ -947,9 +947,10 @@ def test_a_stop_holds_through_a_streaming_tar_gz_buffer(
 
     @contextlib.contextmanager
     def open_reads(callback: Any) -> Any:
-        cfg = ArchiveyConfig(on_source_read=callback, source_read_step=0)
         with (
-            open_archive(path, config=cfg, streaming=True) as reader,
+            open_archive(
+                path, on_source_read=callback, source_read_step=0, streaming=True
+            ) as reader,
             reader.stream_members() as members,
         ):
             for _, stream in members:
@@ -970,16 +971,20 @@ def test_a_stop_on_the_read_of_the_last_bytes_holds_on_the_next_read(
 
     path = tmp_path / "a.gz"
     path.write_bytes(gzip.compress(os.urandom(1 << 16) + b"a" * (1 << 18)))
-    config = ArchiveyConfig(source_read_step=0, use_rapidgzip="off")
+    config = ArchiveyConfig(use_rapidgzip="off")
     recorder = _Recorder()
-    with open_stream(path, config=replace(config, on_source_read=recorder)) as stream:
+    with open_stream(
+        path, config=config, on_source_read=recorder, source_read_step=0
+    ) as stream:
         stream.read()
     calls = len(recorder.calls)
     stopped = 0
     for n in range(1, calls + 1):
         stop = _stop_on(n, _StopValue)
         try:
-            stream = open_stream(path, config=replace(config, on_source_read=stop))
+            stream = open_stream(
+                path, config=config, on_source_read=stop, source_read_step=0
+            )
         except _StopValue:
             continue
         with stream:
@@ -1003,12 +1008,15 @@ def test_a_rar_from_a_pipe_reports_what_the_feeder_thread_read() -> None:
     seen = _Recorder()
     config = ArchiveyConfig(
         spool_limits=SpoolLimits(max_bytes=40_000),
-        on_source_read=seen,
         format_options=[RarOptions(decompressor="unrar")],
     )
     with (
         open_archive(
-            _Pipe(data), config=config, pipe=True, password="password"
+            _Pipe(data),
+            config=config,
+            on_source_read=seen,
+            pipe=True,
+            password="password",
         ) as reader,
         reader.stream_members() as members,
     ):
@@ -1028,8 +1036,7 @@ def test_step_zero_reports_every_read_as_a_range(tmp_path: Path) -> None:
             zf.writestr(f"m{i}.bin", os.urandom(50_000))
     size = path.stat().st_size
     seen = _Recorder()
-    config = ArchiveyConfig(on_source_read=seen, source_read_step=0)
-    with open_archive(path, config=config) as reader:
+    with open_archive(path, on_source_read=seen, source_read_step=0) as reader:
         for member in reader.members():
             reader.read(member)
     ranges = [(c.read_start, c.position) for c in seen.calls]
@@ -1052,7 +1059,7 @@ def test_the_default_step_reports_once_per_mib_with_the_latest_range(
 ) -> None:
     path = _xz_file(tmp_path, 3 * LOCAL_REPORT_STEP)
     seen = _Recorder()
-    _read_stream(path, ArchiveyConfig(on_source_read=seen))
+    _read_stream(path, on_source_read=seen)
     assert all(
         c.read_start is not None and c.read_start < c.position for c in seen.calls
     )
@@ -1068,8 +1075,9 @@ def test_a_url_source_leaves_read_start_unset() -> None:
     fs.pipe("/rs/a.zip", buf.getvalue())
     try:
         seen = _Recorder()
-        config = ArchiveyConfig(on_source_read=seen, source_read_step=0)
-        with open_archive(fsspec.open("memory://rs/a.zip"), config=config) as r:
+        with open_archive(
+            fsspec.open("memory://rs/a.zip"), on_source_read=seen, source_read_step=0
+        ) as r:
             r.read("a.bin")
         assert seen.calls
         assert all(c.read_start is None for c in seen.calls)
@@ -1087,10 +1095,14 @@ def test_an_accelerated_gzip_trailer_check_does_not_swallow_a_stop(
     path = _gz_file(tmp_path, LOCAL_REPORT_STEP)
 
     def read(callback: Any) -> None:
-        config = ArchiveyConfig(
-            use_rapidgzip="on", on_source_read=callback, source_read_step=0
-        )
-        with open_stream(path, seekable=True, config=config) as stream:
+        config = ArchiveyConfig(use_rapidgzip="on")
+        with open_stream(
+            path,
+            seekable=True,
+            config=config,
+            on_source_read=callback,
+            source_read_step=0,
+        ) as stream:
             stream.read()
 
     recorder = _Recorder()
@@ -1127,10 +1139,9 @@ def test_a_stop_of_an_archivey_error_type_reaches_the_caller_as_itself(
         if calls == 3:
             raise stop
 
-    config = ArchiveyConfig(on_source_read=callback, source_read_step=0)
     with (
         pytest.raises(CorruptionError) as caught,
-        open_archive(path, config=config) as reader,
+        open_archive(path, on_source_read=callback, source_read_step=0) as reader,
     ):
         for member in reader.members():
             reader.read(member)
@@ -1154,8 +1165,9 @@ def test_a_stop_holds_for_cached_url_reads() -> None:
             if stopping and progress.request_done is False:
                 raise _StopValue("stop from callback")
 
-        config = ArchiveyConfig(on_source_read=callback)
-        with open_archive(fsspec.open("memory://cached/a.zip"), config=config) as r:
+        with open_archive(
+            fsspec.open("memory://cached/a.zip"), on_source_read=callback
+        ) as r:
             assert r.read("a.txt") == b"a" * 100
             stopping = True
             with pytest.raises(_StopValue):
@@ -1175,8 +1187,9 @@ def test_a_split_set_beside_a_stub_reports(tmp_path: Path) -> None:
     (tmp_path / "vol.zip.001").write_bytes(data[:half])
     (tmp_path / "vol.zip.002").write_bytes(data[half:])
     seen = _Recorder()
-    config = ArchiveyConfig(on_source_read=seen, source_read_step=0)
-    with open_archive(tmp_path / "vol.exe", config=config) as reader:
+    with open_archive(
+        tmp_path / "vol.exe", on_source_read=seen, source_read_step=0
+    ) as reader:
         assert reader.read("x.bin")
     set_calls = [c for c in seen.calls if c.size == len(data)]
     assert set_calls
@@ -1195,8 +1208,7 @@ def test_a_cue_sheet_reports_its_track_reads(tmp_path: Path) -> None:
         'FILE "disc.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
     )
     seen = _Recorder()
-    config = ArchiveyConfig(on_source_read=seen, source_read_step=0)
-    with open_archive(cue, config=config) as reader:
+    with open_archive(cue, on_source_read=seen, source_read_step=0) as reader:
         assert reader.read("big.dat") == _PAYLOAD
     track = [c for c in seen.calls if c.name == "disc.bin"]
     assert track
@@ -1210,8 +1222,7 @@ def test_a_mid_stream_open_reports_file_offsets() -> None:
     stream = io.BytesIO(b"\0" * prefix + archive)
     stream.seek(prefix)
     seen = _Recorder()
-    config = ArchiveyConfig(on_source_read=seen, source_read_step=0)
-    with open_archive(stream, config=config) as reader:
+    with open_archive(stream, on_source_read=seen, source_read_step=0) as reader:
         assert reader.read("sample.txt") == b"hello"
     assert seen.calls
     for c in seen.calls:
@@ -1229,8 +1240,7 @@ def test_a_mixed_volume_list_reports_local_and_remote_parts() -> None:
     try:
         seen = _Recorder()
         parts = [io.BytesIO(data[:half]), fsspec.open("memory://mixed/a.zip.002")]
-        config = ArchiveyConfig(on_source_read=seen, source_read_step=0)
-        with open_archive(parts, config=config) as r:
+        with open_archive(parts, on_source_read=seen, source_read_step=0) as r:
             for m in r.members():
                 r.read(m)
         local = [c for c in seen.calls if c.request_start is None]
@@ -1268,8 +1278,7 @@ def test_a_mixed_volume_list_reports_local_parts_after_a_url(
             local_size += len(chunk)
     try:
         seen = _Recorder()
-        config = ArchiveyConfig(on_source_read=seen, source_read_step=0)
-        with open_archive(parts, config=config) as r:
+        with open_archive(parts, on_source_read=seen, source_read_step=0) as r:
             for m in r.members():
                 r.read(m)
         local = [c for c in seen.calls if c.request_start is None]
@@ -1284,12 +1293,11 @@ def test_a_mixed_volume_list_reports_local_parts_after_a_url(
 def test_a_caller_thread_named_like_archivey_s_still_reports(tmp_path: Path) -> None:
     path = _gz_file(tmp_path, 3 * LOCAL_REPORT_STEP)
     seen = _Recorder()
-    config = ArchiveyConfig(on_source_read=seen)
     errors: list[BaseException] = []
 
     def work() -> None:
         try:
-            _read_stream(path, config)
+            _read_stream(path, on_source_read=seen)
         except Exception as exc:  # noqa: BLE001 - reported below
             errors.append(exc)
 
@@ -1310,7 +1318,7 @@ def test_a_compressed_url_reports_its_url_as_the_name() -> None:
     try:
         seen = _Recorder()
         opened = fsspec.open("memory://named/example.zip.gz", compression="gzip")
-        with open_archive(opened, config=ArchiveyConfig(on_source_read=seen)) as r:
+        with open_archive(opened, on_source_read=seen) as r:
             assert r.read("a.txt") == b"a"
         assert seen.calls
         assert all(c.name and "example.zip.gz" in c.name for c in seen.calls)

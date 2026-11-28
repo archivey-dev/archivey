@@ -1757,7 +1757,6 @@ def detect_format(
         config = config_with_callbacks(
             config if config is not None else DEFAULT_ARCHIVEY_CONFIG,
             on_diagnostic=on_diagnostic,
-            on_source_read=None,
         )
     return detect_format_into(
         source, config=config, collector=None, follow_stub_volumes=follow_stub_volumes

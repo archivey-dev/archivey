@@ -101,6 +101,7 @@ if TYPE_CHECKING:
     from archivey.internal.password import _PasswordCandidates
     from archivey.internal.registry import ContentProbe
     from archivey.internal.streams.streamtools import HandleLock
+    from archivey.types import OnSourceRead
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -1063,6 +1064,10 @@ class BaseArchiveReader(ArchiveReader):
         up = self._nest_outer if self._nest_outer is not None else self._nest_parent
         # How many archives sit above this one in its nest, both kinds counted.
         self._nest_level: int = 0 if up is None else up._nest_level + 1
+        # The ``on_source_read`` callback and step this reader's source reports to, set
+        # by ``open_archive`` once the reader exists. A reader opened with ``parent=``
+        # and no callback of its own reports to them.
+        self._source_reads: tuple[OnSourceRead, int] | None = None
         # Only descendants retain the root. A root retaining itself would keep
         # its whole listing alive until cyclic garbage collection.
         self._nest_root: BaseArchiveReader | None = (

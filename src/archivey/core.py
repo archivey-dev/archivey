@@ -71,6 +71,7 @@ from archivey.internal.arg_checks import (
     check_bool,
     check_callable,
     check_config,
+    check_count,
     check_encoding,
     check_instance,
     check_path_not_empty,
@@ -106,6 +107,7 @@ from archivey.internal.nesting import joining
 from archivey.internal.open_site import OpenSite, capture_open_site
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.pe_resources import ProgramResources
+from archivey.internal.read_progress import LOCAL_REPORT_STEP
 from archivey.internal.registry import (
     format_availability,
     get_registry,
@@ -435,6 +437,7 @@ def open_archive(
     config: ArchiveyConfig | None = None,
     on_diagnostic: OnDiagnostic | None = None,
     on_source_read: OnSourceRead | None = None,
+    source_read_step: int | None = None,
     parent: ForwardArchiveReader | None = None,
     salvage: bool = False,
 ) -> ArchiveReader: ...
@@ -454,6 +457,7 @@ def open_archive(
     config: ArchiveyConfig | None = None,
     on_diagnostic: OnDiagnostic | None = None,
     on_source_read: OnSourceRead | None = None,
+    source_read_step: int | None = None,
     parent: ForwardArchiveReader | None = None,
     salvage: bool = False,
 ) -> ForwardArchiveReader: ...
@@ -473,6 +477,7 @@ def open_archive(
     config: ArchiveyConfig | None = None,
     on_diagnostic: OnDiagnostic | None = None,
     on_source_read: OnSourceRead | None = None,
+    source_read_step: int | None = None,
     parent: ForwardArchiveReader | None = None,
     salvage: bool = False,
 ) -> ForwardArchiveReader: ...
@@ -491,6 +496,7 @@ def open_archive(
     config: ArchiveyConfig | None = None,
     on_diagnostic: OnDiagnostic | None = None,
     on_source_read: OnSourceRead | None = None,
+    source_read_step: int | None = None,
     parent: ForwardArchiveReader | None = None,
     salvage: bool = False,
 ) -> ForwardArchiveReader:
@@ -569,7 +575,10 @@ def open_archive(
 
     ``on_source_read`` is called with a :class:`~archivey.types.SourceProgress` as
     archivey reads the archive's own file. A local file or stream reports about once
-    per ``config.source_read_step`` bytes read (1 MiB). A URL source (an
+    per ``source_read_step`` bytes read (1 MiB by default). ``source_read_step=0``
+    reports every read, so :attr:`SourceProgress.read_start
+    <archivey.types.SourceProgress.read_start>` and ``position`` give the range of each
+    read: a log of the regions of the file read. A URL source (an
     ``fsspec.core.OpenFile``) reports before and after each range request, and over
     HTTP about once per MiB of the answer as it comes in. Detection's reads count. It
     runs on the thread that read, and an exception it raises propagates out of that
@@ -589,9 +598,10 @@ def open_archive(
     :attr:`SourceProgress.nest_level <archivey.types.SourceProgress.nest_level>` is one
     more than its parent's. A member stream passed without ``parent=`` is a file of its
     own, at level 0. To tell apart nested archives open at the same time, give each its
-    own callback, such as ``on_source_read=functools.partial(on_read, name)``. The
-    deprecated ``on_diagnostic`` and ``on_source_read`` fields still
-    work; a keyword this call passes wins over them.
+    own callback, such as ``on_source_read=functools.partial(on_read, name)``. A reader
+    that reports to its parent's ``on_source_read`` also takes its parent's
+    ``source_read_step``, unless this call passes one. The deprecated
+    ``ArchiveyConfig.on_diagnostic`` field still works; the keyword wins over it.
 
     ``parent`` is the reader this archive was read from, when the caller found it
     inside another archive: open or closed, a reader ``open_archive`` returned. The new
@@ -744,6 +754,7 @@ def open_archive(
     check_config(config, call="open_archive(config=…)")
     check_callable(on_diagnostic, call="open_archive(on_diagnostic=…)")
     check_callable(on_source_read, call="open_archive(on_source_read=…)")
+    check_count(source_read_step, call="open_archive(source_read_step=…)")
     _check_parent(parent)
     check_encoding(encoding, call="open_archive(encoding=…)")
     if encoding is not None:
@@ -796,7 +807,6 @@ def open_archive(
     effective_config = config_with_callbacks(
         effective_config,
         on_diagnostic=on_diagnostic,
-        on_source_read=on_source_read,
         inherit_from=(
             cast("BaseArchiveReader", parent)._config
             if parent is not None and config is not None
@@ -823,16 +833,20 @@ def open_archive(
         resolved = _read_as_pipe(resolved)
     # Every reader reports to its own config's callback; a ``parent=`` reader's
     # reports say how deep it is; each reader counts reads of its own source.
-    if effective_config.on_source_read is not None:
+    source_reads = _source_reads(
+        on_source_read,
+        source_read_step,
+        None if parent is None else cast("BaseArchiveReader", parent)._source_reads,
+    )
+    if source_reads is not None:
         resolved.source.report_reads(
-            effective_config.on_source_read,
-            effective_config.source_read_step,
+            *source_reads,
             0 if parent is None else cast("BaseArchiveReader", parent)._nest_level + 1,
         )
     slot = _SourceSlot(resolved.source)
     try:
         with noting_fsspec_decoding(source):
-            return _open_resolved(
+            reader = _open_resolved(
                 slot,
                 resolved,
                 format=format,
@@ -852,6 +866,30 @@ def open_archive(
         # Once a reader exists it closes its source; until then nobody else will.
         slot.current.close()
         raise
+    # For a reader a later ``open_archive(parent=)`` names, to report to.
+    cast("BaseArchiveReader", reader)._source_reads = source_reads
+    return reader
+
+
+def _source_reads(
+    on_source_read: OnSourceRead | None,
+    source_read_step: int | None,
+    parent_reads: tuple[OnSourceRead, int] | None,
+) -> tuple[OnSourceRead, int] | None:
+    """The callback and step one opening call reports its source's reads to, or
+    ``None`` when nothing is reported.
+
+    A callback the call passes reports at the call's step (1 MiB if it passes none).
+    Without one, a reader opened with ``parent=`` reports to its parent's callback, at
+    the call's step if it passes one and at its parent's otherwise.
+    """
+    if on_source_read is not None:
+        step = LOCAL_REPORT_STEP if source_read_step is None else source_read_step
+        return (on_source_read, step)
+    if parent_reads is None:
+        return None
+    callback, parent_step = parent_reads
+    return (callback, parent_step if source_read_step is None else source_read_step)
 
 
 def _start_may_be_lost(detected: FormatInfo | None) -> bool:
@@ -1588,6 +1626,7 @@ def open_stream(
     config: ArchiveyConfig | None = None,
     on_diagnostic: OnDiagnostic | None = None,
     on_source_read: OnSourceRead | None = None,
+    source_read_step: int | None = None,
 ) -> ArchiveStream:
     """Open a single-file compressed stream and return a decompressing stream.
 
@@ -1627,7 +1666,8 @@ def open_stream(
 
     ``on_diagnostic`` and ``on_source_read`` are called as for :func:`open_archive`:
     with each diagnostic the policy collects or raises, and with a
-    :class:`~archivey.types.SourceProgress` as the stream's source is read.
+    :class:`~archivey.types.SourceProgress` as the stream's source is read, at the
+    ``source_read_step`` given (1 MiB by default, 0 for every read).
 
     A stream must be blocking: when a non-blocking one has nothing ready (its ``read``
     returns ``None``), opening or reading raises ``BlockingIOError``, not an archivey
@@ -1678,11 +1718,11 @@ def open_stream(
     check_config(config, call="open_stream(config=…)")
     check_callable(on_diagnostic, call="open_stream(on_diagnostic=…)")
     check_callable(on_source_read, call="open_stream(on_source_read=…)")
+    check_count(source_read_step, call="open_stream(source_read_step=…)")
 
     effective_config = config_with_callbacks(
         config if config is not None else _DEFAULT_CONFIG,
         on_diagnostic=on_diagnostic,
-        on_source_read=on_source_read,
     )
     collector = collector_from_config(effective_config)
 
@@ -1738,10 +1778,9 @@ def open_stream(
         codec_input = ArchiveSource.for_stream(source)
         # The mid-stream origin contract: the payload starts where the caller left it.
         codec_input.rebase_to_current_position()
-    if effective_config.on_source_read is not None:
-        codec_input.report_reads(
-            effective_config.on_source_read, effective_config.source_read_step
-        )
+    source_reads = _source_reads(on_source_read, source_read_step, None)
+    if source_reads is not None:
+        codec_input.report_reads(*source_reads)
     # The returned stream owns the source from here, as a reader does: closing it closes
     # the source (which never closes the caller's object), and so does any refusal
     # before there is a stream to close.

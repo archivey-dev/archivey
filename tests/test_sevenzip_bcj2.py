@@ -20,7 +20,7 @@ from typing import BinaryIO
 import pytest
 
 import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
-from archivey import ArchiveyConfig, open_archive
+from archivey import open_archive
 from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
@@ -878,8 +878,9 @@ def test_the_read_after_a_stop_raises_it_again() -> None:
             if calls == 4:
                 raise _Stop("stop")
 
-    config = ArchiveyConfig(on_source_read=stop, source_read_step=1)
-    with open_archive(io.BytesIO(_bare_bcj2_archive(payload)), config=config) as reader:
+    with open_archive(
+        io.BytesIO(_bare_bcj2_archive(payload)), on_source_read=stop, source_read_step=1
+    ) as reader:
         (member,) = reader.members()
         with reader.open(member) as stream:
             armed = True
