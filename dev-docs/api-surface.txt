@@ -1063,7 +1063,7 @@ field archivey.diagnostics.ReaderDisagreementContext.member_name: str = ''
 field archivey.diagnostics.ReaderDisagreementContext.shape: Literal['file_named_as_directory', 'link_name_on_file', 'star_prefix', 'gnu_prefix_bytes', 'hardlink_to_symlink', 'nul_in_name', 'directory_attribute_without_slash', 'file_only_in_joliet', 'file_only_in_iso9660', 'file_only_in_udf'] = 'file_named_as_directory'
 method archivey.diagnostics.ReaderDisagreementContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.RegionSkippedContext(_JsonSafeContext)
-init archivey.diagnostics.RegionSkippedContext(kind: Literal['region_skipped'] = 'region_skipped', archive_name: str | None = None, format: str = '', layer: str = 'archive', offset: int = 0, length: int | None = None, reason: Literal['no_header', 'search_limit', 'report_limit'] = 'no_header') -> None
+init archivey.diagnostics.RegionSkippedContext(kind: Literal['region_skipped'] = 'region_skipped', archive_name: str | None = None, format: str = '', layer: str = 'archive', offset: int = 0, length: int | None = None, reason: Literal['no_header', 'search_limit', 'report_limit'] = 'no_header', volume_index: int | None = None) -> None
 field archivey.diagnostics.RegionSkippedContext.archive_name: str | None = None
 field archivey.diagnostics.RegionSkippedContext.format: str = ''
 field archivey.diagnostics.RegionSkippedContext.kind: Literal['region_skipped'] = 'region_skipped'
@@ -1071,18 +1071,20 @@ field archivey.diagnostics.RegionSkippedContext.layer: str = 'archive'
 field archivey.diagnostics.RegionSkippedContext.length: int | None = None
 field archivey.diagnostics.RegionSkippedContext.offset: int = 0
 field archivey.diagnostics.RegionSkippedContext.reason: Literal['no_header', 'search_limit', 'report_limit'] = 'no_header'
+field archivey.diagnostics.RegionSkippedContext.volume_index: int | None = None
 method archivey.diagnostics.RegionSkippedContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.SalvageScanContext(_JsonSafeContext)
-init archivey.diagnostics.SalvageScanContext(kind: Literal['salvage_scan'] = 'salvage_scan', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, format: str = '', method: Literal['header_search'] = 'header_search', offset: int = 0, confirmed: bool = False, unchecked: tuple[str, ...] = ('position',)) -> None
+init archivey.diagnostics.SalvageScanContext(kind: Literal['salvage_scan'] = 'salvage_scan', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, format: str = '', method: Literal['header_search', 'next_volume'] = 'header_search', offset: int = 0, confirmed: bool = False, unchecked: tuple[str, ...] = ('position',), volume_index: int | None = None) -> None
 field archivey.diagnostics.SalvageScanContext.archive_name: str | None = None
 field archivey.diagnostics.SalvageScanContext.confirmed: bool = False
 field archivey.diagnostics.SalvageScanContext.format: str = ''
 field archivey.diagnostics.SalvageScanContext.kind: Literal['salvage_scan'] = 'salvage_scan'
 field archivey.diagnostics.SalvageScanContext.member_id: int | None = None
 field archivey.diagnostics.SalvageScanContext.member_name: str = ''
-field archivey.diagnostics.SalvageScanContext.method: Literal['header_search'] = 'header_search'
+field archivey.diagnostics.SalvageScanContext.method: Literal['header_search', 'next_volume'] = 'header_search'
 field archivey.diagnostics.SalvageScanContext.offset: int = 0
 field archivey.diagnostics.SalvageScanContext.unchecked: tuple[str, ...] = ('position',)
+field archivey.diagnostics.SalvageScanContext.volume_index: int | None = None
 method archivey.diagnostics.SalvageScanContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.SalvageUnavailableContext(_JsonSafeContext)
 init archivey.diagnostics.SalvageUnavailableContext(kind: Literal['salvage_unavailable'] = 'salvage_unavailable', archive_name: str | None = None, format: str = '', reason: Literal['no_salvage_search', 'forward_only_reader'] = 'no_salvage_search') -> None

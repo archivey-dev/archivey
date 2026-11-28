@@ -43,11 +43,11 @@ import itertools
 import re
 import struct
 import zlib
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from hashlib import pbkdf2_hmac
-from typing import BinaryIO, Literal, NamedTuple, Protocol
+from typing import TYPE_CHECKING, BinaryIO, Literal, NamedTuple, Protocol
 
 from archivey.config import ListingLimits
 from archivey.exceptions import (
@@ -82,6 +82,9 @@ from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.windows_reparse import normalize_windows_link_target
 from archivey.terminal import quoted
 from archivey.types import OptionalLibrary
+
+if TYPE_CHECKING:
+    from archivey.internal.salvage import HeaderSearch, SalvageState
 
 
 class _Readable(Protocol):
@@ -424,6 +427,31 @@ class RarOwner(NamedTuple):
     gid: int | None
 
 
+class RarFound(NamedTuple):
+    """How salvage mode reached a member past the default walk's end
+    (``open_archive(salvage=True)``); the reader reports it as
+    ``MEMBER_FOUND_BY_SCAN``.
+
+    ``method`` is ``"header_search"`` for a member in a volume whose walk stopped at
+    damage: the search found its header (``searched``), or the normal walk reached
+    it from one the search found. It is ``"next_volume"`` for a member of a later
+    volume that only salvage goes on to. ``offset`` is where its header starts in its
+    own volume. ``confirmed``: RAR5 headers always (a CRC-32); a RAR 1.5-4 header when
+    the position after its data confirms, as for step 1's second header.
+
+    ``check`` is what confirmed it, for the report: ``"crc32"``, a RAR5 header's own
+    CRC-32; ``"after_data"``, the position after a RAR 1.5-4 member's data;
+    ``"followed"``, a header that failed its CRC and whose sizes step 1 followed to
+    a position that confirms; ``"none"`` for an unconfirmed one.
+    """
+
+    method: Literal["header_search", "next_volume"]
+    offset: int
+    confirmed: bool
+    searched: bool
+    check: Literal["crc32", "after_data", "followed", "none"] = "none"
+
+
 @dataclass(slots=True)
 class RarMemberInfo:
     filename: str
@@ -540,9 +568,24 @@ class RarMemberInfo:
     damaged_header: tuple[int, int] | None = None
     # In a solid archive, the damaged header the walk went past before this member
     # (``"member"``: a listed FILE; ``"service"``: a skipped SERVICE with data, which
-    # ``unrar`` does not decode, so the solid state after it is wrong). The reader
-    # refuses or flags a member that has no digest to check its bytes with.
-    after_damaged_header: Literal["member", "service"] | None = None
+    # ``unrar`` does not decode, so the solid state after it is wrong;
+    # ``"unconfirmed"``: in salvage mode, a member listed from a header nothing
+    # confirms, which may be a false one). The reader refuses or flags a member that
+    # has no digest to check its bytes with: it flags one after ``"member"``, and
+    # refuses one after either of the others.
+    after_damaged_header: Literal["member", "service", "unconfirmed"] | None = None
+    # In a set, a part of the member's packed data runs past the end of the volume
+    # file it is in, and another volume follows that file: the bytes after that end
+    # are the next volume's, not this member's, so the read refuses it as cut.
+    packed_cut: bool = False
+    # Salvage mode only: how the member was reached past the default walk's end
+    # (:class:`RarFound`); ``None`` for every member the default lists.
+    found: RarFound | None = None
+    # Salvage mode only: bytes before this member, and after the member listed
+    # before it, are lost (a range the search stepped over, a damaged header that
+    # is not listed, a volume that ended in damage), named for a message. A member
+    # whose solid stream runs across them cannot be decoded.
+    after_lost: str | None = None
 
     @property
     def header_damaged(self) -> bool:
@@ -671,6 +714,14 @@ class TrailingData(NamedTuple):
     offset: int
 
 
+def walked_members(members: list[RarMemberInfo]) -> Iterator[RarMemberInfo]:
+    """The members the default walk lists: every one salvage did not find past
+    damage (``RarMemberInfo.found``). A solid pass plans its run over the original
+    archive from these alone: a found row is read on its own, so it changes nothing
+    for them, under ``unrar`` or ``unar``."""
+    return (info for info in members if info.found is None)
+
+
 @dataclass(slots=True)
 class RarArchive:
     version: int  # 4 = RAR3-on-disk family (1.5/2/3); 5 = RAR5 (not "RAR 4.x")
@@ -773,6 +824,31 @@ class RarArchive:
     #: volume of a set carries its own record. A synthetic archive for ``unrar``
     #: decrypts a member's stored header again with it (``rar_synthetic.py``).
     rar5_header_crypt: dict[int, tuple[bytes, int]] = field(default_factory=dict)
+    #: Salvage mode only: the error the default raised at open, which salvage turns
+    #: into the end of the listing: no signature (a lost start), a main header that
+    #: fails its CRC, or a later volume with either. The reader lists what the search
+    #: found and raises it after the last member. ``None`` without one.
+    open_error: CorruptionError | None = None
+    #: Salvage mode only: the main header was lost, so ``is_solid`` and
+    #: ``is_volume`` come from the members' own flags.
+    main_lost: bool = False
+    #: Salvage mode only: the walk of the last volume read ended in a search that
+    #: ran to its end, not at an end block or the end of the file after a header.
+    salvage_ended_in_damage: bool = False
+    #: Salvage mode only: the walk of the last volume read ended with bytes it lost
+    #: that no header after them claims (a search ran and no member was listed
+    #: after it), as when the search found the volume's own end block. The member
+    #: those bytes held may be the one the next volume's first member continues,
+    #: so that volume is merged as after a gap.
+    salvage_lost_at_end: bool = False
+    #: Salvage mode only, set where salvage read past the point the default stops:
+    #: the error the default ends in there, ``"truncated"`` or ``"damaged"``. Damage
+    #: or a cut only salvage reaches is reported after it, never in its place.
+    default_stop: Literal["truncated", "damaged"] | None = None
+    #: Salvage mode only, set where a volume's walk first searched: whether the
+    #: default, which stops there, goes on to the next volume
+    #: (:attr:`needs_next_volume` at that point).
+    default_needs_next: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -790,6 +866,7 @@ def parse_rar_archive(
     kdf_cache: RarKdfCache | None = None,
     excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     name_encoding: str | None = None,
+    salvage: SalvageState | None = None,
 ) -> RarArchive:
     """Parse from current position (archive start). Source must be seekable.
 
@@ -809,6 +886,11 @@ def parse_rar_archive(
     ``name_encoding`` is the caller's ``encoding=``, for RAR 1.5-4 names stored
     as 8-bit bytes that are not valid UTF-8 (``_decode_rar3_8bit_name``). RAR5
     names are UTF-8.
+
+    ``salvage`` is the reader's salvage state when it was opened with
+    ``salvage=True``: where the walk stops on damage it searches on for the next
+    header (:class:`_RarSalvage`). ``None``, or a state that does not salvage, reads
+    as the default.
     """
     archive = _parse_rar_volume(
         source,
@@ -820,6 +902,11 @@ def parse_rar_archive(
         max_members=max_members,
         max_metadata_bytes=max_metadata_bytes,
         name_encoding=name_encoding,
+        salvage=(
+            _RarSalvage(salvage, None)
+            if salvage is not None and salvage.enabled
+            else None
+        ),
     )
     _settle_rar15_solid(archive)
     return archive
@@ -836,6 +923,7 @@ def parse_rar_volumes(
     excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
     name_encoding: str | None = None,
     volume_numbers: Sequence[int] | None = None,
+    salvage: SalvageState | None = None,
 ) -> RarArchive:
     """Parse an ordered multi-volume RAR set, merging split members across volumes.
 
@@ -861,6 +949,17 @@ def parse_rar_volumes(
     it is listed on its own with ``split_before`` (unrar warns "You need to start
     extraction from a previous volume" for it). Either flag left on a merged member
     means part of its data is missing, which is what the reader refuses on.
+
+    ``salvage`` is as for :func:`parse_rar_archive`. Each volume is its own layer
+    for the search. A volume whose walk ends in damage does not end the set: the
+    walk goes on into every later volume given (``method="next_volume"``), the next
+    one read as after a gap, whatever the last member said. The exception is a
+    volume the default follows into the next and where salvage listed nothing past
+    the default's stop: the set goes on as the default's does. A later volume whose
+    start is lost is searched from its offset 0 with the earlier volumes' version
+    and flags. A volume only salvage reads that cannot be read counts as one that
+    ended in damage, and the listing ends in the default's error
+    (:attr:`RarArchive.default_stop`).
     """
     if not volumes:
         raise ValueError("at least one RAR volume is required")
@@ -880,6 +979,25 @@ def parse_rar_volumes(
     merged: RarArchive | None = None
     base_offset = 0
     password_proven = False
+    if salvage is not None and not salvage.enabled:
+        salvage = None
+    # Set once a volume's walk ended in damage, or read its end block with lost
+    # bytes before it that no member claims: every later volume is one only
+    # salvage goes on to, and the next one is read as after a gap.
+    past_damaged_volume = False
+    # Set once salvage listed a member of a volume past damage: the default walk
+    # reaches no later volume, so each member of one is flagged (``next_volume``).
+    salvage_reached = False
+    # Whether the default would still be reading volumes: it stops after a volume
+    # whose walk ends with no member continuing into the next one. While it reads,
+    # what it ends in so far: a cut, or damage (a cut outranks damage, as the reader
+    # raises them).
+    default_reading = True
+    default_cut = default_damage = False
+    # Set once a volume's walk searched: salvage read past where the default stops.
+    searched = False
+    # A lone volume is a set too when its number says it is a later one.
+    in_set = len(volumes) > 1 or volume_numbers[0] != 1
     missing: list[int] = list(range(1, volume_numbers[0]))
     previous = volume_numbers[0] - 1
     for volume, number in zip(volumes, volume_numbers):
@@ -894,6 +1012,9 @@ def parse_rar_volumes(
             if len(volumes) > 1
             else ""
         )
+        # A volume only salvage reads: one the default never reaches. A failure to
+        # read it ends nothing the default lists.
+        salvage_only = merged is not None and (past_damaged_volume or salvage_reached)
         try:
             part = _parse_rar_volume(
                 volume,
@@ -906,21 +1027,61 @@ def parse_rar_volumes(
                 max_metadata_bytes=max_metadata_bytes,
                 name_encoding=name_encoding,
                 password_proven=password_proven,
+                salvage=(
+                    _RarSalvage(salvage, number - 1 if in_set else None)
+                    if salvage is not None
+                    else None
+                ),
+                first_volume=merged,
             )
+            if salvage_only and merged is not None and part.version != merged.version:
+                raise CorruptionError(
+                    f"RAR volume version mismatch: {merged.version} vs {part.version}"
+                )
         except EncryptionError as exc:
             if not where or not getattr(exc, _OFFSET_IN_VOLUME, False):
                 raise
             # Still the wrong-password error, so a password list moves on.
             located = wrong_password_error(exc.raw_message + where)
             raise located.with_traceback(exc.__traceback__) from exc.__cause__
+        except (CorruptionError, UnsupportedFeatureError) as exc:
+            if not salvage_only or merged is None:
+                raise
+            # Salvage mode: the members listed so far stay, and the volume counts
+            # as one that ended in damage. A limit or an I/O error still raises.
+            merged.damaged = _add_damage(
+                merged.damaged,
+                f"volume {number} of the set, which only salvage reads, could not be "
+                f"read: {exc.raw_message}",
+            )
+            pos = volume.tell()
+            base_offset += volume.seek(0, 2)
+            volume.seek(pos)
+            past_damaged_volume = True
+            continue
         password_proven = part.password_proven
 
+        if volume is not volumes[-1]:
+            # Before the offsets join the volumes: a packed span past this file's
+            # end would read the next volume's bytes as its own.
+            here = volume.tell()
+            volume_size = volume.seek(0, 2)
+            volume.seek(here)
+            for member in part.members:
+                if member.data_offset + member.compress_size > volume_size:
+                    member.packed_cut = True
+        if past_damaged_volume or salvage_reached:
+            _mark_next_volume(part, number, after_damage=past_damaged_volume)
         _rebase_member_offsets(part, base_offset)
         if where:
             if part.truncated is not None:
                 part.truncated += where
             if part.damaged is not None:
                 part.damaged += where
+            if part.open_error is not None:
+                part.open_error = type(part.open_error)(
+                    part.open_error.raw_message + where
+                )
 
         if merged is None:
             merged = part
@@ -928,7 +1089,7 @@ def parse_rar_volumes(
             _merge_volume(
                 merged,
                 part,
-                after_gap=gap,
+                after_gap=gap or past_damaged_volume,
                 max_members=max_members,
                 max_metadata_bytes=max_metadata_bytes,
             )
@@ -940,12 +1101,61 @@ def parse_rar_volumes(
         base_offset += end
 
         merged.needs_next_volume = part.needs_next_volume
+        if salvage is not None:
+            listed_past_damage = any(
+                member.found is not None for member in part.members
+            )
+            salvage_reached = salvage_reached or listed_past_damage
+            searched = searched or part.default_needs_next is not None
+            default_next = (
+                part.needs_next_volume
+                if part.default_needs_next is None
+                else part.default_needs_next
+            )
+            if default_reading:
+                stop = part.default_stop
+                if part.default_needs_next is None:
+                    # Not searched: the volume reads as the default reads it.
+                    stop = (
+                        "truncated"
+                        if part.truncated is not None
+                        else "damaged"
+                        if part.damaged is not None
+                        else None
+                    )
+                default_cut = default_cut or stop == "truncated" or gap
+                default_damage = default_damage or stop == "damaged"
+                default_reading = default_next
+            # The default goes on into the next volume here, and salvage listed
+            # nothing it does not: the set goes on as the default's does, whatever
+            # the search's budget or end.
+            follows_default = default_reading and not listed_past_damage
+            if salvage.limit_reached and not follows_default:
+                # The search budget ran out: nothing after it is listed.
+                break
+            if part.salvage_ended_in_damage and not follows_default:
+                # The walk reached no end of this volume that says what follows,
+                # so salvage walks every later volume given.
+                past_damaged_volume = True
+                continue
+            # An end block read with lost bytes before it that no member claims:
+            # the next volume's first member may continue the member those bytes
+            # held, not the last one listed, so it joins nothing (after a gap).
+            past_damaged_volume = part.salvage_lost_at_end and not follows_default
         if not part.needs_next_volume:
             # Archive is complete; ignore trailing unused volume paths if any were listed.
             break
 
     assert merged is not None
     mark_missing_next_volume(merged, volumes_read=previous, missing=missing)
+    if salvage is not None and (searched or salvage_reached):
+        # Salvage read past where the default stops: the listing ends in the
+        # default's error, whatever salvage met after it. A default that still
+        # reads after the last volume given ends missing the next one.
+        default_cut = default_cut or default_reading
+        merged.default_stop = (
+            "truncated" if default_cut else "damaged" if default_damage else None
+        )
     _settle_rar15_solid(merged)
     return merged
 
@@ -1002,18 +1212,23 @@ def _merge_volume(
     merged.end_block_damaged_volumes.update(part.end_block_damaged_volumes)
     merged.trailing_data_volumes.update(part.trailing_data_volumes)
     merged.rar5_header_crypt.update(part.rar5_header_crypt)
+    merged.open_error = merged.open_error or part.open_error
+    merged.default_stop = merged.default_stop or part.default_stop
     for position, member in enumerate(part.members):
-        if after_gap and position == 0:
-            # Its earlier parts are in the missing volume: listed on its
-            # own, never folded into the member before the gap.
-            _append_member(
+        if position == 0 and not after_gap:
+            # The one place a member continues the volume before: the same rule
+            # as a walk's, so lost bytes or an unconfirmed member end the split.
+            _emit_walked_member(
                 merged.members,
                 member,
                 max_members=max_members,
                 max_metadata_bytes=max_metadata_bytes,
             )
         else:
-            _emit_file_member(
+            # After a gap, the first member's earlier parts are in the missing
+            # volume: listed on its own. Every later member was already joined, or
+            # left on its own, by the volume's walk.
+            _append_member(
                 merged.members,
                 member,
                 max_members=max_members,
@@ -1042,7 +1257,9 @@ def _settle_rar15_solid(archive: RarArchive) -> None:
     ``rar`` stores 8 packed bytes even for an empty file; no RAR 1.5 archive of
     that shape is known.
     """
-    if archive.version != 4 or not archive.is_solid:
+    if archive.version != 4 or not archive.is_solid or archive.main_lost:
+        # Without the main header (a lost start in salvage mode) nothing says the
+        # archive is solid, so a RAR 1.3-1.5 member reads as not solid.
         return
     seen_file = False
     for member in archive.members:
@@ -1294,6 +1511,8 @@ def _parse_rar_volume(
     max_metadata_bytes: int | None,
     name_encoding: str | None = None,
     password_proven: bool = False,
+    salvage: _RarSalvage | None = None,
+    first_volume: RarArchive | None = None,
 ) -> RarArchive:
     """Parse one volume — one seekable source — into a :class:`RarArchive`.
 
@@ -1306,9 +1525,33 @@ def _parse_rar_volume(
     header that failed its CRC the flag is cleared.
     ``password_proven`` carries an earlier RAR 1.5-4 volume's proof of the header
     password into this volume's walk (:attr:`RarArchive.password_proven`).
+
+    ``salvage``: search past damage (:class:`_RarSalvage`). With it, a volume with no
+    signature is searched from its start when the archive's start may be lost
+    (``SalvageState.lost_start``), or when it is a later volume of a set, whose
+    version and flags ``first_volume`` (the set's listing so far) gives.
     """
     start = source.tell()
-    version, sfx_offset = _find_sfx_header(source, start)
+    try:
+        version, sfx_offset = _find_sfx_header(source, start)
+    except CorruptionError as exc:
+        if salvage is None or not (salvage.state.lost_start or first_volume):
+            raise
+        return _parse_lost_start(
+            source,
+            exc,
+            salvage=salvage,
+            first_volume=first_volume,
+            start=start,
+            password=password,
+            kdf_cache=kdf_cache,
+            excluded=excluded,
+            volume_index=volume_index,
+            max_members=max_members,
+            max_metadata_bytes=max_metadata_bytes,
+            name_encoding=name_encoding,
+            password_proven=password_proven,
+        )
     source.seek(start + sfx_offset)
     try:
         if version == 5:
@@ -1322,6 +1565,7 @@ def _parse_rar_volume(
                 use_qo=use_qo,
                 max_members=max_members,
                 max_metadata_bytes=max_metadata_bytes,
+                salvage=salvage,
             )
         else:
             archive = _parse_rar3(
@@ -1335,18 +1579,297 @@ def _parse_rar_volume(
                 max_metadata_bytes=max_metadata_bytes,
                 name_encoding=name_encoding,
                 password_proven=password_proven,
+                salvage=salvage,
             )
     except _PRIVATE_WALK_ERRORS as exc:
         raise _public_walk_error(exc) from None
+    if archive.main_lost:
+        _flags_without_main(archive, first_volume)
     # RAR5 normally refuses a later volume earlier, from MAIN's volume number;
     # this check covers RAR 1.5-4, which records none, and a RAR5 MAIN without one.
     # The emit rule appends a split_before member only to an empty list, so
     # members[0] is the only place a continuation can show on volume 1.
-    if volume_index == 0 and archive.members and archive.members[0].split_before:
+    if (
+        volume_index == 0
+        and archive.members
+        and archive.members[0].split_before
+        and not archive.main_lost
+    ):
         if archive.members[0].damaged_header is None:
             raise UnsupportedFeatureError(NEED_FIRST_VOLUME_MSG)
         # A damaged header's flag: the first volume holds no continuation.
         archive.members[0].split_before = False
+    return archive
+
+
+# ---------------------------------------------------------------------------
+# Salvage mode
+# ---------------------------------------------------------------------------
+
+
+class _RarSalvage:
+    """Salvage mode's search over one volume (``open_archive(salvage=True)``).
+
+    The walks call :meth:`search` where they stop on damage. ``volume`` is the
+    volume's 0-based position in a set, or ``None`` for an archive in one file: each
+    volume is its own layer for the shared driver
+    (:func:`~archivey.internal.salvage.search_forward`), so no byte of a volume is
+    searched twice, and the diagnostics name the volume. The bytes one search read
+    past its header are kept for the next (``SearchLookahead``), so a volume with
+    damage every few bytes is not read again for each search.
+    """
+
+    def __init__(self, state: SalvageState, volume: int | None) -> None:
+        from archivey.internal.salvage import SearchLookahead
+
+        self.state = state
+        self.volume = volume
+        self._source: BinaryIO | None = None
+        self.end = 0
+        self._lookahead = SearchLookahead()
+
+    def bind(self, source: BinaryIO) -> None:
+        """Search ``source``, the volume the walk reads."""
+        if self._source is source:
+            return
+        from archivey.internal.salvage import SearchLookahead
+
+        self._source = source
+        self._lookahead = SearchLookahead()
+        here = source.tell()
+        self.end = source.seek(0, 2)
+        source.seek(here)
+
+    @property
+    def limit_reached(self) -> bool:
+        return self.state.limit_reached
+
+    def where(self, offset: int) -> str:
+        """An offset as a message names it, with its volume in a set."""
+        if self.volume is None:
+            return f"byte {offset}"
+        return f"byte {offset} of volume {self.volume + 1}"
+
+    def read_at(self, offset: int, size: int) -> bytes:
+        source = self._source
+        assert source is not None
+        source.seek(offset)
+        return read_exact(source, size)
+
+    def search(
+        self,
+        search: HeaderSearch,
+        start: int,
+        *,
+        accept: Callable[[int], bool] | None = None,
+    ) -> int | None:
+        """The next header at or after ``start`` that passes, or ``None`` when none
+        does before the volume's end (or the search budget ran out). The source's
+        position is not kept: the walk seeks where it reads next."""
+        # Imported here: the driver's module imports nothing of RAR, and this keeps
+        # the default walk from loading it.
+        from archivey.internal.salvage import WINDOW_SIZE, search_forward
+
+        if self.state.limit_reached or start >= self.end:
+            return None
+        result = search_forward(
+            self.state,
+            self.read_at,
+            search,
+            start=start,
+            end=self.end,
+            volume_index=self.volume,
+            # A window at least twice the overlap, so a window's search moves the
+            # position on by more than the overlap it reads again.
+            window_size=max(WINDOW_SIZE, 2 * search.max_header_size),
+            accept=accept,
+            lookahead=self._lookahead,
+        )
+        return result.found
+
+
+def _lost_start_text(salvage: _RarSalvage, start: int, first: int) -> str:
+    """What was lost before ``first``, the first header a lost start's search found
+    from ``start``: the ``after_lost`` of the first member listed."""
+    if first > start:
+        return f"the bytes before {salvage.where(first)}"
+    return f"the archive's lost start, before {salvage.where(first)}"
+
+
+def _salvaged_damage(exc: CorruptionError, start: int) -> str:
+    """The ``RarArchive.damaged`` text for a member header that failed its CRC and
+    stopped the walk, in salvage mode: the members after it come from the search."""
+    return (
+        f"{exc}; the header starts at byte {start}, and the members listed after it "
+        "were found by salvage's header search"
+    )
+
+
+def _mark_next_volume(part: RarArchive, number: int, *, after_damage: bool) -> None:
+    """Flag the members of volume ``number``, which only salvage walks: salvage
+    listed members of a volume before it, and ``after_damage`` when that volume's
+    walk ended in damage. Each member the normal walk read keeps its offset in the
+    volume; one the volume's own search found keeps that record."""
+    for member in part.members:
+        if member.found is None:
+            member.found = RarFound(
+                "next_volume", member.header_offset, confirmed=True, searched=False
+            )
+    if after_damage and part.members and part.members[0].after_lost is None:
+        part.members[
+            0
+        ].after_lost = (
+            f"the end of the volume before volume {number}, whose walk ended in damage"
+        )
+
+
+def _flags_without_main(archive: RarArchive, first_volume: RarArchive | None) -> None:
+    """The archive flags of a volume whose main header was lost (salvage mode).
+
+    A later volume of a set takes them from the volumes before it, the solid flag
+    from its own members too when the first volume lost its MAIN. Without one, the
+    members' own flags say what they can: solid when a member's own solid flag is
+    set, a volume of a set when a member's data continues from or into another.
+    Nothing says the archive has a comment or a quick-open table.
+    """
+    members = archive.members
+    if first_volume is not None:
+        # The set's own MAIN decides; when the first volume lost its MAIN too, the
+        # members of each volume say what they can.
+        archive.is_solid = first_volume.is_solid or (
+            first_volume.main_lost and any(member.file_solid for member in members)
+        )
+        archive.is_volume = True
+        archive.old_volume_naming = first_volume.old_volume_naming
+    else:
+        archive.is_solid = any(member.file_solid for member in members)
+        archive.is_volume = archive.is_volume or any(
+            member.split_before or member.split_after for member in members
+        )
+    if not archive.is_solid:
+        # The walk marked the members after a found one as if the archive were
+        # solid, since nothing said it yet: no solid state runs between them.
+        for member in members:
+            member.after_damaged_header = None
+
+
+def _parse_lost_start(
+    source: BinaryIO,
+    error: CorruptionError,
+    *,
+    salvage: _RarSalvage,
+    first_volume: RarArchive | None,
+    start: int,
+    password: str | bytes | None,
+    kdf_cache: RarKdfCache,
+    excluded: frozenset[OptionalLibrary],
+    volume_index: int,
+    max_members: int | None,
+    max_metadata_bytes: int | None,
+    name_encoding: str | None,
+    password_proven: bool,
+) -> RarArchive:
+    """Salvage a volume that has no signature: search it from ``start``.
+
+    A later volume of a set has the version of the volumes before it, and its walk
+    searches from its start. Otherwise both finders run: the first confirmed header
+    decides the version, a RAR5 header that is not a quick-open copy or a RAR 1.5-4
+    header whose next position confirms. Unconfirmed RAR 1.5-4 candidates before it
+    are listed first when the version is RAR 1.5-4, and dropped when it is RAR5.
+    When the search ends with candidates and no confirmed header, they are listed
+    as RAR 1.5-4 (recall first). The buffer of candidates holds at most
+    ``max_members + 1`` of them: one more than the listing could take, so a listing
+    of them still fails as one of more members would. ``error`` is what the default
+    raised; with no header found it is raised again here, and otherwise after the
+    listing (:attr:`RarArchive.open_error`).
+
+    Each search starts where the one before found its candidate, in the bytes that
+    one read (``_RarSalvage``'s lookahead), and the finder keeps what it learned of
+    them (``LostStartFinder``): the probe reads and scans each byte a bounded number
+    of times.
+    """
+    from archivey.internal.backends import rar_search
+
+    salvage.bind(source)
+
+    def rar3_walk() -> _Rar3Walk:
+        return _Rar3Walk(
+            source,
+            password=password,
+            kdf_cache=kdf_cache,
+            excluded=excluded,
+            sfx_offset=0,
+            volume_index=volume_index,
+            max_members=max_members,
+            max_metadata_bytes=max_metadata_bytes,
+            name_encoding=name_encoding,
+            password_proven=password_proven,
+            salvage=salvage,
+        )
+
+    version: int | None = None
+    found_first: list[int] = []
+    last_confirmed = True
+    if first_volume is not None:
+        version = first_volume.version
+    else:
+        prober = rar3_walk()
+        finder = rar_search.LostStartFinder()
+        search = rar_search.lost_start_search(finder)
+
+        def not_qo_copy(offset: int) -> bool:
+            # A RAR5 header a quick-open cache record holds is a copy, not a
+            # member: passed over inside the same skipped range.
+            return finder.last_kind != 5 or not rar_search.is_rar5_qo_copy(
+                salvage.read_at, offset
+            )
+
+        pos = start
+        while True:
+            found = salvage.search(search, pos, accept=not_qo_copy)
+            if found is None:
+                if not found_first:
+                    raise error
+                # Only unconfirmed RAR 1.5-4 candidates: listed, recall first.
+                version = 4
+                last_confirmed = False
+                break
+            if finder.last_kind == 5:
+                version = 5
+                found_first = [found]
+                break
+            confirms = prober.found_confirms(found)
+            if confirms or max_members is None or len(found_first) <= max_members:
+                found_first.append(found)
+            if confirms:
+                version = 4
+                break
+            pos = found + 1
+    try:
+        if version == 5:
+            walk5 = _Rar5Walk(
+                source,
+                password=password,
+                kdf_cache=kdf_cache,
+                excluded=excluded,
+                sfx_offset=0,
+                volume_index=volume_index,
+                use_qo=False,
+                max_members=max_members,
+                max_metadata_bytes=max_metadata_bytes,
+                salvage=salvage,
+            )
+            walk5.lose_main(start, found_first[0] if found_first else None)
+            archive = walk5.run()
+        else:
+            walk3 = rar3_walk()
+            walk3.lose_main(start, found_first, last_confirmed=last_confirmed)
+            archive = walk3.run()
+    except _PRIVATE_WALK_ERRORS as exc:
+        raise _public_walk_error(exc) from None
+    archive.open_error = error
+    if archive.main_lost:
+        _flags_without_main(archive, first_volume)
     return archive
 
 
@@ -1652,36 +2175,59 @@ def _followed_damaged_header(exc: CorruptionError, start: int) -> str:
 # crafted archive of thousands of damaged headers cannot grow the error with its size.
 _NAMED_DAMAGES = 4
 _MORE_DAMAGES = re.compile(
-    r"; and ([0-9]+) more damaged headers? (?:was|were) followed\Z"
+    r"; and ([0-9]+) more damaged headers? (?:was|were) "
+    r"(followed|followed or searched past)\Z"
 )
+_SEARCHED_PAST = "found by salvage's header search"
+"""In a ``damaged`` text from :func:`_salvaged_damage`: the walk stopped there and
+salvage searched on, so an overflow count names both kinds."""
 
 
 def _add_damage(current: str | None, text: str) -> str:
     """``RarArchive.damaged`` with ``text`` added: the first damage leads, a later one,
     past a followed header, is named after it, and past :data:`_NAMED_DAMAGES` of them
-    the rest are only counted."""
+    the rest are only counted. Once salvage searched past a header in it, the count
+    says the headers were followed or searched past: in salvage mode a stop is
+    counted with the followed headers."""
     if current is None:
         return text
     more = _MORE_DAMAGES.search(current)
+    searched = _SEARCHED_PAST in text or _SEARCHED_PAST in current
+    verb = "followed or searched past" if searched else "followed"
     if more is not None:
         count = int(more.group(1)) + 1
+        if more.group(2) != "followed":
+            verb = more.group(2)
         return (
-            f"{current[: more.start()]}; and {count} more damaged headers were followed"
+            f"{current[: more.start()]}; and {count} more damaged headers were {verb}"
         )
     if current.count("; also ") + 1 >= _NAMED_DAMAGES:
-        return f"{current}; and 1 more damaged header was followed"
+        return f"{current}; and 1 more damaged header was {verb}"
     return f"{current}; also {text}"
 
 
 def _solid_damage_after(
-    current: Literal["member", "service"] | None, service: bool, data_size: int
-) -> Literal["member", "service"] | None:
+    current: Literal["member", "service", "unconfirmed"] | None,
+    service: bool,
+    data_size: int,
+) -> Literal["member", "service", "unconfirmed"] | None:
     """``RarMemberInfo.after_damaged_header`` for the members after a damaged header
     the walk followed in a solid archive. A SERVICE header with data is the worse
     case and stays: ``unrar`` skips its data, so the solid state after it is wrong."""
+    if current == "unconfirmed":
+        return current
     if current == "service" or (service and data_size):
         return "service"
     return current if service else "member"
+
+
+def _solid_damage_after_unconfirmed(
+    current: Literal["member", "service", "unconfirmed"] | None,
+) -> Literal["member", "service", "unconfirmed"]:
+    """``RarMemberInfo.after_damaged_header`` for the members after an unconfirmed
+    member salvage listed in a solid archive. Like a SERVICE header with data, it
+    refuses a member with no digest, so it replaces ``"member"`` and nothing else."""
+    return current if current in ("service", "unconfirmed") else "unconfirmed"
 
 
 def _forward_hold_note(source: BinaryIO) -> str:
@@ -1851,6 +2397,16 @@ def _seek_after_packed(source: BinaryIO, data_offset: int, add_size: int) -> Non
     _seek_to(source, _packed_span_end(data_offset, add_size))
 
 
+# The most bytes :func:`load_vint` decodes for one vint. Salvage's RAR5 finder
+# (``rar_search``) takes its type prefilter's width from it, so the two agree.
+RAR5_VINT_MAX_BYTES = 11
+# The most bytes of a RAR5 header-size vint. The RAR5 technical note: the field "must
+# not be longer than 3 bytes in current implementation, resulting in 2 MB maximum
+# header size". The walk (:func:`_read_rar5_block`) refuses a longer one, and
+# salvage's RAR5 finder (``rar_search``) finds none, so the two agree.
+RAR5_HEADER_SIZE_VINT_MAX_BYTES = 3
+
+
 def load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
     # Hot path: most RAR5 vints are a single byte (< 0x80). Avoid the multi-byte
     # loop and ``min()`` on every call (listing many-member archives).
@@ -1860,8 +2416,7 @@ def load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
     b = buf[pos]
     if b < 0x80:
         return b, pos + 1
-    limit = pos + 11
-    limit = min(limit, length)
+    limit = min(pos + RAR5_VINT_MAX_BYTES, length)
     res = b & 0x7F
     ofs = 7
     pos += 1
@@ -2183,6 +2738,7 @@ def _merge_split_member(
     )
     old.split_after = new.split_after
     old.spanned_volumes = True
+    old.packed_cut = old.packed_cut or new.packed_cut
     # One damaged part makes the member's header damaged: its digest, or the split
     # that joins it, rests on a header no CRC checked.
     if old.damaged_header is None:
@@ -2230,8 +2786,9 @@ class _HeaderDecryptStream:
     ``_HeaderDecryptStream``" row in ``dev-docs/formats/rar.md``.
 
     ``read`` rejects unbounded ``n < 0``. It has no per-read size cap: the
-    caller already bounds the ask. RAR5 refuses ``hdrlen > _RAR5_MAX_HEADER``
-    (2 MiB) before the body ``read_exact``; RAR3 ``header_size`` is a 16-bit
+    caller already bounds the ask. RAR5 reads a header-size vint of at most 3 bytes,
+    so ``hdrlen`` is under ``_RAR5_MAX_HEADER`` (2 MiB) before the body
+    ``read_exact``; RAR3 ``header_size`` is a 16-bit
     field (max 65 535). A tighter 8 KiB cap here used to reject a well-formed
     header as ``wrong password?``.
     """
@@ -2821,6 +3378,7 @@ def _parse_rar3(
     max_metadata_bytes: int | None,
     name_encoding: str | None = None,
     password_proven: bool = False,
+    salvage: _RarSalvage | None = None,
 ) -> RarArchive:
     """Walk one RAR 1.5-4 volume from its signature to its end block (:class:`_Rar3Walk`)."""
     _require_exact(source, len(RAR_ID), "RAR3 signature")
@@ -2835,6 +3393,7 @@ def _parse_rar3(
         max_metadata_bytes=max_metadata_bytes,
         name_encoding=name_encoding,
         password_proven=password_proven,
+        salvage=salvage,
     ).run()
 
 
@@ -2910,6 +3469,14 @@ class _Rar3Walk:
     failure is a wrong password until the password is proven
     (:func:`_header_failure`), and a damaged one is not followed. Any other invalid
     header raises.
+
+    In salvage mode (``salvage``), a plain walk that stops on damage searches on
+    for the next ``FILE`` or ``SUB`` header that passes its CRC16
+    (:meth:`_salvage_resume`). The search starts at the data of the last header
+    the walk read: that header passed a 16-bit check only, and the header after it
+    failed, so its size is not trusted. A found header is confirmed when the
+    position after its data confirms (:meth:`found_confirms`); the walk then goes on
+    from it. Otherwise it is listed unconfirmed and the search goes on inside it.
     """
 
     def __init__(
@@ -2925,6 +3492,7 @@ class _Rar3Walk:
         max_metadata_bytes: int | None,
         name_encoding: str | None,
         password_proven: bool,
+        salvage: _RarSalvage | None = None,
     ) -> None:
         self.source = source
         self.password = password
@@ -2956,7 +3524,7 @@ class _Rar3Walk:
         # Damaged headers the walk confirmed and is about to list or skip, each with
         # its parsed fields and where its CRC stops (:meth:`_follow_damage`).
         self.resume: list[tuple[_Rar3Block, RarMemberInfo, int]] = []
-        self.solid_damage: Literal["member", "service"] | None = None
+        self.solid_damage: Literal["member", "service", "unconfirmed"] | None = None
         # The SUB headers that failed their CRC and that the walk went past.
         self.damaged_service_headers: list[DamagedServiceHeader] = []
         self.damaged_service_headers_omitted = 0
@@ -2966,6 +3534,36 @@ class _Rar3Walk:
         #: Yield each FILE member from :meth:`walk` before its data is skipped.
         self.yield_files = False
         self.pending: ForwardMember | None = None
+        # Salvage mode (``open_archive(salvage=True)``); see the class docstring.
+        self.salvage = salvage
+        if salvage is not None:
+            salvage.bind(source)
+        self._search: HeaderSearch | None = None
+        self.past_damage = False
+        self.found_at: int | None = None
+        self.found_here = False
+        self.pending_lost: str | None = None
+        # The data offset of the last header the walk read that passed its check.
+        self.resume_from = source.tell()
+        # Whether the walk just stopped on damage that salvage searches past, and
+        # where the last header it read starts.
+        self.damage_stop = False
+        self.header_start = self.resume_from
+        self.pending_search: int | None = None
+        # Headers a lost start's search found, in order, before the walk reads on.
+        self.prefound: list[int] = []
+        self.prefound_confirmed = True
+        self.main_lost = False
+        # Set when a lost start's search found this volume's own MAIN first: its
+        # comment, before any member, is this archive's (``_own_comment``). Only a
+        # lost start (``lose_main``): after a damaged MAIN (``_lose_damaged_main``)
+        # a MAIN found later is some other archive's, so its comment is not read.
+        self.main_found_first = False
+        self.start_lost = False
+        self.open_error: CorruptionError | None = None
+        self.ended_in_damage = False
+        self.default_stop: Literal["truncated", "damaged"] | None = None
+        self.default_needs_next: bool | None = None
 
     def run(self) -> RarArchive:
         """Walk the blocks after the signature and return what they describe."""
@@ -2973,46 +3571,331 @@ class _Rar3Walk:
             pass
         return self.result()
 
+    @property
+    def _own_comment(self) -> bool:
+        """Whether a comment service here is this archive's: before any damage, or
+        after a MAIN a lost start found first and before any member."""
+        return not self.past_damage or (self.main_found_first and not self.members)
+
+    @property
+    def _main_passed(self) -> bool:
+        """Whether the walk is past ``MAIN``: it read it, or salvage lost it."""
+        return self.main_seen or self.main_lost
+
+    @property
+    def _may_be_solid(self) -> bool:
+        """Whether a solid stream may run through the walk's members: the main
+        header says so, or it was lost, so nothing says yet (the archive's flag is
+        settled from the members after the walk, ``_flags_without_main``, which
+        clears what was marked when it is not solid)."""
+        return self.is_solid or self.main_lost
+
+    @property
+    def _own_main_passed(self) -> bool:
+        """Whether the volume's own ``MAIN`` is behind the walk: read, or damaged in
+        its place after an intact signature. A ``MAIN`` found after it is a nested
+        archive's, whose flags are not read."""
+        return self.main_seen or (self.main_lost and not self.start_lost)
+
+    def _found_block_failed(self, exc: CorruptionError, start: int) -> bool:
+        """Past damage in salvage mode, the header at ``start`` passed its check and
+        then failed: a field it declares, a record it holds, or its place among the
+        others (a split, a seek past its data) is invalid. That is damage the search
+        found, not the end of the open: the damage is recorded after the default's,
+        and the search goes on from the byte after the header's first. ``True`` with
+        the walk at the next header found; ``False`` when it is the volume's end.
+        Raises ``exc`` before the damage, or with no search to make."""
+        if (
+            not self.past_damage
+            or not self._can_salvage()
+            or isinstance(exc, EncryptionError)
+        ):
+            raise exc
+        self.damaged = _add_damage(self.damaged, self._damage_text(exc, start))
+        self.found_here = False
+        members = self.members
+        if members and members[-1].header_offset == start:
+            # Listed before the failure (a seek past its data): as the damaged
+            # header where a walk stops, it is not listed.
+            members.pop()
+        return self._salvage_resume(start + 1)
+
+    def _can_salvage(self) -> bool:
+        return self.salvage is not None and not self.has_header_encryption
+
+    def lose_main(
+        self, start: int, found: list[int], *, last_confirmed: bool = True
+    ) -> None:
+        """Walk a volume whose signature or main header is lost, in salvage mode.
+
+        ``found`` are the headers a lost start's search found, the last one
+        confirmed: the others are listed unconfirmed first, then the walk reads on
+        from the last. Without ``last_confirmed`` none is confirmed, and the search
+        already ran to the volume's end: each one is listed unconfirmed, and the
+        walk ends there. With none, the walk searches from ``start`` first.
+        """
+        self.main_lost = True
+        self.start_lost = True
+        self.past_damage = True
+        assert self.salvage is not None
+        if not found:
+            self.pending_search = start
+            return
+        # The stream before the first header found is lost even when that header
+        # is at ``start``: the source holds none of it. A MAIN found first clears
+        # this (``_on_main``): then only the signature was lost.
+        self.pending_lost = _lost_start_text(self.salvage, start, found[0])
+        self.prefound = found
+        self.prefound_confirmed = last_confirmed
+
+    def _set_truncated(self, text: str | None) -> None:
+        """Record a cut; the first one is kept, as the error the default ends in."""
+        if self.truncated is None:
+            self.truncated = text
+
+    def _search_spent(self) -> bool:
+        """Whether ``SalvageLimits.max_search_bytes`` stopped the searches."""
+        return self.salvage is not None and self.salvage.limit_reached
+
+    def _note_default_stop(self) -> None:
+        """At the first search of the volume, where the default stops: record the
+        error the default ends in there and whether it reads the next volume."""
+        if self.default_needs_next is not None:
+            return
+        self.default_needs_next = self.needs_next_volume
+        if self.truncated is not None:
+            self.default_stop = "truncated"
+        elif self.damaged is not None:
+            self.default_stop = "damaged"
+
+    def _damage_text(self, exc: CorruptionError, start: int) -> str:
+        if self._can_salvage():
+            return _salvaged_damage(exc, start)
+        return _damaged_header(exc, start)
+
+    def _lose_damaged_main(self, exc: CorruptionError, start: int) -> None:
+        """Salvage mode, the main header failed: read on without it, from the
+        damaged header on, and end the pass in the error the default raised. The
+        flags the damaged bytes set are not data."""
+        self.open_error = (
+            _public_walk_error(exc) if isinstance(exc, _PRIVATE_WALK_ERRORS) else exc
+        )
+        self.main_lost = True
+        self.is_solid = self.is_volume = self.old_volume_naming = False
+        self.has_header_encryption = False
+        self.resume_from = start
+        self.damage_stop = True
+
+    def found_confirms(self, offset: int) -> bool:
+        """Whether the plain header at ``offset``, which passed its CRC16, is
+        confirmed: the position after its data confirms, by the predicate step 1
+        uses for its second header (:meth:`_second_confirms`). A position past the
+        end of the volume confirms nothing. A ``MAIN`` that says the headers after
+        it are encrypted is confirmed as it stands: nothing plain follows it, and
+        the encrypted walk from it checks each header it decrypts."""
+        assert self.salvage is not None
+        try:
+            _seek_to(self.source, offset)
+            block = _read_rar3_block(self.source, offset, False)
+            if block is None:
+                return False
+            if block.block_type == _RAR3_MAIN and block.flags & _RAR3_MAIN_PASSWORD:
+                return True
+            if block.block_type == _RAR3_MAIN:
+                end = _packed_span_end(block.data_offset, block.add_size)
+            else:
+                member, _ = self._file_header_fields(block)
+                if member is None:
+                    return False
+                end = _packed_span_end(block.data_offset, member.compress_size)
+            if end > self.salvage.end:
+                return False
+            return self._second_confirms(end, _MAX_DAMAGED_HEADER_CHAIN)
+        except CorruptionError:
+            return False
+
+    def _list_unconfirmed(self, offset: int) -> None:
+        """List the ``FILE`` header at ``offset``, which passed its CRC16 and is not
+        confirmed: flagged, claiming nothing. Any other header is passed over."""
+        try:
+            _seek_to(self.source, offset)
+            block = _read_rar3_block(self.source, offset, False)
+            if block is None or block.block_type != _RAR3_FILE:
+                return
+            member, _ = self._file_header_fields(block)
+        except CorruptionError:
+            return
+        if member is None:
+            return
+        member.found = RarFound("header_search", offset, confirmed=False, searched=True)
+        member.after_lost = self.pending_lost
+        # It claims nothing, so the search goes on inside what it declares: the
+        # next header found is past bytes no confirmed header claims, and a solid
+        # stream through them is lost there too.
+        assert self.salvage is not None
+        self.pending_lost = (
+            f"the bytes after the header at {self.salvage.where(offset)}, "
+            "which nothing confirms"
+        )
+        if self._may_be_solid:
+            # A member after it in a solid stream decodes on top of a header only a
+            # CRC16 checked: without a digest of its own it is refused.
+            self.solid_damage = _solid_damage_after_unconfirmed(self.solid_damage)
+        # A COMMENT subblock (``_RAR3_FILE_COMMENT``) sits past ``crc_pos``, outside
+        # the CRC16 that is the header's only check, so it is not read: nothing
+        # vouches for it, and decoding one would run a program per candidate.
+        # Its split flags are not trusted: nothing confirms its sizes.
+        _emit_walked_member(
+            self.members,
+            member,
+            max_members=self.max_members,
+            max_metadata_bytes=self.max_metadata_bytes,
+        )
+
+    def _salvage_resume(self, start: int) -> bool:
+        """Search on from ``start``; ``True`` with the source at a confirmed header
+        the walk reads on from, ``False`` when the search finds none in the volume.
+        Each unconfirmed header found on the way is listed, and the search goes on
+        at the byte after its first byte."""
+        salvage = self.salvage
+        if salvage is None or self.has_header_encryption:
+            return False
+        self._note_default_stop()
+        self.past_damage = True
+        if self.pending_lost is None:
+            self.pending_lost = f"the damaged bytes after {salvage.where(start)}"
+        members = self.members
+        if members and members[-1].data_offset == start:
+            # The search goes through its data, so it claims nothing.
+            last = members[-1]
+            if last.found is not None:
+                last.found = last.found._replace(confirmed=False, check="none")
+        if self._search is None:
+            from archivey.internal.backends.rar_search import rar3_search
+
+            self._search = rar3_search()
+        while True:
+            found = salvage.search(self._search, start)
+            if found is None:
+                self.ended_in_damage = True
+                return False
+            if self.found_confirms(found):
+                self.ended_in_damage = False
+                self.found_at = found
+                _seek_to(self.source, found)
+                return True
+            self._list_unconfirmed(found)
+            start = found + 1
+
     def walk(self) -> Iterator[ForwardMember]:
         """Walk the blocks after the signature; see :meth:`_Rar5Walk.walk`."""
         source = self.source
+        if self.prefound:
+            if not self.prefound_confirmed:
+                for offset in self.prefound:
+                    self._list_unconfirmed(offset)
+                self.prefound = []
+                self.ended_in_damage = True
+                return
+            *unconfirmed, first = self.prefound
+            self.prefound = []
+            for offset in unconfirmed:
+                self._list_unconfirmed(offset)
+            self.found_at = first
+            _seek_to(source, first)
+        elif self.pending_search is not None:
+            start, self.pending_search = self.pending_search, None
+            if not self._salvage_resume(start):
+                return
         while True:
-            block = self._read_block()
+            self.damage_stop = False
+            try:
+                block = self._read_block()
+            except CorruptionError as exc:
+                # An invalid header size: by default it refuses the archive at
+                # open. Salvage searches on past it.
+                if not self._can_salvage() or isinstance(exc, EncryptionError):
+                    raise
+                if self._main_passed:
+                    self.damaged = _add_damage(
+                        self.damaged, self._damage_text(exc, self.header_start)
+                    )
+                    self.damage_stop = True
+                else:
+                    self._lose_damaged_main(exc, self.header_start)
+                block = None
             if block is None:
-                break
-            if block.block_type == _RAR3_MARK:
-                _seek_after_packed(source, block.data_offset, block.add_size)
-                continue
-            if block.block_type == _RAR3_MAIN:
-                self._on_main(block)
-                continue
-            if block.block_type == _RAR3_ENDARC:
-                self._on_end_block(block)
-                break
-            if block.block_type in (_RAR3_FILE, _RAR3_SUB):
-                if not self._on_file_header(block):
-                    if not self.resume:
-                        break
-                    chain, self.resume = self.resume, []
-                    for damaged, member, crc_pos in chain:
-                        _seek_to(source, damaged.data_offset)
-                        self._on_parsed_file_header(
-                            damaged, member, crc_pos, damaged=True
-                        )
-                        pending, self.pending = self.pending, None
-                        if pending is not None:
-                            yield pending
-                            _seek_after_packed(
-                                source, pending.data_offset, pending.data_size
-                            )
+                if self.damage_stop and self._salvage_resume(self.resume_from):
                     continue
-                pending, self.pending = self.pending, None
-                if pending is not None:
-                    yield pending
-                    _seek_after_packed(source, pending.data_offset, pending.data_size)
-                continue
-            # Unknown / skippable block
-            _seek_after_packed(source, block.data_offset, block.add_size)
+                break
+            try:
+                self.found_here = self.found_at == block.start
+                self.found_at = None
+                if block.block_type == _RAR3_MARK:
+                    _seek_after_packed(source, block.data_offset, block.add_size)
+                    continue
+                if block.block_type == _RAR3_MAIN:
+                    if self.past_damage and self._own_main_passed:
+                        # Past damage, a second MAIN may be a nested archive's.
+                        _seek_after_packed(source, block.data_offset, block.add_size)
+                        continue
+                    try:
+                        self._on_main(block)
+                    except _RarHeaderCrcError as exc:
+                        if not self._can_salvage() or block.encrypted:
+                            raise
+                        self._lose_damaged_main(exc, block.start)
+                        if self._salvage_resume(block.start):
+                            continue
+                        break
+                    continue
+                if block.block_type == _RAR3_ENDARC:
+                    outcome = self._on_end_block(block)
+                    if outcome is not None:
+                        if self._salvage_resume(outcome):
+                            continue
+                        if outcome > block.start and not self._search_spent():
+                            # An intact end block the search went on after, finding
+                            # nothing to the volume's end: it ends this volume.
+                            self.ended_in_damage = False
+                            self._on_end_block(block, searched_after=True)
+                    break
+                if block.block_type in (_RAR3_FILE, _RAR3_SUB):
+                    if not self._on_file_header(block):
+                        if not self.resume:
+                            if self._can_salvage() and self._salvage_resume(
+                                self.resume_from
+                            ):
+                                continue
+                            break
+                        chain, self.resume = self.resume, []
+                        for damaged, member, crc_pos in chain:
+                            _seek_to(source, damaged.data_offset)
+                            self._on_parsed_file_header(
+                                damaged, member, crc_pos, damaged=True
+                            )
+                            pending, self.pending = self.pending, None
+                            if pending is not None:
+                                yield pending
+                                _seek_after_packed(
+                                    source, pending.data_offset, pending.data_size
+                                )
+                        continue
+                    pending, self.pending = self.pending, None
+                    if pending is not None:
+                        yield pending
+                        _seek_after_packed(
+                            source, pending.data_offset, pending.data_size
+                        )
+                    continue
+                # Unknown / skippable block
+                _seek_after_packed(source, block.data_offset, block.add_size)
+            except CorruptionError as exc:
+                # Past damage, a found header that fails after its CRC16 passed
+                # is damage: the search goes on (``_found_block_failed``).
+                if self._found_block_failed(exc, block.start):
+                    continue
+                break
 
     def result(self) -> RarArchive:
         """What the walk found; call once :meth:`walk` is exhausted."""
@@ -3027,6 +3910,7 @@ class _Rar3Walk:
         header_fd: _Readable = source
         block_encrypted = self.has_header_encryption
         header_start = source.tell()
+        self.header_start = header_start
         if self.has_header_encryption:
             password = self.password
             assert password is not None  # MAIN raised without one
@@ -3040,8 +3924,8 @@ class _Rar3Walk:
             # omit ENDARC, and unrar lists such a file and exits 0 (rar.md §1).
             salt = read_exact(source, 8)
             if len(salt) < 8:
-                self.truncated = _no_header(
-                    source, header_start, encrypted_cut=bool(salt)
+                self._set_truncated(
+                    _no_header(source, header_start, encrypted_cut=bool(salt))
                 )
                 return None
             header_fd = _rar3_decrypt_header(
@@ -3052,20 +3936,23 @@ class _Rar3Walk:
             block = _read_rar3_block(header_fd, header_start, block_encrypted)
         except CorruptionError as exc:
             # ``header_fd`` is the decrypt stream exactly when ``block_encrypted``.
-            self.truncated = _header_failure(
+            cut = _header_failure(
                 exc,
                 header_fd,
                 header_start,
                 proven=self.password_proven,
                 version="RAR3",
             )
-            if self.truncated is None:
+            if cut is None:
                 raise
+            self._set_truncated(cut)
+            self.damage_stop = self._can_salvage()
             return None
         if block is None:
-            self.truncated = _no_header(
-                source, header_start, encrypted_cut=block_encrypted
-            )
+            cut = _no_header(source, header_start, encrypted_cut=block_encrypted)
+            if cut is not None:
+                self._set_truncated(cut)
+                self.damage_stop = self._can_salvage()
         return block
 
     def _on_main(self, block: _Rar3Block) -> None:
@@ -3089,14 +3976,29 @@ class _Rar3Walk:
             proven=self.password_proven,
         )
         self.main_seen = True
+        self.main_found_first = self.main_lost and self.start_lost
+        self.main_lost = False
+        if self.main_found_first and not self.members:
+            # Only the signature before this MAIN was lost, no member's bytes.
+            self.pending_lost = None
+        self.resume_from = block.data_offset
         if flags & _RAR3_MAIN_COMMENT:
             self.comment = _parse_rar3_old_comment_subblocks(
                 block.hdata, crc_pos, encoding=self.name_encoding
             )
         _seek_after_packed(self.source, block.data_offset, block.add_size)
 
-    def _on_end_block(self, block: _Rar3Block) -> None:
-        """Finish the walk at ``ENDARC``: record whether a volume follows."""
+    def _on_end_block(
+        self, block: _Rar3Block, *, searched_after: bool = False
+    ) -> int | None:
+        """Finish the walk at ``ENDARC``: record whether a volume follows.
+
+        In salvage mode, returns where the search goes on instead: from the data of
+        the last header read when the block is a damaged header, and from after the
+        block when a search came before it and bytes other than zeros follow it
+        (it may be a nested archive's). ``None`` ends the walk. ``searched_after``:
+        that search found nothing, so the block ends the volume after all.
+        """
         source = self.source
         hdata = block.hdata
         header_size = block.header_size
@@ -3115,7 +4017,7 @@ class _Rar3Walk:
             and _only_zeros_after(source, block.data_offset)
         ):
             self.end_block_damaged_at = block.start
-            return
+            return None
         try:
             self.password_proven = _check_rar3_crc(
                 block.header_crc,
@@ -3126,10 +4028,19 @@ class _Rar3Walk:
             )
         except _RarHeaderCrcError as exc:
             # Not an end block, so a header whose type byte is damaged.
-            if not self.main_seen:
+            if not self._main_passed:
                 raise
-            self.damaged = _add_damage(self.damaged, _damaged_header(exc, block.start))
-            return
+            self.damaged = _add_damage(
+                self.damaged, self._damage_text(exc, block.start)
+            )
+            return self.resume_from if self._can_salvage() else None
+        end = _packed_span_end(block.data_offset, block.add_size)
+        if (
+            self.past_damage
+            and not searched_after
+            and not _only_zeros_after(source, end)
+        ):
+            return end
         self.needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
         _settle_damaged_split_after(self.members, self.needs_next_volume)
         volume_number = _rar3_end_block_volume_number(hdata, flags, header_size)
@@ -3138,9 +4049,8 @@ class _Rar3Walk:
             # member continues from an earlier volume, so only this number
             # tells it from volume 1 (RAR5 reads MAIN's instead).
             raise UnsupportedFeatureError(NEED_FIRST_VOLUME_MSG)
-        self.trailing_at = _scan_after_end_block(
-            source, _packed_span_end(block.data_offset, block.add_size)
-        )
+        self.trailing_at = _scan_after_end_block(source, end)
+        return None
 
     def _on_file_header(self, block: _Rar3Block) -> bool:
         """Handle a ``FILE`` or ``SUB`` header; ``False`` at damage, which ends the
@@ -3167,9 +4077,10 @@ class _Rar3Walk:
         service header and nothing in it is read, as ``unrar`` skips it.
         """
         member.after_damaged_header = self.solid_damage
+        self.resume_from = block.data_offset
         if damaged:
             member.damaged_header = (self.volume_index, block.start)
-            if self.is_solid:
+            if self._may_be_solid:
                 self.solid_damage = _solid_damage_after(
                     self.solid_damage,
                     block.block_type == _RAR3_SUB,
@@ -3201,8 +4112,24 @@ class _Rar3Walk:
                 member.comment = _parse_rar3_old_comment_subblocks(
                     block.hdata, crc_pos, encoding=self.name_encoding
                 )
+            if self.past_damage:
+                # Confirmed by the position after its data: the walk goes on there,
+                # and a search from its data marks it unconfirmed. A damaged header
+                # is confirmed only by step 1 following its sizes.
+                member.found = RarFound(
+                    "header_search",
+                    block.start,
+                    confirmed=True,
+                    searched=self.found_here,
+                    check="followed" if damaged else "after_data",
+                )
+                member.after_lost, self.pending_lost = self.pending_lost, None
+                # The first member after a search's lost bytes, wherever the
+                # search landed (on it, or on a service header before it).
+                if self._may_be_solid and member.after_lost is not None:
+                    self.solid_damage = _solid_damage_after(self.solid_damage, False, 0)
             # The volume's last member decides; an intact end block overrides it.
-            self.needs_next_volume = _emit_file_member(
+            self.needs_next_volume = _emit_walked_member(
                 self.members,
                 member,
                 max_members=self.max_members,
@@ -3211,9 +4138,15 @@ class _Rar3Walk:
             if self.yield_files:
                 self.pending = ForwardMember(member, block.data_offset, packed_size)
                 return
+        elif self.pending_lost is not None and not self._own_comment:
+            # A service header right after lost bytes: the member before it is not
+            # the one it describes, and its comment may be a nested archive's.
+            pass
         elif member.filename == RAR3_UOW_NAME and self.members:
             self._attach_owner(member)
-        elif self._is_readable_comment(member, block.data_offset, packed_size):
+        elif self._own_comment and self._is_readable_comment(
+            member, block.data_offset, packed_size
+        ):
             self._read_comment_service(member, block.data_offset, packed_size)
 
         _seek_after_packed(self.source, block.data_offset, packed_size)
@@ -3235,7 +4168,7 @@ class _Rar3Walk:
                 proven=self.password_proven,
             )
         except _RarHeaderCrcError as exc:
-            if not self.main_seen:
+            if not self._main_passed:
                 raise
             chain = (
                 None if member is None else self._follow_damage(block, member, crc_pos)
@@ -3248,7 +4181,7 @@ class _Rar3Walk:
             else:
                 self.damaged = _add_damage(
                     self.damaged,
-                    _damaged_header(exc, block.start)
+                    self._damage_text(exc, block.start)
                     + (_forward_hold_note(self.source) if chain is not None else ""),
                 )
             return None
@@ -3534,6 +4467,12 @@ class _Rar3Walk:
                 {volume_index: self.trailing_at} if self.trailing_at is not None else {}
             ),
             password_proven=self.password_proven,
+            open_error=self.open_error,
+            main_lost=self.main_lost,
+            salvage_ended_in_damage=self.ended_in_damage,
+            salvage_lost_at_end=self.pending_lost is not None,
+            default_stop=self.default_stop,
+            default_needs_next=self.default_needs_next,
         )
 
 
@@ -4191,6 +5130,48 @@ def _emit_file_member(
     return member.split_after
 
 
+def _emit_walked_member(
+    members: _MemberList,
+    member: RarMemberInfo,
+    *,
+    max_members: int | None,
+    max_metadata_bytes: int | None,
+) -> bool:
+    """:func:`_emit_file_member` for a member a header walk read, and for the first
+    member of a later volume. One that comes after bytes salvage lost
+    (``after_lost``) is never merged into the member before them: their data does
+    not join. Nor is a member salvage listed unconfirmed merged, or merged into:
+    its split flags rest on a header only a CRC16 checked. A damaged header's
+    ``split_before`` is then wrong, as in :func:`_emit_file_member`: it continues
+    nothing.
+    Returns ``split_after``."""
+    previous = members[-1] if members else None
+    tentative = _unconfirmed(member) or (
+        previous is not None and _unconfirmed(previous)
+    )
+    if member.after_lost is None and not tentative:
+        return _emit_file_member(
+            members,
+            member,
+            max_members=max_members,
+            max_metadata_bytes=max_metadata_bytes,
+        )
+    if member.damaged_header is not None:
+        member.split_before = False
+    _append_member(
+        members,
+        member,
+        max_members=max_members,
+        max_metadata_bytes=max_metadata_bytes,
+    )
+    return member.split_after
+
+
+def _unconfirmed(member: RarMemberInfo) -> bool:
+    """Whether salvage listed ``member`` from a header nothing confirms."""
+    return member.found is not None and not member.found.confirmed
+
+
 def _damaged_split_continues(old: RarMemberInfo, new: RarMemberInfo) -> bool:
     """Whether ``new`` continues ``old`` when one of them, or both, was listed from a
     header that failed its CRC.
@@ -4330,6 +5311,7 @@ def _parse_rar5(
     use_qo: bool = True,
     max_members: int | None,
     max_metadata_bytes: int | None,
+    salvage: _RarSalvage | None = None,
 ) -> RarArchive:
     """Walk one RAR5 volume from its signature to its end block (:class:`_Rar5Walk`)."""
     _require_exact(source, len(RAR5_ID), "RAR5 signature")
@@ -4343,6 +5325,7 @@ def _parse_rar5(
         use_qo=use_qo,
         max_members=max_members,
         max_metadata_bytes=max_metadata_bytes,
+        salvage=salvage,
     ).run()
 
 
@@ -4373,6 +5356,17 @@ class _Rar5Walk:
     block with only zeros after it. In an encrypted header, either failure is a wrong
     password until the password is proven (:func:`_header_failure`), and a damaged
     one is not followed. Any other invalid header raises.
+
+    In salvage mode (``salvage``), a plain walk that stops on damage searches on
+    for the next header that passes its CRC-32 (:meth:`_salvage_resume`), and walks
+    on from it; so does an invalid header after ``MAIN``, and a ``MAIN`` that fails
+    its CRC (the walk then reads without it). Every member listed past that point
+    is flagged (``RarMemberInfo.found``). The search starts at the header that
+    failed, not at the data of the member before it (as the RAR 1.5-4 walk does):
+    that member's header passed a 32-bit CRC, so it claims its declared data, and
+    a nested archive inside that data is not searched. The cost is that a header
+    the deletion of bytes inside that data moved into the declared span is passed
+    over (``design.md`` §2).
     """
 
     def __init__(
@@ -4387,6 +5381,7 @@ class _Rar5Walk:
         use_qo: bool,
         max_members: int | None,
         max_metadata_bytes: int | None,
+        salvage: _RarSalvage | None = None,
     ) -> None:
         self.source = source
         self.password = password
@@ -4419,7 +5414,7 @@ class _Rar5Walk:
         # Damaged headers the walk confirmed and is about to list or skip
         # (:meth:`_follow_damage`).
         self.resume: list[_Rar5Block] = []
-        self.solid_damage: Literal["member", "service"] | None = None
+        self.solid_damage: Literal["member", "service", "unconfirmed"] | None = None
         self.main_seen = False
         self.end_block_seen = False
         self.end_block_damaged_at: int | None = None
@@ -4432,12 +5427,178 @@ class _Rar5Walk:
         #: Yield each FILE member from :meth:`walk` before its data is skipped.
         self.yield_files = False
         self.pending: ForwardMember | None = None
+        # Salvage mode (``open_archive(salvage=True)``); see the class docstring.
+        self.salvage = salvage
+        if salvage is not None:
+            salvage.bind(source)
+        self._search: HeaderSearch | None = None
+        # Set once the walk stopped on damage: every member after is one only
+        # salvage lists.
+        self.past_damage = False
+        # Where the last search found a header, until the walk has read it.
+        self.found_at: int | None = None
+        self.found_here = False
+        # The lost bytes the next listed member comes after (``after_lost``).
+        self.pending_lost: str | None = None
+        # Where the header the walk just stopped on starts, when salvage searches on.
+        self.damage_at: int | None = None
+        # A search to start before the first header is read (a lost start).
+        self.pending_search: int | None = None
+        self.main_lost = False
+        # Set when a lost start's search found this volume's own MAIN first: its
+        # comment, before any member, is this archive's (``_own_comment``). Only a
+        # lost start (``lose_main``): after a damaged MAIN (``_lose_damaged_main``)
+        # a MAIN found later is some other archive's, so its comment is not read.
+        self.main_found_first = False
+        self.start_lost = False
+        self.open_error: CorruptionError | None = None
+        self.ended_in_damage = False
+        self.default_stop: Literal["truncated", "damaged"] | None = None
+        self.default_needs_next: bool | None = None
+        self.headers_read = 0
 
     def run(self) -> RarArchive:
         """Walk the blocks after the signature and return what they describe."""
         for _ in self.walk():
             pass
         return self.result()
+
+    @property
+    def _own_comment(self) -> bool:
+        """Whether a comment service here is this archive's: before any damage, or
+        after a MAIN a lost start found first and before any member."""
+        return not self.past_damage or (self.main_found_first and not self.members)
+
+    @property
+    def _main_passed(self) -> bool:
+        """Whether the walk is past ``MAIN``: it read it, or salvage lost it."""
+        return self.main_seen or self.main_lost
+
+    def lose_main(self, start: int, first: int | None) -> None:
+        """Walk a volume whose signature or main header is lost, in salvage mode:
+        from ``first``, the header a search found, or, with ``None``, from the
+        header a search from ``start`` finds."""
+        self.main_lost = True
+        self.start_lost = True
+        self.past_damage = True
+        assert self.salvage is not None
+        if first is None:
+            self.pending_search = start
+            return
+        # As in the RAR 1.5-4 walk: lost even when ``first`` is ``start``.
+        self.pending_lost = _lost_start_text(self.salvage, start, first)
+        self.found_at = first
+        _seek_to(self.source, first)
+
+    @property
+    def _may_be_solid(self) -> bool:
+        """Whether a solid stream may run through the walk's members: the main
+        header says so, or it was lost, so nothing says yet (the archive's flag is
+        settled from the members after the walk, ``_flags_without_main``, which
+        clears what was marked when it is not solid)."""
+        return self.is_solid or self.main_lost
+
+    @property
+    def _own_main_passed(self) -> bool:
+        """Whether the volume's own ``MAIN`` is behind the walk: read, or damaged in
+        its place after an intact signature. A ``MAIN`` found after it is a nested
+        archive's, whose flags are not read."""
+        return self.main_seen or (self.main_lost and not self.start_lost)
+
+    def _found_block_failed(self, exc: CorruptionError, start: int) -> bool:
+        """Past damage in salvage mode, the header at ``start`` passed its check and
+        then failed: a field it declares, a record it holds, or its place among the
+        others (a split, a seek past its data) is invalid. That is damage the search
+        found, not the end of the open: the damage is recorded after the default's,
+        and the search goes on from the byte after the header's first. ``True`` with
+        the walk at the next header found; ``False`` when it is the volume's end.
+        Raises ``exc`` before the damage, or with no search to make."""
+        if (
+            not self.past_damage
+            or not self._can_salvage()
+            or isinstance(exc, EncryptionError)
+        ):
+            raise exc
+        self.damaged = _add_damage(self.damaged, self._damage_text(exc, start))
+        self.found_here = False
+        members = self.members
+        if members and members[-1].header_offset == start:
+            # Listed before the failure (a seek past its data): as the damaged
+            # header where a walk stops, it is not listed.
+            members.pop()
+        return self._salvage_resume(start + 1)
+
+    def _can_salvage(self) -> bool:
+        return self.salvage is not None and self.hdr_enc is None
+
+    def _salvage_resume(self, start: int) -> bool:
+        """Search on from ``start`` for the next header that passes; ``True`` with
+        the source at it, ``False`` when the search finds none in the volume."""
+        salvage = self.salvage
+        if salvage is None or self.hdr_enc is not None:
+            return False
+        self._note_default_stop()
+        if not self.past_damage:
+            self.past_damage = True
+            # Past the default walk's end every FILE header is read from the
+            # volume, so each member listed is flagged.
+            self.qo_by_off = {}
+        if self.pending_lost is None:
+            self.pending_lost = f"the damaged bytes at {salvage.where(start)}"
+        if self._search is None:
+            from archivey.internal.backends.rar_search import rar5_search
+
+            self._search = rar5_search()
+        found = salvage.search(self._search, start, accept=self._not_qo_copy)
+        if found is None:
+            self.ended_in_damage = True
+            return False
+        self.ended_in_damage = False
+        self.found_at = found
+        _seek_to(self.source, found)
+        return True
+
+    def _not_qo_copy(self, offset: int) -> bool:
+        """A found header that a quick-open cache record holds is a copy, not a
+        member: the search passes it over inside the same skipped range."""
+        from archivey.internal.backends.rar_search import is_rar5_qo_copy
+
+        assert self.salvage is not None
+        return not is_rar5_qo_copy(self.salvage.read_at, offset)
+
+    def _set_truncated(self, text: str | None) -> None:
+        """Record a cut; the first one is kept, as the error the default ends in."""
+        if self.truncated is None:
+            self.truncated = text
+
+    def _search_spent(self) -> bool:
+        """Whether ``SalvageLimits.max_search_bytes`` stopped the searches."""
+        return self.salvage is not None and self.salvage.limit_reached
+
+    def _note_default_stop(self) -> None:
+        """At the first search of the volume, where the default stops: record the
+        error the default ends in there and whether it reads the next volume."""
+        if self.default_needs_next is not None:
+            return
+        self.default_needs_next = self.needs_next_volume
+        if self.truncated is not None:
+            self.default_stop = "truncated"
+        elif self.damaged is not None:
+            self.default_stop = "damaged"
+
+    def _damage_text(self, exc: CorruptionError, start: int) -> str:
+        if self._can_salvage():
+            return _salvaged_damage(exc, start)
+        return _damaged_header(exc, start)
+
+    def _lose_damaged_main(self, exc: CorruptionError, start: int) -> None:
+        """Salvage mode, the first header after the signature failed: read on
+        without ``MAIN``, and end the pass in the error the default raised."""
+        self.open_error = (
+            _public_walk_error(exc) if isinstance(exc, _PRIVATE_WALK_ERRORS) else exc
+        )
+        self.main_lost = True
+        self.damage_at = start
 
     def walk(self) -> Iterator[ForwardMember]:
         """Walk the blocks after the signature.
@@ -4447,8 +5608,13 @@ class _Rar5Walk:
         data first (the skip is then a no-op). Otherwise nothing is yielded.
         """
         source = self.source
+        if self.pending_search is not None:
+            start, self.pending_search = self.pending_search, None
+            if not self._salvage_resume(start):
+                return
         while True:
             header_start = source.tell()
+            self.damage_at = None
             header_fd = self._open_header(header_start)
             if header_fd is None:
                 break
@@ -4468,8 +5634,14 @@ class _Rar5Walk:
             block = self._read_block(header_fd, header_start)
             if block is None:
                 if not self.resume:
+                    if self.damage_at is not None and self._salvage_resume(
+                        self.damage_at
+                    ):
+                        continue
                     break
                 chain, self.resume = self.resume, []
+                # The search found the header before these, not them.
+                self.found_here = False
                 for damaged in chain:
                     _seek_to(source, damaged.data_offset)
                     self._on_file_or_service(damaged, damaged=True)
@@ -4480,24 +5652,64 @@ class _Rar5Walk:
                             source, pending.data_offset, pending.data_size
                         )
                 continue
-            if block.block_type == _RAR5_MAIN:
-                self._on_main(block)
-                continue
-            if block.block_type == _RAR5_ENCRYPTION:
-                self._on_encryption(block)
-                continue
-            if block.block_type == _RAR5_ENDARC:
-                self._on_end_block(block)
+            try:
+                self.headers_read += 1
+                self.found_here = self.found_at == block.header_offset
+                self.found_at = None
+                # Past damage, a MAIN or ENCRYPTION header after the first header the
+                # walk read may be a nested archive's: its flags are not read.
+                nested = self.past_damage and (
+                    self._own_main_passed or self.headers_read > 1
+                )
+                if block.block_type == _RAR5_MAIN:
+                    if nested:
+                        _seek_after_packed(source, block.data_offset, block.add_size)
+                        continue
+                    self._on_main(block)
+                    continue
+                if block.block_type == _RAR5_ENCRYPTION:
+                    # After a damaged MAIN with the signature intact, the archive's own
+                    # headers are plain: its ENCRYPTION header would precede MAIN. So
+                    # only a lost start can find the archive's own.
+                    if nested or (self.past_damage and not self.start_lost):
+                        # The headers after it are ciphertext: search on past them.
+                        if self._salvage_resume(
+                            _packed_span_end(block.data_offset, block.add_size)
+                        ):
+                            continue
+                        break
+                    self._on_encryption(block)
+                    continue
+                if block.block_type == _RAR5_ENDARC:
+                    end = _packed_span_end(block.data_offset, block.add_size)
+                    if self.past_damage and not _only_zeros_after(source, end):
+                        # After a search, an end block with more bytes after it may be
+                        # a nested archive's: search on after it. When the search
+                        # finds nothing to its end, the block ends this volume.
+                        if self._salvage_resume(end):
+                            continue
+                        if self._search_spent():
+                            break
+                        self.ended_in_damage = False
+                    self._on_end_block(block)
+                    break
+                if block.block_type in (_RAR5_FILE, _RAR5_SERVICE):
+                    self._on_file_or_service(block)
+                    pending, self.pending = self.pending, None
+                    if pending is not None:
+                        yield pending
+                        _seek_after_packed(
+                            source, pending.data_offset, pending.data_size
+                        )
+                    continue
+                # Unknown block — skip data area.
+                _seek_after_packed(source, block.data_offset, block.add_size)
+            except CorruptionError as exc:
+                # Past damage, a found header that fails after its CRC passed
+                # is damage: the search goes on (``_found_block_failed``).
+                if self._found_block_failed(exc, block.header_offset):
+                    continue
                 break
-            if block.block_type in (_RAR5_FILE, _RAR5_SERVICE):
-                self._on_file_or_service(block)
-                pending, self.pending = self.pending, None
-                if pending is not None:
-                    yield pending
-                    _seek_after_packed(source, pending.data_offset, pending.data_size)
-                continue
-            # Unknown block — skip data area.
-            _seek_after_packed(source, block.data_offset, block.add_size)
 
         self._report_unmatched_qo_copies()
 
@@ -4540,14 +5752,17 @@ class _Rar5Walk:
             block = _read_rar5_block(header_fd)
         except CorruptionError as exc:
             # A plain cut includes one inside the CRC or the size vint.
-            self.truncated = _header_failure(
+            cut = _header_failure(
                 exc,
                 header_fd,
                 header_start,
                 proven=self.password_proven,
                 version="RAR5",
             )
-            if self.truncated is not None:
+            if cut is not None:
+                self._set_truncated(cut)
+                if self._can_salvage():
+                    self.damage_at = header_start
                 return None
             if isinstance(exc, _RarEndBlockCrcError):
                 # As in the RAR3 walk: only a block with nothing but zeros after it is
@@ -4557,13 +5772,18 @@ class _Rar5Walk:
                     self.end_block_seen = True
                     self.end_block_damaged_at = header_start
                     return None
-                if not self.main_seen:
+                if not self._main_passed:
+                    if self._can_salvage():
+                        self._lose_damaged_main(exc.generic, header_start)
+                        return None
                     raise exc.generic from None
                 # Not an end block, so a member header whose type byte is damaged.
                 # Its type is not FILE or SERVICE, so it is not followed.
-                self._stop_at_damage(_damaged_header(exc.generic, header_start))
+                self._stop_at_damage(
+                    self._damage_text(exc.generic, header_start), header_start
+                )
                 return None
-            if isinstance(exc, _RarHeaderCrcError) and self.main_seen:
+            if isinstance(exc, _RarHeaderCrcError) and self._main_passed:
                 chain = self._follow_damage(exc.damaged_block)
                 if chain:
                     self.resume = chain
@@ -4572,20 +5792,37 @@ class _Rar5Walk:
                     )
                 else:
                     self._stop_at_damage(
-                        _damaged_header(exc, header_start)
-                        + (_forward_hold_note(source) if chain is not None else "")
+                        self._damage_text(exc, header_start)
+                        + (_forward_hold_note(source) if chain is not None else ""),
+                        header_start,
+                    )
+                return None
+            if self._can_salvage():
+                # An invalid header size, or a MAIN that fails: by default these
+                # refuse the archive at open. Salvage searches on past them.
+                if not self._main_passed:
+                    self._lose_damaged_main(exc, header_start)
+                else:
+                    self._stop_at_damage(
+                        self._damage_text(exc, header_start), header_start
                     )
                 return None
             raise
         if block is None:
-            self.truncated = _no_header(
-                source, header_start, encrypted_cut=self.hdr_enc is not None
+            self._set_truncated(
+                _no_header(source, header_start, encrypted_cut=self.hdr_enc is not None)
             )
+            if self.truncated is not None and self._can_salvage():
+                self.damage_at = header_start
         return block
 
-    def _stop_at_damage(self, text: str) -> None:
+    def _stop_at_damage(self, text: str, start: int) -> None:
+        """End the walk at the damaged header at ``start``; in salvage mode the
+        walk searches on from there."""
         self.damaged = _add_damage(self.damaged, text)
         self.stopped_at_damage = True
+        if self._can_salvage():
+            self.damage_at = start
 
     def _follow_damage(self, first: _Rar5Block | None) -> list[_Rar5Block] | None:
         """The damaged headers to list or skip, from ``first`` on, when their own
@@ -4691,6 +5928,13 @@ class _Rar5Walk:
         self.is_solid = bool(main_flags & _RAR5_MAIN_SOLID)
         self.is_volume = bool(main_flags & _RAR5_MAIN_ISVOL)
         self.main_seen = True
+        # A search found this MAIN first: its flags stand, and the members' flags do
+        # not replace them. After a lost start it is the archive's own, comment too.
+        self.main_found_first = self.main_lost and self.start_lost
+        self.main_lost = False
+        if self.main_found_first and not self.members:
+            # Only the signature before this MAIN was lost, no member's bytes.
+            self.pending_lost = None
         _seek_after_packed(source, block.data_offset, block.add_size)
         # Header-encrypted QO stores IV+ciphertext header copies and
         # file-encrypts the QO payload; reconstructed data_offset then
@@ -4778,7 +6022,7 @@ class _Rar5Walk:
         member.after_damaged_header = self.solid_damage
         if damaged:
             member.damaged_header = (self.volume_index, block.header_offset)
-            if self.is_solid:
+            if self._may_be_solid:
                 self.solid_damage = _solid_damage_after(
                     self.solid_damage, block.block_type == _RAR5_SERVICE, block.add_size
                 )
@@ -4795,8 +6039,25 @@ class _Rar5Walk:
             # QO copies are emitted in `_emit_and_skip_qo_run` before this
             # read; this branch is holes, FILE after QO, and the no-QO walk.
             if member.header_offset not in self.seen_file_offsets:
-                # As in the RAR 1.5-4 walk: the last member decides.
-                self.needs_next_volume = _emit_file_member(
+                if self.past_damage:
+                    # Its CRC-32 passed, a 32-bit check: confirmed. A damaged one is
+                    # confirmed only by step 1 following its sizes.
+                    member.found = RarFound(
+                        "header_search",
+                        block.header_offset,
+                        confirmed=True,
+                        searched=self.found_here,
+                        check="followed" if damaged else "crc32",
+                    )
+                    member.after_lost, self.pending_lost = self.pending_lost, None
+                    # The first member after a search's lost bytes, wherever the
+                    # search landed (on it, or on a service header before it).
+                    if self._may_be_solid and member.after_lost is not None:
+                        self.solid_damage = _solid_damage_after(
+                            self.solid_damage, False, 0
+                        )
+                # The volume's last member decides; an intact end block overrides it.
+                self.needs_next_volume = _emit_walked_member(
                     self.members,
                     member,
                     max_members=self.max_members,
@@ -4815,8 +6076,10 @@ class _Rar5Walk:
                 self.damaged_service_headers, member
             ):
                 self.damaged_service_headers_omitted += 1
-            if _is_stored_rar5_cmt(member) and _span_in_file(
-                source, block.data_offset, member.compress_size
+            if (
+                _is_stored_rar5_cmt(member)
+                and self._own_comment
+                and _span_in_file(source, block.data_offset, member.compress_size)
             ):
                 source.seek(block.data_offset)
                 # The packed size, as for any stored payload: the unpacked one
@@ -4877,6 +6140,8 @@ class _Rar5Walk:
                 if not self.end_block_seen
                 and self.truncated is None
                 and not self.stopped_at_damage
+                and not self.ended_in_damage
+                and self.open_error is None
                 else []
             ),
             end_block_damaged_volumes=(
@@ -4887,6 +6152,12 @@ class _Rar5Walk:
             trailing_data_volumes=(
                 {volume_index: self.trailing_at} if self.trailing_at is not None else {}
             ),
+            open_error=self.open_error,
+            main_lost=self.main_lost,
+            salvage_ended_in_damage=self.ended_in_damage,
+            salvage_lost_at_end=self.pending_lost is not None,
+            default_stop=self.default_stop,
+            default_needs_next=self.default_needs_next,
         )
 
 
@@ -4905,14 +6176,14 @@ def _read_rar5_block(fd: _Readable) -> _Rar5Block | None:
         return None
     if len(head) < preload:
         raise _RarHeaderCutError("Unexpected EOF while reading RAR5 header")
-    # The header-size vint starts at byte 4 (after the 4-byte CRC). A vint is at most
-    # 10 bytes; cap the continuation so a crafted run of 0x80 bytes cannot drive an
-    # unbounded, O(n^2) byte-at-a-time read of the source before ``load_vint``'s own
-    # 11-byte guard (which only runs *after* this loop) would reject it.
+    # The header-size vint starts at byte 4 (after the 4-byte CRC), and is at most
+    # ``RAR5_HEADER_SIZE_VINT_MAX_BYTES`` bytes, as the RAR5 note requires. The cap
+    # also keeps a crafted run of 0x80 bytes from driving a long byte-at-a-time read.
     while head[-1] & 0x80:
-        if len(head) - 4 >= 10:
+        if len(head) - 4 >= RAR5_HEADER_SIZE_VINT_MAX_BYTES:
             raise CorruptionError(
-                "Invalid RAR5 header size (variable-length integer too long)"
+                "Invalid RAR5 header size (variable-length integer longer than "
+                f"{RAR5_HEADER_SIZE_VINT_MAX_BYTES} bytes)"
             )
         b = fd.read(1)
         if not b:
@@ -4920,9 +6191,8 @@ def _read_rar5_block(fd: _Readable) -> _Rar5Block | None:
         head += b
     start_bytes = bytes(head)
     header_crc, pos = _load_le32(start_bytes, 0)
+    # At most 3 bytes: under 2 MiB (``_RAR5_MAX_HEADER``), the note's cap.
     hdrlen, pos = load_vint(start_bytes, pos)
-    if hdrlen > _RAR5_MAX_HEADER:
-        raise CorruptionError(f"RAR5 header too large: {hdrlen}")
     header_size = pos + hdrlen
     hdata = start_bytes + read_exact(fd, header_size - len(start_bytes))
     if len(hdata) != header_size:

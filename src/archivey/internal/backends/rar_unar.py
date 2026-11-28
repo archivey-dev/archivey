@@ -27,7 +27,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from archivey.internal.backends.rar_parser import RarArchive, RarMemberInfo
+from archivey.internal.backends.rar_parser import (
+    RarArchive,
+    RarMemberInfo,
+    walked_members,
+)
 from archivey.terminal import quoted
 
 # Compression versions below 2.0 are decoded by a separate RAR 1.5 algorithm, which
@@ -42,6 +46,11 @@ _USE_UNRAR = (
     "Set ArchiveyConfig.rar_decompressor to 'unrar' to read it with RARLAB unrar."
 )
 
+REFUSE_FOUND_BY_SALVAGE = (
+    "salvage mode found this member past damage, and unar names a member by its own "
+    "index in the original archive, where it reads no member past the damage. "
+    + _USE_UNRAR
+)
 REFUSE_RAR4_ENCRYPTED = (
     "unar 1.10 returns no data, and reports success, for encrypted RAR 2.x-4.x data "
     "even with the right password. " + _USE_UNRAR
@@ -443,14 +452,18 @@ class UnarRarPolicy:
         not only out of the demux: ``unar`` 1.10.1 crashes on it, and the crash loses
         output of *earlier* members that ``unar`` had buffered but not yet written.
         """
-        payload = [info for info in self._archive.members if info.is_payload_file()]
+        # A row salvage found is not in the run: the pass serves it on its own,
+        # where ``member_refusal`` refuses it. Leaving it out keeps the run the
+        # default walk's listing gets, every entry selected included.
+        walked = list(walked_members(self._archive.members))
+        payload = [info for info in walked if info.is_payload_file()]
         for info in payload:
             reason = self.member_refusal(info)
             if reason is not None:
                 self._pass_refusals[id(info)] = reason
         if not self._pass_refusals:
             self._pass_offsets, self._pass_unknown_before, self._pass_unknown = (
-                _place_entries(list(self._archive.members))
+                _place_entries(walked)
             )
             return
         selected: list[RarMemberInfo] = []
@@ -473,6 +486,10 @@ class UnarRarPolicy:
 
     def member_refusal(self, info: RarMemberInfo) -> str | None:
         """Why ``unar`` must not read this member on its own, or ``None``."""
+        if info.found is not None:
+            # A synthetic archive of the member would do, but unar is only ever
+            # handed the original archive; unrar reads such a member.
+            return REFUSE_FOUND_BY_SALVAGE
         version = info.unknown_compression_version()
         if version is not None:
             return REFUSE_UNKNOWN_COMPRESSION.format(version=version)
@@ -524,7 +541,10 @@ class UnarRarPolicy:
                 for info in self._archive.members
                 if id(info) in self._pass_selected
             )
-        return any(unar_emitted_size(info) > 0 for info in self._archive.members)
+        return any(
+            unar_emitted_size(info) > 0
+            for info in walked_members(self._archive.members)
+        )
 
     def solid_pass_needs_password(self) -> bool:
         """Whether the solid pass's run holds encrypted data.
@@ -541,7 +561,11 @@ class UnarRarPolicy:
             return True
         return any(
             info.is_encrypted
-            for info in self._archive.members
+            for info in (
+                walked_members(self._archive.members)
+                if self._pass_indexes is None
+                else self._archive.members
+            )
             if self._pass_indexes is None or id(info) in self._pass_selected
         )
 

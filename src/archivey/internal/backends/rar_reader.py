@@ -77,6 +77,8 @@ from archivey.diagnostics import (
     DigestContext,
     MemberHeaderDamageContext,
     MemberHeaderRecordContext,
+    SalvageScanContext,
+    SalvageUnavailableContext,
     UnknownMemberTypeContext,
 )
 from archivey.exceptions import (
@@ -110,6 +112,7 @@ from archivey.internal.backends.rar_parser import (
     DamagedServiceHeader,
     RarArchive,
     RarEncryptionInfo,
+    RarFound,
     RarKdfCache,
     RarMemberInfo,
     RarOwner,
@@ -126,6 +129,7 @@ from archivey.internal.backends.rar_parser import (
     parse_rar_volumes,
     rar5_data_key,
     rar5_hash_key,
+    walked_members,
 )
 from archivey.internal.backends.rar_rolling import (
     RollingVolumes,
@@ -645,6 +649,21 @@ _RAR_ENCDATA_FLAG_TWEAKED_CHECKSUMS = 0x02
 _RAR5_XREDIR_WINDOWS_JUNCTION = 3
 
 
+# What ``MEMBER_FOUND_BY_SCAN`` says confirmed a member a header search reached, by
+# ``RarFound.check``.
+_FOUND_CHECK_TEXT = {
+    "crc32": "its header passes its own CRC-32",
+    "after_data": (
+        "the position after its data confirms it (a header that passes its CRC16, "
+        "an end block, or the end of the volume)"
+    ),
+    "followed": (
+        "its header fails its CRC, and the walk followed its sizes to a position "
+        "that confirms them, as the default walk does"
+    ),
+    "none": "nothing after its data confirms it, so its sizes are unchecked",
+}
+
 # Read step for the confirmation pass over a cut-short member's stored bytes
 # (``RarReader._confirm_unsettled_plaintext``). Matches the verifier's own drain
 # step; the pass is bounded by the member, which is bounded by the source.
@@ -672,6 +691,19 @@ class _PassRun:
     start: int
     indices: list[int]
     packed: int
+
+
+@dataclass(slots=True)
+class _FoundPass:
+    """How a solid pass reads the members salvage found past damage: runs over
+    synthetic archives of whole found solid streams (:class:`_PassRun`), read back
+    to back after the original archive's pipe, each found member's offset in that
+    output by ``id`` of its parsed member, and the dictionary cost of reading up
+    to it, by ``id`` of its listed member."""
+
+    runs: list[_PassRun]
+    offsets: dict[int, int]
+    costs: dict[int, _DictionaryCost]
 
 
 def _rolling_volume_bytes(limits: SpoolLimits) -> int:
@@ -2047,6 +2079,25 @@ class RarReader(BaseArchiveReader):
         self._end: int | None = end_offset if self._volume_set_size() <= 1 else None
         self._cost_notes = self._source_copy_notes(source)
         self._archive, self._unrar_password = self._parse_archive()
+        if self._salvage_mode.enabled and self._archive.has_header_encryption:
+            if self._salvage_mode.searched_bytes or any(
+                info.found is not None for info in self._archive.members
+            ):
+                # A set whose plain volumes salvage already searched: only the
+                # volumes with encrypted headers are read without it.
+                self._emit_salvage_unavailable(
+                    "some of its volumes have encrypted headers, and archivey has no "
+                    "header search for encrypted RAR headers, so those volumes are "
+                    "read as they are without salvage; the volumes with plain "
+                    "headers are salvaged",
+                    whole=False,
+                )
+            else:
+                self._emit_salvage_unavailable(
+                    "its headers are encrypted, and archivey has no header search "
+                    "for encrypted RAR headers, so the archive is read as it is "
+                    "without salvage"
+                )
         # A lone archive stored as a resource of the PE program it sits in: bytes
         # after that resource are the rest of the program, not data after the
         # archive (``_emit_trailing_data``). Decided here, while nothing else reads
@@ -2337,7 +2388,8 @@ class RarReader(BaseArchiveReader):
     def _missing_data_error(
         self, member: ArchiveMember, info: RarMemberInfo
     ) -> TruncatedError | None:
-        """Why this member's data cannot be read for a missing volume, or ``None``.
+        """Why this member's data cannot be read for a missing volume, or a volume
+        cut inside it (``packed_cut``), or ``None``.
 
         Decided from the listing, before any decompressor runs. A member that runs
         into a missing volume, or starts in one, has part of its data missing
@@ -2345,7 +2397,12 @@ class RarReader(BaseArchiveReader):
         archive a member past a gap needs the solid stream that ran through the
         missing volume; ``unrar`` reports checksum errors for those.
         """
-        if info.split_after:
+        if info.packed_cut:
+            detail = (
+                "is cut short: its packed data runs past the end of its volume, "
+                "where the next volume's bytes start"
+            )
+        elif info.split_after:
             detail = "continues into a volume that is missing from the set"
         elif info.split_before:
             detail = "starts in a volume that is missing from the set"
@@ -2642,6 +2699,11 @@ class RarReader(BaseArchiveReader):
             if self._source is not None and self._source.is_lone_remote
             else None
         )
+        salvage = self._salvage_mode
+        if salvage.enabled:
+            # Each parse searches from the start again (``_parse_headers``): only
+            # the records of the parse that stands are made, once.
+            salvage.hold()
         try:
             try:
                 archive = self._parse_headers(None)
@@ -2683,13 +2745,26 @@ class RarReader(BaseArchiveReader):
                 source_format=exc.source_format,
                 archive_name=exc.archive_name,
             ) from exc
+        finally:
+            if salvage.enabled:
+                salvage.release()
 
     def _parse_headers(self, password: bytes | None) -> RarArchive:
         """Run the header parser over the source, in the shape the source has.
 
         A set of volume files, a set of stream volumes, one file, and one stream
-        each need their own handles; the parse itself is the same.
+        each need their own handles; the parse itself is the same. In salvage mode
+        each parse (a retry with a password too) searches from the start again.
         """
+        salvage = self._salvage_mode
+        if salvage.enabled:
+            salvage.restart()
+        archive = self._parse_headers_in_shape(password)
+        if salvage.enabled:
+            salvage.finish()
+        return archive
+
+    def _parse_headers_in_shape(self, password: bytes | None) -> RarArchive:
         if len(self._volume_paths) > 1:
             return self._parse_volume_files(password)
         if len(self._stream_volume_items) > 1:
@@ -2717,6 +2792,7 @@ class RarReader(BaseArchiveReader):
                 max_metadata_bytes=self._config.listing_limits.max_metadata_bytes,
                 kdf_cache=self._kdf_cache,
                 excluded=self._excluded,
+                salvage=self._salvage_mode,
                 name_encoding=self._encoding,
                 volume_numbers=self._volume_numbers,
             )
@@ -2744,6 +2820,7 @@ class RarReader(BaseArchiveReader):
                 max_metadata_bytes=self._config.listing_limits.max_metadata_bytes,
                 kdf_cache=self._kdf_cache,
                 excluded=self._excluded,
+                salvage=self._salvage_mode,
                 name_encoding=self._encoding,
             )
         finally:
@@ -2761,6 +2838,7 @@ class RarReader(BaseArchiveReader):
                 else SlicingStream(file, start=0, length=self._end)
             )
             handle.seek(self._origin)
+            salvage = self._salvage_mode
             try:
                 archive = parse_rar_archive(
                     handle,
@@ -2769,6 +2847,7 @@ class RarReader(BaseArchiveReader):
                     max_metadata_bytes=max_metadata_bytes,
                     kdf_cache=self._kdf_cache,
                     excluded=self._excluded,
+                    salvage=salvage,
                     name_encoding=self._encoding,
                 )
             except UnsupportedFeatureError:
@@ -2778,6 +2857,11 @@ class RarReader(BaseArchiveReader):
                     raise
                 self._volume_numbers = [self._lone_volume_number]
                 handle.seek(self._origin)
+                if salvage.enabled:
+                    # Drops what the first walk made, held back (``_parse_archive``):
+                    # the walk below records the same ranges, in volume
+                    # ``_lone_volume_number``.
+                    salvage.restart()
                 return parse_rar_volumes(
                     [handle],
                     password=password,
@@ -2785,6 +2869,7 @@ class RarReader(BaseArchiveReader):
                     max_metadata_bytes=max_metadata_bytes,
                     kdf_cache=self._kdf_cache,
                     excluded=self._excluded,
+                    salvage=self._salvage_mode,
                     name_encoding=self._encoding,
                     volume_numbers=self._volume_numbers,
                 )
@@ -2802,9 +2887,15 @@ class RarReader(BaseArchiveReader):
                 max_metadata_bytes=self._config.listing_limits.max_metadata_bytes,
                 kdf_cache=self._kdf_cache,
                 excluded=self._excluded,
+                salvage=self._salvage_mode,
                 name_encoding=self._encoding,
             )
             if archive.is_volume and not archive.needs_next_volume:
+                if archive.main_lost:
+                    # Salvage read on without MAIN: the volume flag is inferred
+                    # from the members' split flags, and the listing ends in the
+                    # default's error, as from a file (``_parse_lone_file``).
+                    return archive
                 # A lone volume that says nothing follows it is a later
                 # volume, or the only one, of a set. One that says another
                 # follows is volume 1 here: the parse refuses a later volume
@@ -2996,6 +3087,10 @@ class RarReader(BaseArchiveReader):
             # with every candidate, so it cannot judge them.
             and self._cut_data_error(member, member._raw) is None
             and self._missing_data_error(member, member._raw) is None
+            # Nor can a found member that nothing confirms, whose data can be
+            # anything, or one whose solid stream runs through lost bytes.
+            and not (member._raw.found is not None and not member._raw.found.confirmed)
+            and self._lost_chain_error(member, member._raw) is None
         ]
         if not encrypted:
             return None
@@ -3552,6 +3647,34 @@ class RarReader(BaseArchiveReader):
     def _after_last_member(self) -> None:
         """After the last member: raise the walk's terminal damage, or report what the
         walk found after the members."""
+        if self._archive.open_error is not None:
+            # Salvage mode: the error the default open raised (no signature, a
+            # damaged main header), raised after the members salvage's search
+            # found, with the other damage the walk met.
+            error = self._archive.open_error
+            message = error.raw_message
+            for also in (self._archive.truncated, self._archive.damaged):
+                if also is not None:
+                    message += f"; also {also}"
+            raise type(error)(
+                message,
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.RAR,
+            )
+        if (
+            self._archive.default_stop == "damaged"
+            and self._archive.damaged is not None
+        ):
+            # Salvage mode: the default ends in this damage, and the cut only
+            # salvage reached (a later volume, the rest of the file) comes after it.
+            message = self._archive.damaged
+            if self._archive.truncated is not None:
+                message += f"; also {self._archive.truncated}"
+            raise CorruptionError(
+                message,
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.RAR,
+            )
         if self._archive.truncated is not None:
             # Terminal damage after the prefix, so the listing keeps what the file
             # holds and reports the rest as missing (``members_report().error``).
@@ -3907,6 +4030,8 @@ class RarReader(BaseArchiveReader):
         All attach onto ``member`` (``attach_to_member=True``) and can raise
         under a strict collector, so this must run before ``_to_member`` returns.
         """
+        if info.found is not None:
+            self._emit_member_found(info, info.found, member, index)
         emit_member_name_normalized(
             self._diagnostics_collector,
             member=member,
@@ -3966,6 +4091,112 @@ class RarReader(BaseArchiveReader):
                 attach_to_member=True,
                 logger=integrity_logger,
             )
+
+    def _emit_salvage_unavailable(self, why: str, *, whole: bool = True) -> None:
+        """Record ``SALVAGE_UNAVAILABLE`` for an archive salvage cannot search, or
+        (``whole=False``) for the part of a set it cannot search."""
+        if self._salvage_mode.repeat:
+            # A repeat reader: the first reader of this archive recorded it.
+            return
+        effect = "has no effect" if whole else "has only part of its effect"
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.SALVAGE_UNAVAILABLE,
+            message=f"salvage=True {effect} on this RAR archive: {why}.",
+            context=SalvageUnavailableContext(
+                archive_name=self._archive_name,
+                format=ArchiveFormat.RAR.display_name,
+                # The closest reason: archivey has no search for encrypted headers.
+                reason="no_salvage_search",
+            ),
+            logger=logger,
+        )
+
+    def _emit_member_found(
+        self, info: RarMemberInfo, found: RarFound, member: ArchiveMember, index: int
+    ) -> None:
+        """``MEMBER_FOUND_BY_SCAN`` for a member salvage listed past damage."""
+        if self._salvage_mode.repeat:
+            # A repeat reader (``SalvageRequest.repeat``): the first reader of this
+            # archive flagged the member.
+            return
+        volume_index = info.volume_index if self._in_set else None
+        where = f"byte {found.offset}"
+        if volume_index is not None:
+            where += f" of volume {volume_index + 1}"
+        if found.method == "next_volume":
+            message = (
+                f"Salvage listed RAR member {quoted(member.name)} from its header at "
+                f"{where}: the walk reached that volume only because salvage read on "
+                "past damage in an earlier volume."
+            )
+            unchecked: tuple[str, ...] = ()
+        else:
+            check = _FOUND_CHECK_TEXT[found.check]
+            message = (
+                f"Salvage found RAR member {quoted(member.name)} by a header search, "
+                f"at {where}; {check}. Nothing says it belongs at this level of the "
+                "archive (it may be a member of an archive stored inside another "
+                "member)."
+            )
+            unchecked = ("position",)
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_FOUND_BY_SCAN,
+            message=message,
+            context=SalvageScanContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=index,
+                format=ArchiveFormat.RAR.display_name,
+                method=found.method,
+                offset=found.offset,
+                confirmed=found.confirmed,
+                unchecked=unchecked,
+                volume_index=volume_index,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=integrity_logger,
+        )
+
+    def _lost_chain_error(
+        self, member: ArchiveMember, info: RarMemberInfo
+    ) -> CorruptionError | None:
+        """Why a program cannot decode this found member, or ``None``: its solid
+        stream runs through bytes salvage lost (``after_lost``).
+
+        Decided from the listing, before any program runs, by the members' own solid
+        flags, which the decoder follows whatever the main header says. A stored
+        plaintext or stored encrypted member is read by archivey itself before this is
+        asked. From the member back, the first member that restarts the decoder ends the
+        stream: one with its own solid flag clear that is not a directory (which has no
+        data, so restarts nothing). Lost bytes before any member up to that one, that
+        one excluded, break the stream. An unconfirmed member claims nothing, so the
+        member found after it is past lost bytes too (``after_lost``): a stream through
+        it is refused here, before any program runs.
+        """
+        if info.found is None:
+            return None
+        members = self._archive.members
+        position = self._member_position(member)
+        while True:
+            current = members[position]
+            restarts = not current.file_solid and not current.is_directory
+            if restarts:
+                return None
+            lost = current.after_lost
+            if lost is not None:
+                return CorruptionError(
+                    f"RAR member {quoted(member.name)} cannot be decoded: salvage "
+                    f"found it past damage, and its solid stream runs through {lost}, "
+                    "which salvage could not read. Its data depends on the decoder "
+                    "state those bytes left.",
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    source_format=ArchiveFormat.RAR,
+                )
+            if position == 0:
+                return None
+            position -= 1
 
     def _resolve_file_copies(self) -> None:
         """Point each RAR5 file copy's ``link_target_member`` at its source.
@@ -4161,10 +4392,8 @@ class RarReader(BaseArchiveReader):
         # Bare ``unrar p`` omits ``-ver`` history from the ALL pipe; pass ``-ver``
         # when any versioned payload FILE is present so demux stays aligned.
         version_control = any(
-            isinstance(m._raw, RarMemberInfo)
-            and m._raw.is_payload_file()
-            and m._raw.is_file_version_history()
-            for m in self._members
+            info.is_payload_file() and info.is_file_version_history()
+            for info in walked_members(self._archive.members)
         )
 
         groups = self._solid_pass_groups()
@@ -4226,10 +4455,49 @@ class RarReader(BaseArchiveReader):
         pipe_offset: int | None = 0
         # Members of unknown size whose bytes sit in the pipe ahead of the cursor.
         unplaced: list[ArchiveMember] = []
+        # The members salvage found: a second pipe, started on the first read of
+        # one of them (``_found_pass_plan``).
+        found_pass = self._found_pass_plan()
+        found_block: SolidBlockReader | None = None
+
+        def _found_pipe() -> SolidBlockReader:
+            nonlocal found_block
+            if found_block is None:
+                assert found_pass is not None
+                owned = _SolidPassPipe(
+                    self._solid_pass_runs(
+                        found_pass.runs, self._archive_data_password()
+                    )
+                )
+                with _close_on_error(owned):
+                    tracked = self._track_decompressed(owned)
+                with _close_on_error(tracked):
+                    found_block = SolidBlockReader(tracked)
+            return found_block
+
+        def _plan_found(
+            member: ArchiveMember, raw: RarMemberInfo, size: int | None
+        ) -> Callable[[], BinaryIO] | None:
+            offset = None if found_pass is None else found_pass.offsets.get(id(raw))
+            if found_pass is None or offset is None or size is None:
+                # Served as ``open()`` serves it.
+                return None
+            cost = found_pass.costs[id(member)]
+
+            def _from_found() -> BinaryIO:
+                self._check_dictionary_memory(member, cost)
+                stream = _found_pipe().open_member(offset, size, lazy=True)
+                return self._watch_unverified(stream, member)
+
+            return _from_found
 
         def _plan(
             member: ArchiveMember, raw: RarMemberInfo, size: int | None, _: bool
         ) -> int | Callable[[], BinaryIO] | None:
+            if raw.found is not None:
+                # Salvage found it past damage: the pipe over the original archive
+                # holds no bytes for it, and the found pipe may.
+                return _plan_found(member, raw, size)
             unknown_version = raw.unknown_compression_version()
             if unknown_version is not None:
                 # ``unrar p`` writes nothing for it ("Unknown method") and raises
@@ -4268,12 +4536,16 @@ class RarReader(BaseArchiveReader):
             pipe_offset += size
             return member_offset
 
-        yield from self._drive_solid_pass(
-            copies,
-            _spawn,
-            _plan,
-            costs=None if runs is None else self._stream_pass_costs(runs),
-        )
+        try:
+            yield from self._drive_solid_pass(
+                copies,
+                _spawn,
+                _plan,
+                costs=None if runs is None else self._stream_pass_costs(runs),
+            )
+        finally:
+            if found_block is not None:
+                found_block.close()
 
     def _stream_pass_costs(self, runs: list[_PassRun]) -> dict[int, _DictionaryCost]:
         """:meth:`_pass_dictionary_costs` when each run of solid streams gets its
@@ -4549,13 +4821,19 @@ class RarReader(BaseArchiveReader):
         the original archive's pipe does, so the demultiplexing offsets do not
         change. A group that is empty is left out.
         """
-        if self._volume_paths or self._solid_after_unknown:
-            return None
         members = self._archive.members
+        if self._volume_paths or any(
+            id(info) in self._solid_after_unknown for info in walked_members(members)
+        ):
+            return None
         groups: list[_PassRun] = []
         stream_start = -1
         group_start = -2
         for index, info in enumerate(members):
+            if info.found is not None:
+                # Salvage found it past damage: the pass reads it on its own
+                # (``_plan``), so the groups are the default walk's.
+                continue
             if info.unknown_compression_version() is not None:
                 return None
             if not info.file_solid or stream_start < 0:
@@ -4585,6 +4863,90 @@ class RarReader(BaseArchiveReader):
                 # Ruled out by _solid_pass_groups: only a join past 4 GiB fails.
                 raise AssertionError("a synthetic header the pass cannot write")
             yield entry
+
+    def _found_pass_plan(self) -> _FoundPass | None:
+        """The second pipe of a solid pass, for members salvage found past damage,
+        or ``None`` when no found member can come from one.
+
+        A found member's own read decodes its solid stream, through a synthetic
+        archive of it, back to the member that restarts the decoder; in a pass,
+        one ``unrar`` per member decoded each stream once for each member in it.
+        Here each found stream is decoded once: runs of whole streams, as for a
+        stream source (:meth:`_solid_pass_runs`). A stream qualifies when it starts
+        at a found member that restarts the decoder, and every member in it is one
+        the run can carry and its own read would decode: known size, data in reach,
+        a known compression version, no lost bytes in its chain. A stream that does
+        not qualify is read member by member, as ``open()`` reads it.
+        """
+        if self._unar_policy is not None:
+            return None
+        members = self._archive.members
+        listed = self._members
+        streams: list[list[int]] = []
+        current: list[int] | None = None
+        for index, info in enumerate(members):
+            if info.found is None:
+                current = None
+                continue
+            if not info.file_solid:
+                current = []
+                streams.append(current)
+            elif current is None:
+                # Continues a stream that did not start at a found member.
+                continue
+            current.append(index)
+        cap = _pass_run_bytes(self._config.spool_limits)
+        runs: list[_PassRun] = []
+        offsets: dict[int, int] = {}
+        costs: dict[int, _DictionaryCost] = {}
+        cursor = 0
+        peak = _NO_DICTIONARY
+        for stream in streams:
+            if not all(self._found_pass_carries(index) for index in stream):
+                continue
+            packed = [i for i in stream if has_packed_data(members[i])]
+            if not packed:
+                continue
+            size = sum(members[i].compress_size for i in packed)
+            if runs and runs[-1].packed + size <= cap:
+                runs[-1].indices.extend(packed)
+                runs[-1].packed += size
+            else:
+                runs.append(_PassRun(stream[0], packed, size))
+            for index in stream:
+                info, member = members[index], listed[index]
+                peak = _larger_cost(peak, self._dictionary_costs[id(member)])
+                if info.is_payload_file() and member.is_file:
+                    assert member.size is not None
+                    offsets[id(info)] = cursor
+                    costs[id(member)] = peak
+                    cursor += member.size
+        if not runs:
+            return None
+        return _FoundPass(runs, offsets, costs)
+
+    def _found_pass_carries(self, index: int) -> bool:
+        """Whether a run of the found pass can carry member ``index``, as
+        :meth:`_found_pass_plan` asks."""
+        info = self._archive.members[index]
+        member = self._members[index]
+        if info.is_file_copy() or info.encryption_unknown:
+            return False
+        if info.unknown_compression_version() is not None:
+            return False
+        if id(info) in self._solid_after_unknown:
+            return False
+        if not _data_is_reachable(info):
+            return False
+        if self._archive.version != 5 and info.compress_size >= 1 << 32:
+            return False
+        if info.is_payload_file() and member.is_file and member.size is None:
+            return False
+        return (
+            self._lost_chain_error(member, info) is None
+            and self._missing_data_error(member, info) is None
+            and self._cut_data_error(member, info) is None
+        )
 
     def _solid_pass_run_plan(self, groups: list[_PassRun]) -> list[_PassRun] | None:
         """The runs of solid streams a pass over a stream source reads one at a time
@@ -5027,6 +5389,16 @@ class RarReader(BaseArchiveReader):
         self, member: ArchiveMember, raw: RarMemberInfo
     ) -> None:
         """See :meth:`_report_member_read`."""
+        if raw.after_damaged_header == "unconfirmed":
+            raise CorruptionError(
+                f"RAR member {quoted(member.name)} has no checksum and follows, in a "
+                "solid archive, a member salvage listed from a header nothing "
+                "confirms: that header may be a false one, so this member's bytes may "
+                "come out wrong.",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
         if raw.after_damaged_header == "service":
             raise CorruptionError(
                 f"RAR member {quoted(member.name)} has no checksum and follows a "
@@ -5039,9 +5411,9 @@ class RarReader(BaseArchiveReader):
         self._diagnostics_collector.emit(
             code=DiagnosticCode.DIGEST_UNVERIFIABLE,
             message=(
-                f"RAR member {quoted(member.name)} has no checksum and follows a "
-                "member listed from a damaged header in a solid archive, so nothing "
-                "checks that its bytes decoded right."
+                f"RAR member {quoted(member.name)} has no checksum and follows, in a "
+                "solid archive, a member listed from a damaged header or found by "
+                "salvage past damage, so nothing checks that its bytes decoded right."
             ),
             context=DigestContext(
                 archive_name=self._archive_name,
@@ -5901,6 +6273,10 @@ class RarReader(BaseArchiveReader):
         if self._decrypts_natively(raw):
             return self._open_decrypted_stored(member, raw)
 
+        lost_chain = self._lost_chain_error(member, raw)
+        if lost_chain is not None:
+            raise lost_chain
+
         cut = self._cut_data_error(member, raw)
         if cut is not None:
             raise cut
@@ -6110,7 +6486,12 @@ class RarReader(BaseArchiveReader):
         the walk's confirmation and may see headers the listing does not hold, so no
         name is known to select one member. A cut volume
         (``truncated``) ends the file, so it hides no header ``unrar`` could reach.
+        ``None`` for a member salvage found past damage: ``unrar`` reading the
+        original archive stops at the damage, before it.
         """
+        raw = member._raw
+        if isinstance(raw, RarMemberInfo) and raw.found is not None:
+            return None
         masks = self._plain_masks
         if masks is None:
             masks = (
@@ -6922,6 +7303,10 @@ class RarReader(BaseArchiveReader):
             size: int | None,
             has_digest: bool,
         ) -> int | Callable[[], BinaryIO] | None:
+            if raw.found is not None:
+                # Not in ``unar``'s run over the original archive; a stored one is
+                # read by archivey, the others are refused (``member_refusal``).
+                return None
             block = self._solid_after_unknown.get(id(raw))
             if block is not None and block.same_stream:
                 # Left out of the run (``member_refusal``) and served as ``open()``
@@ -7041,6 +7426,10 @@ class RarReadBackend(ReadBackend):
     SFX_PARSER_SCANS = True
     SUPPORTS_PASSWORD = True
     USES_ENCODING = True  # for RAR 1.5-4 names stored as 8-bit bytes
+    # Salvage mode searches past damage for the next header (``rar_search``). It
+    # needs a seekable source: ``RarForwardReader`` (an archive inside another one)
+    # records SALVAGE_UNAVAILABLE instead.
+    SUPPORTS_SALVAGE = True
     # Read front to back by ``RarForwardReader``, with RARLAB unrar 7.00 or later.
     SUPPORTS_STREAMING_NON_SEEKABLE = True
     OPTIONAL_DEPENDENCY = None

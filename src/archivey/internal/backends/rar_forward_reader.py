@@ -89,6 +89,7 @@ from archivey.internal.naming import resolve_link_target_name
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidatesExhausted
 from archivey.internal.pe_resources import ProgramResources
+from archivey.internal.salvage import emit_salvage_unavailable
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
@@ -589,6 +590,19 @@ class RarForwardReader(RarReader):
         # tell where such a stream ends in the object a size counts from), and a PE
         # program's resources are read from a seekable one only.
         del end_offset, program_resources
+        if self._salvage_mode.enabled:
+            # The header walk reads back to a found member's data, which a source
+            # that reads forward only cannot give. A repeat reader (the inner
+            # archive built again to reach a member's data) records nothing: the
+            # first one already did.
+            self._salvage_mode.enabled = False
+            if not self._salvage_mode.repeat:
+                emit_salvage_unavailable(
+                    self._diagnostics_collector,
+                    archive_name=self._archive_name,
+                    format_name=ArchiveFormat.RAR.display_name,
+                    reason="forward_only_reader",
+                )
         self._origin = 0
         self._end = None
         self._program_tail = False

@@ -16,9 +16,9 @@ line. How to write the entry: see
 ### Added
 
 - `open_archive(salvage=True)` opts into salvage mode, capped by the new `SalvageLimits`
-  (`ArchiveyConfig.salvage_limits`): TAR searches past damage for the next header and
-  lists what it finds, flagged, even when the archive's start is lost; other formats
-  read as before and record `SALVAGE_UNAVAILABLE`.
+  (`ArchiveyConfig.salvage_limits`): RAR and TAR search past damage for the next header
+  and list what they find, flagged (`MEMBER_FOUND_BY_SCAN`), even when the archive's
+  start is lost; other formats read as before and record `SALVAGE_UNAVAILABLE`.
 - A format or codec plugin can use archivey-speedups' fast decoders:
   `context.speedup("lzw")` (or `call.speedup()`) returns the speedup, or `None` when it
   can't run. Their interfaces are in the new `archivey.speedups` module.
@@ -32,6 +32,9 @@ line. How to write the entry: see
   extension names the format. A probe that returns a bool, `None` or `CERTAIN` counts as
   no match and logs a warning; replace `True` with `DetectionConfidence.PROBABLE` and
   `False` with `DetectionConfidence.REJECTED`.
+- RAR5: a header whose size field is longer than 3 bytes is refused with
+  `CorruptionError`, as the RAR5 technical note requires ("must not be longer than 3
+  bytes") and as salvage's header search already did; it was read as a header.
 - **Breaking:** with `concurrent_operations=True`, `stream_members()`, `extract_all()`
   and `verify_all()` no longer run beside other calls: while a pass runs, `open()`,
   `read()`, `get()`, `members()`, `members_report()`, iteration or another pass raises
