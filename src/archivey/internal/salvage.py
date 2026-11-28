@@ -25,6 +25,7 @@ lists comes first and unchanged.
 
 from __future__ import annotations
 
+import copy
 import threading
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -34,18 +35,30 @@ from typing import TYPE_CHECKING, Literal
 from archivey.diagnostics import (
     DiagnosticCode,
     RegionSkippedContext,
+    SalvageScanContext,
     SalvageUnavailableContext,
 )
+from archivey.exceptions import ArchiveyError, CorruptionError
+from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError
 from archivey.internal.logs import backends as logger
 from archivey.internal.overrides import override
+from archivey.internal.streams.callers_source import from_source_callback
+from archivey.terminal import escape_control_chars
 
 if TYPE_CHECKING:
     from archivey.config import SalvageLimits
+    from archivey.formats import ForwardStream, ReaderContext
     from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.types import ArchiveMember
 
 # Bytes one window of the search holds beyond the overlap. 1 MiB keeps a read large
 # enough to be cheap on a file and on a range-request source, and small enough to hold.
 WINDOW_SIZE = 1 << 20
+# The first window of each search call; each later one doubles, up to WINDOW_SIZE. A
+# walk that lists a found member it cannot confirm searches again just after it, and
+# the next header is often close: a search that started with a full window would
+# read, and on a decoded layer decode and charge, a megabyte for each such restart.
+FIRST_WINDOW_SIZE = 4 << 10
 
 # The layer name of the archive's own bytes, as opposed to a codec's decoded stream.
 ARCHIVE_LAYER = "archive"
@@ -209,6 +222,8 @@ class SalvageState:
     ) -> None:
         self.requested = requested
         self.enabled = enabled
+        # Whether the reader starts with a search from offset 0 when its first
+        # header fails there (``SalvageRequest.lost_start``).
         self.lost_start = enabled and lost_start
         self.limits = limits
         self._collector = collector
@@ -404,6 +419,7 @@ def search_forward(
     base: int = 0,
     layer: str = ARCHIVE_LAYER,
     window_size: int = WINDOW_SIZE,
+    first_window_size: int = FIRST_WINDOW_SIZE,
 ) -> SearchResult:
     """Search ``layer`` forward from ``start`` for the next header that passes.
 
@@ -417,6 +433,11 @@ def search_forward(
     reads no further than the last header the budget lets it reach (one byte more
     when ``end`` is not known and the budget pays for every byte read, to see
     whether the layer ends there), and with no budget left it reads nothing.
+
+    The first window holds ``first_window_size`` bytes (``window_size`` when that is
+    smaller), and each later one twice the one before, up to ``window_size``: a call
+    reads about twice the bytes up to the header it finds, plus one header, not a
+    full window, so a search started again just after a header costs what it reads.
 
     The candidate positions are ``base + k * search.step``. The search starts at the
     first one at or after ``start``, or at the first one this layer's earlier
@@ -478,7 +499,8 @@ def search_forward(
         None if remaining is None else pos + remaining + search.max_header_size - 1
     )
 
-    span = window_size + search.max_header_size - 1
+    window = min(first_window_size, window_size)
+    span = window + search.max_header_size - 1
     # The bytes read so far, from ``pos``; ``buf_end`` is the layer offset after them.
     buf = b""
     buf_end = pos
@@ -525,8 +547,8 @@ def search_forward(
             # The candidate positions this window may examine are those before
             # ``stop``; the window keeps the bytes a header at the last one needs.
             stop = last - pos + 1
-            window = buf[: stop - 1 + search.max_header_size]
-            found = search.find_header(window, 0, stop)
+            examined = buf[: stop - 1 + search.max_header_size]
+            found = search.find_header(examined, 0, stop)
             if found is not None:
                 if found < 0 or found % step or found >= stop:
                     raise AssertionError(
@@ -552,6 +574,9 @@ def search_forward(
             state._examined(layer, pos, next_pos)
             buf = buf[next_pos - pos :]
             pos = next_pos
+            if window < window_size:
+                window = min(window * 2, window_size)
+                span = window + search.max_header_size - 1
 
         if at_end and pos >= buf_end and not budget_bound:
             # The layer ends here, so no later search of it has anything to examine,
@@ -604,6 +629,23 @@ def _record_no_header(
         )
 
 
+def noting_search_limit(state: SalvageState, error: ArchiveyError) -> ArchiveyError:
+    """The damage error that ends a salvage pass: ``error`` itself, or, when
+    ``SalvageLimits.max_search_bytes`` stopped a search, a copy of it whose message
+    says so."""
+    if not state.limit_reached:
+        return error
+    noted = copy.copy(error)
+    raw = (
+        f"{error.raw_message}; salvage stopped there: SalvageLimits.max_search_bytes "
+        f"({state.limits.max_search_bytes}) stopped the search"
+    )
+    noted.raw_message = raw
+    noted.message = escape_control_chars(raw)
+    noted.args = (noted.message, *error.args[1:])
+    return noted
+
+
 class QuietSalvageState(SalvageState):
     """The salvage state of a walk started over to reach member data: it searches as
     the listing walk did, so it finds the same members, and records nothing, since
@@ -614,3 +656,257 @@ class QuietSalvageState(SalvageState):
     @override
     def _emit(self, context: RegionSkippedContext, message: str) -> None:
         pass
+
+
+# The step of a probe that reads forward through a decoded layer (``WalkSalvage``).
+_PROBE_STEP = 1 << 20
+
+
+class WalkSalvage:
+    """What a sequential reader's walk uses to search past damage in the layer it
+    reads: built by archivey for each layer a random-access walk reads, and handed
+    out by ``ReaderContext._salvage(stream)`` (``None`` when the reader does not
+    salvage, or reads the layer forward only).
+
+    ``read_at`` and :meth:`search` read the layer through views of their own and do
+    not move the walk's stream; :meth:`seek` moves it, back as well as forward, to a
+    header the search found. :meth:`found` records ``MEMBER_FOUND_BY_SCAN`` for a
+    member about to be yielded. When the walk ends, :meth:`ending` gives the error
+    to raise, after :meth:`SalvageState.finish`.
+    """
+
+    def __init__(
+        self,
+        *,
+        state: SalvageState,
+        layer: str,
+        size: int | None,
+        read_at: Callable[[int, int], bytes],
+        open_reader: Callable[
+            [int], tuple[Callable[[int, int], bytes], Callable[[], None]]
+        ],
+        seek: Callable[[int], None],
+        position: Callable[[], int],
+        report_found: Callable[[ArchiveMember, SalvageScanContext, str], None] | None,
+        format_name: str,
+    ) -> None:
+        self.state = state
+        self.layer = layer
+        self.size = size
+        self._read_at = read_at
+        self._open_reader = open_reader
+        self.seek = seek
+        self._position = position
+        # On a layer of unknown size: how far the probes have read, and the layer's
+        # end once one reached it (``read_at``).
+        self._held_to = 0
+        self._end: int | None = None
+        # The member about to be yielded is one the walk could not confirm, so it
+        # moves back into its data after it (``moves_back``).
+        self._moves_back = False
+        self._report_found = report_found
+        self._format_name = format_name
+
+    @property
+    def lost_start(self) -> bool:
+        """The reader was asked to find its first header by a search from 0."""
+        return self.state.lost_start
+
+    def search(
+        self, search: HeaderSearch, *, start: int, base: int = 0
+    ) -> SearchResult:
+        """:func:`search_forward` over this layer from ``start``. A start past the
+        layer's end (a header's sizes that point past it) has nothing left to
+        search: the search starts at the end."""
+        self._moves_back = False
+        if self.size is not None:
+            start = min(start, self.size)
+        read, close = self._open_reader(start)
+        try:
+            return search_forward(
+                self.state,
+                read,
+                search,
+                start=start,
+                end=self.size,
+                base=base,
+                layer=self.layer,
+            )
+        finally:
+            close()
+
+    def moves_back(self) -> bool:
+        """Whether the walk moves back into the data of the member it yielded last,
+        to search on, so the skip past that data can wait (``_skip_data`` in the
+        adapter). Asked once per member: it answers ``False`` again after."""
+        moves_back, self._moves_back = self._moves_back, False
+        return moves_back
+
+    def after(self, header: int) -> int:
+        """Where a search starts that must not find the header at ``header`` again
+        (a member past the damage that nothing confirms): the search rounds it up to
+        the next candidate position."""
+        return header + 1
+
+    def read_at(self, offset: int, n: int) -> bytes:
+        """Up to ``n`` bytes of the layer from ``offset``, for a check of a header
+        the search did not read: the next one, or the first one's magic.
+
+        On a decoded layer of unknown size, a probe past the bytes known to be there
+        reads forward to ``offset`` rather than seeking there. A decoder that has not
+        reached its end takes a seek to any offset, and the decoded-bytes budget would
+        charge the whole gap, up to an offset a damaged size field gave, without
+        decoding it. The walk keeps how far its probes have read (``_held_to``) and,
+        once one reaches it, the layer's end (``_end``): a later probe reads forward
+        only past ``_held_to``, a probe behind it reads its bytes where they are, and
+        a probe at or past ``_end`` reads nothing. So the walk's probes together read
+        forward through the layer at most once, however many headers the search finds.
+
+        A probe the decoding limits refuse (the ratio limit, or the listing's budget)
+        reads as nothing: the candidate fails its check, and the pass ends in the first
+        damage, not in the limit. So does a probe past damage in a decoded layer (a
+        codec stream cut or corrupt before ``offset``): the layer ends there for the
+        probes. An exception ``on_source_read`` raised is not damage and propagates.
+        """
+        if self.size is not None:
+            return self._read_at_refused_as_nothing(offset, n)
+        if n <= 0 or (self._end is not None and offset >= self._end):
+            return b""
+        start = max(self._position(), self._held_to)
+        if offset <= start:
+            data = self._read_at_refused_as_nothing(offset, n)
+        else:
+            data = self._read_forward(start, offset, n)
+        if data:
+            self._held_to = max(self._held_to, offset + len(data))
+        else:
+            # The layer ends at ``offset`` or before, or the limits refuse a read
+            # there: a later probe there reads nothing either, without a read.
+            self._end = offset if self._end is None else min(self._end, offset)
+        return data
+
+    def _read_at_refused_as_nothing(self, offset: int, n: int) -> bytes:
+        try:
+            return self._read_at(offset, n)
+        except AlwaysStopResourceLimitError:
+            return b""
+        except CorruptionError as exc:
+            # A decoded layer damaged before ``offset`` (a codec stream cut or
+            # corrupt there): the probe reads nothing, as at the layer's end. The
+            # walk's own read reaches that damage, if anything does.
+            if not self.is_damage(exc):
+                raise
+            return b""
+
+    def _read_forward(self, start: int, offset: int, n: int) -> bytes:
+        """``read_at`` past ``start``, the furthest offset known to be there: read
+        forward from it, noting how far the layer goes."""
+        at = start
+        read, close = self._open_reader(start)
+        try:
+            while at < offset:
+                got = len(read(at, min(offset - at, _PROBE_STEP)))
+                if not got:
+                    return b""
+                at += got
+                self._held_to = max(self._held_to, at)
+            return read(offset, n)
+        except AlwaysStopResourceLimitError:
+            return b""
+        except CorruptionError as exc:
+            # The decoded layer is damaged past ``at``: it ends there for the
+            # probes, so a later one does not decode up to the damage again.
+            if not self.is_damage(exc):
+                raise
+            self._end = at if self._end is None else min(self._end, at)
+            return b""
+        finally:
+            close()
+
+    def holds(self, end: int) -> bool:
+        """Whether the layer has bytes up to ``end``: a member past the damage whose
+        data runs past the layer's end is not listed, since reading it would stop the
+        pass. On a decoded layer of unknown size, ``end`` within what the probes have
+        read is held without a read, and a probe the limits refuse is not held."""
+        if self.size is not None:
+            return end <= self.size
+        if end <= max(self._held_to, self._position()):
+            return True
+        return len(self.read_at(end - 1, 1)) == 1
+
+    def found(
+        self,
+        member: ArchiveMember,
+        *,
+        offset: int,
+        confirmed: bool,
+        unchecked: tuple[str, ...] = ("position",),
+        searched: bool = True,
+        held: bool = False,
+    ) -> None:
+        """Record ``MEMBER_FOUND_BY_SCAN`` for ``member``, before it is yielded:
+        found by the search (``searched``), walked on to after a member the search
+        found, or (``held``) a hard link the walk read whole before the damage and
+        held for data that no link before the damage carried (``"held_link"``)."""
+        if not held:
+            # A held link has no data to move back into.
+            self._moves_back = not confirmed
+        if self._report_found is None:
+            return
+        if held:
+            where = (
+                "as a hard link: the walk read its header whole before the damage, "
+                "but its data never came with a later link before the damage"
+            )
+        elif searched:
+            where = "by a header search"
+        else:
+            where = "by walking on from a member a header search found"
+        if held:
+            # Size 0, read whole by the normal walk: no sizes of its own to check.
+            how = (
+                "the header after it passes too"
+                if confirmed
+                else "the header after it is the damage"
+            )
+        elif confirmed:
+            how = "the header after its data passes too"
+        else:
+            how = "nothing after it confirms it, so its sizes are unchecked"
+        self._report_found(
+            member,
+            SalvageScanContext(
+                member_name=member.name,
+                format=self._format_name,
+                method="held_link" if held else "header_search",
+                offset=offset,
+                confirmed=confirmed,
+                unchecked=unchecked,
+            ),
+            f"Salvage found {self._format_name} member {member.name!r} {where}, "
+            f"at offset {offset}{_in_layer(self.layer)}; {how}.",
+        )
+
+    @staticmethod
+    def is_damage(error: BaseException) -> bool:
+        """Whether ``error``, a ``CorruptionError`` the walk caught, is damage the
+        search may go past. An exception ``ArchiveyConfig.on_source_read`` raised is
+        the caller's own, whatever its type: the walk raises it unchanged."""
+        return not from_source_callback(error)
+
+    def ending(self, error: ArchiveyError) -> ArchiveyError:
+        """Finish the walk's salvage records and give the damage error to raise."""
+        self.state.finish()
+        return noting_search_limit(self.state, error)
+
+
+def walk_salvage(context: ReaderContext, stream: ForwardStream) -> WalkSalvage | None:
+    """The salvage search of the layer ``stream`` reads, or ``None`` when the caller did
+    not ask for salvage. A reader's walk calls this once, before its first header.
+
+    It is the one place a reader reaches the context's salvage hook, so that readers
+    bound for a plugin package read no private attribute of ``ReaderContext``. Plugins
+    get salvage later through a hook of their own (openspec/changes/salvage-mode,
+    design decision 4)."""
+    search = context._salvage
+    return search(stream) if search is not None else None

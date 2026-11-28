@@ -16,6 +16,8 @@ from archivey import DiagnosticCode, SalvageLimits
 from archivey.diagnostics import RegionSkippedContext
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.salvage import (
+    FIRST_WINDOW_SIZE,
+    WINDOW_SIZE,
     HeaderSearch,
     QuietSalvageState,
     SalvageState,
@@ -289,6 +291,42 @@ def test_after_the_limit_every_search_stops_without_a_new_record() -> None:
     again = search_forward(state, _Layer(data).read_at, search, start=50, layer="xz")
     assert again.limit_reached
     assert [r.reason for r in _regions(collector)] == ["search_limit"]
+
+
+def test_the_first_window_is_small_and_each_later_one_doubles() -> None:
+    data = b"\x00" * (3 * WINDOW_SIZE)
+    state, _ = _state()
+    layer = _Layer(data)
+    search_forward(state, layer.read_at, _magic_search(header=8), start=0)
+    sizes = [size for _, size in layer.reads]
+    assert sizes[0] == FIRST_WINDOW_SIZE + 7
+    expected = FIRST_WINDOW_SIZE * 2
+    for size in sizes[1:-1]:
+        assert size == min(expected, WINDOW_SIZE)
+        expected *= 2
+    # The reads run on to the layer's end, the last one coming back short.
+    assert layer.reads[-1][0] <= len(data) < sum(sizes)
+
+
+def test_a_search_started_again_just_after_a_header_reads_what_it_needs() -> None:
+    """A walk that lists a found member it cannot confirm searches again from just
+    after it. With a header every 100 bytes, 2,000 such searches read a few KiB
+    each, not a full window each (about 200 MB over this 200 KB layer)."""
+    data = (MAGIC + b"\x00" * 96) * 2000
+    state, _ = _state()
+    total = 0
+    start = 0
+    found = []
+    while True:
+        layer = _Layer(data)
+        result = search_forward(state, layer.read_at, _magic_search(), start=start)
+        total += sum(size for _, size in layer.reads)
+        if result.found is None:
+            break
+        found.append(result.found)
+        start = result.found + 1
+    assert found == list(range(0, len(data), 100))
+    assert total < 2 * len(found) * FIRST_WINDOW_SIZE
 
 
 def test_the_budget_runs_out_across_windows() -> None:

@@ -140,3 +140,19 @@ def test_the_registry_has_the_table_declarations() -> None:
         ArchiveFormat.LHA,
         ArchiveFormat.ARJ,
     }
+
+
+def test_the_table_turns_salvage_on_for_its_salvage_readers() -> None:
+    """``salvage=True`` reaches a reader only when its backend says it searches past
+    damage. The table declares that for ar, CPIO and deb, the readers with a salvage
+    walk; every other table handler reads as the default and records
+    ``SALVAGE_UNAVAILABLE``."""
+    registry = get_registry()
+    salvaging = {ArchiveFormat.AR, ArchiveFormat.CPIO, ArchiveFormat.DEB}
+    for entry in format_table.CORE_FORMATS:
+        if not isinstance(entry, format_table.HandlerEntry):
+            continue
+        handler = format_table.load(entry.handler)
+        backend = registry.registered_reader(handler.format)  # type: ignore[attr-defined]
+        assert backend is not None, entry.handler
+        assert backend.SUPPORTS_SALVAGE is (handler.format in salvaging), entry.handler  # type: ignore[attr-defined]

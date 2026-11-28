@@ -1,0 +1,1638 @@
+"""``open_archive(salvage=True)`` on CPIO, ar and a ``.deb``'s ar level: the header
+search past damage (openspec/changes/salvage-mode, design decisions 7 and 8).
+
+Every damaged copy is built here from crafted bytes (GNU ``ar`` too, when installed).
+The add-only rule holds for each: the default listing is a prefix of the salvage
+listing, member by member, and the default's diagnostics come first, unchanged.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+from collections.abc import Callable
+from pathlib import Path
+
+import pytest
+
+from archivey import (
+    ArchiveyConfig,
+    DiagnosticCode,
+    DiagnosticPolicy,
+    ListingLimits,
+    SalvageLimits,
+    open_archive,
+)
+from archivey.diagnostics import RegionSkippedContext, SalvageScanContext
+from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.internal.base_reader import BaseArchiveReader
+from archivey.internal.salvage import requesting_salvage
+
+# CPIO --------------------------------------------------------------------------------
+
+
+def _newc(name: str, data: bytes, ino: int, *, magic: bytes = b"070701") -> bytes:
+    raw = name.encode() + b"\0"
+    check = sum(data) & 0xFFFFFFFF if magic == b"070702" else 0
+    mode = 0o100644 if name != "TRAILER!!!" else 0
+    fields = [ino, mode, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(raw), check]
+    header = magic + b"".join(b"%08X" % f for f in fields) + raw
+    header += b"\0" * (-len(header) % 4)
+    return header + data + b"\0" * (-len(data) % 4)
+
+
+def _odc(name: str, data: bytes, ino: int) -> bytes:
+    raw = name.encode() + b"\0"
+    mode = 0o100644 if name != "TRAILER!!!" else 0
+    fields = [(0, 6), (ino, 6), (mode, 6), (0, 6), (0, 6), (1, 6), (0, 6), (0, 11)]
+    fields += [(len(raw), 6), (len(data), 11)]
+    return b"070707" + b"".join(b"%0*o" % (w, v) for v, w in fields) + raw + data
+
+
+FILES = [(f"dir/f{i}.txt", bytes([65 + i]) * (200 + 37 * i)) for i in range(6)]
+
+
+def _cpio(
+    variant: str, files: list[tuple[str, bytes]] = FILES
+) -> tuple[bytes, list[int]]:
+    """The archive, and where each member's header starts."""
+
+    def member(name: str, data: bytes, ino: int) -> bytes:
+        if variant == "odc":
+            return _odc(name, data, ino)
+        return _newc(
+            name, data, ino, magic=b"070702" if variant == "crc" else b"070701"
+        )
+
+    out = bytearray()
+    offsets = []
+    for ino, (name, data) in enumerate(files, 1):
+        offsets.append(len(out))
+        out += member(name, data, ino)
+    out += member("TRAILER!!!", b"", 0)
+    return bytes(out), offsets
+
+
+# ar ----------------------------------------------------------------------------------
+
+
+def _ar_header(name: bytes, size: int) -> bytes:
+    return (
+        name.ljust(16)
+        + b"0".ljust(12)
+        + b"0".ljust(6)
+        + b"0".ljust(6)
+        + b"100644".ljust(8)
+        + str(size).encode().ljust(10)
+        + b"`\n"
+    )
+
+
+LONG = [f"a_rather_long_member_name_{i}.o" for i in range(3)]
+AR_FILES = [
+    ("short1.o", b"x" * 101),
+    *[(n, b"y" * (50 + i)) for i, n in enumerate(LONG)],
+]
+AR_FILES += [("short2.o", b"z" * 33), ("short3.o", b"w" * 64)]
+
+
+def _gnu_ar(files: list[tuple[str, bytes]] = AR_FILES) -> tuple[bytes, dict[str, int]]:
+    """A GNU ar archive with a long-name table, and where each header starts (the
+    table's under ``"//"``)."""
+    table = b""
+    fields: dict[str, bytes] = {}
+    for name, _data in files:
+        if len(name) > 15:
+            fields[name] = b"/%d" % len(table)
+            table += name.encode() + b"/\n"
+        else:
+            fields[name] = name.encode() + b"/"
+    out = bytearray(b"!<arch>\n")
+    offsets: dict[str, int] = {}
+    entries: list[tuple[str, bytes, bytes]] = [("//", b"//", table)] if table else []
+    entries += [(name, fields[name], data) for name, data in files]
+    for key, field, data in entries:
+        offsets[key] = len(out)
+        out += _ar_header(field, len(data)) + data + b"\n" * (len(data) & 1)
+    return bytes(out), offsets
+
+
+# The finders ---------------------------------------------------------------------------
+
+
+def test_the_finders_examine_no_candidate_at_or_past_stop() -> None:
+    """``find_header(window, start, stop)`` examines only the candidate positions
+    before ``stop``, though the window holds the header at ``stop`` whole."""
+    from archivey.internal.backends.ar_reader import _SEARCH_ANY_BYTE, AR_HEADER_SEARCH
+    from archivey.internal.backends.cpio_reader import _ASCII_MAGICS, _header_search
+
+    cpio = bytes(8) + _newc("f", b"data", 1)
+    for step in (1, 4):
+        find = _header_search(_ASCII_MAGICS, step).find_header
+        assert find(cpio, 0, 8) is None
+        assert find(cpio, 0, 9) == 8
+    ar = bytes(8) + _ar_header(b"f/", 4) + b"data"
+    for search in (AR_HEADER_SEARCH, _SEARCH_ANY_BYTE):
+        assert search.find_header(ar, 0, 8) is None
+        assert search.find_header(ar, 0, 9) == 8
+
+
+# Reading -----------------------------------------------------------------------------
+
+
+def _read(
+    path: Path, **kwargs: object
+) -> tuple[list[tuple[object, ...]], list[tuple[object, ...]], BaseException | None]:
+    """The listing (name, size, data), the diagnostics (code, context) and the error
+    that ended the listing."""
+    try:
+        reader = open_archive(path, **kwargs)  # type: ignore[call-overload]
+    except CorruptionError as err:
+        return [], [], err
+    with reader:
+        report = reader.members_report()
+        members = [
+            (m.name, m.size, reader.read(m) if m.is_file else None)
+            for m in report.members
+        ]
+        diagnostics = [(d.code, d.context) for d in reader.diagnostics.retained]
+        return members, diagnostics, report.error
+
+
+def _found(diagnostics: list[tuple[object, ...]]) -> list[SalvageScanContext]:
+    return [c for _code, c in diagnostics if isinstance(c, SalvageScanContext)]
+
+
+def _regions(diagnostics: list[tuple[object, ...]]) -> list[RegionSkippedContext]:
+    return [c for _code, c in diagnostics if isinstance(c, RegionSkippedContext)]
+
+
+def _assert_add_only(path: Path, **kwargs: object) -> tuple[list, list, BaseException]:
+    """The default listing is a prefix of the salvage listing, its diagnostics come
+    first, and both passes end in the same error. Returns the salvage pass."""
+    members, diagnostics, error = _read(path)
+    s_members, s_diagnostics, s_error = _read(path, salvage=True, **kwargs)
+    assert s_members[: len(members)] == members
+    assert s_diagnostics[: len(diagnostics)] == diagnostics
+    assert error is not None and s_error is not None
+    assert type(s_error) is type(error)
+    assert s_error.raw_message.startswith(error.raw_message)  # type: ignore[attr-defined]
+    # Every member past the default's is flagged, in archive order.
+    found = _found(s_diagnostics)
+    assert [c.member_name for c in found] == [m[0] for m in s_members[len(members) :]]
+    assert [c.offset for c in found] == sorted(c.offset for c in found)
+    assert all("position" in c.unchecked for c in found)
+    return s_members, s_diagnostics, s_error
+
+
+def _write(tmp_path: Path, data: bytes, name: str) -> Path:
+    path = tmp_path / name
+    path.write_bytes(data)
+    return path
+
+
+# CPIO tests --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("variant", ["newc", "crc", "odc"])
+def test_cpio_zeroed_header_lists_every_later_member(
+    variant: str, tmp_path: Path
+) -> None:
+    raw, offsets = _cpio(variant)
+    damaged = bytearray(raw)
+    damaged[offsets[1] : offsets[2]] = b"\0" * (offsets[2] - offsets[1])
+    path = _write(tmp_path, bytes(damaged), "a.cpio")
+    members, diagnostics, error = _assert_add_only(path)
+    assert [m[0] for m in members] == [n for i, (n, _d) in enumerate(FILES) if i != 1]
+    assert [m[2] for m in members] == [d for i, (_n, d) in enumerate(FILES) if i != 1]
+    assert isinstance(error, CorruptionError)
+    [region] = _regions(diagnostics)
+    assert (region.offset, region.length) == (offsets[1], offsets[2] - offsets[1])
+    assert region.layer == "archive" and region.reason == "no_header"
+    found = _found(diagnostics)
+    assert [c.offset for c in found] == offsets[2:]
+    assert all(c.confirmed for c in found)
+    assert found[0].format == "CPIO"
+
+
+def test_cpio_zeroed_4k_region(tmp_path: Path) -> None:
+    files = [(f"f{i}", bytes([97 + i]) * 1500) for i in range(8)]
+    raw, offsets = _cpio("newc", files)
+    damaged = bytearray(raw)
+    damaged[offsets[2] + 4 : offsets[2] + 4 + 4096] = b"\0" * 4096
+    path = _write(tmp_path, bytes(damaged), "a.cpio")
+    members, _diagnostics, _error = _assert_add_only(path)
+    later = [
+        n for (n, _d), at in zip(files, offsets, strict=True) if at > offsets[2] + 4100
+    ]
+    assert [m[0] for m in members] == ["f0", "f1", *later]
+
+
+def test_cpio_byte_flips_in_a_header(tmp_path: Path) -> None:
+    raw, offsets = _cpio("newc")
+    damaged = bytearray(raw)
+    # A field that no longer parses, and a magic that no longer matches.
+    damaged[offsets[2] + 20] = ord("x")
+    damaged[offsets[4] + 1] = ord("9")
+    path = _write(tmp_path, bytes(damaged), "a.cpio")
+    members, diagnostics, _error = _assert_add_only(path)
+    assert [m[0] for m in members] == [FILES[i][0] for i in (0, 1, 3, 5)]
+    assert len(_regions(diagnostics)) == 2
+
+
+def test_cpio_odc_gap_of_odd_length(tmp_path: Path) -> None:
+    raw, offsets = _cpio("odc")
+    cut = offsets[1] + 17
+    damaged = raw[:cut] + raw[cut + 333 :]
+    path = _write(tmp_path, damaged, "a.cpio")
+    members, _diagnostics, _error = _assert_add_only(path)
+    later = [n for (n, _d), at in zip(FILES, offsets, strict=True) if at > cut + 333]
+    assert [m[0] for m in members] == [FILES[0][0], *later]
+
+
+def test_cpio_cut_short(tmp_path: Path) -> None:
+    raw, offsets = _cpio("newc")
+    path = _write(tmp_path, raw[: offsets[3] + 50], "a.cpio")
+    members, diagnostics, error = _assert_add_only(path)
+    assert [m[0] for m in members] == [n for n, _d in FILES[:3]]
+    assert isinstance(error, TruncatedError)
+    [region] = _regions(diagnostics)
+    assert region.offset == offsets[3]
+
+
+def test_cpio_unconfirmed_member_does_not_claim_its_data(tmp_path: Path) -> None:
+    """A found member whose next header is damaged too is unconfirmed, and the search
+    goes on inside its data, where a header stored as data is found."""
+    inner, _ = _cpio("newc", [("inner.txt", b"I" * 64)])
+    files = [("a", b"A" * 40), ("b", b"B" * 40), ("c", inner[:-124]), ("d", b"D" * 40)]
+    raw, offsets = _cpio("newc", files)
+    damaged = bytearray(raw)
+    damaged[offsets[1]] = 0
+    damaged[offsets[3]] = 0
+    path = _write(tmp_path, bytes(damaged), "a.cpio")
+    members, diagnostics, _error = _assert_add_only(path)
+    assert [m[0] for m in members] == ["a", "c", "inner.txt"]
+    found = {c.member_name: c for c in _found(diagnostics)}
+    assert not found["c"].confirmed
+    assert not found["inner.txt"].confirmed
+
+
+def test_cpio_found_trailer_ends_the_walk(tmp_path: Path) -> None:
+    raw, offsets = _cpio("newc")
+    damaged = bytearray(raw)
+    damaged[offsets[5]] = 0
+    path = _write(tmp_path, bytes(damaged), "a.cpio")
+    members, diagnostics, error = _assert_add_only(path)
+    assert [m[0] for m in members] == [n for n, _d in FILES[:5]]
+    assert isinstance(error, CorruptionError)
+    assert not _found(diagnostics)
+
+
+def test_cpio_crc_data_sum_still_checks(tmp_path: Path) -> None:
+    raw, offsets = _cpio("crc")
+    damaged = bytearray(raw)
+    damaged[offsets[1]] = 0
+    # A data byte of a member past the damage.
+    damaged[offsets[3] + 120 + 5] ^= 1
+    path = _write(tmp_path, bytes(damaged), "a.cpio")
+    with open_archive(path, salvage=True) as reader:
+        listed = {m.name: m for m in reader.members_report().members}
+        assert reader.read(listed[FILES[2][0]]) == FILES[2][1]
+        with pytest.raises(CorruptionError):
+            reader.read(listed[FILES[3][0]])
+
+
+def test_cpio_intact_reads_the_same(tmp_path: Path) -> None:
+    path = _write(tmp_path, _cpio("newc")[0], "a.cpio")
+    assert _read(path, salvage=True) == _read(path)
+    with open_archive(path, salvage=True) as reader:
+        reader.members()
+        assert not reader.diagnostics.counts.get(DiagnosticCode.SALVAGE_UNAVAILABLE)
+
+
+def test_cpio_after_a_clean_trailer_nothing_is_searched(tmp_path: Path) -> None:
+    raw, _offsets = _cpio("newc")
+    path = _write(tmp_path, raw + b"\0" * 12 + _cpio("newc")[0], "a.cpio")
+    members, diagnostics, error = _read(path, salvage=True)
+    assert error is None
+    assert len(members) == len(FILES)
+    assert not _found(diagnostics) and not _regions(diagnostics)
+
+
+def test_cpio_damaged_first_header(tmp_path: Path) -> None:
+    """The default raises at open; salvage lists what the search finds."""
+    raw, offsets = _cpio("newc")
+    damaged = bytearray(raw)
+    damaged[offsets[0] + 10] = ord("z")
+    path = _write(tmp_path, bytes(damaged), "a.cpio")
+    with pytest.raises(CorruptionError):
+        open_archive(path)
+    members, diagnostics, error = _read(path, salvage=True)
+    assert [m[0] for m in members] == [n for n, _d in FILES[1:]]
+    assert isinstance(error, CorruptionError)
+    assert _regions(diagnostics)[0].offset == 0
+
+
+# ar tests ----------------------------------------------------------------------------
+
+
+def test_ar_zeroed_header(tmp_path: Path) -> None:
+    raw, offsets = _gnu_ar()
+    damaged = bytearray(raw)
+    at = offsets[LONG[0]]
+    damaged[at : at + 60] = b"\0" * 60
+    path = _write(tmp_path, bytes(damaged), "a.a")
+    members, diagnostics, error = _assert_add_only(path)
+    names = [n for n, _d in AR_FILES if n != LONG[0]]
+    assert [m[0] for m in members] == names
+    assert isinstance(error, CorruptionError)
+    assert all(
+        c.confirmed and c.unchecked == ("position",) for c in _found(diagnostics)
+    )
+    [region] = _regions(diagnostics)
+    assert region.offset == at
+
+
+def test_ar_lost_long_name_table(tmp_path: Path) -> None:
+    raw, offsets = _gnu_ar()
+    damaged = bytearray(raw)
+    damaged[offsets["//"] + 58] = ord("x")
+    path = _write(tmp_path, bytes(damaged), "a.a")
+    members, diagnostics, _error = _assert_add_only(path)
+    found = {c.member_name: c for c in _found(diagnostics)}
+    assert [m[0] for m in members] == [
+        "short1.o",
+        "/0",
+        f"/{len(LONG[0]) + 2}",
+        f"/{2 * (len(LONG[0]) + 2)}",
+        "short2.o",
+        "short3.o",
+    ]
+    assert found["/0"].unchecked == ("position", "name")
+    assert found["short2.o"].unchecked == ("position",)
+
+
+def test_ar_found_table_names_the_members_after_it(tmp_path: Path) -> None:
+    """Damage before the table: the table is found and names the later members."""
+    files = [("a.o", b"a" * 10), ("b.o", b"b" * 12), *AR_FILES[1:]]
+    raw, offsets = _gnu_ar(files)
+    # Move the table after a.o and b.o, as a writer may place it, then damage b.o.
+    table_at = offsets["//"]
+    table_end = offsets["a.o"]
+    table = raw[table_at:table_end]
+    body = raw[table_end : offsets["b.o"]] + raw[offsets["b.o"] : offsets[LONG[0]]]
+    rebuilt = raw[:table_at] + body + table + raw[offsets[LONG[0]] :]
+    damaged = bytearray(rebuilt)
+    b_at = table_at + (offsets["b.o"] - table_end)
+    damaged[b_at + 59] = 0
+    path = _write(tmp_path, bytes(damaged), "a.a")
+    members, diagnostics, error = _read(path, salvage=True)
+    assert isinstance(error, CorruptionError)
+    assert [m[0] for m in members] == ["a.o", *LONG, "short2.o", "short3.o"]
+    assert all(c.unchecked == ("position",) for c in _found(diagnostics))
+
+
+def test_ar_byte_flip_in_size_field(tmp_path: Path) -> None:
+    raw, offsets = _gnu_ar()
+    damaged = bytearray(raw)
+    damaged[offsets["short2.o"] + 48] = ord("x")
+    path = _write(tmp_path, bytes(damaged), "a.a")
+    members, _diagnostics, _error = _assert_add_only(path)
+    assert [m[0] for m in members] == [n for n, _d in AR_FILES if n != "short2.o"]
+
+
+def test_ar_cut_and_gap(tmp_path: Path) -> None:
+    raw, offsets = _gnu_ar()
+    cut = _write(tmp_path, raw[: offsets["short2.o"] + 30], "cut.a")
+    members, _diagnostics, error = _assert_add_only(cut)
+    assert isinstance(error, TruncatedError)
+    assert len(members) == 4
+    # A gap of an even length keeps the 2-byte alignment of the later headers.
+    at = offsets[LONG[1]] + 10
+    gap = _write(tmp_path, raw[:at] + raw[at + 40 :], "gap.a")
+    members, _diagnostics, _error = _assert_add_only(gap)
+    assert [m[0] for m in members] == [
+        "short1.o",
+        LONG[0],
+        LONG[2],
+        "short2.o",
+        "short3.o",
+    ]
+
+
+@pytest.mark.skipif(shutil.which("ar") is None, reason="needs GNU ar")
+def test_ar_written_by_gnu_ar(tmp_path: Path) -> None:
+    work = tmp_path / "w"
+    work.mkdir()
+    names = []
+    for name, data in AR_FILES:
+        (work / name).write_bytes(data)
+        names.append(name)
+    subprocess.run(["ar", "rc", "x.a", *names], cwd=work, check=True)
+    raw = (work / "x.a").read_bytes()
+    at = raw.index(b"short2.o/")
+    damaged = bytearray(raw)
+    damaged[at + 58] = ord("?")
+    path = _write(tmp_path, bytes(damaged), "x.a")
+    members, _diagnostics, _error = _assert_add_only(path)
+    assert [m[0] for m in members] == [n for n in names if n != "short2.o"]
+
+
+# Deb ---------------------------------------------------------------------------------
+
+
+def test_deb_damaged_control_header_finds_the_data_tar(tmp_path: Path) -> None:
+    from tests.test_deb import _deb
+
+    raw = _deb()
+    damaged = bytearray(raw)
+    # The control tar's header follows debian-binary's 4 bytes.
+    control_at = 8 + 60 + 4
+    assert raw[control_at : control_at + 11] == b"control.tar"
+    damaged[control_at + 58] = ord("!")
+    path = _write(tmp_path, bytes(damaged), "a.deb")
+    # Detection reads the damaged header as a plain ar archive.
+    with pytest.raises(CorruptionError):
+        open_archive(path, format="deb")
+    members, diagnostics, error = _read(path, salvage=True, format="deb")
+    assert isinstance(error, CorruptionError)
+    names = [m[0] for m in members]
+    assert "usr/a" in names and "usr/b" in names
+    assert not any(n.startswith("DEBIAN") for n in names)
+    assert {c.member_name for c in _found(diagnostics)} == set(names)
+
+
+# Shared rules ------------------------------------------------------------------------
+
+
+def _damaged_cpio(tmp_path: Path) -> Path:
+    raw, offsets = _cpio("newc")
+    damaged = bytearray(raw)
+    damaged[offsets[1]] = 0
+    return _write(tmp_path, bytes(damaged), "a.cpio")
+
+
+def _damaged_ar(tmp_path: Path) -> Path:
+    raw, offsets = _gnu_ar()
+    damaged = bytearray(raw)
+    damaged[offsets[LONG[0]] + 59] = 0
+    return _write(tmp_path, bytes(damaged), "a.a")
+
+
+DAMAGED: list[Callable[[Path], Path]] = [_damaged_cpio, _damaged_ar]
+
+
+@pytest.mark.parametrize("make", DAMAGED, ids=["cpio", "ar"])
+def test_max_search_bytes_zero_lists_nothing_past_the_damage(
+    make: Callable[[Path], Path], tmp_path: Path
+) -> None:
+    path = make(tmp_path)
+    default, _d, error = _read(path)
+    config = ArchiveyConfig(salvage_limits=SalvageLimits(max_search_bytes=0))
+    members, diagnostics, s_error = _read(path, salvage=True, config=config)
+    assert members == default
+    [region] = _regions(diagnostics)
+    assert region.reason == "search_limit" and region.length is None
+    assert s_error is not None and error is not None
+    assert "max_search_bytes" in str(s_error)
+    assert type(s_error) is type(error)
+
+
+@pytest.mark.parametrize("make", DAMAGED, ids=["cpio", "ar"])
+def test_strict_does_not_stop_a_salvage_listing(
+    make: Callable[[Path], Path], tmp_path: Path
+) -> None:
+    path = make(tmp_path)
+    lenient = _read(path, salvage=True)
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    strict = _read(path, salvage=True, config=config)
+    assert [m[0] for m in strict[0]] == [m[0] for m in lenient[0]]
+    assert isinstance(strict[2], CorruptionError)
+
+
+@pytest.mark.parametrize("make", DAMAGED, ids=["cpio", "ar"])
+def test_stream_members_and_extract_all_see_the_salvage_listing(
+    make: Callable[[Path], Path], tmp_path: Path
+) -> None:
+    path = make(tmp_path)
+    members, _d, _e = _read(path, salvage=True)
+    with open_archive(path, salvage=True) as reader:
+        streamed = []
+        with pytest.raises(CorruptionError):
+            for member, stream in reader.stream_members():
+                streamed.append((member.name, member.size, stream.read()))
+    assert streamed == members
+    out = tmp_path / "out"
+    with open_archive(path, salvage=True) as reader, pytest.raises(CorruptionError):
+        reader.extract_all(out)
+    assert sorted(p.name for p in out.rglob("*") if p.is_file()) == sorted(
+        Path(str(m[0])).name for m in members
+    )
+
+
+@pytest.mark.parametrize("make", DAMAGED, ids=["cpio", "ar"])
+def test_a_second_listing_reads_the_same(
+    make: Callable[[Path], Path], tmp_path: Path
+) -> None:
+    path = make(tmp_path)
+    with open_archive(path, salvage=True) as reader:
+        first = [m.name for m in reader.members_report().members]
+        assert [m.name for m, _s in _drain(reader)] == first
+        assert (
+            reader.diagnostics.counts[DiagnosticCode.MEMBER_FOUND_BY_SCAN]
+            == len(first) - 1
+        )
+
+
+def _drain(reader: object) -> list[tuple[object, object]]:
+    out = []
+    try:
+        for member, stream in reader.stream_members():  # type: ignore[attr-defined]
+            stream.read()
+            out.append((member, stream))
+    except CorruptionError:
+        pass
+    return out
+
+
+# Lost start (the reader side; the opener that asks for it is core's) ----------------
+
+
+def _open_lost_start(path: Path) -> tuple[list[str], list[tuple[object, ...]], object]:
+    """Open as the lost-start opener (core's, another change) will: the salvage
+    request carries ``lost_start``."""
+    from archivey import core
+
+    fmt = "cpio" if path.suffix == ".cpio" else "ar"
+    original = core.requesting_salvage
+
+    def lost(requested: bool, *, supported: bool, lost_start: bool = False):  # type: ignore[no-untyped-def]
+        return original(requested, supported=supported, lost_start=True)
+
+    core.requesting_salvage = lost  # type: ignore[assignment]
+    try:
+        members, diagnostics, error = _read(path, salvage=True, format=fmt)
+    finally:
+        core.requesting_salvage = original  # type: ignore[assignment]
+    return [str(m[0]) for m in members], diagnostics, error
+
+
+@pytest.mark.parametrize("variant", ["newc", "odc"])
+def test_cpio_lost_start_searches_from_zero(variant: str, tmp_path: Path) -> None:
+    raw, offsets = _cpio(variant)
+    path = _write(tmp_path, raw[offsets[1] + 7 :], "a.cpio")
+    names, diagnostics, error = _open_lost_start(path)
+    assert names == [n for n, _d in FILES[2:]]
+    assert _regions(diagnostics)[0].offset == 0
+    assert isinstance(error, CorruptionError)
+
+
+def test_ar_lost_start_searches_from_zero(tmp_path: Path) -> None:
+    raw, offsets = _gnu_ar()
+    path = _write(tmp_path, raw[offsets["short1.o"] + 3 :], "a.a")
+    names, diagnostics, error = _open_lost_start(path)
+    assert names[0] == "/0"
+    assert names[-2:] == ["short2.o", "short3.o"]
+    assert _regions(diagnostics)[0].offset == 0
+    assert isinstance(error, CorruptionError)
+
+
+def test_lost_start_with_nothing_found_raises_the_open_error(tmp_path: Path) -> None:
+    path = _write(tmp_path, b"\x01" * 4000, "a.cpio")
+    _names, _diagnostics, error = _open_lost_start(path)
+    assert isinstance(error, CorruptionError)
+
+
+def test_the_request_carries_lost_start() -> None:
+    from archivey.internal.salvage import take_salvage_request
+
+    with requesting_salvage(True, supported=True, lost_start=True):
+        request = take_salvage_request()
+    assert request.lost_start
+    assert BaseArchiveReader  # the reader takes it as SalvageState.lost_start
+
+
+def test_cpio_gz_searches_the_decoded_stream(tmp_path: Path) -> None:
+    import gzip
+
+    raw, offsets = _cpio("newc")
+    damaged = bytearray(raw)
+    damaged[offsets[2]] = 0
+    path = _write(tmp_path, gzip.compress(bytes(damaged)), "a.cpio.gz")
+    members, diagnostics, _error = _assert_add_only(path)
+    assert [m[0] for m in members] == [n for i, (n, _d) in enumerate(FILES) if i != 2]
+    [region] = _regions(diagnostics)
+    assert (region.layer, region.offset) == ("gzip", offsets[2])
+
+
+# Review round 1 ----------------------------------------------------------------------
+
+
+def test_cpio_member_walked_on_then_unconfirmed_is_listed_once(tmp_path: Path) -> None:
+    """C is found, D is walked on to and is unconfirmed (E is damaged): the search
+    after D starts past D's header, so D is not found a second time."""
+    files = [(name, name.encode() * 50) for name in "ABCDEF"]
+    raw, offsets = _cpio("newc", files)
+    damaged = bytearray(raw)
+    for i in (1, 4):
+        damaged[offsets[i] : offsets[i] + 6] = b"\0" * 6
+    path = _write(tmp_path, bytes(damaged), "a.cpio")
+    members, diagnostics, _error = _assert_add_only(path)
+    assert [m[0] for m in members] == ["A", "C", "D", "F"]
+    found = {c.member_name: c for c in _found(diagnostics)}
+    assert found["C"].confirmed and not found["D"].confirmed
+
+
+def test_ar_member_walked_on_then_unconfirmed_is_listed_once(tmp_path: Path) -> None:
+    files = [(f"{name}.o", name.encode() * 51) for name in "ABCDEF"]
+    raw, offsets = _gnu_ar(files)
+    damaged = bytearray(raw)
+    for name in ("B.o", "E.o"):
+        damaged[offsets[name] : offsets[name] + 60] = b"#" * 60
+    path = _write(tmp_path, bytes(damaged), "a.a")
+    members, diagnostics, _error = _assert_add_only(path)
+    assert [m[0] for m in members] == ["A.o", "C.o", "D.o", "F.o"]
+    found = {c.member_name: c for c in _found(diagnostics)}
+    assert found["C.o"].confirmed and not found["D.o"].confirmed
+
+
+def test_cpio_gz_size_past_the_decoding_limits_is_not_held(tmp_path: Path) -> None:
+    """A found header whose size runs far past the decoded stream: the probe the
+    ratio limit refuses rejects the candidate, and the pass ends in the first
+    damage, not in the limit."""
+    import gzip
+
+    raw, offsets = _cpio("newc")
+    damaged = bytearray(raw)
+    damaged[offsets[1]] = 0
+    # The filesize field of the next header (after the magic and six fields).
+    damaged[offsets[2] + 54 : offsets[2] + 62] = b"FFFFFF00"
+    path = _write(tmp_path, gzip.compress(bytes(damaged)), "a.cpio.gz")
+    members, _diagnostics, error = _assert_add_only(path)
+    assert [m[0] for m in members] == [FILES[i][0] for i in (0, 3, 4, 5)]
+    assert type(error) is CorruptionError
+
+
+def test_found_message_says_how_the_member_was_reached(tmp_path: Path) -> None:
+    path = _damaged_cpio(tmp_path)
+    with open_archive(path, salvage=True) as reader:
+        reader.members_report()
+        messages = [
+            d.message
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_FOUND_BY_SCAN
+        ]
+    assert "by a header search" in messages[0]
+    assert all(
+        "by walking on from a member a header search found" in m for m in messages[1:]
+    )
+
+
+# Review round 2 ----------------------------------------------------------------------
+
+
+def _with_huge_size(tmp_path: Path, members: list[bytes], name: str) -> Path:
+    """``members``, then a header that passes the checks with ``filesize=FFFFFF00``,
+    8 MiB that do not compress and the trailer; gzipped for a ``.gz`` name. The
+    decoder is not at its end when a probe looks past the fake header's data."""
+    import gzip
+    import random
+
+    fake = bytearray(_newc("huge", b"", 9))
+    fake[54:62] = b"FFFFFF00"
+    noise = random.Random(0).randbytes(8 << 20)
+    raw = b"".join(members) + bytes(fake) + noise + _newc("TRAILER!!!", b"", 0)
+    if name.endswith(".gz"):
+        raw = gzip.compress(raw, compresslevel=1)
+    return _write(tmp_path, raw, name)
+
+
+def _zeroed_magic(member: bytes) -> bytes:
+    return b"\0" * 6 + member[6:]
+
+
+def _stream_names(path: Path) -> tuple[list[str], BaseException | None]:
+    names: list[str] = []
+    try:
+        with open_archive(path, salvage=True) as reader:
+            for member, _stream in reader.stream_members():
+                names.append(member.name)
+    except CorruptionError as err:
+        return names, err
+    return names, None
+
+
+def test_cpio_gz_found_size_past_the_layer_end_does_not_use_up_the_budget(
+    tmp_path: Path,
+) -> None:
+    """The probe of a found header's data end reads forward, so it charges the
+    listing budget only for what it decodes: the 8 MiB the layer holds, not the 4 GiB
+    the size field claims. The pass ends in the first damage."""
+    a = _newc("A", b"a" * 100, 1)
+    members = [a, _zeroed_magic(_newc("B", b"b", 2))]
+    path = _with_huge_size(tmp_path, members, "a.cpio.gz")
+    names, error = _stream_names(path)
+    assert names == ["A"]
+    assert type(error) is CorruptionError
+    assert f"No CPIO header at offset {len(a)}" in str(error)
+
+
+@pytest.mark.parametrize("name", ["a.cpio", "a.cpio.gz"])
+def test_cpio_walked_on_size_past_the_layer_end_is_not_listed(
+    name: str, tmp_path: Path
+) -> None:
+    """The same size on a member walked on to: its data runs past the layer's end,
+    so it is not listed, as a found one is not, and the search goes on past it. The
+    pass ends in the first damage."""
+    a = _newc("A", b"a" * 100, 1)
+    members = [a, _zeroed_magic(_newc("B", b"b", 2)), _newc("C", b"c" * 40, 3)]
+    path = _with_huge_size(tmp_path, members, name)
+    with open_archive(path, salvage=True) as reader:
+        report = reader.members_report()
+        found = {
+            c.member_name: c.confirmed
+            for d in reader.diagnostics.retained
+            if isinstance(c := d.context, SalvageScanContext)
+        }
+    assert [m.name for m in report.members] == ["A", "C"]
+    assert found == {"C": True}
+    assert type(report.error) is CorruptionError
+    assert f"No CPIO header at offset {len(a)}" in str(report.error)
+
+
+def test_ar_walked_on_size_past_the_layer_end_is_not_listed(tmp_path: Path) -> None:
+    raw = bytearray(b"!<arch>\n")
+    raw += _ar_header(b"A/", 100) + b"a" * 100
+    damage_at = len(raw)
+    raw += b"X" * 60 + b"b" * 10
+    raw += _ar_header(b"C/", 40) + b"c" * 40
+    raw += _ar_header(b"D/", 9999999999) + bytes(1 << 20)
+    path = _write(tmp_path, bytes(raw), "a.a")
+    members, diagnostics, error = _assert_add_only(path)
+    assert [m[0] for m in members] == ["A", "C"]
+    assert [c.confirmed for c in _found(diagnostics)] == [True]
+    assert type(error) is CorruptionError
+    assert f"No ar member header at offset {damage_at}" in str(error)
+
+
+def test_deb_walked_on_size_past_the_layer_end_is_not_listed(tmp_path: Path) -> None:
+    """A ``.deb`` whose control tar the search finds past damage, then a data tar
+    header whose size runs past the package's end: the data tar is not opened, and
+    the pass ends in the first damage."""
+    from tests.test_deb import CONTROL, _ar, _tar
+
+    control = _tar([("./control", CONTROL)], "gz")
+    raw = bytearray(_ar((b"debian-binary", b"2.0\n"), (b"_extra", b"x" * 20)))
+    extra_at = 8 + 60 + 4
+    raw[extra_at + 58] = ord("!")
+    raw += _ar((b"control.tar.gz", control))[8:]
+    raw += _ar_header(b"data.tar.xz", 9999999999) + bytes(1 << 20)
+    path = _write(tmp_path, bytes(raw), "a.deb")
+    with open_archive(path, salvage=True, format="deb") as reader:
+        report = reader.members_report()
+    names = [m.name for m in report.members]
+    assert names and all(n.startswith("DEBIAN") for n in names)
+    assert type(report.error) is CorruptionError
+    assert f"offset {extra_at}" in str(report.error)
+
+
+def _many_candidates(
+    tmp_path: Path, sizes: Callable[[int, int, int], int], count: int
+) -> Path:
+    """A ``.cpio.gz``: ``A``, ``B`` with its magic zeroed, ``count`` headers that pass
+    the checks, then 4 MiB of data and the trailer. ``sizes(i, start, end)`` gives the
+    size field of header ``i``, whose data starts at ``start``, where the 4 MiB end
+    at ``end``."""
+    import gzip
+    import random
+
+    data = bytes(random.Random(0).choices(b"abcd", k=4 << 20))
+    head = _newc("A", b"a" * 100, 1) + _zeroed_magic(_newc("B", b"b", 2))
+    out = bytearray(head)
+    headers = [_newc(f"fake{i:03}", b"", 10 + i) for i in range(count)]
+    data_end = len(head) + sum(len(h) for h in headers) + len(data)
+    for i, header in enumerate(headers):
+        fake = bytearray(header)
+        fake[54:62] = b"%08X" % sizes(i, len(out) + len(header), data_end)
+        out += fake
+    out += data + _newc("TRAILER!!!", b"", 0)
+    return _write(tmp_path, gzip.compress(bytes(out), 6), "a.cpio.gz")
+
+
+@pytest.mark.parametrize("count", [40, 160])
+@pytest.mark.parametrize(
+    "sizes",
+    [
+        pytest.param(lambda i, start, end: 0xFFFFFF00, id="past-the-end"),
+        pytest.param(
+            lambda i, start, end: end - 64 * (i + 1) - start, id="just-before-the-end"
+        ),
+    ],
+)
+def test_cpio_gz_salvage_decodes_the_layer_a_bounded_number_of_times(
+    sizes: Callable[[int, int, int], int], count: int, tmp_path: Path
+) -> None:
+    """Candidate headers whose sizes run past the 4 MiB layer, or end just before its
+    end: the pass ends in the first damage within 24 MiB of decoding, for 40
+    candidates as for 160. Each candidate is cheap: the probes of its data end and
+    of the header after it read forward only past what earlier probes read; the
+    search started again just after it reads a small window first, not 1 MiB; and
+    the skip past the data of a candidate listed unconfirmed waits for the walk's
+    next read, which never comes, since the walk moves back to search on. At 40
+    candidates, a probe reading forward from the walk's position each time needed
+    about 207 and 527 MiB; with that fixed, the full window and the skip needed
+    about 51 and 211 MiB; now both need about 11."""
+    path = _many_candidates(tmp_path, sizes, count)
+    limits = ListingLimits(max_decoded_bytes=24 << 20)
+    with open_archive(
+        path, salvage=True, config=ArchiveyConfig(listing_limits=limits)
+    ) as reader:
+        report = reader.members_report()
+    assert report.members[0].name == "A"
+    assert type(report.error) is CorruptionError
+    assert "No CPIO header at offset 212" in str(report.error)
+
+
+def test_a_cpio_inside_another_archive_names_the_forward_only_reader() -> None:
+    """A package's CPIO payload is read forward only, so it records
+    ``SALVAGE_UNAVAILABLE`` with the reason that says so."""
+    import io
+
+    from archivey.diagnostics import SalvageUnavailableContext
+    from tests.test_pkg import _PRODUCT
+
+    with open_archive(io.BytesIO(_PRODUCT), salvage=True) as reader:
+        reader.members()
+        reasons = {
+            d.context.format: d.context.reason
+            for d in reader.diagnostics.retained
+            if isinstance(d.context, SalvageUnavailableContext)
+        }
+    assert reasons == {
+        "PKG": "no_salvage_search",
+        "CPIO_PBZX": "forward_only_reader",
+        "CPIO_GZIP": "forward_only_reader",
+    }
+
+
+def test_a_skip_left_for_later_is_paid_by_a_read_and_dropped_by_a_move() -> None:
+    """``ForwardStream._skip_later``: the offset moves at once; the bytes are skipped
+    from where the stream really is before the next read, or never, when the walk
+    moves the stream back first."""
+    from archivey.formats import ForwardStream
+
+    data = bytes(range(100))
+    at = 0
+    skips: list[tuple[int, int]] = []
+
+    def read(n: int) -> bytes:
+        nonlocal at
+        out = data[at : at + n]
+        at += len(out)
+        return out
+
+    def skip(offset: int, n: int) -> None:
+        nonlocal at
+        assert offset == at
+        skips.append((offset, n))
+        at += n
+
+    def seek(offset: int) -> None:
+        nonlocal at
+        at = offset
+
+    stream = ForwardStream(read, skip)
+    stream.read(10)
+    stream._skip_later(20)
+    assert stream.offset == 30 and skips == []
+    assert stream.read(2) == bytes([30, 31])
+    assert skips == [(10, 20)]
+    stream._skip_later(40)
+    stream._move_to(5, seek)
+    assert stream.read(1) == bytes([5])
+    assert skips == [(10, 20)]
+
+
+@pytest.mark.parametrize("name", ["a.cpio", "a.cpio.gz"])
+def test_cpio_cut_inside_a_member_ends_as_the_default(
+    name: str, tmp_path: Path
+) -> None:
+    """No damage before the cut: the member whose data the cut ends raises the
+    default's TruncatedError, from the skip past its data, and the salvage walk does
+    not read it as header damage. Only the skip after a member listed unconfirmed
+    waits for the walk's next read."""
+    import gzip
+    import random
+
+    rng = random.Random(0)
+    sizes = [0, 3, 100, 70_000, 300_000]
+    files = [(f"f{i:02}", rng.randbytes(rng.choice(sizes))) for i in range(30)]
+    raw, _offsets = _cpio("newc", files)
+    cut = raw[: len(raw) // 2]
+    path = _write(tmp_path, gzip.compress(cut) if name.endswith(".gz") else cut, name)
+
+    def listing(**kwargs: object) -> tuple[list[str], BaseException]:
+        names: list[str] = []
+        with open_archive(path, **kwargs) as reader:  # type: ignore[call-overload]
+            with pytest.raises(TruncatedError) as caught:
+                names.extend(m.name for m in reader.members())
+            report = reader.members_report()
+        assert report.error is not None
+        return [m.name for m in report.members], caught.value
+
+    default_names, default_error = listing()
+    # The cut is inside a member's data, not in a header.
+    assert "bytes from offset" in str(default_error)
+    salvage_names, salvage_error = listing(salvage=True)
+    assert salvage_names == default_names
+    assert str(salvage_error) == str(default_error)
+
+
+# Review round 3 ----------------------------------------------------------------------
+
+
+def _deb_with_planted(planted: bytes | None, *, damage_before_control: bool) -> bytes:
+    """A ``.deb`` with 60 zero bytes where an ar header was: after debian-binary, or
+    after the control tar. ``planted`` names a member put just past those bytes whose
+    payload is ``b"not-a-tar!"``: ``control.tar`` or ``data.tar``; ``None`` for none."""
+    from tests.test_deb import CONTROL, _ar, _tar
+
+    control = (b"control.tar", _tar([("./", None), ("./control", CONTROL)]))
+    data = (b"data.tar", _tar([("./", None), ("./usr/", None), ("./usr/a", b"x")]))
+    before = [(b"debian-binary", b"2.0\n")]
+    after = [control, data]
+    if not damage_before_control:
+        before.append(after.pop(0))
+    raw = _ar(*before) + bytes(60)
+    if planted is not None:
+        raw += _ar((planted, b"not-a-tar!"))[8:]
+    return raw + _ar(*after)[8:]
+
+
+@pytest.mark.parametrize(
+    ("planted", "damage_before_control"),
+    [(b"control.tar", True), (b"data.tar", False)],
+    ids=["control", "data"],
+)
+def test_deb_found_tar_that_does_not_open_is_passed_over(
+    planted: bytes, damage_before_control: bool, tmp_path: Path
+) -> None:
+    """A tar header the search finds past the damage whose payload is not a tar is
+    not listed: the search goes on past it, and the pass lists and ends as for the
+    same package without it."""
+    clean = _write(
+        tmp_path,
+        _deb_with_planted(None, damage_before_control=damage_before_control),
+        "clean.deb",
+    )
+    bad = _write(
+        tmp_path,
+        _deb_with_planted(planted, damage_before_control=damage_before_control),
+        "planted.deb",
+    )
+    members, _diagnostics, error = _read(clean, salvage=True, format="deb")
+    assert [m[0] for m in members] == [
+        "DEBIAN/",
+        "DEBIAN/control",
+        ".",
+        "usr/",
+        "usr/a",
+    ]
+    assert type(error) is CorruptionError
+    p_members, _p_diagnostics, p_error = _read(bad, salvage=True, format="deb")
+    assert p_members == members
+    assert type(p_error) is CorruptionError
+    assert p_error.raw_message == error.raw_message  # type: ignore[attr-defined]
+
+
+def test_cpio_lost_start_listing_again_after_a_limit_reads_the_same(
+    tmp_path: Path,
+) -> None:
+    """A lost-start listing stopped by ``max_members`` and started again searches as
+    the first did: the variant an earlier walk found does not set where the second
+    search looks."""
+    from archivey import core
+    from archivey.exceptions import ResourceLimitError
+
+    raw, offsets = _cpio("newc")
+    # The first intact header is at an offset that is not a multiple of 4.
+    path = _write(tmp_path, raw[offsets[1] + 7 :], "a.cpio")
+    assert (offsets[2] - offsets[1] - 7) % 4 != 0
+    original = core.requesting_salvage
+
+    def lost(requested: bool, *, supported: bool, lost_start: bool = False):  # type: ignore[no-untyped-def]
+        return original(requested, supported=supported, lost_start=True)
+
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=1))
+    core.requesting_salvage = lost  # type: ignore[assignment]
+    try:
+        with open_archive(path, salvage=True, format="cpio", config=config) as reader:
+            errors = []
+            for _ in range(2):
+                with pytest.raises(ResourceLimitError) as caught:
+                    reader.members()
+                errors.append(str(caught.value))
+    finally:
+        core.requesting_salvage = original  # type: ignore[assignment]
+    assert errors[0] == errors[1]
+    assert "max_members=1" in errors[0]
+
+
+def test_cpio_odc_search_finds_an_afio_large_header(tmp_path: Path) -> None:
+    """An odc archive with a damaged header, then a member under afio's large header:
+    the search finds it, reads it, and confirms it by the odc header after it."""
+    from tests.test_cpio import _afio_large_member
+
+    damaged = bytearray(_odc("b.txt", b"b" * 60, 2))
+    damaged[:6] = b"000000"
+    raw = (
+        _odc("a.txt", b"a" * 50, 1)
+        + bytes(damaged)
+        + _afio_large_member(b"c.txt", b"c" * 70, ino=3, uid=65536)
+        + _odc("d.txt", b"d" * 80, 4)
+        + _odc("TRAILER!!!", b"", 0)
+    )
+    path = _write(tmp_path, raw, "a.cpio")
+    members, diagnostics, _error = _assert_add_only(path)
+    assert [(m[0], m[2]) for m in members] == [
+        ("a.txt", b"a" * 50),
+        ("c.txt", b"c" * 70),
+        ("d.txt", b"d" * 80),
+    ]
+    found = _found(diagnostics)
+    assert [c.member_name for c in found] == ["c.txt", "d.txt"]
+
+
+def test_deb_found_data_tar_that_fails_later_keeps_the_first_error(
+    tmp_path: Path,
+) -> None:
+    """A data tar found past the damage lists its members up to its own damage, and
+    the pass still ends in the package's first error, not the tar's later one."""
+    import io
+    import tarfile
+
+    from tests.test_deb import _deb
+
+    raw = _deb(data_kind="")
+    damaged = bytearray(raw)
+    control_at = 8 + 60 + 4
+    damaged[control_at + 58] = ord("!")
+    data_at = raw.index(b"data.tar") + 60
+    with tarfile.open(fileobj=io.BytesIO(raw[data_at:])) as tar:
+        later = tar.getmembers()[-1]
+    assert later.name == "./usr/b"
+    size_at = data_at + later.offset + 124
+    damaged[size_at : size_at + 4] = b"zzzz"  # its size does not parse
+    path = _write(tmp_path, bytes(damaged), "a.deb")
+    default = _read(path, format="deb")[2]
+    members, diagnostics, error = _read(path, salvage=True, format="deb")
+    assert [m[0] for m in members if m[0].startswith("usr/")] == ["usr/", "usr/a"]
+    assert {c.member_name for c in _found(diagnostics)} == {m[0] for m in members}
+    assert isinstance(error, CorruptionError)
+    assert isinstance(default, CorruptionError)
+    assert error.raw_message.startswith(default.raw_message)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("tables", [1, 2])
+def test_ar_bogus_long_name_table_past_the_end_charges_nothing(
+    tables: int, tmp_path: Path
+) -> None:
+    """Past the damage, a ``//`` header whose size runs past the file's end is
+    passed over before its table is charged or read: the members after it are
+    listed, and the pass ends in the first damage, not a listing limit."""
+    out = b"!<arch>\n" + _ar_header(b"before/", 2) + b"bb"
+    out += b"X" * 60
+    for _ in range(tables):
+        out += _ar_header(b"//", 70_000_000)
+    out += _ar_header(b"after/", 2) + b"aa"
+    path = _write(tmp_path, out, "a.a")
+    members, _diagnostics, error = _read(path, salvage=True)
+    assert [m[0] for m in members] == ["before", "after"]
+    assert isinstance(error, CorruptionError)
+
+
+def test_cpio_lost_start_passed_over_candidate_does_not_set_the_variant(
+    tmp_path: Path,
+) -> None:
+    """A lost start whose first candidate is a newc header whose data runs past
+    the end: the search passes over it and still finds the odc members after it."""
+    bogus = _newc("bogus", b"", 9)
+    bogus = bogus[:54] + b"%08X" % 999_999 + bogus[62:]  # its size field
+    raw = b"\x01" * 5 + bogus + _odc("real.txt", b"hello", 1)
+    raw += _odc("TRAILER!!!", b"", 0)
+    path = _write(tmp_path, raw, "a.cpio")
+    names, _diagnostics, error = _open_lost_start(path)
+    assert names == ["real.txt"]
+    assert isinstance(error, CorruptionError)
+
+
+def test_cpio_held_link_is_recorded_as_found_when_it_is_listed(tmp_path: Path) -> None:
+    """Past the damage, a newc link held for data that never arrives (the archive
+    ends first) is listed as an empty file when the pass ends, and its
+    ``MEMBER_FOUND_BY_SCAN`` record is made then, once."""
+    before = _newc("before.txt", b"b" * 8, 1)
+    link = bytearray(_newc("orphan_link", b"", 2))
+    link[6 + 4 * 8 : 6 + 5 * 8] = b"%08X" % 2  # nlink
+    raw = before + b"\0" * 120 + bytes(link)
+    path = _write(tmp_path, raw, "a.cpio")
+    members, diagnostics, error = _read(path, salvage=True)
+    assert [m[0] for m in members] == ["before.txt", "orphan_link"]
+    assert [f.member_name for f in _found(diagnostics)] == ["orphan_link"]
+    assert isinstance(error, CorruptionError)
+
+
+def test_cpio_gz_probe_into_a_damaged_codec_tail_reads_as_the_end(
+    tmp_path: Path,
+) -> None:
+    """A .cpio.gz damaged near its end, with a found newc header past the cpio
+    damage whose size points into the damaged gzip tail: the probe of that size
+    reads as the layer's end, so the header is passed over and the members after
+    it are listed. The pass ends in the first damage, the cpio one."""
+    import gzip
+
+    bogus = _newc("bogus", b"", 9)
+    bogus = bogus[:54] + b"%08X" % 500_000 + bogus[62:]
+    raw = _newc("before.txt", b"b" * 8, 1) + b"\0" * 120 + bogus
+    raw += _newc("good_after.txt", b"g" * 8, 2) + _newc("TRAILER!!!", b"", 0)
+    raw += bytes(4096)
+    packed = bytearray(gzip.compress(raw))
+    packed[-20:] = b"\xff" * 20
+    path = _write(tmp_path, bytes(packed), "a.cpio.gz")
+    default = _read(path)[2]
+    members, _diagnostics, error = _read(path, salvage=True)
+    assert [m[0] for m in members] == ["before.txt", "good_after.txt"]
+    assert isinstance(default, CorruptionError)
+    assert type(error) is type(default)
+    assert error.raw_message.startswith(default.raw_message)  # type: ignore[attr-defined]
+
+
+def test_cpio_lost_start_unconfirmed_header_does_not_set_the_variant(
+    tmp_path: Path,
+) -> None:
+    """A lost start whose first found header is a newc one with a small size that
+    nothing confirms: it is listed, but the search after it still looks for every
+    variant, and finds the odc members."""
+    raw = b"\x01" * 5 + _newc("bogus", b"abcd", 9) + _odc("real.txt", b"hello", 1)
+    raw += _odc("real2.txt", b"world", 2) + _odc("TRAILER!!!", b"", 0)
+    path = _write(tmp_path, raw, "a.cpio")
+    names, _diagnostics, error = _open_lost_start(path)
+    assert names[-2:] == ["real.txt", "real2.txt"]
+    assert isinstance(error, CorruptionError)
+
+
+def test_ar_lost_start_unconfirmed_header_does_not_set_the_alignment(
+    tmp_path: Path,
+) -> None:
+    """A lost start whose first found header sits at an odd offset and that
+    nothing confirms: the members after it, at even offsets, are still found."""
+    raw = b"\x01" * 5 + _ar_header(b"bogus/", 4) + b"abcd" + b"\x01"
+    assert len(raw) % 2 == 0
+    raw += _ar_header(b"real/", 4) + b"real" + _ar_header(b"real2/", 5) + b"real2\n"
+    path = _write(tmp_path, raw, "a.a")
+    names, _diagnostics, error = _open_lost_start(path)
+    assert names[-2:] == ["real", "real2"]
+    assert isinstance(error, CorruptionError)
+
+
+def test_ar_unconfirmed_long_name_table_is_not_charged(tmp_path: Path) -> None:
+    """Past the damage, a found ``//`` table the file holds but that nothing
+    confirms is passed over before it is charged or read: a member found inside
+    its data is listed, and the pass ends in the first damage."""
+    after = _ar_header(b"after/", 5) + b"hello\n"
+    table = after + b"J" * (5000 - len(after))
+    raw = b"!<arch>\n" + _ar_header(b"before/", 4) + b"bbbb"
+    raw += b"J" * 60 + _ar_header(b"//", len(table)) + table + b"J" * 60
+    path = _write(tmp_path, raw, "a.a")
+    limits = ListingLimits(max_metadata_bytes=1000)
+    members, _diagnostics, error = _read(
+        path, salvage=True, config=ArchiveyConfig(listing_limits=limits)
+    )
+    assert [m[0] for m in members] == ["before", "after"]
+    assert isinstance(error, CorruptionError)
+
+
+def _newc_link(name: str, data: bytes, ino: int) -> bytes:
+    """A newc header with ``nlink=2``."""
+    member = bytearray(_newc(name, data, ino))
+    member[6 + 4 * 8 : 6 + 5 * 8] = b"%08X" % 2
+    return bytes(member)
+
+
+def test_cpio_lost_start_unconfirmed_link_header_still_waits_for_its_data(
+    tmp_path: Path,
+) -> None:
+    """After a lost start, an unconfirmed newc header that shares an inode with
+    later links is held for its data like any newc link, so the later links point
+    at the member that carries the data, not at the empty stray header."""
+    raw = b"\x01" * 4 + _newc_link("bogus", b"", 7) + b"\x01" * 4
+    raw += _newc_link("a.txt", b"", 7) + _newc_link("b.txt", b"hello", 7)
+    raw += _newc("TRAILER!!!", b"", 0)
+    path = _write(tmp_path, raw, "a.cpio")
+    from archivey import core
+
+    original = core.requesting_salvage
+
+    def lost(requested: bool, *, supported: bool, lost_start: bool = False):  # type: ignore[no-untyped-def]
+        return original(requested, supported=supported, lost_start=True)
+
+    core.requesting_salvage = lost  # type: ignore[assignment]
+    try:
+        with open_archive(path, salvage=True, format="cpio") as reader:
+            members = {m.name: m for m in reader.members_report().members}
+    finally:
+        core.requesting_salvage = original  # type: ignore[assignment]
+    assert members["a.txt"].link_target == "b.txt"
+    assert members["b.txt"].size == 5
+
+
+def test_ar_unconfirmed_table_leaves_the_dialect_alone(tmp_path: Path) -> None:
+    """Past the damage, a ``//`` table nothing confirms is passed over without
+    changing the dialect the archive info reports."""
+
+    def bsd(name: bytes, data: bytes) -> bytes:
+        body = name + data
+        return (
+            _ar_header(b"#1/%d" % len(name), len(body)) + body + b"\n" * (len(body) & 1)
+        )
+
+    raw = b"!<arch>\n" + bsd(b"before.o", b"x" * 4) + b"J" * 60
+    raw += _ar_header(b"//", 40) + b"J" * 40 + b"J" * 60 + bsd(b"after.o", b"y" * 4)
+    path = _write(tmp_path, raw, "a.a")
+    with open_archive(path, salvage=True) as reader:
+        names = [m.name for m in reader.members_report().members]
+        dialect = reader.info.extra.get("ar.dialect")
+    assert names == ["before.o", "after.o"]
+    assert dialect == "bsd"
+
+
+def _odc_link(name: str, data: bytes, ino: int) -> bytes:
+    """An odc header with ``nlink=2``."""
+    member = bytearray(_odc(name, data, ino))
+    member[36:42] = b"%06o" % 2
+    return bytes(member)
+
+
+def _links(path: Path, *, lost_start: bool) -> dict[str, tuple[object, object]]:
+    """Each listed name with its link target and the bytes a read gives."""
+    from archivey import core
+
+    original = core.requesting_salvage
+
+    def lost(requested: bool, *, supported: bool, lost_start: bool = False):  # type: ignore[no-untyped-def]
+        return original(requested, supported=supported, lost_start=True)
+
+    if lost_start:
+        core.requesting_salvage = lost  # type: ignore[assignment]
+    try:
+        with open_archive(path, salvage=True, format="cpio") as reader:
+            out = {}
+            for m in reader.members_report().members:
+                data = reader.read(m) if m.is_file or m.link_target else None
+                out[m.name] = (m.link_target, data)
+            return out
+    finally:
+        core.requesting_salvage = original  # type: ignore[assignment]
+
+
+_LINK_TAIL = (
+    b"\x01" * 4
+    + _newc_link("a.txt", b"", 7)
+    + _newc_link("b.txt", b"hello", 7)
+    + _newc("TRAILER!!!", b"", 0)
+)
+
+
+@pytest.mark.parametrize(
+    ("stray", "lost_start"),
+    [
+        (b"\x01" * 4 + _odc_link("bogus", b"", 7), True),
+        (b"\x01" * 4 + _newc_link("bogus", b"zzzz", 7), True),
+        (
+            _newc("x.txt", b"x" * 4, 1) + b"\0" * 8 + _newc_link("bogus", b"zzzz", 7),
+            False,
+        ),
+    ],
+    ids=["odc-lost-start", "data-lost-start", "data-after-damage"],
+)
+def test_cpio_unconfirmed_stray_does_not_take_a_link_group(
+    stray: bytes, lost_start: bool, tmp_path: Path
+) -> None:
+    """A header nothing confirms that shares an inode with real links does not
+    become their group's file: the real link still reads the real data."""
+    path = _write(tmp_path, stray + _LINK_TAIL, "a.cpio")
+    links = _links(path, lost_start=lost_start)
+    assert links["b.txt"][1] == b"hello"
+    assert links["a.txt"] == ("b.txt", b"hello")
+
+
+def test_cpio_held_links_are_listed_when_the_pass_ends_in_damage(
+    tmp_path: Path,
+) -> None:
+    """A newc link held for data that never came is still listed (as an empty file)
+    when the salvage pass ends in the damage error rather than at a trailer."""
+    raw = b"\x01" * 4 + _newc_link("bogus", b"", 7) + _newc("c.txt", b"c" * 4, 1)
+    path = _write(tmp_path, raw, "a.cpio")
+    names, _diagnostics, error = _open_lost_start(path)
+    assert sorted(names) == ["bogus", "c.txt"]
+    assert isinstance(error, CorruptionError)
+
+
+# Only a confirmed header changes what the walk carries forward -----------------------
+#
+# One rule for every format here (design.md, "Notes from the CPIO and ar PR"): a header
+# the default walk does not read, or that nothing confirms, is listed, and changes no
+# state of the walk or the reader. Each case below is one piece of that state.
+
+
+def _binary_header_at_zero() -> bytes:
+    """A binary CPIO magic at offset 0 whose header holds a name size of 0."""
+    return b"\xc7\x71" + bytes(24)
+
+
+def _newc_without_its_nul() -> bytes:
+    """A newc header at offset 0 whose fields parse and whose name has no NUL."""
+    header = bytearray(_newc("zz", b"", 5))
+    header[110 + 2] = ord("X")
+    return bytes(header)
+
+
+@pytest.mark.parametrize(
+    "head",
+    [_newc_without_its_nul(), _binary_header_at_zero()],
+    ids=["newc-name-without-nul", "binary-magic"],
+)
+def test_cpio_lost_start_failed_header_at_zero_does_not_set_the_variant(
+    head: bytes, tmp_path: Path
+) -> None:
+    """After a lost start, a header at offset 0 that the walk reads and then fails is
+    damage like any other: it does not choose the variant the search looks for, so
+    the odc members after it are found."""
+    raw = head + b"\x01" + _odc("real.txt", b"hello", 1)
+    raw += _odc("real2.txt", b"world", 2) + _odc("TRAILER!!!", b"", 0)
+    path = _write(tmp_path, raw, "a.cpio")
+    names, _diagnostics, error = _open_lost_start(path)
+    assert names == ["real.txt", "real2.txt"]
+    assert isinstance(error, CorruptionError)
+
+
+def _with_mode_and_size(member: bytes, variant: str, mode: int, size: int) -> bytes:
+    out = bytearray(member)
+    if variant == "odc":
+        out[18:24] = b"%06o" % mode
+        out[65:76] = b"%011o" % size
+    else:
+        out[14:22] = b"%08X" % mode
+        out[54:62] = b"%08X" % size
+    return bytes(out)
+
+
+@pytest.mark.parametrize("variant", ["newc", "odc"])
+@pytest.mark.parametrize(
+    ("mode", "code"),
+    [
+        (0o130644, DiagnosticCode.MEMBER_TYPE_UNKNOWN),
+        (0o010644, DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA),
+    ],
+    ids=["unknown-type", "fifo-with-data"],
+)
+def test_cpio_walked_on_header_not_listed_reports_nothing(
+    variant: str, mode: int, code: DiagnosticCode, tmp_path: Path
+) -> None:
+    """Past the damage, a walked-on header whose data runs past the end is not
+    listed, and records no diagnostic about the member it would have been."""
+    member = _odc if variant == "odc" else _newc
+    raw = member("x.txt", b"xxxx", 1) + _zeroed_magic(member("y.txt", b"yyyy", 2))
+    raw += member("c.txt", b"cccc", 3)
+    raw += _with_mode_and_size(member("late", b"", 4), variant, mode, 1 << 20)
+    path = _write(tmp_path, raw + bytes(64), "a.cpio")
+    members, diagnostics, error = _read(path, salvage=True)
+    assert [m[0] for m in members] == ["x.txt", "c.txt"]
+    assert code not in [c for c, _context in diagnostics]
+    assert isinstance(error, CorruptionError)
+
+
+def _bsd(name: bytes, data: bytes) -> bytes:
+    body = name + data
+    return _ar_header(b"#1/%d" % len(name), len(body)) + body + b"\n" * (len(body) & 1)
+
+
+_BSD_AFTER = _bsd(b"after.o", b"y" * 4)
+_GNU_AFTER = _ar_header(b"after/", 4) + b"yyyy"
+
+
+@pytest.mark.parametrize(
+    ("first", "stray", "after", "dialect"),
+    [
+        (_bsd(b"before.o", b"x" * 4), b"stray/", _BSD_AFTER, "bsd"),
+        (_bsd(b"before.o", b"x" * 4), b"/0", _BSD_AFTER, "bsd"),
+        # The damage at the first header: nothing has shown a dialect yet.
+        (b"J" * 68, b"stray/", _BSD_AFTER, "bsd"),
+        # A BSD spelling never replaced a dialect: this one held before the fix.
+        (_ar_header(b"before/", 4) + b"xxxx", b"stray", _GNU_AFTER, "gnu"),
+    ],
+    ids=["gnu-name-in-bsd", "gnu-long-name-in-bsd", "gnu-name-first", "bsd-in-gnu"],
+)
+def test_ar_unconfirmed_member_leaves_the_dialect_alone(
+    first: bytes, stray: bytes, after: bytes, dialect: str, tmp_path: Path
+) -> None:
+    """Past the damage, a member nothing confirms is listed, but its name's
+    spelling does not change the dialect the archive info reports: only the
+    headers the walk counts do."""
+    raw = b"!<arch>\n" + first + b"J" * 60
+    raw += _ar_header(stray, 4) + b"J" * 4 + b"J" * 60 + after
+    path = _write(tmp_path, raw, "a.a")
+    with open_archive(path, salvage=True) as reader:
+        names = [m.name for m in reader.members_report().members]
+        shown = reader.info.extra.get("ar.dialect")
+    # The stray is listed (unconfirmed), and the member after it too.
+    assert names[-2:] == [
+        stray.removesuffix(b"/").decode(),
+        "after.o" if dialect == "bsd" else "after",
+    ]
+    assert shown == dialect
+
+
+def test_deb_unconfirmed_control_tar_does_not_take_the_package(
+    tmp_path: Path,
+) -> None:
+    """Past the damage, a control tar nothing confirms is listed, but its fields
+    and md5sums are not the package's, and the control tar after it is read: the
+    archive info shows the real fields and the data file reads with the real
+    digest."""
+    from tests.test_deb import CONTROL, _ar, _md5sums, _tar
+
+    stray = _tar(
+        [
+            ("./", None),
+            ("./control", b"Package: stray\nVersion: 9\nArchitecture: all\n"),
+            ("./md5sums", _md5sums({"usr/a": b"other"})),
+        ]
+    )
+    control = _tar(
+        [("./", None), ("./control", CONTROL), ("./md5sums", _md5sums({"usr/a": b"x"}))]
+    )
+    data = _tar([("./", None), ("./usr/", None), ("./usr/a", b"x")])
+    raw = _ar((b"debian-binary", b"2.0\n")) + bytes(60)
+    raw += _ar((b"control.tar", stray))[8:] + b"J" * 60
+    raw += _ar((b"control.tar", control), (b"data.tar", data))[8:]
+    path = _write(tmp_path, raw, "a.deb")
+    with open_archive(path, salvage=True, format="deb") as reader:
+        report = reader.members_report()
+        names = [m.name for m in report.members]
+        package = reader.info.extra.get("deb.package")
+        data_a = reader.read("usr/a")
+    # Both control tars are listed, each flagged; the real one is the package's.
+    assert names.count("DEBIAN/control") == 2
+    assert names[-3:] == [".", "usr/", "usr/a"]
+    assert package == "tiny"
+    assert data_a == b"x"
+    assert isinstance(report.error, CorruptionError)
+
+
+def test_deb_unconfirmed_control_tar_holds_nothing(tmp_path: Path) -> None:
+    """Past the damage, a control tar nothing confirms is not read whole, so its
+    control file is not charged against ``max_metadata_bytes``: the pass lists the
+    real package and ends in the first damage, not in the limit."""
+    from tests.test_deb import CONTROL, _ar, _tar
+
+    stray = _tar([("./", None), ("./control", b"Package: stray\n" + b"#" * 5000)])
+    control = _tar([("./", None), ("./control", CONTROL)])
+    data = _tar([("./", None), ("./usr/", None), ("./usr/a", b"x")])
+    raw = _ar((b"debian-binary", b"2.0\n")) + bytes(60)
+    raw += _ar((b"control.tar", stray))[8:] + b"J" * 60
+    raw += _ar((b"control.tar", control), (b"data.tar", data))[8:]
+    path = _write(tmp_path, raw, "a.deb")
+    limits = ListingLimits(max_metadata_bytes=4000)
+    members, _diagnostics, error = _read(
+        path, salvage=True, format="deb", config=ArchiveyConfig(listing_limits=limits)
+    )
+    assert [m[0] for m in members][-3:] == [".", "usr/", "usr/a"]
+    assert members[1] == ("DEBIAN/control", 5015, b"Package: stray\n" + b"#" * 5000)
+    assert isinstance(error, CorruptionError)
+
+
+# Every member salvage adds is flagged: links held from before the damage ------------
+
+
+def _link(variant: str, name: str, data: bytes, ino: int) -> bytes:
+    """A member with ``nlink=2`` in ``variant``."""
+    if variant == "odc":
+        return _odc_link(name, data, ino)
+    member = bytearray(_newc(name, data, ino, magic=_MAGICS[variant]))
+    member[6 + 4 * 8 : 6 + 5 * 8] = b"%08X" % 2
+    return bytes(member)
+
+
+_MAGICS = {"newc": b"070701", "crc": b"070702"}
+
+
+def _plain(variant: str, name: str, data: bytes, ino: int) -> bytes:
+    if variant == "odc":
+        return _odc(name, data, ino)
+    return _newc(name, data, ino, magic=_MAGICS[variant])
+
+
+@pytest.mark.parametrize("variant", ["newc", "crc", "odc"])
+@pytest.mark.parametrize(
+    "end", ["damage-end", "found-trailer", "found-data-link", "data-before-damage"]
+)
+def test_cpio_link_held_before_the_damage_is_flagged(
+    variant: str, end: str, tmp_path: Path
+) -> None:
+    """A newc or crc link the default walk read and held for its data before the
+    damage is listed by salvage only, so it is flagged ``method="held_link"``: where
+    the pass ends in the damage, at a trailer the search finds, and when a link with
+    its data is found past the damage. odc stores the data with every link and
+    holds none, so the default lists the link itself and there is nothing to flag.
+    Every member salvage adds is flagged once; a link whose data comes before the
+    damage is the default's, and is not flagged."""
+    raw = _plain(variant, "x.txt", b"xxxx", 1) + _link(variant, "a.txt", b"", 7)
+    if end == "data-before-damage":
+        raw += _link(variant, "b.txt", b"hello", 7)
+    raw += b"\0" * 64
+    if end == "found-trailer":
+        raw += _plain(variant, "c.txt", b"cccc", 3)
+    elif end == "found-data-link":
+        raw += _link(variant, "b.txt", b"hello", 7)
+    if end != "damage-end":
+        raw += _plain(variant, "TRAILER!!!", b"", 0)
+    path = _write(tmp_path, raw, "a.cpio")
+    members, _diagnostics, error = _read(path)
+    s_members, s_diagnostics, s_error = _read(path, salvage=True)
+    assert s_members[: len(members)] == members
+    assert type(s_error) is type(error)
+    added = [m[0] for m in s_members[len(members) :]]
+    found = _found(s_diagnostics)
+    assert sorted(c.member_name for c in found) == sorted(added)
+    held = [c for c in found if c.method == "held_link"]
+    if variant == "odc" or end == "data-before-damage":
+        assert held == []
+        assert "a.txt" in [m[0] for m in members]
+        return
+    assert "a.txt" in added
+    (record,) = held
+    assert (record.member_name, record.offset) == (
+        "a.txt",
+        len(_plain(variant, "x.txt", b"xxxx", 1)),
+    )
+    assert record.confirmed is False  # the header after it is the damage
+    with open_archive(path, salvage=True) as reader:
+        listed = {m.name: m for m in reader.members_report().members}
+        if end == "found-data-link":
+            # Released to the data link the search found, as a link to it.
+            assert listed["a.txt"].link_target == "b.txt"
+            assert reader.read("a.txt") == b"hello"
+        (message,) = [
+            str(d.message)
+            for d in reader.diagnostics.retained
+            if isinstance(d.context, SalvageScanContext)
+            and d.context.method == "held_link"
+        ]
+    assert "read its header whole before the damage" in message
+    assert "data never came with a later link" in message
+    # A held link has no data of its own: no claim about sizes it does not have.
+    assert message.endswith("; the header after it is the damage.")
+    assert "sizes are unchecked" not in message
+
+
+def _overlapping_control_tars(k: int, m: int) -> bytes:
+    """A deb whose damage is followed by ``k`` overlapping ``control.tar`` members
+    that nothing confirms: each holds one ustar member whose data runs to one shared
+    tail of ``m`` empty ustar members, and each ar size stops 7 bytes before the end
+    of the file, so no header after one passes (review round 9, K14)."""
+    import io
+    import tarfile
+
+    def ustar(name: str, size: int) -> bytes:
+        info = tarfile.TarInfo(name)
+        info.size = size
+        return info.tobuf(format=tarfile.USTAR_FORMAT)
+
+    head = _ar_header(b"debian-binary", 4)
+    raw = b"!<arch>\n" + head + b"2.0\n" + bytes(60)
+    start = len(raw)
+    # The tail starts 60 bytes after the last block, so it is a whole number of
+    # 512-byte blocks after each ustar member's data start.
+    tail_at = start + 1024 * k + 60
+    tail = b"".join(ustar(f"./t{j}", 0) for j in range(m)) + bytes(1024)
+    end = tail_at + len(tail)
+    blocks = io.BytesIO()
+    for i in range(k):
+        at = start + 1024 * i
+        data_at = at + 60 + 512
+        blocks.write(_ar_header(b"control.tar", end - (at + 60)))
+        blocks.write(ustar(f"./p{i}", tail_at - data_at) + bytes(452))
+    return raw + blocks.getvalue() + b"J" * 60 + tail + b"J" * 7
+
+
+def test_deb_overlapping_unconfirmed_control_tars_list_once(tmp_path: Path) -> None:
+    """Past the damage, at most one control tar nothing confirms is listed, so
+    control tars inside the data of one already listed do not list the same
+    members again: the listing stays linear in the file, and the pass ends in the
+    first damage."""
+    path = _write(tmp_path, _overlapping_control_tars(20, 20), "a.deb")
+    members, _diagnostics, error = _read(path, salvage=True, format="deb")
+    names = [m[0] for m in members]
+    assert names == ["DEBIAN/p0", *(f"DEBIAN/t{j}" for j in range(20))]
+    assert isinstance(error, CorruptionError)
+    assert error.raw_message.startswith("No ar member header at offset 72")  # type: ignore[attr-defined]

@@ -31,18 +31,22 @@ members to it. The member order is then not quite the archive's. A group whose d
 never arrives (all its links empty, as for an empty file) is yielded at the trailer:
 the first as an empty ``FILE``, the rest as links to it.
 
-The reader is written against ``archivey.formats`` and archivey's public names only,
-as a format added from outside would be (``tests/test_plugin_modules_use_public_api.py``
-checks); core's format table registers its handler. Handbook page:
+The reader is written against ``archivey.formats`` and archivey's public names, as a
+format added from outside would be (``tests/test_plugin_modules_use_public_api.py``
+checks), apart from the salvage search's names (``internal.salvage``, which has no
+plugin hook yet); core's format table registers its handler. With
+``open_archive(salvage=True)`` the walk searches past damage for the next header
+(``_search``). Handbook page:
 ``dev-docs/formats/cpio.md``.
 """
 
 from __future__ import annotations
 
+import re
 import struct
 import typing
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -69,6 +73,7 @@ from archivey.formats import (
     SequentialReader,
     unix_member_type,
 )
+from archivey.internal.salvage import HeaderSearch, WalkSalvage, walk_salvage
 from archivey.terminal import quoted
 from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
 
@@ -93,6 +98,85 @@ _ODC = b"070707"
 _NEWC = b"070701"
 _CRC = b"070702"
 _AFIO_LARGE = b"070727"
+
+
+# The ASCII magics, afio's large header among them: it is an odc member's header.
+_ASCII_MAGICS = frozenset({_ODC, _AFIO_LARGE, _NEWC, _CRC})
+_ODC_SIZE = 76
+_NEWC_SIZE = 110
+_AFIO_HEADER_SIZE = 116
+# Each field of a header the salvage search checks: digits only, and afio's four
+# separators where they go. afio's 4-byte flag is not read, so it is not checked;
+# its xsize must be 0, since the walk refuses a header with extra bytes.
+_NEWC_DIGITS = re.compile(rb"[0-9A-Fa-f]{104}\Z")
+_ODC_DIGITS = re.compile(rb"[0-7]{70}\Z")
+_AFIO_DIGITS = re.compile(
+    rb"[0-9A-Fa-f]{24}m[0-7]{6}[0-9A-Fa-f]{48}n[0-9A-Fa-f]{4}.{4}0000s[0-9A-Fa-f]{16}:\Z",
+    re.DOTALL,
+)
+
+
+def _fixed_size(magic: bytes) -> int:
+    """The size of the ASCII header with ``magic``, before its name."""
+    if magic == _ODC:
+        return _ODC_SIZE
+    if magic == _AFIO_LARGE:
+        return _AFIO_HEADER_SIZE
+    return _NEWC_SIZE
+
+
+def _name_size(window: bytes, at: int, magics: frozenset[bytes]) -> int | None:
+    """The name size of the ASCII header at ``at`` of ``window`` when its magic is
+    one of ``magics``, every field holds digits only and the size is in range;
+    ``None`` otherwise, or when the header does not fit in ``window``."""
+    magic = window[at : at + 6]
+    if magic not in magics:
+        return None
+    if magic == _ODC:
+        fields = window[at + 6 : at + _ODC_SIZE]
+        if not _ODC_DIGITS.match(fields):
+            return None
+        name_size = int(fields[53:59], 8)
+    elif magic == _AFIO_LARGE:
+        fields = window[at + 6 : at + _AFIO_HEADER_SIZE]
+        if not _AFIO_DIGITS.match(fields):
+            return None
+        name_size = int(fields[80:84], 16)
+    else:
+        fields = window[at + 6 : at + _NEWC_SIZE]
+        if not _NEWC_DIGITS.match(fields):
+            return None
+        name_size = int(fields[88:96], 16)
+    return name_size if 1 <= name_size <= MAX_NAME_BYTES else None
+
+
+def _passes(window: bytes, at: int, magics: frozenset[bytes]) -> bool:
+    """Whether a header the salvage search accepts starts at ``at`` of ``window``:
+    its magic is one of ``magics``, every field parses, the name size is in range
+    and the name ends with its NUL there."""
+    name_size = _name_size(window, at, magics)
+    if name_size is None:
+        return False
+    end = at + _fixed_size(window[at : at + 6]) + name_size
+    return end <= len(window) and window[end - 1] == 0
+
+
+def _header_search(magics: frozenset[bytes], step: int) -> HeaderSearch:
+    """The salvage search for the headers of ``magics``, at every ``step`` bytes."""
+
+    def find_header(window: bytes, start: int, stop: int) -> int | None:
+        at = start
+        while True:
+            # The ASCII magics share their first four bytes. The end bound lets a
+            # match start only before ``stop``.
+            i = window.find(b"0707", at, stop + 3)
+            if i < 0:
+                return None
+            if i % step == 0 and _passes(window, i, magics):
+                return i
+            at = i + 1
+
+    return HeaderSearch(find_header, step, _AFIO_HEADER_SIZE + MAX_NAME_BYTES)
 
 
 class Variant(Enum):
@@ -136,6 +220,13 @@ _AFIO_LARGE_SEPARATORS = ((24, b"m"), (79, b"n"), (92, b"s"), (109, b":"))
 
 _S_IFMT = 0o170000
 
+# The magic each variant's salvage search looks for; binary has no search.
+_VARIANT_MAGICS = {
+    Variant.ODC: frozenset({_ODC, _AFIO_LARGE}),
+    Variant.NEWC: frozenset({_NEWC}),
+    Variant.CRC: frozenset({_CRC}),
+}
+
 
 @dataclass
 class Header:
@@ -176,7 +267,43 @@ class _LinkGroup:
     until one does."""
 
     name: str | None = None
-    held: list[ArchiveMember] = field(default_factory=list)
+    held: list[tuple[ArchiveMember, _Scan | None]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _Scan:
+    """How salvage reached a member past the damage, for its
+    ``MEMBER_FOUND_BY_SCAN`` record, made when the member is listed. ``held``: a
+    newc or crc link the walk read and held for its data before the damage, which
+    the default lists only if a link before the damage carries that data."""
+
+    offset: int
+    confirmed: bool
+    searched: bool
+    held: bool = False
+
+    def report(self, salvage: WalkSalvage | None, member: ArchiveMember) -> None:
+        assert salvage is not None
+        salvage.found(
+            member,
+            offset=self.offset,
+            confirmed=self.confirmed,
+            searched=self.searched,
+            held=self.held,
+        )
+
+
+def _listed_link(
+    salvage: WalkSalvage | None,
+    past_damage: bool,
+    link: ArchiveMember,
+    scan: _Scan | None,
+) -> MemberSpan:
+    """A held link, as it is listed: recorded as found when salvage lists it and
+    the default does not, which is when it is released past the damage."""
+    if scan is not None and (past_damage or not scan.held):
+        scan.report(salvage, link)
+    return MemberSpan(link, 0)
 
 
 # What the held links are, in a limit error (ReaderContext.hold).
@@ -225,81 +352,261 @@ class CpioReader(SequentialReader):
     @override
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         groups: dict[tuple[tuple[int, int], int], _LinkGroup] = {}
+        # Salvage (``open_archive(salvage=True)``): the layer's search, the first
+        # damage the walk met, where the next search starts, and the origin of the
+        # candidate positions (0, or a header found after a lost start).
+        salvage = walk_salvage(self._context, stream)
+        damage: CorruptionError | None = None
+        search_from: int | None = None
+        # What the walk carries from one header to the next: the variant and the
+        # origin of the candidate positions (0, or the header that set the variant
+        # after a lost start). This walk's own, so a walk started over (after a
+        # limit, or to reach member data) decides them again from the archive, and
+        # set in one place below, from a header the walk counts.
+        variant: Variant | None = None
+        base = 0
+        # The link held last before any damage, while the header after it is unread.
+        last_held: tuple[_LinkGroup, int] | None = None
         while True:
-            header = self._read_header(stream)
-            raw = stream.read_exact(header.name_size)
-            if raw[-1:] != b"\0":
-                raise CorruptionError(
-                    f"CPIO header at offset {header.offset}: the name is not "
-                    "NUL-terminated"
-                )
-            raw = raw[:-1]
-            stream.skip(self._name_pad(header))
+            # Whether the search found this header, or the walk walked on to it.
+            searched = search_from is not None
+            if search_from is not None:
+                assert salvage is not None and damage is not None
+                hit = self._search(salvage, stream, search_from, base, variant)
+                search_from = None
+                if hit is None:
+                    # The pass ends in the damage error, with no trailer: the links
+                    # still held for data are listed as at a trailer (recall first).
+                    yield from self._flush(groups, salvage, past_damage=True)
+                    raise salvage.ending(damage)
+                header, raw = hit
+            else:
+                offset = stream.offset
+                try:
+                    header, raw = self._read_entry(stream, variant)
+                    last_held = None
+                except CorruptionError as err:
+                    if (
+                        salvage is None
+                        or not salvage.is_damage(err)
+                        or self._search_magics(salvage, variant) is None
+                    ):
+                        raise
+                    # Damage: the walk searches on from the damaged header, and the
+                    # pass ends in this error.
+                    if damage is None and last_held is not None:
+                        # The header after the last link held before the damage
+                        # is the damage: nothing confirms that link.
+                        group, at = last_held
+                        link, link_scan = group.held[at]
+                        assert link_scan is not None
+                        group.held[at] = (link, replace(link_scan, confirmed=False))
+                    damage = damage or err
+                    search_from = offset
+                    continue
             if raw == TRAILER:
-                yield from self._flush(groups)
+                if variant is None:
+                    self._variant = header.variant
+                yield from self._flush(groups, salvage, past_damage=damage is not None)
                 self._check_end(stream)
+                if salvage is not None:
+                    if damage is not None:
+                        raise salvage.ending(damage)
+                    salvage.state.finish()
                 return
+            scan: _Scan | None = None
+            if damage is not None:
+                # Past the damage every member is one the default does not list: the
+                # one the search found, and those walked on from it.
+                assert salvage is not None
+                if not searched and not salvage.holds(stream.offset + header.file_size):
+                    # Data that runs past the layer's end, as ``_search`` refuses for
+                    # a found header: not listed, since reading it would end the pass
+                    # in TruncatedError. The search goes on past this header.
+                    search_from = salvage.after(header.offset)
+                    continue
+                confirmed = self._confirmed(salvage, header, stream.offset)
+                # Recorded when the member is listed: a link held for its data
+                # may never be.
+                scan = _Scan(header.offset, confirmed, searched)
+                if not confirmed:
+                    # No claim on its data: the search goes on inside it, past this
+                    # header, which it must not find again.
+                    search_from = salvage.after(header.offset)
+            # The one place a header's effects on the rest of the walk are decided.
+            # A header nothing confirms (``unconfirmed``) is listed, and changes
+            # nothing else: not the variant or the alignment of later searches, and
+            # not a hard-link group (it never becomes the group's file, whose name
+            # and data the group's links take, and releases no held link).
+            unconfirmed = scan is not None and not scan.confirmed
+            if variant is None and not unconfirmed:
+                variant = self._variant = header.variant
+                base = header.offset
             member = self._member(header, raw)
             size = header.file_size
             # A file that shares its inode with another.
             key = (header.dev, header.ino)
-            if member.type is MemberType.FILE and header.nlink > 1:
+            linked = member.type is MemberType.FILE and header.nlink > 1
+            if linked:
                 group = groups.setdefault(key, _LinkGroup())
                 # A conforming newc or crc writer stores the data with one link only.
                 # A later name that carries data of its own anyway is read as a file
                 # of its own, as GNU cpio's copy-in and 7-Zip extract it.
-                own_data = size > 0 and self._defers_link_data()
+                own_data = size > 0 and self._defers_link_data(header)
                 if group.name is not None and not own_data:
                     # A later link of a file already yielded. binary and odc repeat
                     # the data here, which is skipped as the span's unread bytes.
                     member.type = MemberType.HARDLINK
                     member.link_target = group.name
                     member.size = None
-                elif size == 0 and self._defers_link_data():
+                elif size == 0 and self._defers_link_data(header):
                     # newc keeps the data with the last link: hold this one back,
                     # counted toward the listing's limits while it waits.
                     self._context.hold(member, reason=_HELD)
-                    group.held.append(member)
+                    if salvage is not None and scan is None:
+                        # Before the damage: listed by salvage alone if the pass
+                        # gets past the damage before its data comes.
+                        scan = _Scan(header.offset, True, False, held=True)
+                        last_held = (group, len(group.held))
+                    group.held.append((member, scan))
                     stream.skip(size + self._data_pad(header))
                     continue
+                elif unconfirmed:
+                    linked = False
                 else:
                     # The link that is yielded as the FILE: the first one in binary
                     # and odc, the one carrying the data in newc and crc.
                     group.name = member.name
+            if scan is not None:
+                scan.report(salvage, member)
             yield MemberSpan(member, size, self._digests(header, member))
-            stream.skip(self._data_pad(header))
-            if member.type is MemberType.FILE and header.nlink > 1:
+            if search_from is None:
+                # Not after a member the walk cannot confirm: it moves back into
+                # the data to search on, and the pad is not where it reads next.
+                stream.skip(self._data_pad(header))
+            if linked and member.type is MemberType.FILE:
                 group = groups[key]
-                for link in group.held:
+                for link, link_scan in group.held:
                     link.type = MemberType.HARDLINK
                     link.link_target = member.name
                     link.size = None
-                    yield MemberSpan(link, 0)
+                    yield _listed_link(salvage, damage is not None, link, link_scan)
                 group.held.clear()
 
+    def _read_entry(
+        self, stream: ForwardStream, variant: Variant | None
+    ) -> tuple[Header, bytes]:
+        """The next header and its name, the NUL taken off, and the name's padding.
+        A header of another variant than ``variant``, the walk's, is damage."""
+        header = self._read_header(stream, variant)
+        raw = stream.read_exact(header.name_size)
+        if raw[-1:] != b"\0":
+            raise CorruptionError(
+                f"CPIO header at offset {header.offset}: the name is not NUL-terminated"
+            )
+        stream.skip(self._name_pad(header))
+        return header, raw[:-1]
+
+    # Salvage ------------------------------------------------------------------------
+
+    @staticmethod
+    def _search_magics(
+        salvage: WalkSalvage, variant: Variant | None
+    ) -> frozenset[bytes] | None:
+        """The magics the salvage search looks for: ``variant``, the one the archive
+        showed, any of the three ASCII ones after a lost start, or ``None`` for a
+        binary archive, which has no search."""
+        if variant is None:
+            if salvage.lost_start:
+                return _ASCII_MAGICS
+            # The first header failed: its magic still names the variant.
+            magic = salvage.read_at(0, len(_ODC))
+            if magic == _AFIO_LARGE:
+                return _VARIANT_MAGICS[Variant.ODC]
+            return frozenset({magic}) if magic in _ASCII_MAGICS else None
+        return _VARIANT_MAGICS.get(variant)
+
+    def _search(
+        self,
+        salvage: WalkSalvage,
+        stream: ForwardStream,
+        start: int,
+        base: int,
+        variant: Variant | None,
+    ) -> tuple[Header, bytes] | None:
+        """The next header of ``variant`` (any ASCII one while it is ``None`` after
+        a lost start, at every byte) the salvage search finds from ``start`` that
+        the walk reads and whose data the layer holds; the stream is moved to after
+        its name. ``None`` when none is found."""
+        magics = self._search_magics(salvage, variant)
+        assert magics is not None
+        step = 1 if _ODC in magics else 4
+        while True:
+            result = salvage.search(
+                _header_search(magics, step), start=start, base=base % step
+            )
+            if result.found is None:
+                return None
+            at = result.found
+            salvage.seek(at)
+            try:
+                header, raw = self._read_entry(stream, variant)
+            except CorruptionError as exc:
+                if not salvage.is_damage(exc):
+                    raise
+                start = at
+                continue
+            if not salvage.holds(stream.offset + header.file_size):
+                start = at
+                continue
+            return header, raw
+
+    def _confirmed(self, salvage: WalkSalvage, header: Header, data_at: int) -> bool:
+        """Whether the header after a found member's data, which starts at
+        ``data_at``, passes the search's check (the trailer included)."""
+        after = data_at + header.file_size + self._data_pad(header)
+        magics = _VARIANT_MAGICS[header.variant]
+        head = salvage.read_at(after, _AFIO_HEADER_SIZE)
+        name_size = _name_size(head, 0, magics)
+        if name_size is None:
+            return False
+        fixed = _fixed_size(head[:6])
+        whole = head[:fixed] + salvage.read_at(after + fixed, name_size)
+        return _passes(whole, 0, magics)
+
+    @staticmethod
     def _flush(
-        self, groups: dict[tuple[tuple[int, int], int], _LinkGroup]
+        groups: dict[tuple[tuple[int, int], int], _LinkGroup],
+        salvage: WalkSalvage | None,
+        *,
+        past_damage: bool,
     ) -> Iterator[MemberSpan]:
-        """At the trailer: the links whose data never arrived, the first as an empty
-        file and the rest as links to it."""
+        """At the end of the walk (a trailer, or the damage error past the damage):
+        the links whose data never arrived, the first as an empty file and the rest
+        as links to it."""
         for group in groups.values():
             if not group.held:
                 continue
-            first, *rest = group.held
+            (first, first_scan), *rest = group.held
             first.size = 0
-            yield MemberSpan(first, 0)
-            for link in rest:
+            yield _listed_link(salvage, past_damage, first, first_scan)
+            for link, link_scan in rest:
                 link.type = MemberType.HARDLINK
                 link.link_target = first.name
                 link.size = None
-                yield MemberSpan(link, 0)
+                yield _listed_link(salvage, past_damage, link, link_scan)
 
-    def _defers_link_data(self) -> bool:
-        """True for newc and crc, which store a hard-linked file's data with one link
-        only, normally the last."""
-        return self._variant in (Variant.NEWC, Variant.CRC)
+    @staticmethod
+    def _defers_link_data(header: Header) -> bool:
+        """True for a newc or crc header, whose variant stores a hard-linked file's
+        data with one link only, normally the last. Decided by the header itself,
+        as ``_data_pad`` is: after a lost start the walk's variant can be unset
+        while an unconfirmed header is handled."""
+        return header.variant in (Variant.NEWC, Variant.CRC)
 
-    def _read_header(self, stream: ForwardStream) -> Header:
+    def _read_header(self, stream: ForwardStream, walks: Variant | None) -> Header:
+        """The next header; one of another variant than ``walks``, the walk's
+        variant once a header settled it, is damage."""
         offset = stream.offset
         magic = stream.read(2)
         if len(magic) < 2:
@@ -322,12 +629,10 @@ class CpioReader(SequentialReader):
                 header = self._newc_header(stream, variant, offset)
             else:
                 raise CorruptionError(f"No CPIO header at offset {offset}")
-        if self._variant is None:
-            self._variant = header.variant
-        elif header.variant is not self._variant:
+        if walks is not None and header.variant is not walks:
             raise CorruptionError(
                 f"CPIO header at offset {offset} is {header.variant.value}, in a "
-                f"{self._variant.value} archive"
+                f"{walks.value} archive"
             )
         if header.name_size == 0 or header.name_size > MAX_NAME_BYTES:
             raise CorruptionError(

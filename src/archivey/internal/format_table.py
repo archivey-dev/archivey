@@ -5,7 +5,8 @@ step 1). A reader written against ``archivey.formats`` does not register itself:
 module defines a handler, and an entry here names that handler by dotted path and adds
 what a handler cannot declare yet. Those additions are data, as they will be in a
 manifest: a trailer at the end of the source, a refinement of another format's magic,
-and whether the format's magic may sit behind a self-extracting stub. Code an entry
+whether the format's magic may sit behind a self-extracting stub, and whether the
+reader searches past damage under ``open_archive(salvage=True)``. Code an entry
 needs (a refinement check, a stub-hit validator) is named by dotted path too.
 
 A reader written against ``BaseArchiveReader`` (ZIP, TAR, 7z, RAR, single-file and
@@ -47,7 +48,9 @@ class HandlerEntry:
     check says yes, the file is this format. ``behind_stub`` says the handler's magic
     may sit behind an executable stub, which detection then scans for, calling
     ``stub_validator`` on each hit; ``stub_parser_scans`` says the reader runs its
-    own capped scan at open.
+    own capped scan at open. ``salvage`` says the reader searches past damage when
+    opened with ``salvage=True`` (``ReadBackend.SUPPORTS_SALVAGE``); a reader without
+    it reads as the default and records ``SALVAGE_UNAVAILABLE``.
     """
 
     handler: str
@@ -56,6 +59,7 @@ class HandlerEntry:
     behind_stub: bool = False
     stub_validator: str | None = None
     stub_parser_scans: bool = False
+    salvage: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,8 +70,8 @@ class ModuleEntry:
 
 
 CORE_FORMATS: tuple[HandlerEntry | ModuleEntry, ...] = (
-    HandlerEntry(f"{_BACKENDS}.deb_reader:DebHandler"),
-    HandlerEntry(f"{_BACKENDS}.ar_reader:ArHandler"),
+    HandlerEntry(f"{_BACKENDS}.deb_reader:DebHandler", salvage=True),
+    HandlerEntry(f"{_BACKENDS}.ar_reader:ArHandler", salvage=True),
     HandlerEntry(
         f"{_BACKENDS}.arj_reader:ArjHandler",
         behind_stub=True,
@@ -75,7 +79,7 @@ CORE_FORMATS: tuple[HandlerEntry | ModuleEntry, ...] = (
         stub_parser_scans=True,
     ),
     HandlerEntry(f"{_BACKENDS}.cab_reader:CabHandler"),
-    HandlerEntry(f"{_BACKENDS}.cpio_reader:CpioHandler"),
+    HandlerEntry(f"{_BACKENDS}.cpio_reader:CpioHandler", salvage=True),
     ModuleEntry(f"{_BACKENDS}.directory_reader"),
     HandlerEntry(
         f"{_BACKENDS}.dmg_reader:DmgHandler",
@@ -124,6 +128,8 @@ def _backend_attributes(
 ) -> dict[str, object]:
     """The backend attributes the entry sets beyond what the handler declares."""
     attrs: dict[str, object] = {}
+    if entry.salvage:
+        attrs["SUPPORTS_SALVAGE"] = True
     if entry.trailers:
         attrs["TRAILER"] = entry.trailers
     if entry.refines:

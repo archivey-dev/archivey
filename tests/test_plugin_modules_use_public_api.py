@@ -34,11 +34,16 @@ PUBLIC_ONLY_MODULES = (
 
 # Modules that leave core in one package, as the plan's packages group them. A module
 # may use what the others of its package define, private names too, since they ship
-# and change together: pkg's reader extends xar's.
+# and change together: pkg's reader extends xar's, and deb's salvage reuses ar's header
+# search and confirmation.
 SAME_PACKAGE = (
     (
         "archivey.internal.backends.xar_reader",
         "archivey.internal.backends.pkg_reader",
+    ),
+    (
+        "archivey.internal.backends.ar_reader",
+        "archivey.internal.backends.deb_reader",
     ),
 )
 

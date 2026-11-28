@@ -38,14 +38,20 @@ def _imported_names(path: Path) -> Iterator[tuple[str, str]]:
 def assert_only_public_archivey(
     module_file: str | None, *, siblings: Iterable[str] = ()
 ) -> None:
-    """Every archivey name the module imports is public, or comes from one of
-    ``siblings``, the modules that leave core in the same package. Core registers the
+    """Every archivey name the module imports is public, comes from one of
+    ``siblings``, the modules that leave core in the same package, or is one of the
+    salvage search's three names, which have no plugin hook yet. Core registers the
     module's handler from its table (``internal/format_table.py``), and the module
     carries its own ``override`` shim, as a format from outside would."""
     assert module_file is not None
     allowed = frozenset(siblings)
     for module, name in _imported_names(Path(module_file)):
         if module.split(".")[0] != "archivey" or module in allowed:
+            continue
+        if module == "archivey.internal.salvage":
+            # The salvage search, which plugins get later through a hook of their
+            # own (openspec/changes/salvage-mode, design decision 4).
+            assert name in ("HeaderSearch", "WalkSalvage", "walk_salvage"), name
             continue
         assert module in _PUBLIC, module
         assert name in _PUBLIC[module], (module, name)

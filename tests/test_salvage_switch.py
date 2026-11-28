@@ -2,9 +2,10 @@
 
 Salvage needs a seekable file, so ``streaming=True`` is refused before the source is
 read. A format without a salvage search (ZIP here) reads exactly as the default and
-records ``SALVAGE_UNAVAILABLE`` once at open; one with a search (TAR) records none.
-``salvage=False`` records none of the salvage codes. TAR's search itself is tested in
-``tests/test_tar_salvage.py``.
+records ``SALVAGE_UNAVAILABLE`` once at open; one with a search (TAR, CPIO, ar, deb)
+records none. ``salvage=False`` records none of the salvage codes. The searches
+themselves are tested in ``tests/test_tar_salvage.py`` and
+``tests/test_salvage_cpio_ar.py``.
 """
 
 from __future__ import annotations
@@ -60,6 +61,32 @@ def _tar(path: Path) -> Path:
     return path
 
 
+def _cpio(path: Path) -> Path:
+    from tests.test_salvage_cpio_ar import _cpio as build
+
+    path.write_bytes(build("newc")[0])
+    return path
+
+
+def _ar(path: Path) -> Path:
+    from tests.test_salvage_cpio_ar import _gnu_ar
+
+    path.write_bytes(_gnu_ar()[0])
+    return path
+
+
+def _deb(path: Path) -> Path:
+    from tests.test_deb import _deb as build
+
+    path.write_bytes(build())
+    return path
+
+
+# The formats with a salvage search, and the suffix each one's file takes.
+_SALVAGING = [(_tar, "tar"), (_cpio, "cpio"), (_ar, "a"), (_deb, "deb")]
+_SALVAGING_IDS = ["tar", "cpio", "ar", "deb"]
+
+
 def _listing(path: Path, **kwargs: object) -> list[tuple[object, ...]]:
     with open_archive(path, **kwargs) as reader:  # type: ignore[call-overload]
         return [
@@ -93,9 +120,13 @@ def test_salvage_takes_a_real_bool(tmp_path: Path) -> None:
         open_archive(_zip(tmp_path / "a.zip"), salvage="yes")  # type: ignore[call-overload]
 
 
-@pytest.mark.parametrize("make", [_zip, _tar], ids=["zip", "tar"])
-def test_an_intact_archive_reads_the_same_with_salvage(make, tmp_path: Path) -> None:
-    path = make(tmp_path / ("a." + make.__name__.strip("_")))
+@pytest.mark.parametrize(
+    ("make", "suffix"), [(_zip, "zip"), *_SALVAGING], ids=["zip", *_SALVAGING_IDS]
+)
+def test_an_intact_archive_reads_the_same_with_salvage(
+    make, suffix: str, tmp_path: Path
+) -> None:
+    path = make(tmp_path / f"a.{suffix}")
     assert _listing(path, salvage=True) == _listing(path)
 
 
@@ -125,8 +156,11 @@ def test_a_format_without_salvage_records_unavailable_once(
         assert not reader._salvage_mode.enabled
 
 
-def test_tar_salvages_and_records_no_unavailable(tmp_path: Path) -> None:
-    with open_archive(_tar(tmp_path / "a.tar"), salvage=True) as reader:
+@pytest.mark.parametrize(("make", "suffix"), _SALVAGING, ids=_SALVAGING_IDS)
+def test_a_salvage_format_salvages_and_records_no_unavailable(
+    make, suffix: str, tmp_path: Path
+) -> None:
+    with open_archive(make(tmp_path / f"a.{suffix}"), salvage=True) as reader:
         reader.members()
         list(reader.stream_members())
         assert not SALVAGE_CODES & set(reader.diagnostics.counts)
@@ -135,9 +169,13 @@ def test_tar_salvages_and_records_no_unavailable(tmp_path: Path) -> None:
         assert reader._salvage_mode.enabled
 
 
-@pytest.mark.parametrize("make", [_zip, _tar], ids=["zip", "tar"])
-def test_without_salvage_no_salvage_code_is_recorded(make, tmp_path: Path) -> None:
-    path = make(tmp_path / ("a." + make.__name__.strip("_")))
+@pytest.mark.parametrize(
+    ("make", "suffix"), [(_zip, "zip"), *_SALVAGING], ids=["zip", *_SALVAGING_IDS]
+)
+def test_without_salvage_no_salvage_code_is_recorded(
+    make, suffix: str, tmp_path: Path
+) -> None:
+    path = make(tmp_path / f"a.{suffix}")
     with open_archive(path) as reader:
         reader.members()
         assert not SALVAGE_CODES & set(reader.diagnostics.counts)
@@ -287,9 +325,9 @@ def test_scan_context_defaults_hold_position_unchecked() -> None:
 def test_a_nested_reader_archivey_opens_inherits_the_flag() -> None:
     """A ``.deb``'s control and data tars are read by readers archivey opens itself
     (``ReaderContext.open_nested``): they are asked to salvage when the package is.
-    The package's own format (ar) has no search yet and records
-    ``SALVAGE_UNAVAILABLE``; the tars salvage and record none, and a walk that builds
-    them again to read member data records nothing more.
+    The package's own format (ar) and the tars all have a salvage search, so none
+    records ``SALVAGE_UNAVAILABLE``, and a walk that builds them again to read
+    member data records none either.
     ``test_a_deb_with_a_damaged_data_tar_lists_past_the_damage``
     (``tests/test_tar_salvage.py``) shows the inner search runs."""
     from tests.test_deb import _deb
@@ -306,14 +344,14 @@ def test_a_nested_reader_archivey_opens_inherits_the_flag() -> None:
 
     with open_archive(io.BytesIO(_deb()), salvage=True, config=config) as reader:
         members = reader.members()
-        assert unavailable(reader) == ["DEB"]
+        assert unavailable(reader) == []
         files = [m for m in members if m.is_file]
         assert any(m.name.startswith("DEBIAN/") for m in files)
         assert any(not m.name.startswith("DEBIAN/") for m in files)
         for member in files:
             reader.read(member)
-        assert unavailable(reader) == ["DEB"]
-    assert seen.count(DiagnosticCode.SALVAGE_UNAVAILABLE) == 1
+        assert unavailable(reader) == []
+    assert seen.count(DiagnosticCode.SALVAGE_UNAVAILABLE) == 0
     with open_archive(io.BytesIO(_deb())) as reader:
         reader.members()
         assert not SALVAGE_CODES & set(reader.diagnostics.counts)

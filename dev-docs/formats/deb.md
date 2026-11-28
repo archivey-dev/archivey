@@ -230,6 +230,10 @@ Nothing deb-specific: `open_nested` hands each inner member's decoded stream thr
 - A wrong MD5 raises `CorruptionError` when a read reaches the member's end.
 - A malformed `md5sums` line (not 32 hex digits, a space and a name) is skipped:
   `dpkg --verify` skips it too, and the file it would cover is then listed with no digest.
+- With `open_archive(salvage=True)`, a damaged ar header after `debian-binary` starts
+  the ar search (`dev-docs/formats/ar.md` §2.2): a found `control.tar*` or `data.tar*`
+  is read, and each of its members is listed with `MEMBER_FOUND_BY_SCAN`. The tars
+  themselves are read as they are.
 
 ## 4. Tests
 

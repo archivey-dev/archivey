@@ -287,11 +287,14 @@ class DiagnosticCode(StrEnum):
     to a symlink. archivey reads it as the format's own tool does; another reader may
     write another tree or refuse it. Advisory: the shapes come from real archives."""
     MEMBER_FOUND_BY_SCAN = "member_found_by_scan"
-    """A reader opened with ``open_archive(salvage=True)`` found this member by
-    searching past damage, not by the format's normal walk. Its header passed the
-    format's own checks, but nothing says it belongs at this level of the archive: a
-    header of an archive stored inside a member passes too. The context says which
-    fields no check covers. Reported once per member, at listing. Salvage only."""
+    """A reader opened with ``open_archive(salvage=True)`` listed this member past
+    damage the format's normal walk stops at: a search found its header, the walk
+    reached it by walking on from a member the search found, or it is a hard link the
+    walk read before the damage and held for data no link before the damage carried
+    (``SalvageScanContext.method``). Its header passed the format's own checks, but
+    nothing says it belongs at this level of the archive: a header of an archive stored
+    inside a member passes too. The context says which fields no check covers. Reported
+    once per member, at listing. Salvage only."""
     ARCHIVE_REGION_SKIPPED = "archive_region_skipped"
     """A salvage search (``open_archive(salvage=True)``) stepped over a range of the
     archive in which no header passed the format's checks, or stopped at a
@@ -1398,16 +1401,22 @@ class ReaderDisagreementContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class SalvageScanContext(_JsonSafeContext):
-    """A salvage search found a member past damage (``MEMBER_FOUND_BY_SCAN``).
+    """A salvage search found a member past damage (``MEMBER_FOUND_BY_SCAN``), or
+    the walk reached it from a member the search found.
 
-    ``format`` is the archive format's name. ``method`` says how the member was
-    found: ``"header_search"``, a forward search for a header that passes the
-    format's checks. ``offset`` is where the member's header starts, counted from the
-    start of its layer (``RegionSkippedContext.layer``).
+    ``format`` is the archive format's name. ``method`` says how the member was found:
+    ``"header_search"``, a forward search for a header that passes the format's checks
+    (and the walk on from the header it found); ``"held_link"``, a hard link whose
+    header the normal walk read whole before the damage and held for data a later link
+    carries (CPIO ``newc`` and ``crc``), which no link before the damage did.
+    ``offset`` is where the member's header starts, counted from the start of its
+    layer (``RegionSkippedContext.layer``).
 
     ``confirmed`` is ``True`` when the header after the member's data passes the same
     checks, or is the format's clean end. An unconfirmed member's sizes are checked by
-    nothing, so its data may run into other members' bytes.
+    nothing, so its data may run into other members' bytes. A ``"held_link"`` member
+    has size 0 and no data of its own, and the normal walk read its header whole:
+    ``confirmed`` is ``False`` only because the header after it is the damage.
 
     ``unchecked`` names the fields no check covers. It always holds ``"position"``:
     nothing says the member belongs at this level of the archive, since a header of an
@@ -1421,7 +1430,7 @@ class SalvageScanContext(_JsonSafeContext):
     member_name: str = ""
     member_id: int | None = None
     format: str = ""
-    method: Literal["header_search"] = "header_search"
+    method: Literal["header_search", "held_link"] = "header_search"
     offset: int = 0
     confirmed: bool = False
     unchecked: tuple[str, ...] = ("position",)

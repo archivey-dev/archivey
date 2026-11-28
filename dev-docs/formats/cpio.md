@@ -89,12 +89,24 @@ archivey's hard links name an earlier member only, so:
   their copy of the data is skipped.
 - newc and crc: the reader holds the empty links back until the link with the data
   arrives, yields that one as the `FILE`, then the held ones as `HARDLINK` members to it.
-  A group whose data never arrives (an empty file) is yielded at the trailer. A second
+  A group whose data never arrives (an empty file) is yielded at the trailer, or, in
+  salvage mode, where the pass ends in the damage error with no trailer. A second
   name in the group that stores data too is a `FILE` of its own with its own bytes, as
   GNU cpio and 7-Zip extract it; later empty names link to it. Each held
   link counts toward `ListingLimits.max_members` and `ListingLimits.max_metadata_bytes`
   together with the members already listed, so a held link that takes either over
   raises `ResourceLimitError`.
+
+With `open_archive(salvage=True)`, where a header fails before the trailer, the walk
+searches forward for the next header of the variant the first header showed (`newc`
+and `crc` at 4-byte steps, `odc` at every byte; binary has no search) and lists every
+member after the damage with `MEMBER_FOUND_BY_SCAN`. A found `TRAILER!!!` ends the walk;
+the pass still ends in the first damage error (`openspec/changes/salvage-mode`, design
+decision 7). A `newc` or `crc` link the walk read and held before the damage, whose data
+no link before the damage carried, is listed then too (as an empty file, or as a link to
+a data link found past the damage) and flagged with `method="held_link"`: the default
+does not list it. A CPIO read inside another archive (a `.pkg` payload) reads forward only
+and records `SALVAGE_UNAVAILABLE`.
 
 ### 2.3 Member data
 

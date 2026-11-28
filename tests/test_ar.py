@@ -11,8 +11,6 @@ import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
@@ -376,8 +374,7 @@ def test_long_name_lookup_scans_only_its_entry(
     table = _ScanSpy(b"\0a.o\0" + b"x" * (1 << 20))
     table.scans = []
     monkeypatch.setattr(ar_reader, "_NAME_END", _MatchSpy(ar_reader._NAME_END, table))
-    reader = cast("ArReader", SimpleNamespace(_dialect=None))
-    assert ArReader._short_name(reader, b"/1", table, 0) == b"a.o"
+    assert ArReader._short_name(b"/1", table, 0) == (b"a.o", "gnu", True)
     assert table.scans, "the lookup made no search the test can see"
     assert all(scan <= 16 for scan in table.scans), table.scans
 

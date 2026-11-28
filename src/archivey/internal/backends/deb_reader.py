@@ -25,14 +25,22 @@ file: the walk holds it (it is part of the control tar, so it arrives first) and
 each data file its digest in ``ArchiveMember.hashes``, which a read then checks. A line
 that is not an MD5 and a name is skipped, as ``dpkg --verify`` skips it.
 
+The reader uses archivey's public names only, as a format added from outside would
+(``tests/test_plugin_modules_use_public_api.py`` checks), apart from the salvage
+search's names (``internal.salvage``, which has no plugin hook yet) and the ar
+reader's, which ships in the same plugin package. With ``open_archive(salvage=True)``,
+damage to an ar header after ``debian-binary`` starts a search for the next one
+(``_search``), with the ar reader's header search and confirmation.
+
 Handbook page: ``dev-docs/formats/deb.md``.
 """
 
 from __future__ import annotations
 
 import io
+import itertools
 import typing
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import (
@@ -49,6 +57,8 @@ from archivey.formats import (
     SequentialFormatHandler,
     SequentialReader,
 )
+from archivey.internal.backends.ar_reader import AR_HEADER_SEARCH, ar_confirmed
+from archivey.internal.salvage import WalkSalvage, walk_salvage
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfoExtra,
@@ -172,32 +182,210 @@ class DebReader(SequentialReader):
         self._count(size, "debian-binary member")
         self._read_version(stream.read_exact(size))
         stream.read(size & 1)
+        # Salvage (``open_archive(salvage=True)``): where an ar header after
+        # debian-binary is damaged, the walk searches on for the next ar header, as
+        # the ar reader does, and lists the tar it finds; the pass ends in the first
+        # damage. The tars themselves are read as they are.
+        salvage = walk_salvage(self._context, stream)
+        damage: CorruptionError | None = None
+        search_from: int | None = None
         control = False
+        # A control tar past the damage that nothing confirmed has been listed. At
+        # most one is: a later unconfirmed one may sit inside the data of the one
+        # listed, and would list its members again, so the listing would grow with
+        # the square of the layer. A confirmed one is still read after it.
+        stray_control = False
         while True:
-            name, size = self._header(stream)
+            # Whether the search found this header, or the walk walked on to it.
+            searched = search_from is not None
+            if search_from is not None:
+                assert salvage is not None and damage is not None
+                hit = self._search(salvage, stream, search_from)
+                search_from = None
+                if hit is None:
+                    raise salvage.ending(damage)
+                offset, name, size = hit
+            else:
+                offset = stream.offset
+                try:
+                    name, size = self._header(stream)
+                except CorruptionError as err:
+                    if salvage is None or not salvage.is_damage(err):
+                        raise
+                    damage = damage or err
+                    search_from = offset
+                    continue
+            confirmed = True
+            if damage is not None:
+                # Past the damage, a member claims its data only when the header
+                # after it passes too, or the package ends there.
+                assert salvage is not None
+                if not searched and not salvage.holds(offset + HEADER_SIZE + size):
+                    # Data that runs past the layer's end, as ``_search`` refuses for
+                    # a found header: not listed, since reading it would end the pass
+                    # in TruncatedError. The search goes on past this header.
+                    search_from = salvage.after(offset)
+                    continue
+                confirmed = ar_confirmed(
+                    salvage, offset + HEADER_SIZE + size + (size & 1)
+                )
+                if not confirmed:
+                    # The search goes on inside its data, past this header.
+                    search_from = salvage.after(offset)
             if name.startswith(b"_"):
                 stream.skip(size)
                 stream.read(size & 1)
                 continue
-            if not control:
-                fmt = _tar_format(name, b"control", _CONTROL_STREAMS)
-                if fmt is None:
+            fmt = (
+                None
+                if control or (stray_control and not confirmed)
+                else _tar_format(name, b"control", _CONTROL_STREAMS)
+            )
+            if fmt is not None:
+                # Only a control tar the walk counts (``confirmed``) is the package's:
+                # its fields, its md5sums and the end of the search for one. One
+                # nothing confirms is listed and changes nothing else, so a later
+                # control tar is still read.
+                spans = self._opened(
+                    self._control(stream.take(size), fmt, settles=confirmed), damage
+                )
+                if spans is None:
+                    # Past the damage, a control tar that does not open is not one:
+                    # the search goes on past its header.
+                    assert salvage is not None
+                    search_from = salvage.after(offset)
+                    continue
+                whole = yield from self._found(
+                    salvage if damage else None, spans, offset, confirmed, searched
+                )
+                control = control or confirmed
+                stray_control = stray_control or not confirmed
+                if not whole:
+                    # The control tar failed after listing members: the search goes
+                    # on past its header, for the data tar.
+                    assert salvage is not None
+                    search_from = salvage.after(offset)
+                    continue
+                stream.read(size & 1)
+                continue
+            fmt = _tar_format(name, b"data", _DATA_STREAMS)
+            if fmt is None:
+                if damage is not None:
+                    # A header past the damage that is not a package member: the
+                    # search goes on past it.
+                    assert salvage is not None
+                    search_from = salvage.after(offset)
+                    continue
+                if not control:
                     raise CorruptionError(
                         "Debian package has no control.tar member after debian-binary"
                     )
-                yield from self._control(stream.take(size), fmt)
-                control = True
-            else:
-                fmt = _tar_format(name, b"data", _DATA_STREAMS)
-                if fmt is None:
-                    raise CorruptionError(
-                        "Debian package has an unexpected member before its data.tar"
+                raise CorruptionError(
+                    "Debian package has an unexpected member before its data.tar"
+                )
+            if not control and damage is None:
+                raise CorruptionError(
+                    "Debian package has no control.tar member after debian-binary"
+                )
+            spans = self._opened(self._data(stream.take(size), fmt), damage)
+            if spans is None:
+                # Past the damage, a data tar that does not open is not one: the
+                # search goes on past its header, as for a control tar.
+                assert salvage is not None
+                search_from = salvage.after(offset)
+                continue
+            yield from self._found(
+                salvage if damage else None, spans, offset, confirmed, searched
+            )
+            # dpkg-deb reads no further: members after the data tar are not part of
+            # the package.
+            if salvage is not None:
+                if damage is not None:
+                    raise salvage.ending(damage)
+                salvage.state.finish()
+            return
+
+    @staticmethod
+    def _opened(
+        spans: Iterator[MemberSpan], damage: CorruptionError | None
+    ) -> Iterator[MemberSpan] | None:
+        """``spans`` with its first member read, or ``None`` when the tar is past
+        ``damage`` and reading its first member raises ``CorruptionError``.
+
+        The salvage search checks little of an ar header (a name, a size, a date), so
+        a header past the damage can name a tar whose payload is not one. Such a tar
+        lists nothing and is not the package's: the walk searches on, and the pass
+        ends in the first damage. Before any damage, or once the tar has listed a
+        member, its error is the package's and is raised.
+        """
+        if damage is None:
+            return spans
+        try:
+            first = next(spans)
+        except StopIteration:
+            return iter(())
+        except CorruptionError as exc:
+            if not WalkSalvage.is_damage(exc):
+                raise
+            return None
+        return itertools.chain((first,), spans)
+
+    @staticmethod
+    def _found(
+        salvage: WalkSalvage | None,
+        spans: Iterator[MemberSpan],
+        offset: int,
+        confirmed: bool,
+        searched: bool,
+    ) -> Generator[MemberSpan, None, bool]:
+        """``spans``, each member flagged with ``MEMBER_FOUND_BY_SCAN`` when
+        ``salvage`` is given: the tar's ar header at ``offset`` is past damage, found
+        by the search (``searched``) or walked on to.
+
+        Returns whether the tar listed to its end. Past damage, a tar that raises
+        ``CorruptionError`` after its first member ends there and returns ``False``:
+        the pass still ends in the first damage, the package's own error. Before
+        damage, and for an exception ``on_source_read`` raised, the error is raised.
+        """
+        try:
+            for span in spans:
+                if salvage is not None:
+                    salvage.found(
+                        span.member,
+                        offset=offset,
+                        confirmed=confirmed,
+                        searched=searched,
                     )
-                yield from self._data(stream.take(size), fmt)
-                # dpkg-deb reads no further: members after the data tar are not part
-                # of the package.
-                return
-            stream.read(size & 1)
+                yield span
+        except CorruptionError as exc:
+            if salvage is None or not salvage.is_damage(exc):
+                raise
+            return False
+        return True
+
+    def _search(
+        self, salvage: WalkSalvage, stream: ForwardStream, start: int
+    ) -> tuple[int, bytes, int] | None:
+        """The next ar header the salvage search finds from ``start`` whose data
+        the package holds, with its offset, name and size; the stream is moved to
+        its data. ``None`` when none is found."""
+        while True:
+            result = salvage.search(AR_HEADER_SEARCH, start=start)
+            if result.found is None:
+                return None
+            at = result.found
+            salvage.seek(at)
+            try:
+                name, size = self._header(stream)
+            except CorruptionError as exc:
+                if not salvage.is_damage(exc):
+                    raise
+                start = at
+                continue
+            if not salvage.holds(at + HEADER_SIZE + size):
+                start = at
+                continue
+            return at, name, size
 
     def _header(self, stream: ForwardStream) -> tuple[bytes, int]:
         """The next ar member's name and size."""
@@ -236,7 +424,9 @@ class DebReader(SequentialReader):
             )
         self._version = version.decode("ascii", "replace")
 
-    def _control(self, data: BinaryIO, fmt: ArchiveFormat) -> Iterator[MemberSpan]:
+    def _control(
+        self, data: BinaryIO, fmt: ArchiveFormat, *, settles: bool = True
+    ) -> Iterator[MemberSpan]:
         """The control tar's members, under ``DEBIAN/``.
 
         ``control`` and ``md5sums`` are read whole on the way, for the archive info and
@@ -244,12 +434,18 @@ class DebReader(SequentialReader):
         ``open_nested(under=)`` refuses a member whose prefixed name extracts outside
         ``DEBIAN/`` (``../usr/x``), a hard link whose prefixed target does, and a
         member under a symlink of the control tar. The folder is compared as spelled:
-        folding would accept ``../debian/x``, which is data on Linux.
+        folding would accept ``../debian/x``, which is data on Linux. Not when ``settles`` is false
+        (a tar past damage that nothing confirms): its members are listed as they are,
+        and it holds and charges nothing.
         """
         for span in self._context.open_nested(data, fmt, under=CONTROL_DIR):
             member = span.member
             inner = member.name.removeprefix(CONTROL_DIR)
-            if member.type is MemberType.FILE and inner in ("control", "md5sums"):
+            if (
+                settles
+                and member.type is MemberType.FILE
+                and inner in ("control", "md5sums")
+            ):
                 held, span = self._hold(span, inner)
                 if inner == "control":
                     self._read_control(held)

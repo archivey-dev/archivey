@@ -29,9 +29,12 @@ Symbol tables are the linker's index, not files: the walk skips them, and the ar
 info says one was there. A *thin* archive (``!<thin>\\n``) stores only the names of
 files kept outside it and is refused.
 
-The reader is written against ``archivey.formats`` and archivey's public names only,
-as a format added from outside would be (``tests/test_plugin_modules_use_public_api.py``
-checks); core's format table registers its handler. Handbook page:
+The reader is written against ``archivey.formats`` and archivey's public names, as a
+format added from outside would be (``tests/test_plugin_modules_use_public_api.py``
+checks), apart from the salvage search's names (``internal.salvage``, which has no
+plugin hook yet); core's format table registers its handler. With
+``open_archive(salvage=True)`` the walk searches past damage for the next header
+(``_search``). Handbook page:
 ``dev-docs/formats/ar.md``.
 """
 
@@ -40,7 +43,7 @@ from __future__ import annotations
 import re
 import typing
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from archivey.exceptions import (
     CorruptionError,
@@ -56,6 +59,7 @@ from archivey.formats import (
     SequentialFormatHandler,
     SequentialReader,
 )
+from archivey.internal.salvage import HeaderSearch, WalkSalvage, walk_salvage
 from archivey.terminal import quoted
 from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
 
@@ -100,6 +104,82 @@ def _field(raw: bytes, base: int, what: str, offset: int) -> int | None:
 _NAME_END = re.compile(rb"[\n\0]")
 
 
+_OCTAL = frozenset(b"01234567")
+_DIGITS_AND_SPACES = re.compile(rb"[0-9 ]*\Z")
+
+
+class _Entry(NamedTuple):
+    """What one ar header holds: its size field, and a member (with how many of its
+    bytes are data), a long-name table, or neither (a symbol table).
+
+    ``dialect`` is the dialect the header shows, ``None`` for none; with
+    ``dialect_wins`` it replaces one an earlier header showed (a GNU name), else it
+    only fills an unset one. The walk applies it, and ``symbol_table``, to the
+    archive info (``ArReader._settle``)."""
+
+    size: int
+    member: ArchiveMember | None = None
+    data_length: int = 0
+    unchecked: tuple[str, ...] = ("position",)
+    table: bytes | None = None
+    dialect: str | None = None
+    dialect_wins: bool = False
+    symbol_table: bool = False
+
+
+def _passes(window: bytes, at: int) -> bool:
+    """Whether a header the salvage search accepts starts at ``at`` of ``window``:
+    60 bytes ending in the header end, with a size, an octal or blank mode, and
+    date, uid and gid fields of digits and spaces only."""
+    header = window[at : at + HEADER_SIZE]
+    if len(header) < HEADER_SIZE or header[58:] != _HEADER_END:
+        return False
+    size = header[48:58].strip(b" ")
+    mode = header[40:48].strip(b" ")
+    return (
+        size.isdigit()
+        and set(mode) <= _OCTAL
+        and _DIGITS_AND_SPACES.match(header[16:40]) is not None
+    )
+
+
+def _search_at(step: int) -> HeaderSearch:
+    """The salvage search for an ar header at every ``step`` bytes."""
+
+    def find_header(window: bytes, start: int, stop: int) -> int | None:
+        at = start + 58
+        while True:
+            # The end bound lets a header end match only for a candidate before
+            # ``stop``.
+            end = window.find(_HEADER_END, at, stop + 59)
+            if end < 0:
+                return None
+            candidate = end - 58
+            if candidate % step == 0 and _passes(window, candidate):
+                return candidate
+            at = end + 1
+
+    return HeaderSearch(find_header, step, HEADER_SIZE)
+
+
+# Headers start on 2 bytes, counted from the archive's start; after a lost start
+# that start is not known, and the first header is searched for at every byte.
+AR_HEADER_SEARCH = _search_at(2)
+_SEARCH_ANY_BYTE = _search_at(1)
+
+
+def ar_confirmed(salvage: WalkSalvage, after: int) -> bool:
+    """Whether the header at ``after``, past a member's padded data, passes the
+    search's check, or the archive ends there. A probe the decoding limits refuse
+    reads as nothing, and the layer does not hold the bytes before ``after`` then
+    either: unconfirmed."""
+    head = salvage.read_at(after, HEADER_SIZE)
+    if not head:
+        # The last pad byte may be missing (a writer that leaves it off).
+        return salvage.holds(after - 1)
+    return _passes(head, 0)
+
+
 class ArReader(SequentialReader):
     """Walks an ar archive of either dialect."""
 
@@ -121,6 +201,14 @@ class ArReader(SequentialReader):
 
     @override
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        # Salvage (``open_archive(salvage=True)``): the layer's search, the first
+        # damage the walk met, where the next search starts, and the origin of the
+        # candidate positions: 0, the first header found after a lost start, or
+        # ``None`` while a lost start's search runs at every byte.
+        salvage = walk_salvage(self._context, stream)
+        damage: CorruptionError | None = None
+        search_from: int | None = None
+        base: int | None = 0
         magic = stream.read(len(MAGIC))
         if magic == THIN_MAGIC:
             raise UnsupportedFeatureError(
@@ -128,85 +216,273 @@ class ArReader(SequentialReader):
             )
         if magic != MAGIC:
             if not magic:
-                raise TruncatedError("ar archive is empty")
-            if MAGIC.startswith(magic):
-                raise TruncatedError("ar archive ends inside its magic")
-            raise CorruptionError("No ar magic at offset 0")
+                error: CorruptionError = TruncatedError("ar archive is empty")
+            elif MAGIC.startswith(magic):
+                error = TruncatedError("ar archive ends inside its magic")
+            else:
+                error = CorruptionError("No ar magic at offset 0")
+            if salvage is None or not salvage.lost_start:
+                raise error
+            # A lost start: the first header is found by a search from 0.
+            damage = error
+            search_from = 0
+            base = None
         names: bytes | None = None
         while True:
-            offset = stream.offset
-            raw = stream.read(HEADER_SIZE)
-            if not raw:
-                return
-            if len(raw) < HEADER_SIZE:
-                raise TruncatedError(
-                    f"ar archive ends {len(raw)} bytes into the header at offset "
-                    f"{offset}"
-                )
-            if raw[58:] != _HEADER_END:
-                raise CorruptionError(f"No ar member header at offset {offset}")
-            size = _field(raw[48:58], 10, "size", offset)
-            if size is None:
-                raise CorruptionError(f"ar header at offset {offset} has no size")
-            name_field = raw[:16].rstrip(b" ")
-            if name_field.startswith(b"#1/"):
-                self._dialect = self._dialect or "bsd"
-                name_size = _field(name_field[3:], 10, "name length", offset)
-                if name_size is None:
-                    raise CorruptionError(
-                        f"ar header at offset {offset}: the name length is blank"
-                    )
-                if not name_size or name_size > min(size, MAX_NAME_BYTES):
-                    raise CorruptionError(
-                        f"ar header at offset {offset}: a name of {name_size} bytes "
-                        f"in a member of {size}"
-                    )
-                name = stream.read_exact(name_size).rstrip(b"\0")
-                data_length = size - name_size
-                if name in _BSD_SYMBOL_TABLES:
-                    self._symbol_table = True
-                    stream.skip(data_length)
-                    stream.read(size & 1)
-                    continue
-            elif name_field in _GNU_SYMBOL_TABLES or name_field in _BSD_SYMBOL_TABLES:
-                # The symbol table's spelling names the dialect too.
-                gnu = name_field in _GNU_SYMBOL_TABLES
-                self._dialect = self._dialect or ("gnu" if gnu else "bsd")
-                self._symbol_table = True
-                stream.skip(size)
-                stream.read(size & 1)
-                continue
-            elif name_field == b"//":
-                self._dialect = "gnu"
-                if names is not None:
-                    raise CorruptionError(
-                        f"ar archive has a second long-name table at offset {offset}"
-                    )
-                # The table is held for the whole walk: text the listing retains.
-                self._context.charge_metadata(size, what="the ar long-name table")
-                names = stream.read_exact(size)
-                stream.read(size & 1)
-                continue
+            # Whether the search found this header, or the walk walked on to it.
+            searched = search_from is not None
+            # A lost start's search at every byte: only a header something confirms
+            # names the alignment of the later searches.
+            base_before = base
+            if search_from is not None:
+                assert salvage is not None and damage is not None
+                hit = self._search(salvage, stream, search_from, base, names)
+                search_from = None
+                if hit is None:
+                    raise salvage.ending(damage)
+                offset, entry = hit
+                base = offset % 2
             else:
-                name = self._short_name(name_field, names, offset)
-                data_length = size
-            if not name:
-                raise CorruptionError(f"ar header at offset {offset} has no name")
-            yield MemberSpan(self._member(raw, name, data_length, offset), data_length)
-            # The pad byte; a writer that leaves it off the last member is harmless.
-            stream.read(size & 1)
+                offset = stream.offset
+                raw = stream.read(HEADER_SIZE)
+                if not raw:
+                    if salvage is not None:
+                        if damage is not None:
+                            raise salvage.ending(damage)
+                        salvage.state.finish()
+                    return
+                try:
+                    entry = self._entry(
+                        stream,
+                        raw,
+                        offset,
+                        names,
+                        salvage=salvage if damage is not None else None,
+                    )
+                except CorruptionError as err:
+                    if salvage is None or not salvage.is_damage(err):
+                        raise
+                    # Damage: the walk searches on from the damaged header, and the
+                    # pass ends in this error.
+                    damage = damage or err
+                    search_from = offset
+                    continue
+                if entry is None:
+                    # Past the damage, data that runs past the layer's end, as
+                    # ``_search`` refuses for a found header: not listed, since
+                    # reading it would end the pass in TruncatedError. The search
+                    # goes on past this header.
+                    assert salvage is not None
+                    search_from = salvage.after(offset)
+                    continue
+            confirmed = True
+            if damage is not None:
+                # Past the damage every header is one the default does not reach. It
+                # claims its data only when the header after it passes too.
+                assert salvage is not None
+                size = entry.size
+                confirmed = ar_confirmed(
+                    salvage, offset + HEADER_SIZE + size + (size & 1)
+                )
+                if not confirmed:
+                    # The search goes on inside its data, past this header, which it
+                    # must not find again.
+                    search_from = salvage.after(offset)
+                    base = base_before
+            if confirmed:
+                # The one place a header's effects on the rest of the walk are
+                # decided: a header nothing confirms is listed and changes nothing
+                # else (not the alignment above, the long-name table, nor what the
+                # archive info says). Its tables never get here (``_entry``).
+                self._settle(entry)
+            if entry.table is not None:
+                names = entry.table
+                continue
+            member = entry.member
+            if member is None:
+                # A symbol table, skipped.
+                continue
+            if damage is not None:
+                assert salvage is not None
+                salvage.found(
+                    member,
+                    offset=offset,
+                    confirmed=confirmed,
+                    unchecked=entry.unchecked,
+                    searched=searched,
+                )
+            yield MemberSpan(member, entry.data_length)
+            if search_from is None:
+                # The pad byte; a writer that leaves it off the last member is
+                # harmless. After a member the walk cannot confirm, it moves back
+                # into the data to search on instead.
+                stream.read(entry.size & 1)
 
-    def _short_name(self, field: bytes, names: bytes | None, offset: int) -> bytes:
-        """The name a GNU or short BSD name field gives."""
+    def _settle(self, entry: _Entry) -> None:
+        """What ``entry``, a header the walk counts, shows about the archive."""
+        if entry.dialect is not None and (entry.dialect_wins or self._dialect is None):
+            self._dialect = entry.dialect
+        self._symbol_table = self._symbol_table or entry.symbol_table
+
+    def _entry(
+        self,
+        stream: ForwardStream,
+        raw: bytes,
+        offset: int,
+        names: bytes | None,
+        *,
+        salvage: WalkSalvage | None,
+    ) -> _Entry | None:
+        """What the header ``raw`` at ``offset`` holds, the stream moved past what
+        the walk reads of it: a member's data is left for archivey. It changes no
+        state of the reader: the walk does, from what it returns (``_settle``).
+
+        ``salvage`` is given past damage in salvage mode. The header is then
+        ``None`` when its data runs past the layer's end (``WalkSalvage.holds``),
+        checked before anything past the header is read, charged or kept, and also
+        when it is a long-name or symbol table that the header after it does not
+        confirm. And it keeps a GNU ``/123`` name whose table is not there, and takes
+        a second long-name table."""
+        salvaging = salvage is not None
+        if len(raw) < HEADER_SIZE:
+            raise TruncatedError(
+                f"ar archive ends {len(raw)} bytes into the header at offset {offset}"
+            )
+        if raw[58:] != _HEADER_END:
+            raise CorruptionError(f"No ar member header at offset {offset}")
+        size = _field(raw[48:58], 10, "size", offset)
+        if size is None:
+            raise CorruptionError(f"ar header at offset {offset} has no size")
+        if salvage is not None and not salvage.holds(offset + HEADER_SIZE + size):
+            return None
+        unchecked: tuple[str, ...] = ("position",)
+
+        def confirmed() -> bool:
+            # Past the damage, a table (long names or symbols) is kept only when
+            # the header after it confirms it; one that is not is passed over
+            # before it changes any state.
+            return salvage is None or ar_confirmed(
+                salvage, offset + HEADER_SIZE + size + (size & 1)
+            )
+
+        name_field = raw[:16].rstrip(b" ")
+        if name_field.startswith(b"#1/"):
+            name_size = _field(name_field[3:], 10, "name length", offset)
+            if name_size is None:
+                raise CorruptionError(
+                    f"ar header at offset {offset}: the name length is blank"
+                )
+            if not name_size or name_size > min(size, MAX_NAME_BYTES):
+                raise CorruptionError(
+                    f"ar header at offset {offset}: a name of {name_size} bytes "
+                    f"in a member of {size}"
+                )
+            name = stream.read_exact(name_size).rstrip(b"\0")
+            data_length = size - name_size
+            if name in _BSD_SYMBOL_TABLES:
+                if not confirmed():
+                    return None
+                stream.skip(data_length)
+                stream.read(size & 1)
+                return _Entry(size, dialect="bsd", symbol_table=True)
+            dialect, wins = "bsd", False
+        elif name_field in _GNU_SYMBOL_TABLES or name_field in _BSD_SYMBOL_TABLES:
+            if not confirmed():
+                return None
+            # The symbol table's spelling names the dialect too.
+            gnu = name_field in _GNU_SYMBOL_TABLES
+            stream.skip(size)
+            stream.read(size & 1)
+            return _Entry(size, dialect="gnu" if gnu else "bsd", symbol_table=True)
+        elif name_field == b"//":
+            if names is not None and not salvaging:
+                raise CorruptionError(
+                    f"ar archive has a second long-name table at offset {offset}"
+                )
+            if not confirmed():
+                # Past the damage, a table nothing confirms is passed over before it
+                # is charged or read, and leaves no state: the search goes on
+                # inside it.
+                return None
+            # The table is held for the whole walk: text the listing retains.
+            self._context.charge_metadata(size, what="the ar long-name table")
+            table = stream.read_exact(size)
+            stream.read(size & 1)
+            return _Entry(size, table=table, dialect="gnu", dialect_wins=True)
+        else:
+            found, dialect, wins = self._short_name(
+                name_field, names, offset, salvaging=salvaging
+            )
+            if found is None:
+                # A long name whose table the damage took: the raw name stays.
+                name = name_field
+                unchecked = ("position", "name")
+            else:
+                name = found
+            data_length = size
+        if not name:
+            raise CorruptionError(f"ar header at offset {offset} has no name")
+        member = self._member(raw, name, data_length, offset)
+        return _Entry(
+            size,
+            member=member,
+            data_length=data_length,
+            unchecked=unchecked,
+            dialect=dialect,
+            dialect_wins=wins,
+        )
+
+    def _search(
+        self,
+        salvage: WalkSalvage,
+        stream: ForwardStream,
+        start: int,
+        base: int | None,
+        names: bytes | None,
+    ) -> tuple[int, _Entry] | None:
+        """The next header the salvage search finds from ``start`` that the walk
+        reads and whose data the layer holds, with its offset; the stream is moved
+        past what the walk reads of it. ``None`` when none is found."""
+        search = _SEARCH_ANY_BYTE if base is None else AR_HEADER_SEARCH
+        while True:
+            result = salvage.search(search, start=start, base=base or 0)
+            if result.found is None:
+                return None
+            at = result.found
+            salvage.seek(at)
+            try:
+                entry = self._entry(
+                    stream, stream.read(HEADER_SIZE), at, names, salvage=salvage
+                )
+            except CorruptionError as exc:
+                if not salvage.is_damage(exc):
+                    raise
+                start = at
+                continue
+            if entry is None:
+                start = at
+                continue
+            return at, entry
+
+    @staticmethod
+    def _short_name(
+        field: bytes, names: bytes | None, offset: int, *, salvaging: bool = False
+    ) -> tuple[bytes | None, str, bool]:
+        """The name a GNU or short BSD name field gives (``None``, when
+        ``salvaging``, for a long name the table does not hold), the dialect it
+        shows, and whether that replaces one an earlier header showed."""
         if field.startswith(b"/") and field[1:].isdigit():
-            self._dialect = "gnu"
             if names is None:
+                if salvaging:
+                    return None, "gnu", True
                 raise CorruptionError(
                     f"ar header at offset {offset} names entry {field[1:].decode()} "
                     "of a long-name table the archive has not given"
                 )
             at = int(field[1:])
             if at >= len(names):
+                if salvaging:
+                    return None, "gnu", True
                 raise CorruptionError(
                     f"ar header at offset {offset}: long-name offset {at} is past the "
                     f"{len(names)}-byte table"
@@ -216,12 +492,10 @@ class ArReader(SequentialReader):
             # length and not the table's, and only the entry is sliced.
             found = _NAME_END.search(names, at)
             stop = len(names) if found is None else found.start()
-            return names[at:stop].removesuffix(b"/")
+            return names[at:stop].removesuffix(b"/"), "gnu", True
         if field.endswith(b"/"):
-            self._dialect = "gnu"
-            return field[:-1]
-        self._dialect = self._dialect or "bsd"
-        return field
+            return field[:-1], "gnu", True
+        return field, "bsd", False
 
     def _member(self, raw: bytes, name: bytes, size: int, offset: int) -> ArchiveMember:
         context = self._context

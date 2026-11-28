@@ -69,8 +69,10 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
    SalvageUnavailableContext(kind="salvage_unavailable", archive_name, format, reason)
    ```
 
-   - `method`: `"header_search"` in this step (later: `"second_copy"`,
-     `"stream_segment"`, `"content"`).
+   - `method`: `"header_search"` in this step, and `"held_link"` for a CPIO
+     `newc`/`crc` hard link the walk read before the damage and held for data no link
+     before the damage carried (the CPIO and ar notes below). Later: `"second_copy"`,
+     `"stream_segment"`, `"content"`.
    - `offset`: where the member's header starts in its layer.
    - `confirmed`: the header after the member's data passes its check too (or is the
      format's clean end). Q16.
@@ -333,6 +335,93 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
   trusted. A deb's pass drains each member's data, so a
   lying size no longer runs the walk into the stream's end, and the bytes it hands
   out count once against `max_decoded_bytes`, however many found members cover them.
+
+## Notes from the CPIO and ar PR
+
+Choices made while building PR 3, and where it departs from the decisions above:
+
+- **Every member past the damage is flagged**, not only the one the search found: the
+  ones walked on from a found member are not in the default listing either (the
+  archive-reading delta: each added member carries `MEMBER_FOUND_BY_SCAN`). Each one
+  is checked as a found one is, so a member whose next header fails is unconfirmed,
+  and the search goes on inside its data (decision 4 resumed the normal walk; the
+  next header's failure would start a search there anyway, after the member's data).
+- **How a sequential reader reaches the driver.** `walk_salvage(context, stream)`
+  (`internal.salvage`, the one place a reader reads the adapter's internal
+  `ReaderContext._salvage` hook) gives a `WalkSalvage` for the layer the walk reads:
+  `search()`, `read_at()`, `seek()` (moves the walk's `ForwardStream` back to the
+  found header), `holds()`, `found()` and `ending()` (finish, and the damage error,
+  its message noting the search limit when that stopped the search). The CPIO and ar
+  readers import `HeaderSearch`, `WalkSalvage` and `walk_salvage` from
+  `internal.salvage` until the plugin hook (step 11); `tests/public_names.py` allows
+  those three names.
+- **Where the flag is set.** Core registers ar, CPIO and deb from its format table
+  (`internal/format_table.py`, #1853), so `HandlerEntry(salvage=True)` declares
+  `SUPPORTS_SALVAGE` for them, beside the other data a handler cannot declare yet.
+- **Forward-only layers do not search.** The walk moves back to the header the search
+  found, which a reader built `streaming=True` over a member's data cannot do. A CPIO
+  or ar reader inside another archive (a `.pkg` payload) records
+  `SALVAGE_UNAVAILABLE`, saying it reads forward only, and reads as the default. A
+  random-access `.cpio.gz` searches its decoded stream (`layer="gzip"`).
+- **A member past the damage whose data runs past the layer's end is not listed**,
+  found or walked on to: reading it would end the pass in `TruncatedError` instead of
+  the first damage. A default member whose size runs past the end still ends the pass
+  there, as the default does. A probe for that check, or for a confirmation, that
+  reaches damage in a codec stream (a `.cpio.gz` whose gzip data is damaged) reads
+  that damage as the layer's end. The search itself still stops with the codec error.
+- **Only a header the walk counts changes what the walk carries forward.** A header
+  counts when the default walk reads it whole or, past the damage, when the header
+  after it confirms it. Any other header (a candidate the search passes over, a header
+  that fails after it is read, a found or walked-on header nothing confirms) is listed
+  when it passes, flagged, and changes nothing else. Each reader decides this in one
+  place in its walk, and its header parsing changes no state. The state it covers:
+  CPIO's variant and the alignment of later searches (kept per walk, so a walk started
+  over decides them again) and its hard-link groups (such a header never becomes a
+  group's file, whose name and data the links take, and releases no held link); ar's
+  alignment, its long-name and symbol tables (passed over before they are charged
+  against `max_metadata_bytes` or read; the search goes on inside them) and the
+  dialect the archive info reports; a deb's control tar (its fields, its md5sums, and
+  whether a later confirmed control tar is still read; the deb note bounds the
+  unconfirmed ones). A member that is not listed records no diagnostic.
+- **Every member the walk has read is listed at every end of the pass, and each one
+  the default does not list is flagged** (Q2): at a trailer, and where the pass ends
+  in the damage error with no trailer. CPIO links still held for data are listed as
+  empty files there, as at a trailer. A `newc`/`crc` link held from before the damage
+  is listed by salvage only when the walk gets past the damage first: at the damage
+  end, at a trailer the search finds, or released to a data link found past the
+  damage. It is flagged `MEMBER_FOUND_BY_SCAN` with `method="held_link"`, unconfirmed
+  when the header after it is the damage (maintainer ruling, 2026-11-26: "List them,
+  flagged").
+- **Many candidates cost about one pass over a decoded layer**, not one each: a
+  probe of a data end or of the next header reads forward only past what earlier
+  probes read, and stops at the end once one reached it; each `search_forward` call
+  starts with a 4 KiB window and doubles it up to 1 MiB, so a search started again
+  just after an unconfirmed member reads what it needs; and the skip past that
+  member's data waits for the walk's next read (`ForwardStream._skip_later`), which
+  the move back to search on drops.
+- **CPIO damage at the first header**: its magic still names the variant (detection
+  needed it), so the search runs for that variant. Binary CPIO has no search.
+- **Lost start (reader side).** `SalvageRequest.lost_start` / `SalvageState.lost_start`
+  (`requesting_salvage(..., lost_start=True)`, the TAR PR's shape). With it, a CPIO
+  whose first header fails searches all three ASCII magics at every byte until a
+  header counts (rule above), which sets the variant and the alignment of later
+  `newc`/`crc` searches. An ar whose magic is missing searches from 0 at **every
+  byte** (not 2: the bytes lost may be odd), then at 2-byte steps from the first
+  header that counts.
+- **deb.** A damaged ar header after `debian-binary` starts the ar search; a found
+  `control.tar*` or `data.tar*` is read as the walk reads one, each inner member
+  flagged with the ar header's offset. A found header with another name is passed
+  over. Damage to `debian-binary`'s own header is not searched: detection needs it.
+  The deb reader uses the ar reader's search and confirmation: the two ship in one
+  plugin package (`archivey-package-formats`), so the public-names check lets deb
+  import ar's names (`SAME_PACKAGE`).
+  At most one control tar that nothing confirms is listed, and a confirmed one is
+  still read after it: a later unconfirmed one may lie inside the data of the one
+  listed and list the same members again, so the listing would grow with the square
+  of the package's size (review round 9, K14). Only one data tar is listed (the walk
+  ends there), and a confirmed control tar ends the search for one.
+- **ar** after damage takes a second `//` table (the later one names what follows),
+  and a `/123` whose offset is past the table keeps its raw name like a lost table.
 
 ## Verification
 

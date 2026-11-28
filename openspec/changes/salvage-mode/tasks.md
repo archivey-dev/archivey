@@ -30,9 +30,10 @@
 
 ## 3. CPIO and ar (PR 3)
 
-- [ ] 3.1 CPIO `find_header` per variant; walk.
-- [ ] 3.2 ar `find_header`; GNU/BSD names; walk.
-- [ ] 3.3 Tests as 2.4.
+- [x] 3.1 CPIO `find_header` per variant; walk.
+- [x] 3.2 ar `find_header`; GNU/BSD names; walk.
+- [x] 3.3 Tests as 2.4 (crafted bytes; GNU `ar` when installed; no `cpio` tool here).
+- [x] 3.4 deb: the ar search at the package level.
 
 ## 4. CLI (PR 4, after #1715)
 

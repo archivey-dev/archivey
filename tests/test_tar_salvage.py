@@ -1279,7 +1279,8 @@ def test_a_deb_s_damaged_data_tar_records_its_salvage_once() -> None:
         files = [m for m in reader.members_report().members if m.is_file]
         listed = list(seen)
         assert listed.count(DiagnosticCode.ARCHIVE_REGION_SKIPPED) == 1
-        assert listed.count(DiagnosticCode.SALVAGE_UNAVAILABLE) == 1
+        # The package's ar level has a search of its own, so nothing is unavailable.
+        assert listed.count(DiagnosticCode.SALVAGE_UNAVAILABLE) == 0
         for member in files:
             reader.read(member)
     assert seen == listed
