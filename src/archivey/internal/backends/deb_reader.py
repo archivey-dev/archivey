@@ -27,10 +27,10 @@ that is not an MD5 and a name is skipped, as ``dpkg --verify`` skips it.
 
 The reader uses archivey's public names only, as a format added from outside would
 (``tests/test_plugin_modules_use_public_api.py`` checks), apart from the salvage
-search's names (``internal.salvage``, which has no plugin hook yet). With
-``open_archive(salvage=True)``, damage to an ar header after ``debian-binary`` starts
-a search for the next one (``_search``), with the package's own copy of the ar
-reader's checks.
+search's names (``internal.salvage``, which has no plugin hook yet) and the ar
+reader's, which ships in the same plugin package. With ``open_archive(salvage=True)``,
+damage to an ar header after ``debian-binary`` starts a search for the next one
+(``_search``), with the ar reader's header search and confirmation.
 
 Handbook page: ``dev-docs/formats/deb.md``.
 """
@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import io
 import itertools
-import re
 import typing
 from collections.abc import Generator, Iterator
 from typing import TYPE_CHECKING, BinaryIO
@@ -58,7 +57,8 @@ from archivey.formats import (
     SequentialFormatHandler,
     SequentialReader,
 )
-from archivey.internal.salvage import HeaderSearch, WalkSalvage, walk_salvage
+from archivey.internal.backends.ar_reader import AR_HEADER_SEARCH, ar_confirmed
+from archivey.internal.salvage import WalkSalvage, walk_salvage
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfoExtra,
@@ -127,60 +127,6 @@ def _str_bytes(text: str) -> int:
     if len(text.encode("utf-16-le", "surrogatepass")) > 2 * len(text):
         return 4 * len(text)
     return 2 * len(text)
-
-
-# The salvage search of the package's ar level. The same checks as the ar reader's
-# (``ar_reader._passes``, ``AR_HEADER_SEARCH`` and ``ar_confirmed``), kept here
-# because the deb reader uses public names only, as a format from outside would:
-# importing the ar reader would make one plugin depend on another.
-# ``tests/test_salvage_cpio_ar.py`` checks that the two copies agree.
-_AR_HEADER_END = b"`\n"
-_OCTAL = frozenset(b"01234567")
-_DIGITS_AND_SPACES = re.compile(rb"[0-9 ]*\Z")
-
-
-def _ar_passes(window: bytes, at: int) -> bool:
-    """Whether an ar header the salvage search accepts starts at ``at`` of
-    ``window``: 60 bytes ending in the header end, with a size, an octal or blank
-    mode, and date, uid and gid fields of digits and spaces only."""
-    header = window[at : at + HEADER_SIZE]
-    if len(header) < HEADER_SIZE or header[58:] != _AR_HEADER_END:
-        return False
-    size = header[48:58].strip(b" ")
-    mode = header[40:48].strip(b" ")
-    return (
-        size.isdigit()
-        and set(mode) <= _OCTAL
-        and _DIGITS_AND_SPACES.match(header[16:40]) is not None
-    )
-
-
-def _find_ar_header(window: bytes, start: int, stop: int) -> int | None:
-    """The first ar header at an even candidate position from ``start`` and before
-    ``stop`` that passes (``HeaderSearch.find_header``)."""
-    at = start + 58
-    while True:
-        end = window.find(_AR_HEADER_END, at, stop + 59)
-        if end < 0:
-            return None
-        candidate = end - 58
-        if candidate % 2 == 0 and _ar_passes(window, candidate):
-            return candidate
-        at = end + 1
-
-
-# ar headers start on 2 bytes, counted from the package's start.
-_AR_HEADER_SEARCH = HeaderSearch(_find_ar_header, 2, HEADER_SIZE)
-
-
-def _ar_confirmed(salvage: WalkSalvage, after: int) -> bool:
-    """Whether the header at ``after``, past a member's padded data, passes the
-    search's check, or the package ends there."""
-    head = salvage.read_at(after, HEADER_SIZE)
-    if not head:
-        # The last pad byte may be missing (a writer that leaves it off).
-        return salvage.holds(after - 1)
-    return _ar_passes(head, 0)
 
 
 def _tar_format(
@@ -280,7 +226,7 @@ class DebReader(SequentialReader):
                     # in TruncatedError. The search goes on past this header.
                     search_from = salvage.after(offset)
                     continue
-                confirmed = _ar_confirmed(
+                confirmed = ar_confirmed(
                     salvage, offset + HEADER_SIZE + size + (size & 1)
                 )
                 if not confirmed:
@@ -424,7 +370,7 @@ class DebReader(SequentialReader):
         the package holds, with its offset, name and size; the stream is moved to
         its data. ``None`` when none is found."""
         while True:
-            result = salvage.search(_AR_HEADER_SEARCH, start=start)
+            result = salvage.search(AR_HEADER_SEARCH, start=start)
             if result.found is None:
                 return None
             at = result.found
