@@ -15,8 +15,9 @@ same interface::
 A kernel gives the same bytes and raises the same errors as a correct Python decoder
 of the same interface: the choice changes speed only. A kernel's own fault (a Rust
 panic) raises ``CorruptionError``. archivey gives back the decoder child of every
-kernel object it handed out when the member stream or the reader closes, so a plugin
-does not close them.
+kernel object it handed out when the reader closes (for ``ReaderContext.kernel``) or
+when the member stream closes (for ``CodecCall.kernel``), so a plugin does not close
+them.
 """
 
 from __future__ import annotations

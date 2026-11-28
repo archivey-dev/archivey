@@ -19,6 +19,7 @@ from archivey import (
     ArchiveyUsageError,
     FormatPolicy,
     MemberType,
+    ProcessIsolation,
     open_archive,
     open_stream,
 )
@@ -32,11 +33,12 @@ from archivey.formats import (
 from archivey.internal import kernels
 from archivey.internal.format_adapter import registration_scope
 from archivey.internal.streams.codecs import deps
+from archivey.kernels import KernelName
 from archivey.types import OptionalLibrary
 from tests.test_codec_api import TOY, ToyDecompressor, ToyHandler
 from tests.test_format_api import ToyHandler as ToyaHandler, ToyReader, build_toya
 
-_NAMES = ("crc16_arc", "lzfse", "lzo1x", "lzvn", "lzw", "lzx")
+_NAMES: tuple[KernelName, ...] = ("crc16_arc", "lzfse", "lzo1x", "lzvn", "lzw", "lzx")
 _OFF = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={"archivey-speedups"}))
 
 
@@ -47,7 +49,7 @@ class _AskingReader(ToyReader):
 
     def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         super().__init__(source, context)
-        _AskingReader.asked = {name: context.kernel(name) for name in _NAMES}  # type: ignore[call-overload]
+        _AskingReader.asked = {name: context.kernel(name) for name in _NAMES}
 
 
 class _AskingToyaHandler(ToyaHandler):
@@ -59,7 +61,7 @@ class _AskingToyHandler(ToyHandler):
     asked: ClassVar[dict[str, object]] = {}
 
     def decompressor(self, call: CodecCall) -> ToyDecompressor:
-        _AskingToyHandler.asked = {name: call.kernel(name) for name in _NAMES}  # type: ignore[call-overload]
+        _AskingToyHandler.asked = {name: call.kernel(name) for name in _NAMES}
         return super().decompressor(call)
 
 
@@ -114,7 +116,8 @@ def test_a_codec_gets_a_kernel_only_when_it_can_run(
 def test_an_unknown_kernel_name_is_a_usage_error() -> None:
     call = CodecCall()
     with pytest.raises(ArchiveyUsageError, match="'bcj2'"):
-        call.kernel("bcj2")  # type: ignore[call-overload]
+        # A name that is not a kernel, on purpose.
+        call.kernel("bcj2")  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
 
 
 # --- giving back the decoder children ---------------------------------------------------
@@ -167,6 +170,60 @@ class _LzwReader(ToyReader):
 class _LzwToyaHandler(ToyaHandler):
     def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
         return _LzwReader(source, context)
+
+
+_ISOLATED = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+
+
+@pytest.fixture
+def isolation_seen(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Each ``isolated`` a plugin's ``kernel("lzw")`` passed on."""
+    seen: list[bool] = []
+
+    def lzw(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> kernels.Lzw:
+        seen.append(isolated)
+        return kernels.Lzw(
+            Decompressor=_FakeChild,  # type: ignore[arg-type]
+            library=OptionalLibrary.ARCHIVEY_SPEEDUPS,
+        )
+
+    monkeypatch.setattr(kernels, "lzw", lzw)
+    return seen
+
+
+@pytest.mark.parametrize(
+    ("config", "isolated"),
+    [(None, False), (_ISOLATED, True)],
+    ids=["default", "native"],
+)
+def test_a_readers_kernel_follows_the_callers_isolation(
+    isolation_seen: list[bool],
+    tmp_path: Path,
+    config: ArchiveyConfig | None,
+    isolated: bool,
+) -> None:
+    with registration_scope():
+        register_format(_LzwToyaHandler)
+        with open_archive(_toya(tmp_path), config=config) as archive:
+            archive.members()
+    assert isolation_seen == [isolated]
+
+
+@pytest.mark.parametrize(
+    ("config", "isolated"),
+    [(None, False), (_ISOLATED, True)],
+    ids=["default", "native"],
+)
+def test_a_codecs_kernel_follows_the_callers_isolation(
+    isolation_seen: list[bool], config: ArchiveyConfig | None, isolated: bool
+) -> None:
+    with registration_scope():
+        register_codec(_LzwToyHandler)
+        with open_stream(
+            io.BytesIO(_toy_stream()), format=TOY, config=config
+        ) as stream:
+            assert stream.read() == b"hello"
+    assert isolation_seen == [isolated]
 
 
 def test_closing_a_stream_gives_back_its_codecs_kernel_children(

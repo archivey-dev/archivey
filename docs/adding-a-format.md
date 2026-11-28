@@ -1003,8 +1003,8 @@ The names are `"crc16_arc"`, `"lzfse"`, `"lzo1x"`, `"lzvn"`, `"lzw"` and `"lzx"`
 `archivey.kernels` has the interface each one returns. A kernel gives the same bytes and
 raises the same errors as a correct Python decoder of the same interface, so the
 choice changes speed only. When a kernel object runs in a decoder child, archivey gives
-the child back when the member stream or the reader closes, so the plugin does not
-close it.
+the child back when the reader closes (for `context.kernel()`) or when the member
+stream closes (for `call.kernel()`), so the plugin does not close it.
 
 ## Replacing a built-in reader
 
