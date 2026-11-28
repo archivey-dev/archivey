@@ -35,6 +35,7 @@ from archivey.internal.streams.codecs.base import (
     StreamCodec,
 )
 from archivey.internal.streams.codecs.registry import add_stream_codec, stream_codecs
+from archivey.internal.streams.decompressor_stream import own_kernels
 from archivey.types import (
     ArchiveFormat,
     BackendKindStr,
@@ -122,7 +123,12 @@ class PluginCodec(StreamCodec):
 
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
-        return self.handler.decompressor(codec_call(params, config))
+        call = codec_call(params, config)
+        decompressor = self.handler.decompressor(call)
+        # The kernel objects the handler took through ``call.kernel()`` are given
+        # back when the stream releases this decompressor (``release_decoder``).
+        own_kernels(decompressor, call._lease)
+        return decompressor
 
     @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
@@ -140,6 +146,8 @@ def codec_call(params: CodecParams, config: StreamConfig) -> CodecCall:
         properties=params.properties,
         limits=config.decoder_limits,
         probe_bound=config.probe_read_bound,
+        _excluded=config.excluded_libraries,
+        _isolated=config.natives.isolated,
     )
 
 

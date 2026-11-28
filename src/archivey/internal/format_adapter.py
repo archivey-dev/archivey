@@ -362,6 +362,8 @@ class _PluginAdapter(BaseArchiveReader):
         context._keep_metadata = self._listing_tracker.keep
         if self._listing_decode is not None:
             context._listing_draw = self._listing_decode.draw
+        # Its kernel objects' decoder children are given back at close.
+        self._context = context
         self._reader = self._open_reader(context)
         self._reader_open = True
         # What kept the first ``info`` from being published at open
@@ -1406,6 +1408,7 @@ class _PluginAdapter(BaseArchiveReader):
             with self._translated_errors(), self._handle_guard():
                 self._reader.close()
         finally:
+            self._context._release_kernels()
             # A closed reader opens nothing again, and keeps no password it won.
             self._saved_winners.clear()
             if self._shared is not None:

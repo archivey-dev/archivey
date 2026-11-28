@@ -985,6 +985,27 @@ reason is internal, so a plugin writes its own.
 A library that needs a file name rather than a stream can use `ReaderSource.path`, which is
 the path the archive was opened from, or `None` when it was opened from a stream.
 
+## Fast decoders from archivey-speedups
+
+archivey-speedups, archivey's optional Rust package, has fast versions of some
+decoders. A reader asks for one by name with `context.kernel()`, and a codec with
+`call.kernel()`. The call returns the kernel when it can run, and `None` when it can't:
+the package is not installed or too old, the caller's `FormatPolicy` turns it off, or,
+under `ProcessIsolation.NATIVE_DECODERS`, no decoder child can run it. Keep a Python
+decoder with the same interface for that case:
+
+```python
+make = context.kernel("lzw") or my_lzw.Decompressor
+decoder = make(max_width=16, block_mode=True)
+```
+
+The names are `"crc16_arc"`, `"lzfse"`, `"lzo1x"`, `"lzvn"`, `"lzw"` and `"lzx"`;
+`archivey.kernels` has the interface each one returns. A kernel gives the same bytes and
+raises the same errors as a correct Python decoder of the same interface, so the
+choice changes speed only. When a kernel object runs in a decoder child, archivey gives
+the child back when the member stream or the reader closes, so the plugin does not
+close it.
+
 ## Replacing a built-in reader
 
 A plugin can also read a format archivey already reads, in place of the built-in

@@ -1235,6 +1235,7 @@ field archivey.formats.CodecCall.limits: DecoderLimits = <factory>
 field archivey.formats.CodecCall.probe_bound: int | None = None
 field archivey.formats.CodecCall.properties: bytes | None = None
 field archivey.formats.CodecCall.size: int | None = None
+method archivey.formats.CodecCall.kernel(self, name: KernelName) -> object | None
 class archivey.formats.CodecHandler(ABC)
 attribute archivey.formats.CodecHandler.checks_content = False
 attribute archivey.formats.CodecHandler.concatenated = True
@@ -1349,6 +1350,7 @@ method archivey.formats.ReaderContext.decode_name(self, raw: bytes) -> str
 method archivey.formats.ReaderContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm | StreamFormat | PluginStream, *, size: int | None = None, properties: bytes | None = None) -> BinaryIO
 property archivey.formats.ReaderContext.encoding: str | None
 method archivey.formats.ReaderContext.hold(self, member: ArchiveMember, *, reason: str | None = None) -> None
+method archivey.formats.ReaderContext.kernel(self, name: KernelName) -> object | None
 method archivey.formats.ReaderContext.link_target_unavailable(self, member: ArchiveMember, *, reason: str, message: str, target_in_archive: bool) -> None
 method archivey.formats.ReaderContext.normalize_name(self, name: str, member_type: MemberType) -> str
 method archivey.formats.ReaderContext.open_nested(self, data: BinaryIO | io.RawIOBase, format: ArchiveFormat) -> Iterator[MemberSpan]
@@ -1384,6 +1386,38 @@ function archivey.formats.buffered_stream(stream: BinaryIO | io.RawIOBase) -> Bi
 function archivey.formats.register_codec(handler: type[CodecHandler]) -> None
 function archivey.formats.register_format(handler: type[IndexedFormatHandler | SequentialFormatHandler]) -> None
 function archivey.formats.unix_member_type(mode: int, *, has_data: bool) -> tuple[MemberType, SpecialFileType | None]
+module archivey.kernels
+class archivey.kernels.BlockDecompress(Protocol)
+init archivey.kernels.BlockDecompress(*args, **kwargs)
+class archivey.kernels.Crc16(Protocol)
+init archivey.kernels.Crc16(*args, **kwargs)
+alias archivey.kernels.KernelName = Literal['crc16_arc', 'lzfse', 'lzo1x', 'lzvn', 'lzw', 'lzx']
+class archivey.kernels.LzwDecompressor(Protocol)
+init archivey.kernels.LzwDecompressor(*args, **kwargs)
+property archivey.kernels.LzwDecompressor.clear_offsets: list[tuple[int, int]]
+method archivey.kernels.LzwDecompressor.decompress(self, data: Buffer, max_length: int = -1) -> bytes
+property archivey.kernels.LzwDecompressor.eof: bool
+method archivey.kernels.LzwDecompressor.flush(self, max_length: int = -1) -> bytes
+property archivey.kernels.LzwDecompressor.header_params: tuple[int, bool] | None
+property archivey.kernels.LzwDecompressor.needs_input: bool
+property archivey.kernels.LzwDecompressor.nine_bit_widens: bool | None
+property archivey.kernels.LzwDecompressor.total_in: int
+property archivey.kernels.LzwDecompressor.total_out: int
+property archivey.kernels.LzwDecompressor.truncation: str | None
+property archivey.kernels.LzwDecompressor.unused_data: bytes
+class archivey.kernels.LzwFactory(Protocol)
+init archivey.kernels.LzwFactory(*args, **kwargs)
+class archivey.kernels.LzxDecompressor(Protocol)
+init archivey.kernels.LzxDecompressor(*args, **kwargs)
+method archivey.kernels.LzxDecompressor.decompress(self, data: Buffer, max_length: int = -1) -> bytes
+property archivey.kernels.LzxDecompressor.eof: bool
+method archivey.kernels.LzxDecompressor.flush(self, max_length: int = -1) -> bytes
+property archivey.kernels.LzxDecompressor.needs_input: bool
+property archivey.kernels.LzxDecompressor.output_size: int | None
+method archivey.kernels.LzxDecompressor.set_output_size(self, output_size: int, /) -> None
+property archivey.kernels.LzxDecompressor.total_out: int
+class archivey.kernels.LzxFactory(Protocol)
+init archivey.kernels.LzxFactory(*args, **kwargs)
 module archivey.terminal
 function archivey.terminal.display_path(path: str | os.PathLike[str]) -> str
 function archivey.terminal.escape_control_chars(text: str) -> str
