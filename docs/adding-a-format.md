@@ -1009,10 +1009,11 @@ the child back when the reader closes (for `context.speedup()`) or when the memb
 stream closes (for `call.speedup()`), so the plugin does not close it. It does so too
 when the reader's `open` or the handler's `decompressor()` raises.
 
-`speedup()` checks what can run. Under `NATIVE_DECODERS`, a decoder child is started
-only when a decoder is made or a block is decoded, and if none can start then, that
-call raises `ResourceUnavailableError`, as archivey's own decoders do. The fallback
-happens at the `speedup()` call only.
+Under `NATIVE_DECODERS`, the first `speedup()` call in a process may start a decoder
+child, to learn what the package can run. Making a decoder or decoding a block then
+takes a decoder child of its own. If none can start then, that call raises
+`ResourceUnavailableError`, as archivey's own decoders do. The fallback happens at the
+`speedup()` call only.
 
 An `"lzw"` decompressor has its own interface, with a `flush()` that marks the end of
 the input. A codec's decompressor signals the end with `end_input()` (see
@@ -1025,16 +1026,20 @@ class LzwCodecDecompressor:
         self._ended = False
 
     def decompress(self, data, max_length=-1):
-        if self._ended:
-            return self._lzw.flush(max_length)
-        return self._lzw.decompress(data, max_length)
+        if not self._ended:
+            return self._lzw.decompress(data, max_length)
+        out = self._lzw.flush(max_length)
+        if not out and self._lzw.truncation is not None:
+            raise EOFError(self._lzw.truncation)
+        return out
 
     def end_input(self):
         self._ended = True
 
     @property
     def eof(self):
-        return self._lzw.eof
+        # A cut-short stream is not complete: the next call raises.
+        return self._lzw.eof and self._lzw.truncation is None
 
     @property
     def needs_input(self):
@@ -1044,6 +1049,11 @@ class LzwCodecDecompressor:
     def unused_data(self):
         return self._lzw.unused_data
 ```
+
+When the stream was cut short, `flush()` returns the output decoded before the cut and
+sets `truncation` to the reason. The wrapper then keeps `eof` false and raises
+`EOFError` with that reason from the next call, which archivey reports as
+`TruncatedError` after the output it already returned.
 
 An `"lzx"` decompressor ends at its output size and has no `unused_data`: it decodes
 a CAB folder inside a format reader, not a codec's stream.

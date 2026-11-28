@@ -1199,11 +1199,16 @@ class DecompressorStream(ReadOnlyIOStream):
             # that cannot be opened otherwise dies again there as ``AttributeError``.
             owned = self._owned_inner
             self._owned_inner = None
+            # Each release is tried on its own: a decoder whose close fails still
+            # leaves the source to close.
             try:
                 # A decoder already made gives back what it holds (a child process).
                 decoder = self.__dict__.get("_decoder")
                 if decoder is not None:
                     decoder.close()
+            except Exception:  # noqa: BLE001, S110 - the refusal below is the error to report
+                pass
+            try:
                 if owned is not None:
                     owned.close()
             except Exception:  # noqa: BLE001, S110 - the refusal below is the error to report

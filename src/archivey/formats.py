@@ -54,7 +54,7 @@ import struct
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -1542,10 +1542,16 @@ class CodecCall:
     "can't tell". ``None`` for every other read."""
 
     # What ``speedup()`` needs, set by archivey (``codec_adapter``): the caller's
-    # excluded libraries and isolation, and the lease of what it hands out. A field,
-    # so that ``dataclasses.replace`` keeps it: a copied call asks with the caller's
-    # policy, and what it hands out is given back with the stream. Internal.
-    _speedups: object = field(default=None, repr=False, compare=False)
+    # excluded libraries and isolation, and the lease of what it hands out. Internal.
+    # An init-only argument, kept on the instance by ``__post_init__``: not a field,
+    # so ``fields()`` and ``asdict()`` show the documented four, while
+    # ``dataclasses.replace`` still passes it on (it reads an init-only argument with
+    # a default from the instance). A copied call asks with the caller's policy, and
+    # what it hands out is given back with the stream.
+    _speedups: InitVar[object] = None
+
+    def __post_init__(self, _speedups: object) -> None:
+        object.__setattr__(self, "_speedups", _speedups)
 
     @overload
     def speedup(self, name: Literal["crc16_arc"]) -> Crc16 | None: ...
@@ -1572,7 +1578,7 @@ class CodecCall:
         from archivey.internal import kernels
 
         # A call built by hand, as a plugin's own tests do, asks with the defaults.
-        state = self._speedups
+        state = self.__dict__.get("_speedups")  # set by ``__post_init__``
         if not isinstance(state, kernels.CallSpeedups):
             state = kernels.CallSpeedups(frozenset(), isolated=False)
             object.__setattr__(self, "_speedups", state)

@@ -24,6 +24,7 @@ from archivey import (
     FormatPolicy,
     MemberType,
     ProcessIsolation,
+    TruncatedError,
     open_archive,
     open_stream,
 )
@@ -426,11 +427,12 @@ def test_crc16_runs_in_process_when_no_decoder_child_can_run(
 def test_codec_call_stays_a_plain_record() -> None:
     call = CodecCall(size=5)
     assert pickle.loads(pickle.dumps(call)) == call
-    # The documented fields, and one internal one: archivey's state for
-    # ``speedup()``, a field so that ``dataclasses.replace`` keeps it.
-    names = {"size", "properties", "limits", "probe_bound", "_speedups"}
-    assert set(get_type_hints(CodecCall)) == names
+    # The documented fields only. archivey's state for ``speedup()`` is an init-only
+    # argument, which ``dataclasses.replace`` still carries over.
+    names = {"size", "properties", "limits", "probe_bound"}
+    assert {f.name for f in dataclasses.fields(CodecCall)} == names
     assert set(dataclasses.asdict(call)) == names
+    get_type_hints(CodecCall)
 
 
 def test_a_stream_whose_setup_fails_closes_the_decoder_it_made() -> None:
@@ -467,16 +469,20 @@ class _LzwCodecDecompressor:
         self._ended = False
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
-        if self._ended:
-            return self._lzw.flush(max_length)
-        return self._lzw.decompress(data, max_length)
+        if not self._ended:
+            return self._lzw.decompress(data, max_length)
+        out = self._lzw.flush(max_length)
+        if not out and self._lzw.truncation is not None:
+            raise EOFError(self._lzw.truncation)
+        return out
 
     def end_input(self) -> None:
         self._ended = True
 
     @property
     def eof(self) -> bool:
-        return self._lzw.eof
+        # A cut-short stream is not complete: the next call raises.
+        return self._lzw.eof and self._lzw.truncation is None
 
     @property
     def needs_input(self) -> bool:
@@ -575,3 +581,76 @@ def test_the_codec_wrapper_copies_without_recursing() -> None:
 
     wrapper = LeasedDecompressor(ToyDecompressor(), KernelLease())  # type: ignore[arg-type]
     assert copy.copy(wrapper).eof is False
+
+
+# --- review round 5 ---
+
+
+def test_a_failed_setup_closes_its_source_when_the_decoder_close_fails() -> None:
+    from archivey.internal.streams.decompressor_stream import DecompressorStream
+
+    closed: list[str] = []
+
+    class Source(io.BufferedReader):
+        def seekable(self) -> bool:
+            raise OSError("gone")
+
+        def close(self) -> None:
+            closed.append("source")
+            super().close()
+
+    class Decoder:
+        def close(self) -> None:
+            closed.append("decoder")
+            raise RuntimeError("decoder close failed")
+
+    source = Source(io.BytesIO(b"x"))  # held, so no finalizer closes it instead
+    with pytest.raises(OSError, match="gone"):
+        DecompressorStream(
+            source,
+            make_decoder=lambda point, inner: Decoder(),  # type: ignore[arg-type,return-value]
+            owns_inner=True,
+        )
+    assert closed == ["decoder", "source"]
+
+
+@pytest.mark.parametrize("cut", [2, len(_DOT_Z) - 1], ids=["header", "last-code"])
+def test_the_guides_lzw_adapter_reports_a_truncated_stream(cut: int) -> None:
+    with registration_scope():
+        register_codec(_DotZHandler)
+        with (
+            open_stream(io.BytesIO(_DOT_Z[:cut]), format=TOY) as stream,
+            pytest.raises(TruncatedError),
+        ):
+            stream.read()
+
+
+def test_the_guides_lzw_adapter_keeps_the_output_before_a_truncation() -> None:
+    with registration_scope():
+        register_codec(_DotZHandler)
+        with open_stream(io.BytesIO(_DOT_Z[:-1]), format=TOY) as stream:
+            assert stream.read(17) == b"hello hello hello"
+            with pytest.raises(TruncatedError):
+                stream.read()
+
+
+class _CapturingToyHandler(ToyHandler):
+    calls: ClassVar[list[CodecCall]] = []
+
+    def decompressor(self, call: CodecCall) -> ToyDecompressor:
+        type(self).calls.append(call)
+        return super().decompressor(call)
+
+
+def test_a_real_call_converts_to_json() -> None:
+    import json
+
+    _CapturingToyHandler.calls = []
+    with registration_scope():
+        register_codec(_CapturingToyHandler)
+        with open_stream(io.BytesIO(_toy_stream()), format=TOY) as stream:
+            assert stream.read() == b"hello"
+    (call,) = _CapturingToyHandler.calls[-1:]
+    as_dict = dataclasses.asdict(call)
+    assert set(as_dict) == {"size", "properties", "limits", "probe_bound"}
+    json.dumps(as_dict)

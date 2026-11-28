@@ -13,8 +13,9 @@ of its own with the same interface::
 
     make = context.speedup("lzw") or my_lzw.Decompressor
 
-``speedup()`` checks what can run: under ``NATIVE_DECODERS`` a decoder child starts
-when a decoder is made or a block decoded, and that call raises
+Under ``NATIVE_DECODERS``, the first ``speedup()`` call in a process may start a
+decoder child, to learn what the package can run. Making a decoder or decoding a block
+then takes a decoder child of its own, and that call raises
 ``ResourceUnavailableError`` if none can start then.
 
 A speedup gives the same bytes and raises the same errors as a correct Python decoder
