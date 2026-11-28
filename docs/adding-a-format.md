@@ -291,6 +291,13 @@ Where the compressed data ends depends on the method:
 - For every method, bytes left after that end raise `CorruptionError`.
 - A **stream format** ends where its format says. Bytes after that end are reported as
   `ARCHIVE_TRAILING_DATA`, as they are for a file of that format.
+- A **stream format with `one_stream=True`** is a member's data that is one stream and
+  nothing else, as in XAR. Bytes after its end raise `CorruptionError`, as for a
+  method, and a second bzip2 or LZMA Alone stream is such bytes. It takes `ZLIB`,
+  `BZIP2`, `XZ`, `LZMA_ALONE`, `ZSTD`, `LZ4` and `BROTLI`; any other stream format
+  raises `UnsupportedFeatureError`. One exception, as for a ZIP member: when rapidgzip
+  decodes, several zlib streams whose last trailer matches the Adler-32 of them all
+  read as one.
 
 **A file in independent blocks.** Some formats store a file as fixed-size blocks, each
 compressed on its own, so a reader can start at any block: SquashFS, CAB, WIM and CSO all

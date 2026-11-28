@@ -82,23 +82,23 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
   earlier member. A link to an id nothing holds raises `CorruptionError` at the end of
   the listing.
 - **Data.** Stored data is a view of the heap and must be as long as its size; encoded
-  data goes through archivey's codecs (`ReaderContext._decompress_coder`) with the decoded
-  size, so archivey's decoder limits and length checks apply. A member's data is one
-  stream: any byte after its end, a second zlib stream, junk or zeros, raises
-  `CorruptionError`, as in a ZIP member, where a `.zz` file only reports it as trailing
-  data. The official readers disagree (§3): on macOS, Apple's `xar` writes the first
-  stream and ignores the rest, and bsdtar hangs. On Linux, libarchive failed on a 24 MiB
-  member ("XAR decompressor made no progress"). Under `rapidgzip`, which decodes
-  every zlib stream as one, the Adler-32 at the end covers only the last stream, and the
-  second decode that mismatch starts finds the first stream's end and raises; only a
-  forged last trailer that matches every stream gets past (`gzip.md` §5). A bzip2 or LZMA
-  Alone member is one stream too, as Apple's `xar` writes it and libarchive reads it (it
-  ends its decoder at the first stream's end), so a further stream is refused, where a
-  `.bz2` or `.lzma` file reads it on. xz keeps its further streams and stream padding, as
-  in a ZIP xz member: the xz format defines its data as one or more streams. The
-  extracted checksum is `member.hashes`, and the verifying stream checks it
-  (`hashlib.new(..., usedforsecurity=False)`, so a FIPS OpenSSL still computes MD5 and
-  SHA-1).
+  data goes through archivey's codecs (`ReaderContext.decompress(..., one_stream=True)`)
+  with the decoded size, so archivey's decoder limits and length checks apply. A
+  member's data is one stream: any byte after its end, a second zlib stream, junk or
+  zeros, raises `CorruptionError`, as in a ZIP member, where a `.zz` file only reports
+  it as trailing data. The official readers disagree (§3): on macOS, Apple's `xar`
+  writes the first stream and ignores the rest, and bsdtar hangs. On Linux, libarchive
+  failed on a 24 MiB member ("XAR decompressor made no progress"). Under `rapidgzip`,
+  which decodes every zlib stream as one, the Adler-32 at the end covers only the last
+  stream, and the second decode that mismatch starts finds the first stream's end and
+  raises; only a forged last trailer that matches every stream gets past (`gzip.md` §5).
+  A bzip2 or LZMA Alone member is one stream too, as Apple's `xar` writes it and
+  libarchive reads it (it ends its decoder at the first stream's end), so a further
+  stream is refused, where a `.bz2` or `.lzma` file reads it on. xz keeps its further
+  streams and stream padding, as in a ZIP xz member: the xz format defines its data as
+  one or more streams. The extracted checksum is `member.hashes`, and the verifying
+  stream checks it (`hashlib.new(..., usedforsecurity=False)`, so a FIPS OpenSSL still
+  computes MD5 and SHA-1).
 - **Shared heap data.** Several files may name one heap range: `xar --coalesce-heap`
   stores identical files once. Each is read as its own member, and each counts in the
   archive-wide ratio, so a TOC of many files over one range stops at `max_ratio` times

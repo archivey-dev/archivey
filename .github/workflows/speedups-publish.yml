@@ -49,6 +49,7 @@ on:
       - src/archivey/internal/streams/codecs/unix_compress_decoder.py
       # archivey's tests of the code that uses the kernels (the job archivey-tests).
       - tests/test_kernels.py
+      - tests/test_format_api_speedups.py
       - tests/test_cab.py
       - tests/test_lzfse_decoder.py
       - tests/test_sevenzip_arm64.py
@@ -261,8 +262,8 @@ jobs:
 
   archivey-tests:
     # archivey's own tests of the code that uses the kernels (the switch, the decoder
-    # child, the CAB, 7z and .Z call sites), with the Linux x86_64 wheel installed. The
-    # main CI does not install the package, so there they skip.
+    # child, the plugin helper, the CAB, 7z and .Z call sites), with the Linux x86_64
+    # wheel installed. The main CI does not install the package, so there they skip.
     name: archivey's tests with the wheel
     needs: wheels
     runs-on: ubuntu-latest
@@ -286,8 +287,9 @@ jobs:
         # import, so the tests that need it fail instead of skipping.
         run: >-
           SPEEDUPS_REQUIRED=1 uv run --no-sync pytest -q -n auto --no-cov
-          tests/test_kernels.py tests/test_cab.py tests/test_sevenzip_arm64.py
-          tests/test_sevenzip_bcj2.py tests/test_sevenzip_riscv.py
+          tests/test_kernels.py tests/test_format_api_speedups.py tests/test_cab.py
+          tests/test_sevenzip_arm64.py tests/test_sevenzip_bcj2.py
+          tests/test_sevenzip_riscv.py
   check:
     name: distribution metadata
     needs: [wheels, sdist]
