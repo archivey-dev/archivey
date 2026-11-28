@@ -55,11 +55,14 @@ def test_an_id_already_on_the_page_is_not_added_again() -> None:
 
 def test_the_hook_covers_every_name_that_left_the_root() -> None:
     """The hook's table is the root shim's plus the two experimental names, which is
-    every name ``archivey.__all__`` listed in 0.5 and no longer lists."""
+    every name ``archivey.__all__`` listed in 0.5 and no longer lists, and the API page
+    documents each one under the module the table gives, where the hook looks."""
     import archivey
 
     covered = {**vars(archivey)["_MOVED_IN_0_6"], **hook.EXPERIMENTAL_MOVED}
     assert len(covered) == 67
     assert not set(covered) & set(archivey.__all__)
+    page = (ROOT / "docs" / "api.md").read_text(encoding="utf-8").splitlines()
     for name, module in covered.items():
         assert hasattr(importlib.import_module(module), name), (module, name)
+        assert f"::: {module}.{name}" in page, (module, name)
