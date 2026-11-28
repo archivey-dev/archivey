@@ -202,9 +202,10 @@ class SalvageState:
     is whether it salvages, which also needs its backend to have a salvage search.
     A reader asks ``enabled`` before it searches, and reads ``limits`` for the caps.
     ``lost_start`` says the format came from ``format=`` or the name's extension, so
-    the archive's first header may be lost: a salvage reader whose first header
-    does not parse searches for one from the start (decision 9 of
-    ``openspec/changes/salvage-mode/design.md``).
+    the archive's first header may be lost (decision 9 of
+    ``openspec/changes/salvage-mode/design.md``), for a format whose search depends
+    on it: a RAR reader whose first header does not parse searches for one from the
+    start (CPIO's and ar's search will read it too, in a later PR; TAR does not).
 
     A format calls :func:`search_forward` with this state, and :meth:`finish` when its
     walk ends, which records the ``report_limit`` record if any range went
@@ -490,7 +491,8 @@ def search_forward(
     forward, each read starting where the one before ended, so a decoded stream can
     serve it without seeking back. ``end``, when known, is where the layer ends; the
     search reads nothing at or past it, and an ``end`` before ``start`` or before the
-    layer's search position is a bug (``AssertionError``). Under a budget the search
+    layer's search position is a bug (``AssertionError``): a format whose start comes
+    from a size the archive gives clamps it to ``end`` first. Under a budget the search
     reads no further than the last header the budget lets it reach (one byte more
     when ``end`` is not known and the budget pays for every byte read, to see
     whether the layer ends there), and with no budget left it reads nothing.

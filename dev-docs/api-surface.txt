@@ -1349,7 +1349,7 @@ method archivey.formats.ReaderContext.charge_key_derivation(self, rounds: int) -
 method archivey.formats.ReaderContext.charge_metadata(self, nbytes: int, *, what: str) -> None
 property archivey.formats.ReaderContext.config: ArchiveyConfig
 method archivey.formats.ReaderContext.decode_name(self, raw: bytes) -> str
-method archivey.formats.ReaderContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm | StreamFormat | PluginStream, *, size: int | None = None, properties: bytes | None = None) -> BinaryIO
+method archivey.formats.ReaderContext.decompress(self, data: BinaryIO, method: CompressionAlgorithm | StreamFormat | PluginStream, *, size: int | None = None, properties: bytes | None = None, one_stream: bool = False) -> BinaryIO
 property archivey.formats.ReaderContext.encoding: str | None
 method archivey.formats.ReaderContext.hold(self, member: ArchiveMember, *, reason: str | None = None) -> None
 method archivey.formats.ReaderContext.link_target_unavailable(self, member: ArchiveMember, *, reason: str, message: str, target_in_archive: bool) -> None
@@ -1387,6 +1387,7 @@ function archivey.formats.block_stream(size: int, block_size: int, read_block: C
 function archivey.formats.buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO
 function archivey.formats.register_codec(handler: type[CodecHandler]) -> None
 function archivey.formats.register_format(handler: type[IndexedFormatHandler | SequentialFormatHandler]) -> None
+function archivey.formats.str_retained_bytes(value: str) -> int
 function archivey.formats.unix_member_type(mode: int, *, has_data: bool) -> tuple[MemberType, SpecialFileType | None]
 module archivey.speedups
 class archivey.speedups.BlockDecompress(Protocol)

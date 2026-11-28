@@ -21,6 +21,6 @@ it (657 vs 713 members in the salvage corpus).
 - CLI `--salvage`, with partial files kept on extract.
 
 **Decisions taken here (not in the rulings):** names `max_reported_regions`,
-`SalvageScanContext.confirmed`/`unchecked`; v7 TAR headers searched only in all-v7
-archives; a TAR clean end never starts a search (data after it is the hidden-content
-step).
+`SalvageScanContext.confirmed`/`unchecked`; v7 TAR headers searched everywhere, on a
+plausibility check of their number fields (davi, 2026-11-26); a TAR clean end never
+starts a search (data after it is the hidden-content step).

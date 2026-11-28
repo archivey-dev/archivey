@@ -16,9 +16,9 @@ line. How to write the entry: see
 ### Added
 
 - `open_archive(salvage=True)` opts into salvage mode, capped by the new `SalvageLimits`
-  (`ArchiveyConfig.salvage_limits`). RAR searches past damage for the next header and
-  lists what it finds (`MEMBER_FOUND_BY_SCAN`); every other format reads as before and
-  records `SALVAGE_UNAVAILABLE`.
+  (`ArchiveyConfig.salvage_limits`): RAR and TAR search past damage for the next header
+  and list what they find, flagged (`MEMBER_FOUND_BY_SCAN`), even when the archive's
+  start is lost; other formats read as before and record `SALVAGE_UNAVAILABLE`.
 - A format or codec plugin can use archivey-speedups' fast decoders:
   `context.speedup("lzw")` (or `call.speedup()`) returns the speedup, or `None` when it
   can't run. Their interfaces are in the new `archivey.speedups` module.

@@ -768,10 +768,13 @@ def _start_may_be_lost(detected: FormatInfo | None) -> bool:
     not from the archive's own bytes.
 
     Detection already falls back to the extension when no signature matches, and
-    ``format=`` skips it, so either one picks the reader. A reader with a salvage
-    search then finds its first header by the search from offset 0
-    (``SalvageState.lost_start``); one without reads, and fails, as it does without
-    salvage. ``detect_format()`` does not change.
+    ``format=`` skips it, so either one picks the reader. ``SalvageState.lost_start``
+    carries the answer to a reader whose search depends on it. RAR reads it: its first
+    header is then found by the search from offset 0. CPIO and ar will read it (their
+    salvage lands in a later PR). TAR does not: under salvage, a first header that
+    does not parse is damage at offset 0 whatever the detection said. A reader
+    without a salvage search reads, and fails, as it does without salvage.
+    ``detect_format()`` does not change.
     """
     return detected is None or detected.detected_by == "extension"
 
