@@ -11,21 +11,20 @@ from collections.abc import Iterator
 from pathlib import Path
 from types import FunctionType
 
-import archivey
 
-# The public modules a reader may import from, with the names each makes public:
-# each module's own ``__all__``. A module inside archivey imports a root name from
-# its defining submodule, to avoid an import cycle.
-_PUBLIC = {
-    "archivey": archivey.__all__,
-    "archivey.types": importlib.import_module("archivey.types").__all__,
-    "archivey.exceptions": importlib.import_module("archivey.exceptions").__all__,
-    "archivey.detection": importlib.import_module("archivey.detection").__all__,
-    "archivey.config": importlib.import_module("archivey.config").__all__,
-    "archivey.formats": importlib.import_module("archivey.formats").__all__,
-    "archivey.diagnostics": importlib.import_module("archivey.diagnostics").__all__,
-    "archivey.terminal": importlib.import_module("archivey.terminal").__all__,
-}
+# The public modules a reader may import from, with the names each makes public: the
+# root and every module of ``api_surface.PUBLIC_MODULES``, each with its own
+# ``__all__``. A module inside archivey imports a root name from its defining
+# submodule, to avoid an import cycle.
+def _public_all() -> dict[str, list[str]]:
+    public: dict[str, list[str]] = {}
+    for module_name in _public_modules():
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue  # an optional dependency is missing (``archivey.fsspec``)
+        public[module_name] = list(module.__all__)
+    return public
 
 
 def _imported_names(path: Path) -> Iterator[tuple[str, str]]:
@@ -41,11 +40,12 @@ def assert_only_public_archivey(module_file: str | None) -> None:
     handler from its table (``internal/format_table.py``), and the module carries its
     own ``override`` shim, as a format from outside would."""
     assert module_file is not None
+    public = _public_all()
     for module, name in _imported_names(Path(module_file)):
         if module.split(".")[0] != "archivey":
             continue
-        assert module in _PUBLIC, module
-        assert name in _PUBLIC[module], (module, name)
+        assert module in public, module
+        assert name in public[module], (module, name)
 
 
 # The public API of ``collections.namedtuple``, spelled with an underscore so that it
