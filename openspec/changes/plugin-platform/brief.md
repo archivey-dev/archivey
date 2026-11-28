@@ -2,7 +2,8 @@
 
 **Status:** Plan only, written to circulate and be refined. The maintainer agreed the
 direction and ten decisions on 2026-11-24 and revised three of them on 2026-11-26
-(design.md §Decisions, R1 to R17). R9 retires the 2026-10-28 rule that left a turned-off
+(design.md §Decisions, R1 to R17), with R18 to R24 added on 2026-11-27 after the
+direction-review check. R9 retires the 2026-10-28 rule that left a turned-off
 plugin format out of detection. No spec deltas yet: each implementation PR brings the
 deltas for its step. No code until the maintainer has read this plan. It replaces
 `openspec/changes/archive/2026-11-27-plugin-api`, whose interface it keeps and whose
