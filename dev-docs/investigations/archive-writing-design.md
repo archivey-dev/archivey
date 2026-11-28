@@ -13,7 +13,10 @@ It is kept because the analysis is real and would otherwise be redone from scrat
 the `CompressionSpec` resolution matrix, the `add_members` conversion semantics, and the
 `add_file` naming argument are all decisions someone reached once. Treat it as a
 starting point for the writing phase's own exploration, not as a design to implement.
-This page is the home for the writing work until an OpenSpec change takes it over.
+This page is the home for the writing work until an OpenSpec change takes it over. The
+conversion design draft, which answers the entry gate below and replaces the
+`add_bytes` / `add_stream` / `add_file` split, is
+[`archive-conversion-design.md`](archive-conversion-design.md).
 Writing is not a 1.0 requirement (`VISION.md`). The planned scope is an `ArchiveWriter`
 ABC, ZIP and TAR writers (including compressed-tar output such as `w:zst`),
 `CompressionSpec`, and streaming conversion (`tar.gz` to `zip` and back) with bounded
