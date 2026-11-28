@@ -6,7 +6,7 @@ XAR archives (what Apple's `xar` and `bsdtar --format xar` write, and the XAR la
 macOS installer package `.pkg` or `.xip` file opened with `format=ArchiveFormat.XAR`)
 are read through the unified `ArchiveReader` API. A `.pkg` or `.xip` otherwise opens as
 `ArchiveFormat.PKG`, which lists its payloads' files. The reader is a built-in written
-against `archivey.formats` and registered with `register_builtin_format`. The format
+against `archivey.formats` and registered from core's format table. The format
 handbook is `dev-docs/formats/xar.md`.
 
 ## Related specs

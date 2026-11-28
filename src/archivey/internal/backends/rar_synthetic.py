@@ -15,8 +15,9 @@ host OS, sizes, CRC, the RAR5 extra area, the RAR 1.5-4 salt and extended time) 
 archive's own. Members are named ``m0``, ``m1``, …, so a mask is plain ASCII and no
 stored name reaches the disk or ``unrar``.
 
-The design and the measurements are in ``openspec/changes/rar-synthetic-archives``.
-This module only builds bytes and files; which reads use it is the reader's choice.
+The design and the measurements are in
+``openspec/changes/archive/2026-11-27-rar-synthetic-archives``. This module only builds
+bytes and files; which reads use it is the reader's choice.
 """
 
 from __future__ import annotations

@@ -65,7 +65,6 @@ from archivey.formats import (
     block_stream,
 )
 from archivey.internal.excluded_libraries import as_reported
-from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.isolated import Natives, natives_for
@@ -1159,6 +1158,3 @@ class SquashfsHandler(IndexedFormatHandler):
     @override
     def open(self, source: ReaderSource, context: ReaderContext) -> SquashfsReader:
         return SquashfsReader(source, context)
-
-
-SquashfsReadBackend = register_builtin_format(SquashfsHandler)

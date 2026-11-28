@@ -4,7 +4,7 @@
 
 CPIO archives (initramfs images, RPM payloads, what `cpio` and `bsdcpio` write) are read
 through the unified `ArchiveReader` API. The reader is a built-in written against
-`archivey.formats` and registered with `register_builtin_format`; it reads every header
+`archivey.formats` and registered from core's format table; it reads every header
 variant in one forward pass. The format handbook is `dev-docs/formats/cpio.md`.
 
 ## Related specs

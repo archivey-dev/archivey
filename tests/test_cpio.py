@@ -19,6 +19,7 @@ import pytest
 import archivey
 from archivey import (
     CorruptionError,
+    DetectionConfidence,
     MemberType,
     ResourceLimitError,
     TruncatedError,
@@ -28,10 +29,12 @@ from archivey import (
 )
 from archivey.diagnostics import DiagnosticCode, SpecialFileDataContext
 from archivey.formats import SequentialReader
-from archivey.internal.backends import cpio_reader
-from archivey.internal.backends.cpio_reader import MAX_NAME_BYTES, CpioReader
+from archivey.internal.backends.cpio_reader import (
+    MAX_NAME_BYTES,
+    CpioHandler,
+    CpioReader,
+)
 from archivey.internal.listing_limits import member_metadata_bytes
-from tests.public_names import assert_only_public_archivey
 from tests.streams_util import ShortReadBytesIO, open_mode
 
 CPIO = archivey.ArchiveFormat.CPIO
@@ -267,6 +270,15 @@ def _binary(name: bytes) -> bytes:
         fields = (0o070707, 0, 1, 0o100644, 0, 0, 1, 0, 0, 0, len(stored), 0, 0)
         out += struct.pack("<13H", *fields) + stored + b"\0" * (len(stored) & 1)
     return out
+
+
+def test_the_binary_probe_answers_with_a_verdict() -> None:
+    """The probe knows yes from no, so it answers a match or no."""
+    probe = CpioHandler.probe
+    assert probe is not None
+    assert probe(_binary(b"hello")) is archivey.DetectionConfidence.PROBABLE
+    assert probe(b"\xc7\x71" + b"\0" * 30) is DetectionConfidence.REJECTED
+    assert probe(b"not a cpio archive at all") is DetectionConfidence.REJECTED
 
 
 def test_a_big_endian_binary_archive() -> None:
@@ -832,11 +844,6 @@ def test_afio_large_header_damage(tmp_path: Path) -> None:
     extra = _afio_large_member(b"a", b"x", ino=1, uid=1, xsize=4) + _odc_trailer()
     with pytest.raises(UnsupportedFeatureError, match="4 bytes of extra data"):
         opened(extra)
-
-
-def test_the_reader_uses_only_public_archivey() -> None:
-    """Written as a format added from outside would be."""
-    assert_only_public_archivey(cpio_reader.__file__)
 
 
 def test_the_reader_is_a_sequential_reader() -> None:

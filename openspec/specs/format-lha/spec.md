@@ -4,8 +4,8 @@
 
 LHA archives (`.lzh`, `.lha`, `.lzs`, `.pma`; what LHarc, LHA, UNLHA32, LHa for UNIX,
 Amiga LhA, LHARK, LArc and PMarc write) are read through the unified `ArchiveReader`
-API. The reader is a built-in written against `archivey.formats` and registered with
-`register_builtin_format`; the LZH methods are decoded by archivey's own decoder, in
+API. The reader is a built-in written against `archivey.formats` and registered from
+core's format table; the LZH methods are decoded by archivey's own decoder, in
 Python. The format handbook is `dev-docs/formats/lha.md`.
 
 ## Related specs

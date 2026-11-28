@@ -3,7 +3,8 @@
 Investigation tools, not archivey code or CI gates. The write-up is
 [`dev-docs/investigations/lzfse-package.md`](../../../dev-docs/investigations/lzfse-package.md).
 They need only an interpreter with `lzfse` installed; the prototype decoder comes from
-`openspec/changes/dmg-reader/resources/prototype/`. Run on Linux (`resource` limits).
+`openspec/changes/archive/2026-11-27-dmg-reader/resources/prototype/`. Run on Linux
+(`resource` limits).
 
 - `common.py`: block walk, the capped and checked ways to call the package, the raw
   LZVN wrapper, and the import of the prototype.

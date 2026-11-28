@@ -10,7 +10,7 @@ registered as a built-in the way ISO, CPIO and ar are.
 
 | | |
 | --- | --- |
-| Read | Yes. `internal/backends/squashfs_reader.py`, a `SquashfsHandler` (`IndexedFormatHandler`) and a `SquashfsReader` (`IndexedReader`), registered with `register_builtin_format` |
+| Read | Yes. `internal/backends/squashfs_reader.py`, a `SquashfsHandler` (`IndexedFormatHandler`) and a `SquashfsReader` (`IndexedReader`), registered from core's format table |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A file or a stream that can seek. Not a pipe: the directory and inode tables come after the data |
 | Listing cost | From the index (the inode and directory tables) |
@@ -322,4 +322,5 @@ fuzzes the image walk and block reads.
   and squashfs-tools.
 - The kernel's `lib/lzo/lzo1x_decompress_safe.c`, which archivey's LZO decoder follows,
   and liblzo2 2.10's `lzo1x_decompress_safe`, whose end-marker rule it takes.
-- `openspec/changes/plugin-api/tasks.md` §3b, the reader's history as a plugin.
+- `openspec/changes/archive/2026-11-27-plugin-api/tasks.md` §3b, the reader's history as
+  a plugin.

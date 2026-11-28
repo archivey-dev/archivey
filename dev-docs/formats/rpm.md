@@ -11,7 +11,7 @@ as a built-in the way ar and CPIO are.
 
 | | |
 | --- | --- |
-| Read | Yes. `internal/backends/rpm_reader.py`, an `RpmHandler` (`SequentialFormatHandler`) and an `RpmReader` (`SequentialReader` with `data_on_demand`), registered with `register_builtin_format` |
+| Read | Yes. `internal/backends/rpm_reader.py`, an `RpmHandler` (`SequentialFormatHandler`) and an `RpmReader` (`SequentialReader` with `data_on_demand`), registered from core's format table |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A file, a stream that can seek, or a pipe (`pipe=True`) |
 | Listing cost | `INDEXED`: the file list is the header's, and listing decodes none of the payload |

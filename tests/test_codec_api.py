@@ -23,6 +23,7 @@ from archivey import (
     ArchiveyUsageError,
     ContainerFormat,
     CorruptionError,
+    DetectionConfidence,
     DiagnosticCode,
     FormatDetectionError,
     FormatPolicy,
@@ -350,7 +351,13 @@ class ProbedDecompressor(ToyDecompressor):
 
 class ProbedHandler(CodecHandler):
     stream_format = ProbedStream.PROBED
-    probe = staticmethod(lambda prefix: prefix.startswith(_PROBED_MAGIC))
+    probe = staticmethod(
+        lambda prefix: (
+            DetectionConfidence.PROBABLE
+            if prefix.startswith(_PROBED_MAGIC)
+            else DetectionConfidence.REJECTED
+        )
+    )
 
     def decompressor(self, call: CodecCall) -> ProbedDecompressor:
         return ProbedDecompressor()
@@ -377,6 +384,49 @@ def test_a_probe_finds_a_codec_with_no_magic(tmp_path: Path) -> None:
         assert detect_format(io.BytesIO(data), config=config).format == probed
         with open_stream(io.BytesIO(data)) as stream:
             assert stream.read() == _TEXT
+
+
+def test_a_codec_probe_grades_its_match(tmp_path: Path) -> None:
+    """A weak match on an unnamed source is a ``GUESS``; the extension raises it."""
+
+    class GuessingHandler(ProbedHandler):
+        pass
+
+    GuessingHandler.probe = staticmethod(
+        lambda prefix: (
+            DetectionConfidence.GUESS
+            if prefix.startswith(_PROBED_MAGIC)
+            else DetectionConfidence.REJECTED
+        )
+    )
+    data = _probed(_TEXT)
+    config = ArchiveyConfig(always_probe_content=True)
+    with registration_scope():
+        register_codec(GuessingHandler)
+        info = detect_format(io.BytesIO(data), config=config)
+        assert info.confidence is DetectionConfidence.GUESS
+        path = tmp_path / "notes.toyprobed"
+        path.write_bytes(data)
+        assert detect_format(path).confidence is DetectionConfidence.PROBABLE
+
+
+def test_a_codec_probe_that_answers_a_bool_is_no_match(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class BoolHandler(ProbedHandler):
+        pass
+
+    BoolHandler.probe = staticmethod(lambda prefix: True)  # type: ignore[assignment]
+    config = ArchiveyConfig(always_probe_content=True)
+    with registration_scope():
+        register_codec(BoolHandler)
+        with (
+            caplog.at_level(logging.DEBUG, logger="archivey.detection"),
+            pytest.raises(FormatDetectionError),
+        ):
+            detect_format(io.BytesIO(_probed(_TEXT)), config=config)
+    levels = [r.levelno for r in caplog.records if "plugin probe" in r.getMessage()]
+    assert levels == [logging.WARNING]
 
 
 def test_a_probe_that_raises_is_no_match(caplog: pytest.LogCaptureFixture) -> None:

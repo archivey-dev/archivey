@@ -19,9 +19,19 @@ line. How to write the entry: see
   (`ArchiveyConfig.salvage_limits`): TAR searches past damage for the next header and
   lists what it finds, flagged, even when the archive's start is lost; other formats
   read as before and record `SALVAGE_UNAVAILABLE`.
+- A format or codec plugin can use archivey-speedups' fast decoders:
+  `context.speedup("lzw")` (or `call.speedup()`) returns the speedup, or `None` when it
+  can't run. Their interfaces are in the new `archivey.speedups` module.
 
 ### Changed
 
+- **Breaking:** a plugin's `probe` (on `FormatHandler` and `CodecHandler`) returns a
+  verdict, not a bool: the new `DetectionConfidence.REJECTED` for no,
+  `DetectionConfidence.GUESS` for a weak match, `DetectionConfidence.PROBABLE` for a
+  match. `detect_format()` reports it as the confidence, raised to `PROBABLE` when the
+  extension names the format. A probe that returns a bool, `None` or `CERTAIN` counts as
+  no match and logs a warning; replace `True` with `DetectionConfidence.PROBABLE` and
+  `False` with `DetectionConfidence.REJECTED`.
 - **Breaking:** with `concurrent_operations=True`, `stream_members()`, `extract_all()`
   and `verify_all()` no longer run beside other calls: while a pass runs, `open()`,
   `read()`, `get()`, `members()`, `members_report()`, iteration or another pass raises

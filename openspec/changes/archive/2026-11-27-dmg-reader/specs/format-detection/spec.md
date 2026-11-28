@@ -48,6 +48,10 @@ read.
 | The same block one byte off its checksum, or with an empty name, no extension | `FormatDetectionError` |
 | gzip of such a v7 tar | `TAR_GZ`, `PROBABLE`, `content_probe` |
 | gzip of a binary CPIO archive, named `.cpio.gz` or with `always_probe_content`; the same with no name | `(CPIO, GZIP)`, `PROBABLE`, `content_probe`: a container's content probe runs on the first 512 decoded bytes under the rule it follows on an uncompressed source; with no name, `GZ` |
+| A plugin format's probe answers `GUESS`, no name, `always_probe_content` | The plugin format, `GUESS`, `content_probe` |
+| The same, named with the plugin's extension | The plugin format, `PROBABLE`, `content_probe` |
+| gzip of a plugin sequential format whose probe answers `GUESS`, no name, `always_probe_content`; the same named `.<ext>.gz` | `GZ`: a weak inner match does not switch formats; named, `(<plugin>, GZIP)`, `PROBABLE`, corroborated |
+| A plugin probe answers `None`, `True`, `CERTAIN` or another non-verdict | No match; one WARNING on `archivey.detection` |
 | Raw CD sector sync at 0 | ISO, `CERTAIN`, `magic`; a Mode 1 or Mode 2 Form 1 image opens, other layouts raise `UnsupportedFeatureError` |
 | `koly` block at offset 0 | `DMG`, `CERTAIN`, `magic`; read by `format-dmg` |
 | `koly` trailer, and no earlier step matched | `DMG`, `CERTAIN`, `magic`; read by `format-dmg` |

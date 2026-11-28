@@ -10,7 +10,7 @@ written against `archivey.formats` and registered as a built-in, as LHA and CAB 
 
 | | |
 | --- | --- |
-| Read | Yes. `internal/backends/arj_reader.py`, an `ArjHandler` (`IndexedFormatHandler`) and an `ArjReader` (`IndexedReader`), registered with `register_builtin_format` |
+| Read | Yes. `internal/backends/arj_reader.py`, an `ArjHandler` (`IndexedFormatHandler`) and an `ArjReader` (`IndexedReader`), registered from core's format table |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A file or a stream that can seek, from its start or behind a self-extracting stub (§4). Not a pipe, for now: the listing seeks past each member's data to the next header |
 | Listing cost | Header by header, one read per header and a seek past the data |
@@ -104,7 +104,7 @@ and file type then confirm it at open, so another file that starts with `60 EA` 
 **Self-extracting archives.** ARJ's `-je` writes a program with the archive after it:
 ARJSFX, ARJSFXV or ARJSFXJR, DOS `MZ` programs (no PE header) from ARJ for DOS, ELF ones
 from ARJ for Unix. No DOS ARJ module is a `.COM`. The backend declares `60 EA` at offset 0
-as SFX magic (`SFX_PARSER_SCANS`), with `_validate_main_header`: the header there must
+as SFX magic (`SFX_PARSER_SCANS`), with `validate_stub_hit`: the header there must
 pass its size bounds, its CRC-32, its layout and its extended headers' CRC-32s, and be
 file type 2. The CRC-32 leaves a stub's stray `60 EA` a chance of 1 in 2^32, so, unlike
 LHA, the validator does not walk on to the members. A main header the source ends inside

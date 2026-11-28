@@ -10,7 +10,7 @@ as a built-in, as CAB, XAR and ar are.
 
 | | |
 | --- | --- |
-| Read | Yes. `internal/backends/lha_reader.py`, a `LhaHandler` (`IndexedFormatHandler`) and a `LhaReader` (`IndexedReader`), registered with `register_builtin_format` |
+| Read | Yes. `internal/backends/lha_reader.py`, a `LhaHandler` (`IndexedFormatHandler`) and a `LhaReader` (`IndexedReader`), registered from core's format table |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A file or a stream that can seek, from its start or behind a self-extracting stub (§2.6). Not a pipe, for now: the listing seeks past each member's data to the next header |
 | Listing cost | Header by header, one read per header and a seek past the data |
@@ -180,7 +180,7 @@ An LHA self-extractor is a program with the archive after it: DOS `.COM` and `.E
 stubs (LHarc, LHA, LArc, PMarc), Windows (LHMelt's WinSFX, ExpLzh's DECLHA), the Amiga
 (LhASFX), the Atari ST and the X68000. The archive is found by its first header, as
 lhasa finds it, but with the shared SFX scan (`internal/sfx.py`): the method at offset 2
-of a header is the needle (`SFX_MAGIC`, offset 2), and `_validate_header` reads the
+of a header is the needle (`SFX_MAGIC`, offset 2), and `validate_stub_hit` reads the
 header there and checks its sum or CRC, so a stub that names the methods in its code is
 passed over. Detection runs it behind an executable cue, and as the leading-bytes scan
 when nothing else matched: a `.COM`, Amiga hunk or Atari TOS stub has no cue.
@@ -199,10 +199,11 @@ by chance loses to the real archive; opening still falls back to it. ExpLzh's
 DECLHA stubs carry no decoy, and lhasa's skip passes over their real archive (it lists
 nothing); archivey reads it.
 
-The format API gives a reader no start offset, so `register_builtin_format` sets
-`SFX_MAGIC` for LHA and `IndexedReaderAdapter` reads detection's `[payload_offset,
-payload_end)` as the reader's whole source (`ReadBackend.open_read`'s promise). A plugin
-cannot declare `SFX_MAGIC`, and still refuses an offset.
+The format API gives a reader no start offset, so core's format table
+(`internal/format_table.py`) sets `SFX_MAGIC` for LHA and `IndexedReaderAdapter` reads
+detection's `[payload_offset, payload_end)` as the reader's whole source
+(`ReadBackend.open_read`'s promise). A plugin cannot declare `SFX_MAGIC`, and still
+refuses an offset.
 
 Measured once (2026-11-09) on lhasa's 15 self-extractors: the 12 lhasa extracts read the
 same, auto-detected and forced; PMarc's is listed and its `-pm2-` member refused; the two
