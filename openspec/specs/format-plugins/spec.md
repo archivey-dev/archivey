@@ -483,3 +483,36 @@ codec off, and `FormatInfo.from_plugin` SHALL be true for a format that uses it.
 | A module in `requires` missing | `FormatSupport.NONE` with the handler's install hint |
 | `open_stream(format=ToyStream.TOY)` before `register_codec()` | `UnsupportedFeatureError` naming `register_codec`, as `open_archive` refuses an unregistered format |
 | `stream_format = StreamFormat.GZIP`, or a value a built-in uses | `ArchiveyUsageError` at registration |
+
+### Requirement: A plugin asks for an archivey-speedups fast decoder by name
+
+`ReaderContext.speedup(name)` and `CodecCall.speedup(name)` SHALL return the named fast
+decoder of archivey-speedups when it can run: the package is installed and recent
+enough, the caller's library policy allows it, and, for the five decoders, under
+`ProcessIsolation.NATIVE_DECODERS`, a decoder child can run it. The `"crc16_arc"`
+checksum SHALL follow the in-process checksum rule under every isolation setting.
+Otherwise they SHALL return `None`. A name that is not a speedup SHALL raise
+`ArchiveyUsageError`. `archivey.speedups` SHALL name the interface of each speedup.
+archivey SHALL give back the decoder child of each object it handed out when the member
+stream (for a codec) or the reader closes, and when the codec's `decompressor()` or the
+reader's open raises. Each decompressor SHALL own what its call handed out, whatever its
+equality or hash. `CodecCall` SHALL pickle, resolve its type hints and convert as a
+plain dataclass, and a call copied with `dataclasses.replace` SHALL ask with the
+caller's policy. The lookup SHALL check what can run; under `NATIVE_DECODERS`, making a
+decoder or decoding a block SHALL raise `ResourceUnavailableError` when no decoder child
+can start then.
+
+#### Scenario: asking for a speedup
+
+| Case | Expected |
+| --- | --- |
+| archivey-speedups installed, default config | each name returns a callable |
+| `FormatPolicy(exclude_libraries={"archivey-speedups"})` | each name returns `None` |
+| `ProcessIsolation.NATIVE_DECODERS` | a decoder is asked to run in a decoder child |
+| the same, no decoder child can run | `"crc16_arc"` returns a callable; the decoders return `None` |
+| two live decompressors that compare equal; the first stream closes | only the first one's child is given back |
+| `decompressor()` or the reader's open raises after making an LZW decompressor | the child is given back before the error reaches the caller |
+| `speedup("bcj2")` | `ArchiveyUsageError` |
+| a reader made an LZW decompressor in a decoder child; the reader closes | the child is given back |
+| the same, the object is in this process | it is closed, which does nothing: it keeps decoding |
+| a reader closes its LZW decompressor when the member is done | the child is given back then, and closing again at reader close is harmless |
