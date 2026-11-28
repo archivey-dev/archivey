@@ -34,6 +34,7 @@ from typing import BinaryIO, Self
 
 from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
+from archivey.internal.streams.streamtools.binaryio import read_blocking
 
 _SKIP_CHUNK = 1 << 20  # 1 MiB
 
@@ -50,13 +51,19 @@ def skip_forward(
     caller tracking the stream position stays correct when a later ``read`` raises
     partway through the skip (a 7z folder decode error, a dying ``unrar`` pipe).
 
-    Raises :class:`EOFError` if the stream ends before ``count`` bytes are consumed.
+    Raises :class:`EOFError` if the stream ends before ``count`` bytes are consumed,
+    :class:`BlockingIOError` if a non-blocking ``stream`` has nothing ready (a stall
+    is not the end), and :class:`ValueError` if a read returns more than it was asked
+    for, since the skip would then pass its target.
     """
     remaining = count
     while remaining > 0:
-        chunk = stream.read(min(remaining, _SKIP_CHUNK))
+        ask = min(remaining, _SKIP_CHUNK)
+        chunk = read_blocking(stream, ask)
         if not chunk:
             raise EOFError("stream ended before the requested position")
+        if len(chunk) > ask:
+            raise ValueError(f"read({ask}) returned {len(chunk)} bytes: {stream!r}")
         remaining -= len(chunk)
         if on_chunk is not None:
             on_chunk(len(chunk))

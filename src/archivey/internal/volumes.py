@@ -69,7 +69,7 @@ from archivey.internal.remote import (
     open_file_compression,
     open_file_name,
 )
-from archivey.internal.source import ArchiveSource, PipeView, seek_is_expensive
+from archivey.internal.source import ArchiveSource, seek_is_expensive
 from archivey.internal.streams.streamtools import (
     is_stream,
     readinto_via_read,
@@ -78,7 +78,6 @@ from archivey.internal.streams.streamtools import (
 )
 from archivey.internal.streams.streamtools.binaryio import (
     ask_resume_offset,
-    is_seekable,
     read_blocking,
 )
 from archivey.terminal import display_path
@@ -1797,12 +1796,5 @@ def _resolve_single(
         # source type archivey does not take. ``reject_source`` is NoReturn, which
         # is what keeps ``source`` narrowed to ``BinaryIO`` below.
         reject_source(source)
-    if pipe and is_seekable(source):
-        # Wrapped before it is measured: ``for_stream`` would otherwise seek to the
-        # end and back to find a size that pipe mode does not use.
-        view = PipeView(source, owns=False, name=source_name(source))
-        archive_source = ArchiveSource.for_stream(cast("BinaryIO", view))
-        archive_source.piped_from_seekable = True
-    else:
-        archive_source = ArchiveSource.for_stream(source)
+    archive_source = ArchiveSource.for_stream(source, pipe=pipe)
     return ResolvedSource(archive_source, source_name(archive_source), 1)

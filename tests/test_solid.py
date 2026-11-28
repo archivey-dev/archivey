@@ -306,3 +306,39 @@ def test_tell_after_reader_close_says_reader_closed() -> None:
     reader.close()
     with pytest.raises(ValueError, match="SolidBlockReader is closed"):
         member.tell()
+
+
+class _StallsAfter(io.RawIOBase):
+    """A non-blocking raw stream: hands out ``data``, then has nothing ready."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes | None:
+        if not self._data:
+            return None
+        chunk, self._data = self._data[:n], self._data[n:]
+        return chunk
+
+
+def test_skip_forward_reports_a_stall_as_blocking_not_eof() -> None:
+    calls: list[int] = []
+    with pytest.raises(BlockingIOError):
+        skip_forward(_StallsAfter(b"abc"), 5, on_chunk=calls.append)  # type: ignore[arg-type]  # RawIOBase double
+    assert calls == [3]
+
+
+class _OverReads(io.RawIOBase):
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes:
+        return b"x" * (n + 1)
+
+
+def test_skip_forward_refuses_a_read_longer_than_asked() -> None:
+    with pytest.raises(ValueError, match="returned"):
+        skip_forward(_OverReads(), 4)  # type: ignore[arg-type]  # RawIOBase double

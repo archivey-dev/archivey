@@ -146,6 +146,7 @@ from archivey.internal.streams.streamtools import (
     ensure_bufferedio,
     is_seekable,
     read_arrived,
+    read_exact,
     source_byte_size,
 )
 from archivey.internal.streams.streamtools.binaryio import (
@@ -2133,16 +2134,6 @@ def _full_count(data: BinaryIO | io.RawIOBase) -> BinaryIO:
     return stream if _reads_full(stream) else FullCountStream(stream)
 
 
-def _read_up_to(decoded: _Decoded, n: int) -> bytes:
-    """Up to ``n`` bytes of ``decoded``, fewer only at its end."""
-    chunks: list[bytes] = []
-    left = n
-    while left and (chunk := decoded.read(left)):
-        chunks.append(chunk)
-        left -= len(chunk)
-    return b"".join(chunks)
-
-
 class _Decoded:
     """A member's decoded data as the reader handed it over (``MemberSpan.data``):
     good until the walk that yielded it moves on, when :meth:`finish` reads what is
@@ -2189,7 +2180,7 @@ class _Decoded:
         self.prefix = 0
         self.done = False
 
-    def read(self, n: int) -> bytes:
+    def read(self, n: int = -1, /) -> bytes:
         if self.done:
             raise ArchiveyUsageError(
                 "member data is no longer readable: the pass has moved on"
@@ -3082,7 +3073,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         (``SequentialReader.link_target_in_data``), or report it too long."""
         if decoded is not None:
             with self._translated_errors(member.name), self._handle_guard():
-                target = _read_up_to(decoded, MAX_LINK_TARGET_BYTES + 1)
+                target = read_exact(decoded, MAX_LINK_TARGET_BYTES + 1)
             if len(target) > MAX_LINK_TARGET_BYTES:
                 self._emit_link_target_too_long(member, member_id=index)
             else:
@@ -3320,7 +3311,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 # Data that ends before ``start`` is short: the reader of the
                 # handed-off stream finds it so (TruncatedError).
                 with self._translated_errors(decoded.name), self._handle_guard():
-                    _read_up_to(target, start)
+                    read_exact(target, start)
             return self._plugin_locked(_DataWalkStream(self, data_walk, target))
         except BaseException:
             if data_walk is not None:

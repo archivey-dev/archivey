@@ -1672,3 +1672,47 @@ def test_a_standard_library_decompressor_is_expensive_to_seek(
     stream = make()
     assert source_module.seek_is_expensive(stream)
     assert not source_module.seeks_to_end_are_cheap(stream)
+
+
+class _SeekRecorder(io.BytesIO):
+    """A seekable caller stream that records every ``seek`` and ``tell``."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.moves: list[str] = []
+
+    def seek(self, offset: int, whence: int = os.SEEK_SET, /) -> int:
+        self.moves.append("seek")
+        return super().seek(offset, whence)
+
+    def tell(self) -> int:
+        self.moves.append("tell")
+        return super().tell()
+
+
+def test_for_stream_pipe_wraps_a_seekable_stream_before_measuring_it() -> None:
+    caller = _SeekRecorder(b"0123456789")
+    caller.read(2)
+    caller.moves.clear()
+    wrapped = ArchiveSource.for_stream(caller, pipe=True)
+    # Measuring the caller's stream would seek it to the end and back; pipe mode
+    # reads it as a pipe would arrive, from where the caller left it.
+    assert caller.moves == []
+    assert not wrapped.seekable()
+    assert wrapped.piped_from_seekable
+    assert wrapped.read() == b"23456789"
+    wrapped.close()
+    assert not caller.closed
+
+
+def test_for_stream_pipe_leaves_a_non_seekable_stream_unmarked() -> None:
+    wrapped = ArchiveSource.for_stream(NonSeekableBytesIO(b"abc"), pipe=True)  # type: ignore[arg-type]
+    assert not wrapped.piped_from_seekable
+    assert wrapped.read() == b"abc"
+
+
+def test_for_stream_pipe_returns_an_archive_source_as_it_is() -> None:
+    # ``open_archive`` pipes a seekable ArchiveSource itself (``read_as_pipe``),
+    # which owns the view; wrapping it here as well would borrow it instead.
+    inner = ArchiveSource.for_stream(io.BytesIO(b"abc"))
+    assert ArchiveSource.for_stream(inner, pipe=True) is inner
