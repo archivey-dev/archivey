@@ -12,7 +12,7 @@ import pickle
 import zlib
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, ClassVar, get_type_hints
+from typing import Any, ClassVar, get_args, get_type_hints
 
 import pytest
 
@@ -41,10 +41,11 @@ from archivey.internal.format_adapter import registration_scope
 from archivey.internal.streams.codecs import deps
 from archivey.speedups import SpeedupName
 from archivey.types import OptionalLibrary
+from tests.conftest import importorskip
 from tests.test_codec_api import TOY, ToyDecompressor, ToyHandler
 from tests.test_format_api import ToyHandler as ToyaHandler, ToyReader, build_toya
 
-_NAMES: tuple[SpeedupName, ...] = ("crc16_arc", "lzfse", "lzo1x", "lzvn", "lzw", "lzx")
+_NAMES: tuple[SpeedupName, ...] = get_args(SpeedupName)
 _OFF = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={"archivey-speedups"}))
 
 
@@ -252,28 +253,6 @@ def test_closing_a_reader_gives_back_its_kernel_children(
             archive.members()
             assert [c.closed for c in _FakeChild.made] == [0]
     assert [c.closed for c in _FakeChild.made] == [1]
-
-
-def test_a_kernel_object_not_in_a_child_is_not_closed(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    class InProcess(_FakeChild):
-        holds_decoder_child = False
-
-    _FakeChild.made = []
-    monkeypatch.setattr(
-        kernels,
-        "lzw",
-        lambda excluded, *, isolated: kernels.Lzw(
-            Decompressor=InProcess,  # type: ignore[arg-type]
-            library=OptionalLibrary.ARCHIVEY_SPEEDUPS,
-        ),
-    )
-    with registration_scope():
-        register_format(_LzwToyaHandler)
-        with open_archive(_toya(tmp_path)) as archive:
-            archive.members()
-    assert [c.closed for c in _FakeChild.made] == [0]
 
 
 def test_the_kernel_types_are_public() -> None:
@@ -654,3 +633,199 @@ def test_a_real_call_converts_to_json() -> None:
     as_dict = dataclasses.asdict(call)
     assert set(as_dict) == {"size", "properties", "limits", "probe_bound"}
     json.dumps(as_dict)
+
+
+# --- review round (Fable, cold): real speedup objects, the reader's lease ------------
+
+_HALF = 8  # bytes of _DOT_Z decoded before the stream or reader closes
+_ISOLATION = pytest.mark.parametrize(
+    "config", [None, _ISOLATED], ids=["in-process", "native"]
+)
+
+
+def _after_close(decoder: Any, config: ArchiveyConfig | None) -> None:
+    """A real object closed by archivey: in this process closing does nothing, so it
+    decodes the rest; in a decoder child it refuses, its child given back."""
+    if config is None:
+        assert (
+            decoder.decompress(_DOT_Z[_HALF:]) + decoder.flush() == b"o hello hello\n"
+        )
+    else:
+        with pytest.raises(ArchiveyUsageError, match="closed"):
+            decoder.decompress(_DOT_Z[_HALF:])
+
+
+class _RealLzwReader(ToyReader):
+    made: ClassVar[list[Any]] = []
+
+    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
+        super().__init__(source, context)
+        make = context.speedup("lzw")
+        assert make is not None
+        decoder = make()
+        assert decoder.decompress(_DOT_Z[:_HALF]) == b"hell"
+        _RealLzwReader.made.append(decoder)
+
+
+class _RealLzwToyaHandler(ToyaHandler):
+    def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
+        return _RealLzwReader(source, context)
+
+
+class _RealLzwToyHandler(ToyHandler):
+    made: ClassVar[list[Any]] = []
+
+    def decompressor(self, call: CodecCall) -> ToyDecompressor:
+        make = call.speedup("lzw")
+        assert make is not None
+        decoder = make()
+        assert decoder.decompress(_DOT_Z[:_HALF]) == b"hell"
+        _RealLzwToyHandler.made.append(decoder)
+        return super().decompressor(call)
+
+
+@_ISOLATION
+def test_a_readers_real_speedup_is_closed_with_the_reader(
+    tmp_path: Path, config: ArchiveyConfig | None
+) -> None:
+    importorskip("archivey_speedups")
+    _RealLzwReader.made = []
+    with registration_scope():
+        register_format(_RealLzwToyaHandler)
+        with open_archive(_toya(tmp_path), config=config) as archive:
+            archive.members()
+    (decoder,) = _RealLzwReader.made
+    _after_close(decoder, config)
+
+
+@_ISOLATION
+def test_a_codecs_real_speedup_is_closed_with_the_stream(
+    config: ArchiveyConfig | None,
+) -> None:
+    importorskip("archivey_speedups")
+    _RealLzwToyHandler.made = []
+    with registration_scope():
+        register_codec(_RealLzwToyHandler)
+        with open_stream(
+            io.BytesIO(_toy_stream()), format=TOY, config=config
+        ) as stream:
+            assert stream.read() == b"hello"
+    (decoder,) = _RealLzwToyHandler.made
+    _after_close(decoder, config)
+
+
+@_ISOLATION
+def test_the_guides_lzw_adapter_decodes_as_the_twin_does_with_a_real_speedup(
+    config: ArchiveyConfig | None,
+) -> None:
+    importorskip("archivey_speedups")
+
+    class Handler(_DotZHandler):
+        def decompressor(self, call: CodecCall) -> _LzwCodecDecompressor:  # type: ignore[override]
+            make = call.speedup("lzw")
+            assert make is not None
+            return _LzwCodecDecompressor(make)
+
+    with registration_scope():
+        register_codec(Handler)
+        with open_stream(io.BytesIO(_DOT_Z), format=TOY, config=config) as stream:
+            assert stream.read() == b"hello hello hello\n"
+        with (
+            open_stream(io.BytesIO(_DOT_Z[:-1]), format=TOY, config=config) as stream,
+            pytest.raises(TruncatedError),
+        ):
+            stream.read()
+
+
+def test_a_readers_first_speedup_calls_share_one_lease(
+    monkeypatch: pytest.MonkeyPatch, fake_lzw: None, tmp_path: Path
+) -> None:
+    import threading
+
+    # Two threads that ask at once both see no lease yet if it is made on first use;
+    # the barrier holds each in the lease's constructor until the other arrives.
+    barrier = threading.Barrier(2, timeout=1)
+
+    class Racing(kernels.KernelLease):
+        def __init__(self) -> None:
+            super().__init__()
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                pass
+
+    monkeypatch.setattr(kernels, "KernelLease", Racing)
+
+    class Reader(ToyReader):
+        def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
+            super().__init__(source, context)
+
+            def ask() -> None:
+                make = context.speedup("lzw")
+                assert make is not None
+                _keep.append(make())
+
+            threads = [threading.Thread(target=ask) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+    class Handler(ToyaHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
+            return Reader(source, context)
+
+    _keep: list[Any] = []
+    with registration_scope():
+        register_format(Handler)
+        with open_archive(_toya(tmp_path)) as archive:
+            archive.members()
+    assert [c.closed for c in _FakeChild.made] == [1, 1]
+
+
+def test_the_stateful_speedups_and_their_twins_have_close() -> None:
+    from archivey.internal.kernels.python import lzw as lzw_twin, lzx as lzx_twin
+    from archivey.speedups import LzwDecompressor, LzxDecompressor
+
+    assert "close" in LzwDecompressor.__dict__
+    assert "close" in LzxDecompressor.__dict__
+    # A plugin's own twin needs no child, so its close does nothing.
+    for twin in (lzw_twin.Decompressor(), lzx_twin.Decompressor(16, output_size=1)):
+        twin.close()
+        twin.close()
+
+
+@_ISOLATION
+def test_a_reader_closes_its_real_speedup_early(
+    tmp_path: Path, config: ArchiveyConfig | None
+) -> None:
+    """A reader done with a member closes its decoder there, so a child per member is
+    not held until the reader closes; archivey's close at the end is then harmless."""
+    importorskip("archivey_speedups")
+    closed_early: list[Any] = []
+
+    class Reader(ToyReader):
+        def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
+            super().__init__(source, context)
+            make = context.speedup("lzw")
+            assert make is not None
+            decoder = make()
+            assert decoder.decompress(_DOT_Z) + decoder.flush() == (
+                b"hello hello hello\n"
+            )
+            decoder.close()
+            closed_early.append(decoder)
+
+    class Handler(ToyaHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
+            return Reader(source, context)
+
+    with registration_scope():
+        register_format(Handler)
+        with open_archive(_toya(tmp_path), config=config) as archive:
+            (decoder,) = closed_early
+            if config is not None:
+                # Its child is given back now, while the reader is still open.
+                with pytest.raises(ArchiveyUsageError, match="closed"):
+                    decoder.decompress(b"")
+            archive.members()

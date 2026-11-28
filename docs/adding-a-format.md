@@ -1006,8 +1006,12 @@ The names are `"crc16_arc"`, `"lzfse"`, `"lzo1x"`, `"lzvn"`, `"lzw"` and `"lzx"`
 raises the same errors as a correct Python decoder of the same interface, so the
 choice changes speed only. When a speedup runs in a decoder child, archivey gives
 the child back when the reader closes (for `context.speedup()`) or when the member
-stream closes (for `call.speedup()`), so the plugin does not close it. It does so too
-when the reader's `open` or the handler's `decompressor()` raises.
+stream closes (for `call.speedup()`). It does so too when the reader's `open` or the
+handler's `decompressor()` raises. A reader that makes an `"lzw"` or `"lzx"`
+decompressor for each member calls its `close()` when the member is done, so it does
+not hold a decoder child per member until the reader closes. Closing twice is harmless,
+so archivey's own close at the end does no harm. The Python decoder you keep for the
+`None` case needs a `close()` too, one that does nothing.
 
 Under `NATIVE_DECODERS`, the first `speedup()` call in a process may start a decoder
 child, to learn what the package can run. Making a decoder or decoding a block then

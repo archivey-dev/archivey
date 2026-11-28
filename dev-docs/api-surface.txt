@@ -1394,6 +1394,7 @@ init archivey.speedups.Crc16(*args, **kwargs)
 class archivey.speedups.LzwDecompressor(Protocol)
 init archivey.speedups.LzwDecompressor(*args, **kwargs)
 property archivey.speedups.LzwDecompressor.clear_offsets: list[tuple[int, int]]
+method archivey.speedups.LzwDecompressor.close(self) -> None
 method archivey.speedups.LzwDecompressor.decompress(self, data: bytes | bytearray | memoryview, max_length: int = -1) -> bytes
 property archivey.speedups.LzwDecompressor.eof: bool
 method archivey.speedups.LzwDecompressor.flush(self, max_length: int = -1) -> bytes
@@ -1408,6 +1409,7 @@ class archivey.speedups.LzwFactory(Protocol)
 init archivey.speedups.LzwFactory(*args, **kwargs)
 class archivey.speedups.LzxDecompressor(Protocol)
 init archivey.speedups.LzxDecompressor(*args, **kwargs)
+method archivey.speedups.LzxDecompressor.close(self) -> None
 method archivey.speedups.LzxDecompressor.decompress(self, data: bytes | bytearray | memoryview, max_length: int = -1) -> bytes
 property archivey.speedups.LzxDecompressor.eof: bool
 method archivey.speedups.LzxDecompressor.flush(self, max_length: int = -1) -> bytes

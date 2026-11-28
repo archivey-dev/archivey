@@ -753,7 +753,7 @@ class ReaderContext:
     # adapter; not for plugins.
     _keep_metadata: Callable[[int, str], None] | None = None
     # The kernel objects ``speedup()`` handed out, given back at close. Internal.
-    _kernel_lease: KernelLease | None = None
+    _kernel_lease: KernelLease
 
     def __init__(
         self,
@@ -796,6 +796,11 @@ class ReaderContext:
         self._hold = hold
         self._charge_metadata = charge_metadata
         self._open_nested = open_nested
+        from archivey.internal.kernels import KernelLease
+
+        # Made here, not on first use: two threads asking at once would each make one,
+        # and what the lost one tracked would never be given back.
+        self._kernel_lease = KernelLease()
 
     @property
     def encoding(self) -> str | None:
@@ -1026,8 +1031,6 @@ class ReaderContext:
         from archivey.internal import kernels
         from archivey.internal.config import ProcessIsolation
 
-        if self._kernel_lease is None:
-            self._kernel_lease = kernels.KernelLease()
         config = self._config
         return kernels.for_plugin(
             name,
@@ -1039,8 +1042,7 @@ class ReaderContext:
     def _release_kernels(self) -> None:
         """Give back the decoder children of the kernel objects :meth:`speedup` handed
         out. The adapter calls it when the reader closes."""
-        if self._kernel_lease is not None:
-            self._kernel_lease.release()
+        self._kernel_lease.release()
 
     def normalize_name(self, name: str, member_type: MemberType) -> str:
         """The name archivey gives a member: ``./a//b`` becomes ``a/b``, and a

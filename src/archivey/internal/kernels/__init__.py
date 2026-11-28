@@ -378,28 +378,33 @@ class KernelLease:
     when the reader or the stream closes, not when the collector frees them.
 
     It keeps weak references: an object the plugin drops is freed, and its child given
-    back, as before. Only objects in a decoder child are kept.
+    back, as before. Every object made is kept, wherever it runs: :meth:`release` closes
+    it, which gives back a decoder child and does nothing to an object in this process.
+    The set is made at the first object, so a call site that makes none costs nothing.
     """
 
     __slots__ = ("__weakref__", "_made")
 
     def __init__(self) -> None:
-        self._made: weakref.WeakSet[Any] = weakref.WeakSet()
+        self._made: weakref.WeakSet[Any] | None = None
 
     def track(self, factory: Callable[..., Any]) -> Callable[..., Any]:
-        """``factory``, noting each object it makes that holds a decoder child."""
+        """``factory``, noting each object it makes."""
 
         @functools.wraps(factory)
         def make(*args: Any, **kwargs: Any) -> Any:
             made = factory(*args, **kwargs)
-            if getattr(type(made), "holds_decoder_child", False):
-                self._made.add(made)
+            if self._made is None:
+                self._made = weakref.WeakSet()
+            self._made.add(made)
             return made
 
         return make
 
     def release(self) -> None:
-        """Give back the decoder child of every object still alive."""
+        """Close every object still alive, giving back its decoder child."""
+        if self._made is None:
+            return
         for made in list(self._made):
             self._made.discard(made)
             made.close()
@@ -444,7 +449,10 @@ def for_plugin(
     run it under ``isolated``. A usage error for a name that is not a
     :data:`~archivey.speedups.SpeedupName`."""
     if name == "crc16_arc":
-        return crc16_arc(excluded) if kernels("crc16_arc", excluded) else None
+        from archivey.internal.kernels import python
+
+        crc = crc16_arc(excluded)
+        return None if crc is python.crc16_arc else crc
     if name == "lzo1x":
         block = lzo1x(excluded, isolated=isolated)
         return None if block.library is None else block.decompress

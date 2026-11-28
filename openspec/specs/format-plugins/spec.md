@@ -514,4 +514,5 @@ can start then.
 | `decompressor()` or the reader's open raises after making an LZW decompressor | the child is given back before the error reaches the caller |
 | `speedup("bcj2")` | `ArchiveyUsageError` |
 | a reader made an LZW decompressor in a decoder child; the reader closes | the child is given back |
-| the same, the object is in this process | nothing is closed |
+| the same, the object is in this process | it is closed, which does nothing: it keeps decoding |
+| a reader closes its LZW decompressor when the member is done | the child is given back then, and closing again at reader close is harmless |

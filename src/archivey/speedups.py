@@ -22,8 +22,9 @@ A speedup gives the same bytes and raises the same errors as a correct Python de
 of the same interface: the choice changes speed only. A speedup's own fault (a Rust
 panic) raises ``CorruptionError``. archivey gives back the decoder child of every
 object it handed out when the reader closes (for ``ReaderContext.speedup``) or when
-the member stream closes (for ``CodecCall.speedup``), so a plugin does not close
-them.
+the member stream closes (for ``CodecCall.speedup``). A reader that makes an LZW or
+LZX decompressor per member closes each one when the member is done, so it does not
+hold a decoder child per member until it closes.
 """
 
 from __future__ import annotations
@@ -102,6 +103,13 @@ class LzwDecompressor(Protocol):
 
     def flush(self, max_length: int = -1) -> bytes: ...
 
+    def close(self) -> None:
+        """Give back the decoder child this object runs in, if any; in this process it
+        does nothing. Close it when the member it decodes is done: archivey closes what
+        is still open when the reader or the stream closes. Closing twice is
+        harmless; a closed object in a decoder child raises ``ArchiveyUsageError``."""
+        ...
+
     @property
     def eof(self) -> bool: ...
 
@@ -170,6 +178,13 @@ class LzxDecompressor(Protocol):
     ) -> bytes: ...
 
     def flush(self, max_length: int = -1) -> bytes: ...
+
+    def close(self) -> None:
+        """Give back the decoder child this object runs in, if any; in this process it
+        does nothing. Close it when the member it decodes is done: archivey closes what
+        is still open when the reader or the stream closes. Closing twice is
+        harmless; a closed object in a decoder child raises ``ArchiveyUsageError``."""
+        ...
 
     @property
     def eof(self) -> bool: ...
