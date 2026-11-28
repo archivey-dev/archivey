@@ -36,7 +36,7 @@ Checked on main `2b66e25` (2026-11-24).
   one list in `cli/common.py`, `REPLACEABLE_CONTAINERS` in `format_adapter.py`, and two
   speed-up tables in `registry.py`.
 - **Diagnostic codes are nearly all generic.** No moving reader needs a code of its
-  own, but three of the 49 are reported only by readers that move:
+  own, but three of the 46 are reported only by readers that move:
   `ARCHIVE_STRUCTURE_INCONSISTENT` (DMG), `ARCHIVE_UNREAD_SESSION` (ISO and CD
   images) and `MEMBER_NAME_DUPLICATE_UNEXPECTED` (CAB). R23 keeps them as general codes.
 
