@@ -177,7 +177,7 @@ _ISOLATED = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
 
 @pytest.fixture
 def isolation_seen(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
-    """Each ``isolated`` a plugin's ``kernel("lzw")`` passed on."""
+    """Each ``isolated`` a plugin's ``speedup("lzw")`` passed on."""
     seen: list[bool] = []
 
     def lzw(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> kernels.Lzw:

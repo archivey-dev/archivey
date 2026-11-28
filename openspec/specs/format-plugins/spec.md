@@ -484,7 +484,7 @@ codec off, and `FormatInfo.from_plugin` SHALL be true for a format that uses it.
 | `open_stream(format=ToyStream.TOY)` before `register_codec()` | `UnsupportedFeatureError` naming `register_codec`, as `open_archive` refuses an unregistered format |
 | `stream_format = StreamFormat.GZIP`, or a value a built-in uses | `ArchiveyUsageError` at registration |
 
-### Requirement: A plugin asks for an archivey-speedups speedup by name
+### Requirement: A plugin asks for an archivey-speedups fast decoder by name
 
 `ReaderContext.speedup(name)` and `CodecCall.speedup(name)` SHALL return the named fast
 decoder of archivey-speedups when it can run: the package is installed and recent
