@@ -1828,9 +1828,9 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
 
     Most codes map 1:1 onto a context ``kind`` via ``_CODE_CONTEXT_KINDS``. Codes that
     share a kind (``member_name_controls``, ``scan_race``, ``unused_argument``,
-    ``unconfirmed_format``, ``archive_eof``, ``local_header``) are told apart by one
-    context field, and every one of them is checked against the value its code
-    requires.
+    ``unconfirmed_format``, ``archive_eof``, ``local_header``, ``name_encoding``) are
+    told apart by one context field, and every one of them is checked against the value
+    its code requires.
     """
     expected = _CODE_CONTEXT_KINDS.get(code)
     if expected is None:
