@@ -142,9 +142,7 @@ def _open_kinds(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     return kinds
 
 
-_ON = ArchiveyConfig(
-    use_rapidgzip=AcceleratorMode.ON, use_indexed_bzip2=AcceleratorMode.ON
-)
+_ON = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
 
 
 @posix_only
@@ -186,13 +184,10 @@ def test_a_reported_member_is_still_read_from_the_file(
     path = _zip(tmp_path, method)
     kinds = _open_kinds(monkeypatch)
     calls: list[SourceProgress] = []
-    config = ArchiveyConfig(
-        use_rapidgzip=AcceleratorMode.ON,
-        use_indexed_bzip2=AcceleratorMode.ON,
-        on_source_read=calls.append,
-        source_read_step=0,
-    )
-    with open_archive(path, config=config) as r:
+    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
+    with open_archive(
+        path, config=config, on_source_read=calls.append, source_read_step=0
+    ) as r:
         assert r.read("data.bin") == _DATA
     assert kinds == [OPEN_RANGE_NOTED]
     with zipfile.ZipFile(path) as zf:
@@ -210,12 +205,10 @@ def test_a_reported_gzip_file_is_read_by_the_child_to_its_end(
     path.write_bytes(gzip.compress(_DATA))
     kinds = _open_kinds(monkeypatch)
     calls: list[SourceProgress] = []
-    config = ArchiveyConfig(
-        use_rapidgzip=AcceleratorMode.ON,
-        on_source_read=calls.append,
-        source_read_step=0,
-    )
-    with open_stream(path, config=config) as stream:
+    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
+    with open_stream(
+        path, config=config, on_source_read=calls.append, source_read_step=0
+    ) as stream:
         assert stream.read() == _DATA
     assert kinds == [OPEN_RANGE_NOTED]
     assert _covered(calls).issuperset(range(path.stat().st_size))
@@ -234,12 +227,10 @@ def test_a_stop_on_a_noted_read_reaches_the_caller(tmp_path: Path) -> None:
     path = _zip(tmp_path, zipfile.ZIP_DEFLATED)
 
     def read(callback: object) -> None:
-        config = ArchiveyConfig(
-            use_rapidgzip=AcceleratorMode.ON,
-            on_source_read=callback,  # type: ignore[arg-type]
-            source_read_step=0,
-        )
-        with open_archive(path, config=config) as r:
+        config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
+        with open_archive(
+            path, config=config, on_source_read=callback, source_read_step=0
+        ) as r:
             r.read("data.bin")
 
     calls: list[SourceProgress] = []
@@ -272,10 +263,11 @@ def test_a_stop_holds_for_every_later_read(tmp_path: Path) -> None:
         if armed:
             raise _Stop("stop")
 
-    config = ArchiveyConfig(
-        use_rapidgzip=AcceleratorMode.ON, on_source_read=stop, source_read_step=0
-    )
-    with open_archive(path, config=config) as r, r.open("data.bin") as stream:
+    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
+    with (
+        open_archive(path, config=config, on_source_read=stop, source_read_step=0) as r,
+        r.open("data.bin") as stream,
+    ):
         assert stream.read(10) == data[:10]
         armed = True
         # The first stop comes with the first report after arming. How many reads

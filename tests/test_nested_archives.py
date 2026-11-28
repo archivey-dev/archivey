@@ -209,7 +209,6 @@ def _config(mode: str, decoder_limits: DecoderLimits | None = None) -> ArchiveyC
     m = AcceleratorMode(mode)
     return ArchiveyConfig(
         use_rapidgzip=m,
-        use_indexed_bzip2=m,
         decoder_limits=decoder_limits or DecoderLimits(),
     )
 
@@ -224,9 +223,8 @@ def _check_stream(stream: BinaryIO, expected: bytes, *, seek: bool) -> None:
             assert stream.read(3000) == expected[offset : offset + 3000]
 
 
-# Levels an accelerator set to ON decodes, by the config field that selects it.
-_RAPIDGZIP_FORMATS = frozenset({"gz", "zz", "tar.gz", "tar.zz"})
-_BZIP2_FORMATS = frozenset({"bz2", "tar.bz2"})
+# Levels rapidgzip decodes when use_rapidgzip is ON.
+_RAPIDGZIP_FORMATS = frozenset({"gz", "zz", "tar.gz", "tar.zz", "bz2", "tar.bz2"})
 
 
 def _must_refuse_forward_only(fmt: str, config: ArchiveyConfig) -> bool:
@@ -238,8 +236,6 @@ def _must_refuse_forward_only(fmt: str, config: ArchiveyConfig) -> bool:
         return not unrar_reads_from_pipes()
     if fmt in _RAPIDGZIP_FORMATS:
         return config.use_rapidgzip is AcceleratorMode.ON
-    if fmt in _BZIP2_FORMATS:
-        return config.use_indexed_bzip2 is AcceleratorMode.ON
     return False
 
 

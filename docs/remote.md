@@ -157,8 +157,7 @@ def show(progress: archivey.types.SourceProgress) -> None:
     if progress.request_done:
         print(f"request {progress.requests}: {progress.request_received} bytes")
 
-config = archivey.ArchiveyConfig(on_source_read=show)
-with archivey.open_archive(fsspec.open("s3://bucket/data.zip"), config=config) as archive:
+with archivey.open_archive(fsspec.open("s3://bucket/data.zip"), on_source_read=show) as archive:
     archive.members()
 ```
 

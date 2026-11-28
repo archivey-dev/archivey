@@ -1,6 +1,6 @@
 """``validate_code_context`` on codes that share a context kind.
 
-Six context kinds each serve more than one code, told apart by one context field
+Seven context kinds each serve more than one code, told apart by one context field
 (``diagnostics`` §"Complete initial warning taxonomy": "typed context distinguishes
 variants"). The kind match alone accepts a mismatched pairing, so every such code
 must also check its field.
@@ -20,6 +20,7 @@ from archivey.diagnostics import (
     DiagnosticContext,
     LocalHeaderContext,
     MemberNameControlsContext,
+    NameEncodingContext,
     ScanRaceContext,
     UnconfirmedFormatContext,
     UnusedArgumentContext,
@@ -84,6 +85,14 @@ _MATCHED: list[tuple[DiagnosticCode, DiagnosticContext]] = [
         DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED,
         LocalHeaderContext(field="offset"),
     ),
+    (
+        DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING,
+        NameEncodingContext(fallback_encoding="cp437"),
+    ),
+    (
+        DiagnosticCode.MEMBER_NAME_ENCODING_MISMATCH,
+        NameEncodingContext(fallback_encoding="cp437", declared_encoding="utf-8"),
+    ),
 ]
 
 
@@ -126,7 +135,7 @@ def test_sibling_context_is_rejected(
     assert getattr(context, field_name) not in allowed
 
 
-def test_mismatches_cover_all_six_shared_kinds() -> None:
+def test_mismatches_cover_all_seven_shared_kinds() -> None:
     kinds = {context.kind for _, context in _MISMATCHED}
     assert kinds == {
         "member_name_controls",
@@ -135,4 +144,5 @@ def test_mismatches_cover_all_six_shared_kinds() -> None:
         "unconfirmed_format",
         "archive_eof",
         "local_header",
+        "name_encoding",
     }

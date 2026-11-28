@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from archivey import detect_format, open_archive
-from archivey.config import ArchiveyConfig, RarDecompressor
+from archivey.config import ArchiveyConfig, RarDecompressor, RarOptions
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
@@ -764,7 +764,7 @@ def test_old_scheme_set_past_r99_opens_from_any_volume(
         "big.s00",
         "big.s48",
     ]
-    config = ArchiveyConfig(rar_decompressor=decompressor)
+    config = ArchiveyConfig(format_options=[RarOptions(decompressor=decompressor)])
     for anchor in (paths[0], paths[1], paths[105]):
         with open_archive(anchor, config=config) as archive:
             assert archive.info.is_multivolume is True
@@ -1032,7 +1032,7 @@ def test_extract_non_utf8_tar_with_explicit_encoding(tmp_path: Path) -> None:
     archive.write_bytes(buf.getvalue())
 
     dest = tmp_path / "out"
-    open_and_extract(archive, dest, encoding="latin-1")
+    open_and_extract(archive, dest, config=ArchiveyConfig(fallback_encoding="latin-1"))
     assert (dest / "café.txt").read_bytes() == b"tea"
 
 

@@ -116,8 +116,9 @@ def _unrar_p(archive: Path, member: str | None = None) -> bytes:
 
 def _check(archives: list[Path]) -> int:
     from archivey import ArchiveyConfig, open_archive
+    from archivey.config import RarOptions
 
-    config = ArchiveyConfig(rar_decompressor="unrar")
+    config = ArchiveyConfig(format_options=[RarOptions(decompressor="unrar")])
     failures = 0
     report: list[dict[str, object]] = []
     for archive in archives:

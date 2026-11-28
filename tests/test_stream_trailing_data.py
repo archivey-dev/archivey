@@ -588,7 +588,7 @@ def test_rapidgzip_reads_to_the_end_and_reports(tmp_path: Path, size: int) -> No
 def test_the_bzip2_accelerator_reports_the_same_offset(tmp_path: Path) -> None:
     compressed = bz2.compress(_PAYLOAD)
     path = _write(tmp_path, ".bz2", compressed + b"\x00" * 3 + _JUNK)
-    config = ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)
+    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
     with open_archive(path, config=config, seekable_members=True) as reader:
         assert reader.read(reader.members()[0]) == _PAYLOAD
         (report,) = _reports(reader)
@@ -675,7 +675,7 @@ def test_empty_bzip2_streams_are_part_of_the_data(
     content = _tar_of(payload) if kind == ".tar.bz2" else payload
     path = _write(tmp_path, kind, _BZ2_LAYOUTS[layout](content))
     config = ArchiveyConfig(
-        use_indexed_bzip2=mode, diagnostic_policy=DiagnosticPolicy.STRICT
+        use_rapidgzip=mode, diagnostic_policy=DiagnosticPolicy.STRICT
     )
     assert _read_single_member(path, config, access) == payload
 
@@ -688,7 +688,7 @@ def test_bytes_after_empty_bzip2_streams_are_reported_past_them(
     """Junk after the empty streams still reports, at the same offset in both modes."""
     data = bz2.compress(_PAYLOAD) + _BZ2_EMPTY * empty_streams
     path = _write(tmp_path, ".bz2", data + _JUNK)
-    config = ArchiveyConfig(use_indexed_bzip2=mode)
+    config = ArchiveyConfig(use_rapidgzip=mode)
     with open_archive(path, config=config, seekable_members=True) as reader:
         assert reader.read(reader.members()[0]) == _PAYLOAD
         (report,) = _reports(reader)
@@ -730,7 +730,7 @@ def test_the_accelerator_scan_finds_empty_streams_across_its_reads(
     """The accelerator's scan reports what the standard library does."""
     compressed = bz2.compress(_PAYLOAD)
     path = _write(tmp_path, ".bz2", compressed + tail)
-    config = ArchiveyConfig(use_indexed_bzip2=mode)
+    config = ArchiveyConfig(use_rapidgzip=mode)
     with open_archive(path, config=config, seekable_members=True) as reader:
         assert reader.read(reader.members()[0]) == _PAYLOAD
         found = [report.observed_bytes for report in _reports(reader)]
@@ -761,7 +761,7 @@ def test_a_damaged_stream_after_the_last_raises_in_both_modes(
     over at the end and gives that verdict, rather than reporting the bytes as
     trailing data."""
     path = _write(tmp_path, ".bz2", bz2.compress(_PAYLOAD) + tail)
-    config = ArchiveyConfig(use_indexed_bzip2=mode)
+    config = ArchiveyConfig(use_rapidgzip=mode)
     with (
         open_archive(path, config=config, seekable_members=True) as reader,
         pytest.raises(error),
@@ -792,7 +792,7 @@ def test_what_follows_zero_padding_is_trailing_data_in_every_mode(
 ) -> None:
     compressed = bz2.compress(_PAYLOAD)
     path = _write(tmp_path, ".bz2", compressed + between)
-    config = ArchiveyConfig(use_indexed_bzip2=mode)
+    config = ArchiveyConfig(use_rapidgzip=mode)
     with open_archive(path, config=config, seekable_members=True) as reader:
         assert reader.read(reader.members()[0]) == _PAYLOAD
         (report,) = _reports(reader)
@@ -820,7 +820,6 @@ def _accelerator_config(
     mode: AcceleratorMode, policy: DiagnosticPolicy | None = None
 ) -> ArchiveyConfig:
     return ArchiveyConfig(
-        use_indexed_bzip2=mode,
         use_rapidgzip=mode,
         diagnostic_policy=policy or DiagnosticPolicy(),
     )
@@ -1062,7 +1061,7 @@ def test_a_damaged_bzip2_header_after_the_last_stream_raises_in_both_modes(
     if tail == b"BY":
         tail = b"BY" + bz2.compress(_SMALL)[2:]
     path = _write(tmp_path, ".bz2", bz2.compress(_SMALL) + tail)
-    config = ArchiveyConfig(use_indexed_bzip2=mode)
+    config = ArchiveyConfig(use_rapidgzip=mode)
     with (
         open_archive(path, config=config, seekable_members=True) as reader,
         raises_corruption_not_truncation(),
@@ -1183,7 +1182,7 @@ def test_bzip2_judges_a_short_zero_run_as_the_magic_in_both_modes(
     else:
         tail = b"\x00" * zeros + second[1:]
     path = _write(tmp_path, ".bz2", first + tail)
-    config = ArchiveyConfig(use_indexed_bzip2=mode)
+    config = ArchiveyConfig(use_rapidgzip=mode)
     with open_archive(path, config=config, seekable_members=True) as reader:
         member = reader.members()[0]
         if damaged:

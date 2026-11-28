@@ -899,8 +899,8 @@ SHALL retain the verb's existing failure-reporting rules.
 
 ### Requirement: The CLI shows the reads of the archive's file
 
-Every verb that opens an archive (`list`, `info`, `test`, `extract` and `cat`) SHALL set
-`ArchiveyConfig.on_source_read` when it would show a progress bar: `tqdm` is installed,
+Every verb that opens an archive (`list`, `info`, `test`, `extract` and `cat`) SHALL pass
+`on_source_read=` when it would show a progress bar: `tqdm` is installed,
 `--hide-progress` is not given, and stderr (or the process's own stderr) is a terminal.
 It SHALL show one line on stderr, and only the reads of the file the user named
 (`nest_level` 0).
@@ -929,4 +929,4 @@ URL the line SHALL also show the range requests so far and the bytes they fetche
 #### Scenario: progress is hidden
 
 - **WHEN** `--hide-progress` is given, or stderr is not a terminal
-- **THEN** no line is shown and `on_source_read` is not set
+- **THEN** no line is shown and no `on_source_read=` is passed

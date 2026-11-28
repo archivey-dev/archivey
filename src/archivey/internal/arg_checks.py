@@ -341,6 +341,19 @@ def check_limit(
         )
 
 
+def check_count(value: object, *, call: str) -> None:
+    """Refuse a keyword that takes an int of zero or more, or ``None``, given
+    anything else; ``call`` names it as the caller wrote it."""
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _UsageTypeError(
+            f"{call} takes an int or None, but got {describe_value(value)}."
+        )
+    if value < 0:
+        raise _UsageValueError(f"{call} cannot be negative, but got {value!r}.")
+
+
 # The annotations a limits field may have, as (allow_float, allow_none).
 _LIMIT_ANNOTATIONS: dict[str, tuple[bool, bool]] = {
     "int": (False, False),

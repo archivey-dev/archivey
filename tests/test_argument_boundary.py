@@ -71,6 +71,7 @@ from archivey.config import (
     DecoderLimits,
     ExtractionLimits,
     ListingLimits,
+    RarOptions,
     SalvageLimits,
     SpoolLimits,
 )
@@ -239,12 +240,22 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
         for bad in ("", "unrar", 0, b"/usr/bin/unrar", "/bin/un\0rar"):
             rows.append(
                 _case(
-                    "ArchiveyConfig",
+                    "RarOptions",
                     program_field,
                     bad,
-                    lambda b=bad, f=program_field: ArchiveyConfig(**{f: b}),
+                    lambda b=bad, f=program_field: RarOptions(**{f: b}),
                 )
             )
+    # One options object per class, and only options objects.
+    for bad in ([RarOptions(), RarOptions()], [{"decompressor": "unar"}], "zip", 3):
+        rows.append(
+            _case(
+                "ArchiveyConfig",
+                "format_options",
+                bad,
+                lambda b=bad: ArchiveyConfig(format_options=b),
+            )
+        )
 
     # Object shape of detection_budget=, not preset spellings. ``"balanced"`` is a real
     # DetectionBudgetPreset value, coerced by ``enum_args`` and asserted in
@@ -599,15 +610,16 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: _with_config(archive, out(), max_read_through=b),
             )
         )
-    for bad in ("x", -1, True, 1.5, None):
-        rows.append(
-            _case(
-                "ArchiveyConfig",
-                "source_read_step",
-                bad,
-                lambda b=bad: _with_config(archive, out(), source_read_step=b),
+    for bad in ("x", -1, True, 1.5):
+        for function in (open_archive, open_stream):
+            rows.append(
+                _case(
+                    function.__name__,
+                    "source_read_step",
+                    bad,
+                    lambda b=bad, f=function: f(archive, source_read_step=b),
+                )
             )
-        )
     for bad in ("x", -1, True, 1.5, None):
         rows.append(
             _case(
@@ -628,17 +640,23 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: _with_config(archive, out(), on_diagnostic=b),
             )
         )
-        rows.append(
-            _case(
-                "ArchiveyConfig",
-                "on_source_read",
-                bad,
-                lambda b=bad: _with_config(archive, out(), on_source_read=b),
+        for function, keyword in (
+            (open_archive, "on_diagnostic"),
+            (open_archive, "on_source_read"),
+            (open_stream, "on_diagnostic"),
+            (open_stream, "on_source_read"),
+            (detect_format, "on_diagnostic"),
+        ):
+            rows.append(
+                _case(
+                    function.__name__,
+                    keyword,
+                    bad,
+                    lambda b=bad, f=function, k=keyword: f(archive, **{k: b}),
+                )
             )
-        )
     # Guard switches: "false" is truthy, so a string would turn a refusal off.
     for field_name in (
-        "rar_allow_glob_member_concatenation",
         "read_link_targets",
         "always_probe_content",
         "discover_volumes",
@@ -750,15 +768,13 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: format_availability("zip", config=b),
             )
         )
-    for bad in ("not-a-codec", "rot13", b"cp437", 0, None):
+    for bad in ("not-a-codec", "rot13", b"cp437", 0):
         rows.append(
             _case(
                 "ArchiveyConfig",
-                "zip_unflagged_fallback_encoding",
+                "fallback_encoding",
                 bad,
-                lambda b=bad: _with_config(
-                    archive, out(), zip_unflagged_fallback_encoding=b
-                ),
+                lambda b=bad: _with_config(archive, out(), fallback_encoding=b),
             )
         )
 
@@ -908,7 +924,15 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
         "in enum_args"
     ),
     ("ArchiveyConfig", "use_rapidgzip"): "coerced by enum_args, in __post_init__",
-    ("ArchiveyConfig", "rar_decompressor"): "coerced by enum_args, in __post_init__",
+    ("RarOptions", "decompressor"): "coerced by enum_args, in __post_init__",
+    # Deprecated in 0.6.0: each is folded into its options object, whose own checks
+    # are swept above.
+    ("ArchiveyConfig", "rar_decompressor"): "deprecated; RarOptions(decompressor=)",
+    ("ArchiveyConfig", "unrar_path"): "deprecated; RarOptions(unrar_path=)",
+    ("ArchiveyConfig", "unar_path"): "deprecated; RarOptions(unar_path=)",
+    ("ArchiveyConfig", "zip_unflagged_fallback_encoding"): (
+        "deprecated; folded into fallback_encoding"
+    ),
     ("ArchiveyConfig", "process_isolation"): "coerced by enum_args, in __post_init__",
     (
         "ArchiveyConfig",
@@ -941,6 +965,7 @@ def _public_surface() -> list[tuple[str, list[str]]]:
         DetectionBudget,
         ExtractionLimits,
         ListingLimits,
+        RarOptions,
         SalvageLimits,
         SpoolLimits,
     ):
@@ -1067,7 +1092,10 @@ def test_valid_arguments_still_work(archive: Path, tmp_path: Path) -> None:
         assert detect_format(archive, config=config).format.container.name == "ZIP"
     with open_archive(archive, config=ArchiveyConfig()) as reader:
         assert reader.extract_all(dest / "a").results
-    with open_archive(archive, encoding="UTF8") as reader:  # an alias, not a name
+    # An alias, not a name.
+    with open_archive(
+        archive, config=ArchiveyConfig(fallback_encoding="UTF8")
+    ) as reader:
         assert reader.extract_all(dest / "c").results
     with open_archive(archive) as reader:
         assert reader.extract_all(dest / "b", limits=ExtractionLimits.UNLIMITED).results

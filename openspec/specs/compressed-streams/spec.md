@@ -840,10 +840,10 @@ Under `NONE` no child process SHALL be started for decoding. PPMd SHALL decode
 in-process at any size, a ZIP member with bit 3 set read from a non-seekable source
 included: as in a child, a member up to `max_ppmd_held_input` is held and handed
 to pyppmd whole, and a larger one, or one whose size is not known, is fed to it in pieces,
-which can crash the process on corrupt input. That risk is the one `NONE` accepts. rapidgzip SHALL NOT be used: `use_rapidgzip=AUTO` and `use_indexed_bzip2=AUTO`
-SHALL decode with the standard library without the warning that a child that cannot
-start logs, and `ON` is refused at configuration (`archive-reading`, "Explicit
-configuration object").
+which can crash the process on corrupt input. That risk is the one `NONE` accepts.
+rapidgzip SHALL NOT be used: `use_rapidgzip=AUTO` SHALL decode with the standard library
+without the warning that a child that cannot start logs, and `ON` is refused at
+configuration (`archive-reading`, "Explicit configuration object").
 
 The system SHALL NOT bound the time a decoder takes under any value.
 

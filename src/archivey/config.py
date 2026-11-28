@@ -16,13 +16,14 @@ This module also holds the password types.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import pathlib
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from archivey.detection_cost import (
     BALANCED_BUDGET,
@@ -41,10 +42,10 @@ from archivey.internal.arg_checks import (
     check_limit,
     check_limit_fields,
 )
-from archivey.internal.config_copy import copying_config
+from archivey.internal.config_copy import CallbackFromCall, copying_config
 from archivey.internal.enum_args import coerce_enum
 from archivey.terminal import quoted
-from archivey.types import ArchiveMember, OnSourceRead, OptionalLibrary
+from archivey.types import ArchiveMember, OptionalLibrary
 
 
 class AcceleratorMode(Enum):
@@ -70,8 +71,8 @@ class AcceleratorMode(Enum):
     """Always use it. Raises :class:`~archivey.PackageNotInstalledError` when its
     package is not installed."""
     OFF = "off"
-    """Never use it. The standard library decodes the stream. Set both ``use_rapidgzip``
-    and ``use_indexed_bzip2`` to this when results must not depend on the machine."""
+    """Never use it. The standard library decodes the stream. Set ``use_rapidgzip`` to
+    this when results must not depend on the machine."""
 
     def enabled_for(
         self,
@@ -110,11 +111,12 @@ class AcceleratorMode(Enum):
 
 
 # The string spellings of ``AcceleratorMode``, which ``ArchiveyConfig`` takes for
-# ``use_rapidgzip`` and ``use_indexed_bzip2``, so a type checker flags a bad one at the
-# call. Deliberately narrower than what ``internal.enum_args`` accepts: coercion also
-# takes the member *name* and ignores case, and a literal can express neither. Keep it
-# beside the enum: ``tests/test_enum_arguments.py`` fails if the two drift. The same
-# holds for ``ProcessIsolationStr`` and ``RarDecompressorStr`` below.
+# ``use_rapidgzip`` (and the deprecated ``use_indexed_bzip2``), so a type checker flags
+# a bad one at the call. Deliberately narrower than what ``internal.enum_args``
+# accepts: coercion also takes the member *name* and ignores case, and a literal can
+# express neither. Keep it beside the enum: ``tests/test_enum_arguments.py`` fails if
+# the two drift. The same holds for ``ProcessIsolationStr`` and ``RarDecompressorStr``
+# below.
 AcceleratorModeStr = Literal["auto", "on", "off"]
 
 
@@ -132,7 +134,7 @@ class ProcessIsolation(Enum):
 
     KNOWN_CRASHES = "known_crashes"
     """The default: only the decoders seen to crash on some input run in a child
-    process: rapidgzip (``use_rapidgzip``, ``use_indexed_bzip2``), pyppmd (every PPMd
+    process: rapidgzip (``use_rapidgzip``), pyppmd (every PPMd
     member) and libbzip3 (every ``.bz3`` file, a young library with memory-safety fixes
     in its 2023 releases). Every other decoder runs in the caller's process. Processes
     are reused for later decoders. Measured on one Linux machine
@@ -172,8 +174,8 @@ class ProcessIsolation(Enum):
     isolated by default because they crash the process on some input or may, and here a
     crash takes the caller with it. It suits trusted files where speed matters, tests,
     and environments that cannot start processes. PPMd members and ``.bz3`` files decode
-    in-process, and rapidgzip is not used: ``use_rapidgzip`` and ``use_indexed_bzip2``
-    under ``AUTO`` use the standard library, and ``ON`` is refused with
+    in-process, and rapidgzip is not used: ``use_rapidgzip`` under ``AUTO`` uses the
+    standard library, and ``ON`` is refused with
     :class:`~archivey.ArchiveyUsageError` when the config is built."""
 
 
@@ -292,7 +294,7 @@ PartialDataRecoveryStr = Literal["off", "before_damage", "before-damage", "all"]
 # design note.
 RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 16 * 1024 * 1024
 
-# Minimum known compressed input size (bytes) before ``use_indexed_bzip2`` AUTO selects
+# Minimum known compressed input size (bytes) before ``use_rapidgzip`` AUTO selects
 # rapidgzip's bzip2 decoder. ``ON`` ignores this; unknown size keeps pre-threshold AUTO.
 #
 # The bzip2 decoder runs in a child process too, so each accelerated stream pays about
@@ -932,19 +934,111 @@ class SalvageLimits:
 
 
 @dataclass(frozen=True)
+class RarOptions:
+    """RAR settings, passed in :attr:`ArchiveyConfig.format_options`."""
+
+    decompressor: RarDecompressor = RarDecompressor.AUTO
+    """Which external program decompresses RAR member data. See :class:`RarDecompressor`.
+
+    Accepts the member or its name (``"unrar"``, ``"unar"``, ``"auto"``, ``"none"``). The
+    listing does not depend on it, except that the selected program decodes compressed
+    RAR 1.5-4 comments.
+    """
+
+    unrar_path: str | os.PathLike[str] | None = None
+    """The RARLAB ``unrar`` or ``rar`` program to run, as an absolute path, or ``None``
+    to look for ``unrar`` and then ``rar`` on ``PATH``.
+
+    When set, archivey runs that file and no other RARLAB program: ``PATH`` is not
+    searched, so a program put there later cannot be picked up. It is still identified
+    before it first runs, and one that is not RARLAB's, or older than 6.0, is refused as
+    a missing one is. A relative path is refused, since it would depend on the current
+    directory. Stored as a ``str``. :func:`~archivey.format_availability` answers for it
+    when passed the config."""
+
+    unar_path: str | os.PathLike[str] | None = None
+    """The ``unar`` program to run, as an absolute path, or ``None`` to look for
+    ``unar`` on ``PATH``. The same rules as :attr:`unrar_path`: when set, it is the only
+    ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
+
+    if TYPE_CHECKING:
+        # The constructor takes a decompressor's string spelling too; see
+        # ``ArchiveyConfig.__init__`` below for why this exists only for type checkers.
+        def __init__(
+            self,
+            decompressor: RarDecompressor | RarDecompressorStr = ...,
+            unrar_path: str | os.PathLike[str] | None = ...,
+            unar_path: str | os.PathLike[str] | None = ...,
+        ) -> None: ...
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "decompressor",
+            coerce_enum(
+                self.decompressor,
+                RarDecompressor,
+                call="RarOptions()",
+                param="decompressor=",
+            ),
+        )
+        for field_name in ("unrar_path", "unar_path"):
+            object.__setattr__(
+                self,
+                field_name,
+                _coerce_program_path(
+                    f"RarOptions({field_name}=)", getattr(self, field_name)
+                ),
+            )
+
+
+# The deprecated ``ArchiveyConfig`` fields, each with the options class and field that
+# replace it.
+_MOVED_TO_OPTIONS: dict[str, tuple[type, str]] = {
+    "rar_decompressor": (RarOptions, "decompressor"),
+    "unrar_path": (RarOptions, "unrar_path"),
+    "unar_path": (RarOptions, "unar_path"),
+}
+
+# Archivey's own options classes: the only ``archivey`` classes ``format_options`` takes,
+# and none of them may be subclassed there, since a reader looks its class up exactly.
+_OPTIONS_CLASSES: tuple[type, ...] = (RarOptions,)
+
+
+@dataclass(frozen=True)
 class ArchiveyConfig:
     """Library tuning knobs passed as ``config=`` to :func:`open_archive`,
     :func:`open_stream` and :func:`detect_format`.
 
     Per-call operationals (``format``, ``streaming``, ``password``, extraction's
     ``members``/``filter``/``policy``/…) stay keyword arguments — not fields here.
+
+    ``ArchiveyConfig.UNTRUSTED`` is for files you did not make, such as uploads. It
+    opens only ``FormatPolicy.COMMON``, raises on damage (``DiagnosticPolicy.STRICT``),
+    runs every native decoder in a child process (``NATIVE_DECODERS``), and lowers the
+    limits: 10,000 members and 4 MiB of metadata per listing, 256 MiB of decoder memory
+    (enough for every 7-Zip preset), 2**24 key-derivation rounds, and 500 MiB and
+    10,000 entries per extraction. It turns rapidgzip off, so the result does not
+    depend on the machine. Every other field keeps its default. Adjust it with
+    ``dataclasses.replace(ArchiveyConfig.UNTRUSTED, ...)``.
+
+    It guards against the archive's contents, not against the machine it runs on. It
+    keeps ``RarOptions()``, so RAR data may go to ``unar``, which receives a password
+    on its command line, where other users of the machine can see it. On a shared
+    machine, add ``RarOptions(decompressor=RarDecompressor.UNRAR)`` to its
+    ``format_options``.
     """
 
+    UNTRUSTED: ClassVar[ArchiveyConfig]
+
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
-    """Whether to use the ``rapidgzip`` accelerator for gzip, zlib and raw deflate.
+    """Whether to use the ``rapidgzip`` accelerator for gzip, zlib, raw deflate and
+    bzip2.
 
     It decodes those codecs in parallel, and seeks faster from its own index. Under
-    ``AUTO`` it is used only when the compressed input is known to be at least
+    ``AUTO`` it is used for bzip2 only when the compressed input is known to be at
+    least ``INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`` bytes (or its size is unknown). For
+    the others it is used only when the compressed input is known to be at least
     ``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`` bytes (or its size is unknown) and the
     decompressed size can be verified, so a truncated stream cannot be swallowed
     silently. With seeking asked for, that is enough. Without it, ``AUTO`` uses it only
@@ -966,17 +1060,12 @@ class ArchiveyConfig:
     ``OFF`` never starts a child.
     """
 
-    use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
-    """Whether to use rapidgzip's bundled bzip2 backend, which decodes bzip2 in parallel.
+    use_indexed_bzip2: AcceleratorMode | None = None
+    """Deprecated since 0.6.0: :attr:`use_rapidgzip` decides bzip2 too. Setting it warns,
+    and archivey 0.7.0 removes it.
 
-    Under ``AUTO`` it is used only when the compressed input is known to be at least
-    ``INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`` bytes (or its size is unknown). Like the
-    gzip decoder, it runs in a child Python process, one per open stream, reused the same
-    way (see ``use_rapidgzip``). No crash has been seen in it; it is isolated as a
-    precaution, because it comes from the same library as the gzip decoder, which does
-    crash on some input. Where no child can be started, ``AUTO`` uses the standard
-    library, logging one warning per process on the ``archivey.streams`` logger, and
-    ``ON`` raises :class:`~archivey.exceptions.ResourceUnavailableError`.
+    While it is set, it decides bzip2 alone, as in 0.5. ``None``, the default, means
+    bzip2 follows :attr:`use_rapidgzip`.
     """
 
     process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
@@ -986,33 +1075,15 @@ class ArchiveyConfig:
     ``"none"``).
     """
 
-    zip_unflagged_fallback_encoding: str = "cp437"
-    """Encoding for a ZIP member name that is neither flagged nor valid UTF-8.
+    zip_unflagged_fallback_encoding: str | None = None
+    """Deprecated since 0.6.0: pass :attr:`fallback_encoding`, which applies to every
+    format. Setting it warns and moves the value into :attr:`fallback_encoding`, so the
+    field always reads back as ``None``; archivey 0.7.0 removes it."""
 
-    A name stored without the UTF-8 flag is tried as UTF-8 first; this encoding is used
-    when those bytes are not valid UTF-8. The default is cp437, as the ZIP specification
-    (APPNOTE) says. Set a local code page (for example ``"cp1252"`` or ``"shift_jis"``)
-    for archives known to come from one. An explicit ``encoding=`` on
-    :func:`~archivey.open_archive` replaces this fallback for that archive; a name
-    whose bytes are valid UTF-8 is still decoded as UTF-8.
-    """
-
-    rar_allow_glob_member_concatenation: bool = False
-    """Deprecated, and has no effect: setting it ``True`` warns.
-
-    ``unrar`` reads a member from a temporary RAR file that holds it under a placeholder
-    name, or from the original archive only when the member's name selects it alone. No
-    read decodes other members because of a member's name, so there is nothing left for
-    this flag to allow. It will be removed in a future release.
-    """
-
-    rar_decompressor: RarDecompressor = RarDecompressor.AUTO
-    """Which external program decompresses RAR member data. See :class:`RarDecompressor`.
-
-    Accepts the member or its name (``"unrar"``, ``"unar"``, ``"auto"``, ``"none"``). The
-    listing does not depend on it, except that the selected program decodes compressed
-    RAR 1.5-4 comments.
-    """
+    rar_decompressor: RarDecompressor | None = None
+    """Deprecated since 0.6.0: pass ``format_options=[RarOptions(decompressor=...)]``.
+    Setting it warns and moves the value into :attr:`format_options`, so the field
+    always reads back as ``None``; archivey 0.7.0 removes it."""
 
     read_link_targets: bool = True
     """Whether the reader reads a symlink's target when the format stores it as member
@@ -1104,8 +1175,9 @@ class ArchiveyConfig:
     """
 
     on_diagnostic: OnDiagnostic | None = None
-    """A callback called with each diagnostic the policy collects or raises, as it is
-    emitted, or ``None``."""
+    """Deprecated since 0.6.0: pass ``on_diagnostic=`` to :func:`~archivey.open_archive`,
+    :func:`~archivey.open_stream` or :func:`~archivey.detect_format`. Setting it warns;
+    the call's keyword wins over it. archivey 0.7.0 removes it."""
 
     formats: FormatPolicy = field(default_factory=FormatPolicy)
     """Which formats this call may open. See :class:`~archivey.FormatPolicy`.
@@ -1127,20 +1199,14 @@ class ArchiveyConfig:
     """
 
     unrar_path: str | os.PathLike[str] | None = None
-    """The RARLAB ``unrar`` or ``rar`` program to run, as an absolute path, or ``None``
-    to look for ``unrar`` and then ``rar`` on ``PATH``.
-
-    When set, archivey runs that file and no other RARLAB program: ``PATH`` is not
-    searched, so a program put there later cannot be picked up. It is still identified
-    before it first runs, and one that is not RARLAB's, or older than 6.0, is refused as
-    a missing one is. A relative path is refused, since it would depend on the current
-    directory. Stored as a ``str``. :func:`~archivey.format_availability` answers for it
-    when passed the config."""
+    """Deprecated since 0.6.0: pass ``format_options=[RarOptions(unrar_path=...)]``.
+    Setting it warns and moves the value into :attr:`format_options`, so the field
+    always reads back as ``None``; archivey 0.7.0 removes it."""
 
     unar_path: str | os.PathLike[str] | None = None
-    """The ``unar`` program to run, as an absolute path, or ``None`` to look for
-    ``unar`` on ``PATH``. The same rules as :attr:`unrar_path`: when set, it is the only
-    ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
+    """Deprecated since 0.6.0: pass ``format_options=[RarOptions(unar_path=...)]``.
+    Setting it warns and moves the value into :attr:`format_options`, so the field
+    always reads back as ``None``; archivey 0.7.0 removes it."""
 
     recover_partial_data: PartialDataRecovery = PartialDataRecovery.BEFORE_DAMAGE
     """Which bytes a read that meets damage hands back before it raises: a
@@ -1160,47 +1226,35 @@ class ArchiveyConfig:
     and the same error at every level: only the partial bytes before an error differ.
     """
 
-    on_source_read: OnSourceRead | None = None
-    """A callback called with a :class:`~archivey.types.SourceProgress` as archivey reads the
-    archive's own file, or ``None``.
-
-    A local file or stream reports about once per MiB read. A URL source (an
-    ``fsspec.core.OpenFile``) reports before and after each range request, and over
-    HTTP about once per MiB of the answer as it comes in. Detection's reads count. It
-    runs on the thread that read, and an exception it raises propagates out of that
-    read: raising is how a caller stops a slow read. Every later read of the
-    file raises it again, and ``extract_all(on_problem="continue")`` stops on it rather
-    than counting it as one member's failure. A read on a thread archivey started (the
-    RAR volume feeder) does not call it: the latest such report is kept and delivered on
-    the caller's next read of the archive or of the member being read. Reports in
-    between are merged, so ``requests`` may skip numbers. Every reader reports to the
-    callback in its own config. A reader opened with ``parent=`` (an archive inside a
-    member, which uses the parent's config unless given one) reports with
-    :attr:`SourceProgress.nest_level <archivey.types.SourceProgress.nest_level>` one more than
-    its parent's. Each reader reports the bytes it reads from its own source (for a
-    nested reader, the member it was opened on), at its own level. A member stream
-    passed without ``parent=`` is a file of its own, at level 0. To tell apart nested
-    archives open at the same time, give each its own callback, such as
-    ``dataclasses.replace(config, on_source_read=functools.partial(on_read, name))``. A
-    split set found beside a stub, and the track files of a ``.cue`` sheet, report as
-    the file they stand in for. Bytes that an external program (``unrar``) or the RAR
-    reader's own volume reads take from a path directly are not reported.
-    """
-
-    source_read_step: int = 1 << 20
-    """Bytes taken from a local file or stream between two ``on_source_read`` calls
-    (1 MiB). ``0`` calls it for every read, so :attr:`SourceProgress.read_start
-    <archivey.types.SourceProgress.read_start>` and ``position`` give the range of each read:
-    a log of the regions of the file read. The log has gaps where archivey's own thread
-    reads (the RAR volume feeder): those reports merge as ``on_source_read`` says, and
-    only the latest range is kept, while ``bytes_read`` still counts every byte. A URL
-    source reports every request whatever this is; over HTTP a request also reports
-    about once per MiB of its answer, a gap this step does not set.
-    """
-
     salvage_limits: SalvageLimits = SalvageLimits()
     """Caps on the search a salvage reader makes past damage
     (``open_archive(salvage=True)``). See :class:`SalvageLimits`."""
+
+    format_options: Sequence[object] = ()
+    """The settings of single formats: one options object per format, such as
+    :class:`RarOptions`, at most one of each class. A format
+    with no object here uses its class's defaults. Stored as a ``tuple``.
+
+    A plugin's format can have an options class of its own, passed here the same way.
+    """
+
+    fallback_encoding: str | None = None
+    """Encoding for a member name that declares none and whose bytes are not valid
+    UTF-8, in every format whose names can lack a declared encoding: ZIP, TAR, ISO,
+    RAR 1.5-4, CPIO, ar, RPM, makeself, SquashFS, CAB, XAR, LHA and ARJ.
+
+    A name whose bytes are valid UTF-8 is decoded as UTF-8 whatever this says, and a
+    name whose archive declares its encoding (a ZIP name with the UTF-8 flag, a RAR5
+    name) is decoded as declared. ``None`` keeps each format's own fallback: cp437 for
+    ZIP, as the ZIP specification says, the host's code page for RAR 1.5-4, and
+    surrogate escapes for the others, which keep every stored byte as a lone surrogate.
+    Set a code page (``"cp1252"``, ``"cp866"``, ``"shift_jis"``) for archives known to
+    come from one. A byte the codec does not define survives as a lone surrogate, and
+    ``member.raw_name`` keeps the stored bytes. Each name decoded by a fallback is
+    reported as ``MEMBER_NAME_FALLBACK_ENCODING``, naming the codec it used, since a
+    different setting could change it. 7z, directory and single-file sources decode
+    names another way and do not read it.
+    """
 
     if TYPE_CHECKING:
         # The constructor's input types, wider than the fields for the enum fields and
@@ -1216,11 +1270,10 @@ class ArchiveyConfig:
         def __init__(
             self,
             use_rapidgzip: AcceleratorMode | AcceleratorModeStr = ...,
-            use_indexed_bzip2: AcceleratorMode | AcceleratorModeStr = ...,
+            use_indexed_bzip2: AcceleratorMode | None | AcceleratorModeStr = ...,
             process_isolation: ProcessIsolation | ProcessIsolationStr = ...,
-            zip_unflagged_fallback_encoding: str = ...,
-            rar_allow_glob_member_concatenation: bool = ...,
-            rar_decompressor: RarDecompressor | RarDecompressorStr = ...,
+            zip_unflagged_fallback_encoding: str | None = ...,
+            rar_decompressor: RarDecompressor | None | RarDecompressorStr = ...,
             read_link_targets: bool = ...,
             extraction_limits: ExtractionLimits = ...,
             listing_limits: ListingLimits = ...,
@@ -1239,9 +1292,9 @@ class ArchiveyConfig:
             unrar_path: str | os.PathLike[str] | None = ...,
             unar_path: str | os.PathLike[str] | None = ...,
             recover_partial_data: PartialDataRecovery | PartialDataRecoveryStr = ...,
-            on_source_read: OnSourceRead | None = ...,
-            source_read_step: int = ...,
             salvage_limits: SalvageLimits = ...,
+            format_options: Sequence[object] = ...,
+            fallback_encoding: str | None = ...,
         ) -> None: ...
 
     def __post_init__(self) -> None:
@@ -1266,17 +1319,44 @@ class ArchiveyConfig:
         # the field on as if it were set again; only the caller's construction warns.
         # The warning stays in this method so that ``stacklevel=3`` names the caller's
         # line: one level is this method, the next is the dataclass ``__init__``.
-        if self.rar_allow_glob_member_concatenation and not copying_config():
+        if self.use_indexed_bzip2 is not None and not copying_config():
             warnings.warn(
-                "ArchiveyConfig.rar_allow_glob_member_concatenation is deprecated and "
-                "has no effect: no RAR read decodes other members because of a "
-                "member's name any more. It will be removed in a future release.",
+                "ArchiveyConfig.use_indexed_bzip2 is deprecated: use_rapidgzip decides "
+                "bzip2 too. archivey 0.7.0 removes it.",
                 DeprecationWarning,
                 stacklevel=3,
             )
+        # A callback a call passed as a keyword travels in archivey's copies of the
+        # config wrapped, so a later copy of those does not warn either.
+        if (
+            self.on_diagnostic is not None
+            and not isinstance(self.on_diagnostic, CallbackFromCall)
+            and not copying_config()
+        ):
+            warnings.warn(
+                "ArchiveyConfig(on_diagnostic=) is deprecated: pass the callback to "
+                "open_archive(), open_stream() or detect_format(), which a nested "
+                "open_archive(parent=) inherits. archivey 0.7.0 removes the field.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+        _fold_zip_fallback_encoding(self)
+        moved = [name for name in _MOVED_TO_OPTIONS if getattr(self, name) is not None]
+        if moved and not copying_config():
+            spelled = ", ".join(
+                f"{name}= -> {_MOVED_TO_OPTIONS[name][0].__name__}"
+                f"({_MOVED_TO_OPTIONS[name][1]}=)"
+                for name in moved
+            )
+            warnings.warn(
+                f"ArchiveyConfig({spelled}) is deprecated: pass the options object in "
+                "format_options=[...]. archivey 0.7.0 removes the old fields.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+        _convert_format_options(self, moved)
         _check_scalar_fields(self)
         _convert_enum_fields(self)
-        _convert_program_paths(self)
         _refuse_unusable_forced_accelerator(self)
 
 
@@ -1331,7 +1411,6 @@ def _check_guard_switches(config: ArchiveyConfig) -> None:
     A string such as ``"false"`` is truthy, so it would silently turn a refusal off.
     """
     for field_name in (
-        "rar_allow_glob_member_concatenation",
         "read_link_targets",
         "always_probe_content",
         "discover_volumes",
@@ -1347,18 +1426,6 @@ def _check_guard_switches(config: ArchiveyConfig) -> None:
 def _check_scalar_fields(config: ArchiveyConfig) -> None:
     """Check the callback, the ZIP fallback encoding and the two integer limits."""
     check_callable(config.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
-    check_callable(config.on_source_read, call="ArchiveyConfig(on_source_read=…)")
-    check_limit(
-        config.source_read_step,
-        cls="ArchiveyConfig",
-        field_name="source_read_step",
-        allow_none=False,
-    )
-    check_encoding(
-        config.zip_unflagged_fallback_encoding,
-        call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",
-        allow_none=False,
-    )
     check_limit(
         config.max_read_through,
         cls="ArchiveyConfig",
@@ -1395,6 +1462,8 @@ def _convert_enum_fields(config: ArchiveyConfig) -> None:
     # Each call names its enum class directly: ``tests/test_enum_arguments.py`` reads
     # the coerced classes from the second argument of every ``coerce_enum`` call.
     for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
+        if getattr(config, field_name) is None and field_name == "use_indexed_bzip2":
+            continue
         object.__setattr__(
             config,
             field_name,
@@ -1405,16 +1474,6 @@ def _convert_enum_fields(config: ArchiveyConfig) -> None:
                 param=f"{field_name}=",
             ),
         )
-    object.__setattr__(
-        config,
-        "rar_decompressor",
-        coerce_enum(
-            config.rar_decompressor,
-            RarDecompressor,
-            call="ArchiveyConfig()",
-            param="rar_decompressor=",
-        ),
-    )
     object.__setattr__(
         config,
         "process_isolation",
@@ -1479,47 +1538,148 @@ def _refuse_unusable_forced_accelerator(config: ArchiveyConfig) -> None:
         )
 
 
-def _convert_program_paths(config: ArchiveyConfig) -> None:
-    """Replace ``unrar_path`` and ``unar_path`` with an absolute ``str``, or refuse
-    them (:func:`_coerce_program_path`)."""
-    for field_name in ("unrar_path", "unar_path"):
-        object.__setattr__(
-            config,
-            field_name,
-            _coerce_program_path(field_name, getattr(config, field_name)),
+def _convert_format_options(config: ArchiveyConfig, moved: list[str]) -> None:
+    """Store ``format_options`` as a tuple of options objects, at most one per class,
+    with the deprecated fields named in ``moved`` folded in as their options objects.
+
+    The folded fields are cleared, so they always read back as ``None`` and a
+    ``dataclasses.replace`` copy never passes them again: only the construction that
+    names them decides with them. Beside them, an equal object is the same setting and
+    a different one is refused."""
+    value = config.format_options
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise _UsageTypeError(
+            "ArchiveyConfig(format_options=) takes a list or tuple of options objects, "
+            f"got {type(value).__name__}."
         )
+    by_class: dict[type, object] = {}
+    for item in value:
+        if (
+            not dataclasses.is_dataclass(item)
+            or isinstance(item, type)
+            or not _frozen_dataclass(item)
+            or (
+                type(item).__module__.split(".")[0] == "archivey"
+                and type(item) not in _OPTIONS_CLASSES
+            )
+            or (
+                isinstance(item, _OPTIONS_CLASSES)
+                and type(item) not in _OPTIONS_CLASSES
+            )
+        ):
+            raise _UsageTypeError(
+                "ArchiveyConfig(format_options=) takes options objects, instances of "
+                "a frozen dataclass a format reads its settings from (RarOptions, or "
+                f"a plugin's own), got {type(item).__name__}."
+            )
+        if type(item) in by_class:
+            raise _UsageValueError(
+                f"ArchiveyConfig(format_options=) got two {type(item).__name__} "
+                "objects; pass one."
+            )
+        by_class[type(item)] = item
+    folded: dict[type, dict[str, object]] = {}
+    for name in moved:
+        cls, field_name = _MOVED_TO_OPTIONS[name]
+        value = getattr(config, name)
+        try:
+            cls(**{field_name: value})
+        except (_UsageTypeError, _UsageValueError) as exc:
+            # Name the field the caller wrote, not only the options class it moved to.
+            raise type(exc)(
+                f"ArchiveyConfig({name}=) (now {cls.__name__}({field_name}=)): {exc}"
+            ) from exc
+        folded.setdefault(cls, {})[field_name] = value
+    for cls, fields in folded.items():
+        made = cls(**fields)
+        given = by_class.get(cls)
+        if given is not None and given != made:
+            old = ", ".join(n for n in moved if _MOVED_TO_OPTIONS[n][0] is cls)
+            raise _UsageValueError(
+                f"ArchiveyConfig() got {old}= beside a {cls.__name__} in "
+                f"format_options=; pass the {cls.__name__} alone."
+            )
+        by_class[cls] = made
+    for name in moved:
+        object.__setattr__(config, name, None)
+    object.__setattr__(config, "format_options", tuple(by_class.values()))
 
 
-def _coerce_program_path(field_name: str, value: object) -> str | None:
-    """An ``unrar_path=`` / ``unar_path=`` value as an absolute ``str``, or ``None``."""
+def _fold_zip_fallback_encoding(config: ArchiveyConfig) -> None:
+    """Check ``fallback_encoding``, and move a deprecated
+    ``zip_unflagged_fallback_encoding`` into it, warning at the caller's line."""
+    old = config.zip_unflagged_fallback_encoding
+    if old is not None:
+        if not copying_config():
+            warnings.warn(
+                "ArchiveyConfig(zip_unflagged_fallback_encoding=) is deprecated: pass "
+                "fallback_encoding=, which applies to every format. archivey 0.7.0 "
+                "removes it.",
+                DeprecationWarning,
+                stacklevel=4,
+            )
+        check_encoding(
+            old,
+            call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",
+            allow_none=False,
+        )
+        if config.fallback_encoding is not None and config.fallback_encoding != old:
+            raise _UsageValueError(
+                "ArchiveyConfig() got zip_unflagged_fallback_encoding= beside a "
+                "different fallback_encoding=; pass fallback_encoding= alone."
+            )
+        object.__setattr__(config, "fallback_encoding", old)
+        object.__setattr__(config, "zip_unflagged_fallback_encoding", None)
+    check_encoding(config.fallback_encoding, call="ArchiveyConfig(fallback_encoding=…)")
+
+
+def _frozen_dataclass(item: object) -> bool:
+    """Whether ``item``'s class is a dataclass declared ``frozen=True``."""
+    cls: Any = type(item)
+    params = getattr(cls, "__dataclass_params__", None)
+    return params is not None and bool(params.frozen)
+
+
+def _coerce_program_path(call: str, value: object) -> str | None:
+    """An ``unrar_path=`` / ``unar_path=`` value as an absolute ``str``, or ``None``;
+    ``call`` names the argument in a refusal."""
     if value is None:
         return None
     if isinstance(value, bytes) or not isinstance(value, (str, os.PathLike)):
         raise _UsageTypeError(
-            f"ArchiveyConfig({field_name}=) takes a path as a str or os.PathLike, "
-            f"got {type(value).__name__}."
+            f"{call} takes a path as a str or os.PathLike, got {type(value).__name__}."
         )
     path = os.fspath(value)
     if not isinstance(path, str):
-        raise _UsageTypeError(
-            f"ArchiveyConfig({field_name}=) takes a str path, got a bytes one."
-        )
+        raise _UsageTypeError(f"{call} takes a str path, got a bytes one.")
     # ``PurePath.is_absolute`` needs a drive or share on Windows on every version;
     # ``os.path.isabs`` before 3.13 accepts a root-relative ``/usr/bin/unrar``.
     if not path or not pathlib.PurePath(path).is_absolute():
         raise _UsageValueError(
-            f"ArchiveyConfig({field_name}=) takes an absolute path, got {quoted(path)}: a "
-            "relative one would depend on the current directory."
+            f"{call} takes an absolute path, got {quoted(path)}: a relative one would "
+            "depend on the current directory."
         )
     if "\0" in path:
-        raise _UsageValueError(
-            f"ArchiveyConfig({field_name}=) got a path with a NUL character."
-        )
+        raise _UsageValueError(f"{call} got a path with a NUL character.")
     return path
 
 
 DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig()
 """The configuration used when a call is given no ``config=``: ``ArchiveyConfig()``."""
+
+ArchiveyConfig.UNTRUSTED = ArchiveyConfig(
+    formats=FormatPolicy.COMMON,
+    diagnostic_policy=DiagnosticPolicy.STRICT,
+    process_isolation=ProcessIsolation.NATIVE_DECODERS,
+    listing_limits=ListingLimits(max_members=10_000, max_metadata_bytes=4 * 2**20),
+    decoder_limits=DecoderLimits(
+        max_decoder_memory=256 * 2**20, max_key_derivation_rounds=2**24
+    ),
+    extraction_limits=ExtractionLimits(
+        max_extracted_bytes=500 * 2**20, max_entries=10_000
+    ),
+    use_rapidgzip=AcceleratorMode.OFF,
+)
 
 
 @dataclass(frozen=True)
@@ -1567,6 +1727,7 @@ __all__ = [
     "PasswordRequest",
     "ProcessIsolation",
     "RarDecompressor",
+    "RarOptions",
     "SalvageLimits",
     "SpoolLimits",
 ]

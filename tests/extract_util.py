@@ -41,7 +41,6 @@ def open_and_extract(
     format: ArchiveFormat | str | None = None,
     streaming: bool = False,
     password: PasswordInput = None,
-    encoding: str | None = None,
     config: ArchiveyConfig | None = None,
     **extract_kwargs: Any,
 ) -> ExtractionReport:
@@ -50,7 +49,6 @@ def open_and_extract(
         format=format,
         **open_mode(source, streaming=streaming),
         password=password,
-        encoding=encoding,
         config=config,
     ) as reader:
         chosen = "on_problem" in extract_kwargs or any(

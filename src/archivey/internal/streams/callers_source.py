@@ -33,7 +33,7 @@ _FROM_CALLBACK = "_archivey_raised_by_on_source_read"
 
 
 def from_source_callback(exc: BaseException) -> bool:
-    """Whether ``exc`` was raised by ``ArchiveyConfig.on_source_read``.
+    """Whether ``exc`` was raised by ``on_source_read``.
 
     Such an exception is also marked as the caller's own (:func:`from_callers_source`),
     so the codec translators leave it alone. This second mark is for the boundaries

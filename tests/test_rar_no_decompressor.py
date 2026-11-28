@@ -1,4 +1,4 @@
-"""``ArchiveyConfig.rar_decompressor="none"``: RAR without any external program.
+"""``RarOptions.decompressor="none"``: RAR without any external program.
 
 Every test here makes starting a process fail, so a read that would have run
 ``unrar`` or ``unar`` shows up as that failure instead of passing quietly.
@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, open_archive
-from archivey.config import RarDecompressor, SpoolLimits
+from archivey.config import RarDecompressor, RarOptions, SpoolLimits
 from archivey.exceptions import TruncatedError, UnsupportedFeatureError
 from tests.conftest import requires
 from tests.test_rar_reader import (
@@ -27,7 +27,7 @@ from tests.test_rar_reader import (
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
 _CORPUS = Path(__file__).parent / "fixtures" / "corpus" / "rar"
-_NONE = ArchiveyConfig(rar_decompressor=RarDecompressor.NONE)
+_NONE = ArchiveyConfig(format_options=[RarOptions(decompressor=RarDecompressor.NONE)])
 # As ``scripts/fixtures/gen_rar_fixtures.py`` writes them.
 _PAYLOADS = {
     "payload.bin": b"ABCDEFGH" * 200,
@@ -45,9 +45,7 @@ def _no_processes(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_name_is_accepted() -> None:
-    assert ArchiveyConfig(rar_decompressor="none").rar_decompressor is (
-        RarDecompressor.NONE
-    )
+    assert RarOptions(decompressor="none").decompressor is RarDecompressor.NONE
 
 
 @pytest.mark.parametrize("as_stream", [False, True], ids=["path", "stream"])
@@ -73,7 +71,9 @@ def test_stored_nonsolid_members_read(as_stream: bool) -> None:
 )
 def test_other_members_refused_before_any_process(name: str, why: str) -> None:
     with open_archive(_RAR / name, config=_NONE, password="password") as ar:
-        assert any("rar_decompressor is 'none'" in note for note in ar.cost.notes)
+        assert any(
+            "RarOptions.decompressor is 'none'" in note for note in ar.cost.notes
+        )
         member = next(m for m in ar.members() if m.is_file)
         with pytest.raises(UnsupportedFeatureError, match=why) as info:
             ar.read(member)
@@ -141,7 +141,8 @@ def test_split_member_missing_its_first_part_is_refused() -> None:
 def test_refusal_comes_before_a_stream_source_is_copied() -> None:
     # With no spool allowance, a copy would raise ResourceLimitError instead.
     config = ArchiveyConfig(
-        rar_decompressor=RarDecompressor.NONE, spool_limits=SpoolLimits(max_bytes=0)
+        spool_limits=SpoolLimits(max_bytes=0),
+        format_options=[RarOptions(decompressor=RarDecompressor.NONE)],
     )
     source = io.BytesIO((_RAR / "basic_solid__.rar").read_bytes())
     with open_archive(source, config=config) as ar:

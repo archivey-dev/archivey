@@ -356,6 +356,9 @@ ResultT = TypeVar("ResultT")
 """What the plugin call returns once the unit is unlocked: the reader, or a
 :class:`MemberData`."""
 
+# A format's options class (``ReaderContext.options``).
+OptionsT = TypeVar("OptionsT")
+
 
 @dataclass(frozen=True)
 class NeedsPassword(Generic[UnlockedT, ResultT]):
@@ -434,7 +437,7 @@ class ReaderSource:
     # archivey only, for its built-in readers, and only on a remote source: ``None``
     # elsewhere, so a reader gathers no hints that would change nothing.
     _will_read: Callable[[int, int], None] | None = None
-    # Gives a reporter for ``ArchiveyConfig.on_source_read`` for another file that holds
+    # Gives a reporter for ``on_source_read`` for another file that holds
     # the archive's bytes (a ``.cue`` sheet's track), named and sized; ``None`` or
     # returning ``None`` when the source does not report. Set by archivey only.
     _progress_reporter: Callable[[str | None, int | None], Any] | None = None
@@ -797,7 +800,8 @@ class ReaderContext:
 
     @property
     def encoding(self) -> str | None:
-        """The caller's ``encoding=`` for names that are not UTF-8, or ``None``."""
+        """The caller's fallback encoding for names that declare none and are not
+        valid UTF-8 (``ArchiveyConfig.fallback_encoding``), or ``None``."""
         return self._encoding
 
     @property
@@ -811,6 +815,14 @@ class ReaderContext:
         bound it by ``config.listing_limits``; archivey applies those limits to the
         members it is handed in any case."""
         return self._config
+
+    def options(self, cls: type[OptionsT]) -> OptionsT:
+        """The caller's ``cls`` object from ``config.format_options``, or ``cls()``
+        when the caller passed none: a format's own settings, such as
+        :class:`~archivey.config.RarOptions`."""
+        from archivey.internal.config import format_options_of
+
+        return format_options_of(self._config, cls)
 
     def report(
         self,
@@ -1116,19 +1128,38 @@ class ReaderContext:
     def decode_name(self, raw: bytes) -> str:
         """Decode a stored name the way built-in formats do.
 
-        Valid UTF-8 wins. Other bytes decode with ``encoding=`` when the caller gave
-        one, else as UTF-8 with ``surrogateescape``, so no byte is lost.
+        Valid UTF-8 wins. Other bytes decode with the caller's fallback encoding
+        (:attr:`encoding`) when there is one, else as UTF-8 with ``surrogateescape``, so
+        no byte is lost. A listed member whose ``raw_name`` is not valid UTF-8 is
+        reported as ``MEMBER_NAME_FALLBACK_ENCODING``, naming the codec this method
+        would use for it, when the format sets ``uses_encoding``: set ``raw_name`` to
+        the stored bytes.
         """
-        try:
+        codec = self._fallback_codec(raw)
+        if codec is None:
             return raw.decode("utf-8")
+        if codec == "surrogateescape":
+            return raw.decode("utf-8", errors="surrogateescape")
+        return raw.decode(codec, errors="surrogateescape")
+
+    def _fallback_codec(self, raw: bytes) -> str | None:
+        """The codec :meth:`decode_name` decodes ``raw`` with: ``None`` for valid
+        UTF-8, else the caller's fallback encoding when it decodes ``raw``, else
+        ``"surrogateescape"``."""
+        try:
+            raw.decode("utf-8")
         except UnicodeDecodeError:
             pass
+        else:
+            return None
         if self._encoding is not None:
             try:
-                return raw.decode(self._encoding, errors="surrogateescape")
+                raw.decode(self._encoding, errors="surrogateescape")
             except UnicodeError:
                 pass
-        return raw.decode("utf-8", errors="surrogateescape")
+            else:
+                return self._encoding
+        return "surrogateescape"
 
     def decompress(
         self,
@@ -1380,9 +1411,16 @@ class FormatHandler(ABC):
     takes it as no match, as it does a probe that raises."""
 
     uses_encoding: ClassVar[bool] = False
-    """Whether the reader applies ``encoding=`` (through
-    :meth:`ReaderContext.decode_name`). When ``False``, a caller's ``encoding=`` is
-    reported as unused."""
+    """Whether the reader applies the caller's fallback encoding (through
+    :meth:`ReaderContext.decode_name`). When ``False``, the deprecated
+    ``open_archive(encoding=)`` is reported as unused. When ``True``, a listed member
+    whose ``raw_name`` is not valid UTF-8 is reported as
+    ``MEMBER_NAME_FALLBACK_ENCODING``, so ``raw_name`` must be the stored bytes and the
+    format must declare no charset for them."""
+
+    # Private: a built-in reader that reports MEMBER_NAME_FALLBACK_ENCODING itself, so
+    # the listing adds no report of its own.
+    _reports_own_name_fallback: ClassVar[bool] = False
 
     supports_password: ClassVar[bool] = False
     """Whether the format can be encrypted, so that its reader may hand archivey a

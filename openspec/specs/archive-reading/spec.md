@@ -1364,11 +1364,11 @@ class ProcessIsolation(Enum):
 
 @dataclass(frozen=True)
 class ArchiveyConfig:
+    UNTRUSTED: ClassVar["ArchiveyConfig"]
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
-    use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
+    use_indexed_bzip2: AcceleratorMode | None = None  # deprecated in 0.6.0
     process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
-    zip_unflagged_fallback_encoding: str = "cp437"
-    rar_allow_glob_member_concatenation: bool = False
+    zip_unflagged_fallback_encoding: str | None = None  # deprecated: fallback_encoding
     read_link_targets: bool = True
     extraction_limits: ExtractionLimits = ExtractionLimits()
     listing_limits: ListingLimits = ListingLimits()
@@ -1378,9 +1378,45 @@ class ArchiveyConfig:
     always_probe_content: bool = False
     diagnostic_policy: DiagnosticPolicy = DiagnosticPolicy()
     max_retained_diagnostic_references: int = 256
-    on_diagnostic: Callable[[Diagnostic], None] | None = None
+    on_diagnostic: Callable[[Diagnostic], None] | None = None  # deprecated
     max_read_through: int = 2**20
+    format_options: Sequence[object] = ()  # stored as a tuple
+    fallback_encoding: str | None = None
+
+@dataclass(frozen=True)
+class RarOptions:
+    decompressor: RarDecompressor = RarDecompressor.AUTO
+    unrar_path: str | None = None
+    unar_path: str | None = None
 ```
+
+`format_options` SHALL hold at most one object of each class, and only frozen
+dataclass instances that are not other archivey config classes or subclasses of
+`RarOptions`; a second object of one class, or anything else, SHALL raise
+`ArchiveyUsageError` at construction. A format's reader SHALL read its settings from the
+object of its class, or from the class's defaults when there is none
+(`ReaderContext.options(cls)` for a plugin). Option fields SHALL hold plain values only:
+text, numbers, booleans, a named choice or a path. The deprecated fields
+`rar_decompressor`, `unrar_path` and `unar_path`
+(0.6.0, removed in 0.7.0) SHALL default to unset; a caller who sets one SHALL get a
+`DeprecationWarning` at their line, its value SHALL move into its options object in
+`format_options`, and the field SHALL read back as unset, so a `dataclasses.replace` copy
+keeps the setting only through `format_options`.
+Setting one beside an options object of its class that says otherwise SHALL raise
+`ArchiveyUsageError`.
+
+`fallback_encoding` SHALL name the codec for a member name that declares no encoding its
+bytes fit and whose bytes are not valid UTF-8, in every format that reads it (ZIP, TAR,
+ISO, RAR 1.5-4 and the formats whose readers decode names with
+`ReaderContext.decode_name`); `None` SHALL keep each format's own fallback. An unknown or
+text-only codec SHALL raise `ArchiveyUsageError` at construction. A reader opened with
+`open_archive(parent=)` and no `config=` uses its parent's config, so it SHALL use the
+same fallback. The deprecated `zip_unflagged_fallback_encoding` (0.6.0, removed in
+0.7.0) SHALL warn at the caller's line, move its value into `fallback_encoding` and read
+back as unset; beside a different `fallback_encoding` it SHALL raise
+`ArchiveyUsageError`. The deprecated `open_archive(encoding=)` and
+`ArchiveyFileSystem(encoding=)` SHALL warn at the caller's line and replace
+`fallback_encoding` for that call.
 
 `max_retained_diagnostic_references` SHALL be non-negative. `max_read_through` is the
 longest forward gap, in bytes, that a remote fetch planner reads through rather than
@@ -1421,7 +1457,8 @@ whose size is known only once it has been read (a ZIP member with bit 3 set, rea
 non-seekable source), SHALL be fed to pyppmd in pieces. `None` SHALL hold every member
 whose size is known. `process_isolation` SHALL be converted from the member or its name
 at construction, as the accelerator fields are. `process_isolation=NONE` together with
-`use_rapidgzip=ON` or `use_indexed_bzip2=ON` SHALL raise `ArchiveyUsageError` (also a
+`use_rapidgzip=ON` (or the deprecated `use_indexed_bzip2=ON`) SHALL raise
+`ArchiveyUsageError` (also a
 `ValueError`) at construction: rapidgzip runs only in a child process. Per-call `limits`
 still beat `config.extraction_limits`, then reader/library default. Other per-call
 operational args stay outside `ArchiveyConfig`. `detection_budget` SHALL bound what
@@ -1460,6 +1497,14 @@ gate raises `ArchiveyUsageError`, and a re-entrant call that gets as far as emit
 diagnostic of its own raises `ArchiveyUsageError` from the collector; other readers OK.
 Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 (`diagnostics` / `reader-concurrency`).
+
+`ArchiveyConfig.UNTRUSTED` SHALL be the default config with these fields changed, and
+no others: `formats=FormatPolicy.COMMON`, `diagnostic_policy=DiagnosticPolicy.STRICT`,
+`process_isolation=NATIVE_DECODERS`, `ListingLimits(max_members=10_000,
+max_metadata_bytes=4 MiB)`, `DecoderLimits(max_decoder_memory=256 MiB,
+max_key_derivation_rounds=2**24)`, `ExtractionLimits(max_extracted_bytes=500 MiB,
+max_entries=10_000)` and `use_rapidgzip=OFF`. A caller adjusts it with
+`dataclasses.replace`, which SHALL NOT warn.
 
 #### Scenario: config matrix
 
@@ -2225,8 +2270,10 @@ system.
 
 ### Requirement: Reading the archive's file reports progress
 
-`ArchiveyConfig.on_source_read` SHALL, when set, be called with a `SourceProgress` as
-`open_archive()` and `open_stream()` read the archive's own file, detection included.
+The `on_source_read=` callback of `open_archive()` and `open_stream()` SHALL, when
+given, be called with a `SourceProgress` as the call reads the archive's own file,
+detection included. A reader opened with `parent=` and no `on_source_read=` SHALL
+report to its parent's.
 
 For a source read by range requests (an `fsspec.core.OpenFile`, alone or in a volume
 list) it SHALL be called once before each request, with `request_received == 0` and
@@ -2254,8 +2301,9 @@ requirement. An exception it raises SHALL propagate out of the read that called 
 unchanged; every later read of the file SHALL raise it again, bytes served from a cache
 or a replay included, and an extraction or verification that goes on past a member's
 error SHALL stop on it instead. A reader opened with `parent=` SHALL report to the
-callback in its own config (its parent's unless given one) with `nest_level` one more
-than its parent's; a member stream opened without `parent=` is a source of its own and
+callback its call passes, or else to its parent's, with or without a `config=` of its
+own, with `nest_level` one more than its parent's; a member stream opened without
+`parent=` is a source of its own and
 SHALL report at `nest_level` 0. A split set found beside a stub, and the track files of
 a `.cue` sheet, SHALL report as the file they stand in for. `position` and `read_start`
 SHALL count from the start of the file, also when a stream is opened where the caller
@@ -2281,7 +2329,7 @@ reporting work SHALL be done beyond checking that it is unset.
 #### Scenario: a nested reader
 
 - **WHEN** `on_source_read` is set and an archive is opened from a member with
-  `open_archive(member, parent=outer)` and no `config=`
+  `open_archive(member, parent=outer)` and no `on_source_read=`
 - **THEN** the outer file's reads report at `nest_level` 0 and the nested reader's
   reads report to the same callback at `nest_level` 1
 
@@ -2303,20 +2351,14 @@ reporting work SHALL be done beyond checking that it is unset.
 - **THEN** the call into archivey that read raises that exception, also under
   `extract_all(on_error="continue")`
 
-### Requirement: Deprecate the RAR glob concatenation switch
+### Requirement: The RAR glob concatenation switch is gone
 
-`ArchiveyConfig.rar_allow_glob_member_concatenation` SHALL stay a `bool` field that
-defaults to `False`, and SHALL change no read: no RAR read refuses a member for a name
-whose mask selects other members. A caller constructing a config with the field set to
-`True` SHALL get a `DeprecationWarning` naming the field; the copies archivey makes of
-that config for itself SHALL NOT warn again. The field SHALL be removed in a later
-minor release.
+`ArchiveyConfig` SHALL have no `rar_allow_glob_member_concatenation` field: it changed
+no read since 0.4.0, which deprecated it, and 0.6.0 removes it. No RAR read refuses a
+member for a name whose mask selects other members.
 
-#### Scenario: deprecated field matrix
+#### Scenario: removed field
 
 | Case | Expected |
 | --- | --- |
-| `ArchiveyConfig()` | No warning |
-| `ArchiveyConfig(rar_allow_glob_member_concatenation=True)` | `DeprecationWarning` naming the field; reads are the same as with `False` |
-| `open_stream(src, config=cfg)` with `cfg` built with the field `True` | No second warning from archivey's own copy |
-| `ArchiveyConfig(rar_allow_glob_member_concatenation="false")` | `ArchiveyUsageError` at construction, as before |
+| `ArchiveyConfig(rar_allow_glob_member_concatenation=True)` | `TypeError` naming the field |

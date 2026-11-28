@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -87,8 +87,13 @@ class StreamConfig:
     through rapidgzip (``AUTO`` applies the gates the size fields below feed)."""
 
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
-    """The caller's ``ArchiveyConfig.use_indexed_bzip2``: whether a bzip2 stream may go
-    through rapidgzip's bzip2 decoder."""
+    """Whether a bzip2 stream may go through rapidgzip's bzip2 decoder: the caller's
+    ``ArchiveyConfig.use_rapidgzip``, or the deprecated ``use_indexed_bzip2`` while it
+    is set."""
+
+    bzip2_setting: str = "use_rapidgzip"
+    """The name of the caller's setting that :attr:`use_indexed_bzip2` came from, for
+    the messages that tell the caller what to change."""
 
     compressed_input_size: int | None = None
     """The known compressed byte length of the source (path size, slice length, …),
@@ -214,6 +219,19 @@ class StreamConfig:
         return self.seekable or self.restart_points
 
 
+OptionsT = TypeVar("OptionsT")
+
+
+def format_options_of(config: ArchiveyConfig, cls: type[OptionsT]) -> OptionsT:
+    """The ``cls`` object in ``config.format_options``, or ``cls()`` when there is
+    none: what a format's reader reads its settings from. The class must match
+    exactly, as ``ArchiveyConfig`` keys its one-object-per-class rule on it."""
+    for item in config.format_options:
+        if type(item) is cls:
+            return cast("OptionsT", item)
+    return cls()
+
+
 def stream_config_from_archivey(
     config: ArchiveyConfig,
     *,
@@ -229,7 +247,14 @@ def stream_config_from_archivey(
         seekable=seekable,
         refuse_input_after_end=refuse_input_after_end,
         use_rapidgzip=config.use_rapidgzip,
-        use_indexed_bzip2=config.use_indexed_bzip2,
+        use_indexed_bzip2=(
+            config.use_rapidgzip
+            if config.use_indexed_bzip2 is None
+            else config.use_indexed_bzip2
+        ),
+        bzip2_setting=(
+            "use_rapidgzip" if config.use_indexed_bzip2 is None else "use_indexed_bzip2"
+        ),
         decoder_limits=config.decoder_limits,
         process_isolation=config.process_isolation,
         redecode_before_damage=(

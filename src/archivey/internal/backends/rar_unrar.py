@@ -157,7 +157,7 @@ _RAR_DISABLE_CONFIG = "-cfg-"
 # Appended to every refusal of a member unrar cannot be pointed at. unar
 # addresses entries by index, so none of those reasons apply to it.
 UNAR_BY_POSITION_HINT = (
-    "Set ArchiveyConfig.rar_decompressor to 'unar' to read it by position instead."
+    "Set RarOptions.decompressor to 'unar' to read it by position instead."
 )
 
 _NOT_INSTALLED_MSG = (
@@ -165,7 +165,7 @@ _NOT_INSTALLED_MSG = (
     "on PATH or, on Windows, in WinRAR's folder under Program Files (or the one found "
     "is not a RARLAB binary). Install RARLAB unrar or rar 6.0 or later and put it on "
     "PATH; unrar-free, 7z and 7zz are not substitutes. With "
-    "ArchiveyConfig.rar_decompressor 'auto' or 'unar', a unar 1.10 or later that "
+    "RarOptions.decompressor 'auto' or 'unar', a unar 1.10 or later that "
     "passes archivey's RAR5 check reads most RAR data too; Debian and Ubuntu packages "
     "before 1.10.8+ds1-10 fail that check and are not used."
 )
@@ -224,7 +224,7 @@ def _unrar_floor_message(
         _describe_floor_refusal(path, version) for path, version in refusals
     )
     fix = (
-        "archivey does not look on PATH when ArchiveyConfig.unrar_path is set; point "
+        "archivey does not look on PATH when RarOptions.unrar_path is set; point "
         f"it at RARLAB unrar or rar {floor} or later."
         if pinned
         else f"Install RARLAB unrar or rar {floor} or later."
@@ -238,9 +238,9 @@ def _unrar_floor_message(
 def _unrar_timeout_message(paths: list[str], *, pinned: bool = False) -> str:
     shown = " and ".join(display_path(path) for path in paths)
     them = "it" if len(paths) == 1 else "them"
-    where = " at ArchiveyConfig.unrar_path" if pinned else ""
+    where = " at RarOptions.unrar_path" if pinned else ""
     fix = (
-        "point ArchiveyConfig.unrar_path at a working RARLAB unrar or rar"
+        "point RarOptions.unrar_path at a working RARLAB unrar or rar"
         if pinned
         else "put a working RARLAB unrar or rar on PATH"
     )
@@ -255,7 +255,7 @@ def _unrar_timeout_message(paths: list[str], *, pinned: bool = False) -> str:
 def _pinned_unrar_missing_message(program: str) -> str:
     return (
         f"RARLAB unrar or rar is required to read RAR member data, but "
-        f"ArchiveyConfig.unrar_path names {display_path(program)}, which could not be "
+        f"RarOptions.unrar_path names {display_path(program)}, which could not be "
         "run, or is not a RARLAB binary. archivey does not look on PATH when "
         "unrar_path is set. Point it at RARLAB unrar or rar 6.0 or later."
     )
@@ -366,7 +366,7 @@ def _rarlab_candidates(path_env: str) -> Iterator[str]:
 
 def _unrar_candidates(program: str | None) -> Iterator[str]:
     """The binaries to try, in order: ``program`` alone when the caller pinned one
-    (``ArchiveyConfig.unrar_path``), else :func:`_rarlab_candidates`."""
+    (``RarOptions.unrar_path``), else :func:`_rarlab_candidates`."""
     if program is not None:
         return iter([program])
     # Sample PATH once and pass it to ``which`` so a concurrent ``os.environ``
@@ -383,7 +383,7 @@ def find_rarlab_unrar(program: str | None = None) -> str:
     A ``which`` miss is never cached. Spawn sites still only run ``p`` (see
     :func:`open_unrar_p`).
 
-    ``program`` is ``ArchiveyConfig.unrar_path``: when set, it is the only binary
+    ``program`` is ``RarOptions.unrar_path``: when set, it is the only binary
     tried, neither ``PATH`` nor the WinRAR folder is searched, and it is held to the
     same identification and version floor.
     """
@@ -730,7 +730,7 @@ def unrar_plain_name_max(program: str | None = None) -> int:
     selects whole (see ``_UNRAR6_PLAIN_NAME_MAX``).
 
     Taken from the banner version :func:`find_rarlab_unrar` probed for ``program``
-    (``ArchiveyConfig.unrar_path``, or ``None`` to search). When no usable
+    (``RarOptions.unrar_path``, or ``None`` to search). When no usable
     ``unrar`` is found, or its version did not parse, the 6.x bound applies: it is
     the smaller one, and the read that follows fails on the missing program anyway.
     """
@@ -962,7 +962,7 @@ def open_unrar_p(
     on stderr. stdin and stderr are then pipes the caller owns: the password, when
     there is one, is written to stdin, which stays open for the prompts' answers.
 
-    ``program`` is ``ArchiveyConfig.unrar_path`` (see :func:`find_rarlab_unrar`).
+    ``program`` is ``RarOptions.unrar_path`` (see :func:`find_rarlab_unrar`).
     ``usage`` records the binary that ran, for ``ArchiveReader.backends_used``.
 
     ``version_control`` adds ``-ver`` so the pipe includes WinRAR file-version history

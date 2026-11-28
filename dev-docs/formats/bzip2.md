@@ -13,7 +13,7 @@ Registers keep the status; this page states the behaviour and links the row.
 | --- | --- |
 | Read | bzip2 as a one-member archive, as a ZIP and 7z coder, and inside `.tar.bz2` |
 | Write | **Not shipped** |
-| Backends | The standard library's `bz2.open`. `rapidgzip.IndexedBzip2File` from `[seekable]`, used when `use_indexed_bzip2` selects it (§2.3) |
+| Backends | The standard library's `bz2.open`. `rapidgzip.IndexedBzip2File` from `[seekable]`, used when `use_rapidgzip` selects it (§2.3) |
 | Seeking | Without the accelerator, a backward seek decodes again from the start. With it, from the nearest block of the index it builds while decoding |
 | Size | `None`. bzip2 has no size field |
 | Digests | None listed. Every block's CRC and the stream's combined CRC are checked on read, the combined one when the read reaches the end of the stream (§2.3) |
@@ -127,8 +127,8 @@ checks the combined CRC at the end from the state, so it never decodes from the 
 Without either, a backward seek decodes again from the start, and the rewind report says
 so.
 
-**When the accelerator is used.** `use_indexed_bzip2` is an `AcceleratorMode`, `AUTO` by
-default:
+**When the accelerator is used.** `use_rapidgzip` (or the deprecated `use_indexed_bzip2`,
+while it is set) is an `AcceleratorMode`, `AUTO` by default:
 
 | Mode | bzip2 |
 | --- | --- |
@@ -355,7 +355,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Choice | Why | Rejected |
 | --- | --- | --- |
 | The bzip2 accelerator is `rapidgzip`'s bundled decoder (ADR 0008) | `indexed_bzip2` and `rapidgzip` loaded together corrupt the heap on macOS; `rapidgzip` covers both codecs | The separate `indexed_bzip2` package |
-| Run the bzip2 accelerator in a child process, like the DEFLATE family (2026-10-10, reversing PR #493) | A precaution: no crash has been seen, but the decoder comes from the same library as the DEFLATE one, whose aborts cannot always be avoided. Isolation is for libraries with observed crashes (rapidgzip, pyppmd), not for native code as such. `scripts/investigations/accelerator_crash_search.py` keeps checking whether it is still needed | Keeping it in-process (PR #493); a config option for process isolation, which `use_indexed_bzip2=OFF` already covers |
+| Run the bzip2 accelerator in a child process, like the DEFLATE family (2026-10-10, reversing PR #493) | A precaution: no crash has been seen, but the decoder comes from the same library as the DEFLATE one, whose aborts cannot always be avoided. Isolation is for libraries with observed crashes (rapidgzip, pyppmd), not for native code as such. `scripts/investigations/accelerator_crash_search.py` keeps checking whether it is still needed | Keeping it in-process (PR #493); a config option for process isolation, which `use_rapidgzip=OFF` already covers |
 | Fall back to the standard library on a first empty read (PR #461) | The decoder's own state cannot tell garbage from an empty stream, and an accelerator must not change whether a corrupt source raises | Trusting the empty result; checking the magic by hand, which misses a valid header followed by garbage |
 | Serve the caller's source from this process (PR #462 trapped it in-process) | `rapidgzip` terminates the process when a Python source raises; the child's source never raises | Letting the exception cross the native boundary |
 | A 1 MiB size threshold for `AUTO` | The child costs a process start; the standard library is slow enough that the child pays for itself from about 1 MiB | No threshold (the in-process decoder cost no start); reusing the 16 MiB DEFLATE gate |

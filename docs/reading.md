@@ -211,9 +211,10 @@ your own threads. Archivey never calls your code from a thread it started.
 
 ## Showing progress
 
-To show how far archivey has read the archive's own file, set `on_source_read`. Archivey calls it
-with a `SourceProgress` as it reads: about once per MiB for a file on disk or a stream, and for a
-URL around each range request ([Remote archives](remote.md#watching-the-requests)).
+To show how far archivey has read the archive's own file, pass `on_source_read=` to `open_archive`
+or `open_stream`. Archivey calls it with a `SourceProgress` as it reads: about once per MiB for a
+file on disk or a stream, and for a URL around each range request
+([Remote archives](remote.md#watching-the-requests)).
 
 ```python
 import archivey
@@ -222,8 +223,7 @@ def show(progress: archivey.types.SourceProgress) -> None:
     if progress.nest_level == 0 and progress.size:
         print(f"{progress.position / progress.size:.0%} of {progress.name}")
 
-config = archivey.ArchiveyConfig(on_source_read=show)
-with archivey.open_archive("backup.tar.xz", config=config) as archive:
+with archivey.open_archive("backup.tar.xz", on_source_read=show) as archive:
     archive.extract_all("out")
 ```
 
@@ -238,11 +238,11 @@ The callback runs inside the read that called it, on your thread. To stop a slow
 exception there: the call to archivey that read raises it unchanged, and so does every later read
 of the file, also in an `extract_all(on_problem="continue")`. An archive opened from a member with
 `parent=` reports to the same callback with `nest_level` 1, so keep level 0 for the file you
-opened. To log each part of the file archivey reads, set `ArchiveyConfig(source_read_step=0)`:
+opened. To log each part of the file archivey reads, pass `source_read_step=0` to the same call:
 the callback then runs for every read, and `read_start` to `position` is the part of the file that
 read took. For a RAR archive opened from a stream, archivey's own thread may copy the volumes to
 `unrar`; you get only the latest of those reads, so the log has gaps there, though `bytes_read`
-counts every byte. With `on_source_read` unset, nothing is counted.
+counts every byte. Without `on_source_read`, nothing is counted.
 
 ## The same result everywhere
 
@@ -259,10 +259,7 @@ answer as other tools, on every machine, and you would rather it be slower than 
 accelerator off:
 
 ```python
-config = archivey.ArchiveyConfig(
-    use_rapidgzip=archivey.config.AcceleratorMode.OFF,
-    use_indexed_bzip2=archivey.config.AcceleratorMode.OFF,
-)
+config = archivey.ArchiveyConfig(use_rapidgzip=archivey.config.AcceleratorMode.OFF)
 with archivey.open_archive("data.zip", config=config) as archive:
     ...
 ```
@@ -291,4 +288,4 @@ format, and the mistake shows up during development.
 | Read from a pipe | `pipe=True` | [TAR, ZIP, cpio, ar, deb, RPM, makeself and single compressed files](#reading-from-a-pipe); [some results differ from a file](formats.md#reading-from-a-pipe) |
 | Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and a seek that [jumps over data](errors-and-diagnostics.md#damaged-archives) stops the checksum check |
 | Read members from several threads | `concurrent_operations=True` | [Slow on sources where each jump is costly](#several-members-at-once) |
-| Get the same result as other tools, on every machine | `use_rapidgzip` and `use_indexed_bzip2` set to `OFF` in `ArchiveyConfig` | [Large gzip and bzip2 reads are slower](#the-same-result-everywhere) |
+| Get the same result as other tools, on every machine | `use_rapidgzip` set to `OFF` in `ArchiveyConfig` | [Large gzip and bzip2 reads are slower](#the-same-result-everywhere) |

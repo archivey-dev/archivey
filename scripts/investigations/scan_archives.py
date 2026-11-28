@@ -174,7 +174,7 @@ _LIMITS: tuple[tuple[str, str, float | None], ...] = (
 _NEAR = 0.5
 # Diagnostics too common in ordinary archives to flag on their own.
 _ROUTINE_DIAGNOSTICS = frozenset(
-    {"member_name_normalized", "member_name_encoding_inferred"}
+    {"member_name_normalized", "member_name_fallback_encoding"}
 )
 _SLOW_SECONDS = 60.0
 _LOGGED_MEMBER_ERRORS = 10

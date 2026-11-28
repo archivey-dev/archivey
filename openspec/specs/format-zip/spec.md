@@ -1094,28 +1094,25 @@ Rejected-candidate streams SHALL be closed before trying the next candidate.
 
 The ZIP backend SHALL decode a member name whose general-purpose bit 11 (UTF-8/EFS flag) is
 **clear** by first attempting UTF-8, and only when the bytes are not valid UTF-8 falling
-back to the caller's `encoding=` when one was passed, else to a configurable legacy encoding
-(default cp437, per APPNOTE). The caller's `encoding=` and the configured fallback SHALL
-decode with `surrogateescape`; a codec that refuses that handler (`idna`) gives way to the
-next one, and cp437 decodes every byte. This sniff SHALL apply only in the absence of an
-authoritative encoding signal: a set bit 11 SHALL be honored as UTF-8 when the bytes are
-valid UTF-8. A name whose bit 11 is set over bytes that are not valid UTF-8 SHALL decode
-as an unflagged name that is not valid UTF-8 does (the caller's `encoding=`, else the
-configured fallback, with no Unicode Path field consulted), and SHALL emit
-`MEMBER_NAME_ENCODING_INFERRED` with `inferred_encoding` the codec used and
-`declared_encoding="utf-8"`, whether or not the caller passed `encoding=`. When the sniff
-selects an encoding archivey chose over the cp437 default — UTF-8, or a configured fallback
-other than cp437 — the backend SHALL emit a `diagnostics` warning identifying the member,
-the chosen encoding and the encoding it passed over (the caller's `encoding=` or the
-configured fallback for a UTF-8 reading, cp437 for a configured fallback), so the decision
-is observable and escalatable via `DiagnosticPolicy`. A name decoded with the caller's
-`encoding=` emits no such warning. Decoding SHALL NOT raise a bare `UnicodeDecodeError`.
+back to the caller's `fallback_encoding` when one is set, else to cp437, per APPNOTE. The
+caller's codec SHALL decode with `surrogateescape`; a codec that refuses that handler
+(`idna`) gives way to cp437, which decodes every byte. This sniff SHALL apply only in the
+absence of an authoritative encoding signal: a set bit 11 SHALL be honored as UTF-8 when
+the bytes are valid UTF-8. A name whose bit 11 is set over bytes that are not valid UTF-8
+SHALL decode as an unflagged name that is not valid UTF-8 does, with no Unicode Path field
+consulted. Every name that went past UTF-8 to that fallback, flagged or not, SHALL emit
+`MEMBER_NAME_FALLBACK_ENCODING` on its member, naming the codec used, so the decision is
+observable and escalatable via `DiagnosticPolicy`; a name read as UTF-8 emits none, since
+no setting could change it. A name whose bit 11 its bytes refute SHALL also emit
+`MEMBER_NAME_ENCODING_MISMATCH`, which `DiagnosticPolicy.STRICT` refuses: the header
+contradicts itself. A valid UTF-8 name with bit 11 clear SHALL NOT emit it. Decoding SHALL
+NOT raise a bare `UnicodeDecodeError`.
 
 An Info-ZIP Unicode Path extra field (`0x7075`) in the central directory outranks both the
-sniff and an explicit `encoding=` for an unflagged name: when the field is version 1, its
+sniff and the fallback for an unflagged name: when the field is version 1, its
 CRC-32 equals the CRC-32 of the stored name bytes, and its name is non-empty valid UTF-8,
 the member name SHALL be that UTF-8 name, `raw_name` SHALL be its UTF-8 bytes, and
-`extra["alternate_raw_name"]` SHALL hold the stored header bytes. No inference diagnostic
+`extra["alternate_raw_name"]` SHALL hold the stored header bytes. No fallback diagnostic
 is emitted, since the field declares the encoding. A field whose CRC does not match or
 whose version is not 1 SHALL be ignored, and the name decoded as above. A malformed field
 SHALL be dropped, the name decoded as above, and `MEMBER_HEADER_RECORD_SKIPPED` emitted on
@@ -1132,16 +1129,16 @@ UTF-8 flag is set. `name` is always `raw_name` decoded and normalized.
 #### Scenario: UTF-8 bytes without the flag
 
 - **WHEN** an archive stores a member name as valid UTF-8 bytes (e.g. `Español.txt`,
-  `emoji_😀.txt`) with bit 11 **clear**, with or without an `encoding=` from the caller
+  `emoji_😀.txt`) with bit 11 **clear**, with or without a `fallback_encoding`
 - **THEN** the member name is decoded as UTF-8 (`Español.txt`, `emoji_😀.txt`), not cp437
-  or `encoding=` mojibake, and a diagnostic records that UTF-8 was inferred for an
-  unflagged name
+  or `fallback_encoding` mojibake, and no `MEMBER_NAME_FALLBACK_ENCODING` is emitted
 
 #### Scenario: Legacy bytes without the flag
 
 - **WHEN** an unflagged member name is not valid UTF-8
-- **THEN** it is decoded with the caller's `encoding=` when one was passed, else with the
-  configured legacy fallback (default cp437), and no bare `UnicodeDecodeError` escapes
+- **THEN** it is decoded with the caller's `fallback_encoding` when one is set, else with
+  cp437, `MEMBER_NAME_FALLBACK_ENCODING` names the codec used, and no bare
+  `UnicodeDecodeError` escapes
 
 #### Scenario: Authoritative signal disables the sniff
 
@@ -1153,17 +1150,18 @@ UTF-8 flag is set. `name` is always `raw_name` decoded and normalized.
 - **WHEN** bit 11 is set and the name is not valid UTF-8 (`caf\xe9.txt`), from a file or
   from a pipe
 - **THEN** the archive lists every member, the name decodes as `cafΘ.txt` (cp437), or
-  as `café.txt` under `encoding="cp1252"`, `raw_name` keeps the stored bytes, and
-  `MEMBER_NAME_ENCODING_INFERRED` records the codec used with
-  `declared_encoding="utf-8"`; `DiagnosticPolicy.STRICT` refuses the archive
+  as `café.txt` under `fallback_encoding="cp1252"`, `raw_name` keeps the stored bytes,
+  and `MEMBER_NAME_FALLBACK_ENCODING` records the codec used, its message naming the set
+  flag; `MEMBER_NAME_ENCODING_MISMATCH` is emitted too, so `DiagnosticPolicy.STRICT`
+  refuses the archive
 
 #### Scenario: Unicode Path extra field
 
 | Case | Expected |
 | --- | --- |
 | Unflagged cp866 name `Привет.txt`, central `0x7075` version 1 with a matching CRC | `name == "Привет.txt"`; `raw_name` is its UTF-8 bytes; `extra["alternate_raw_name"]` is the cp866 bytes; no diagnostic |
-| The same, `encoding="latin-1"` | The same: the field outranks `encoding=` |
-| The field's CRC does not match the stored bytes, or its version is not 1 | Field ignored: cp437 decode (or `encoding=`), `raw_name` is the stored bytes, no `alternate_raw_name` |
+| The same, `fallback_encoding="latin-1"` | The same: the field outranks `fallback_encoding` |
+| The field's CRC does not match the stored bytes, or its version is not 1 | Field ignored: cp437 decode (or `fallback_encoding`), `raw_name` is the stored bytes, no `alternate_raw_name` |
 | The field in the local header only | Field ignored |
 | The field is 0 to 4 bytes long, whatever its first byte, or the CRC matches and the name is empty, not valid UTF-8, or cut short by the end of the extra field | The archive opens on every Python version; field dropped: the name decoded as above, no `alternate_raw_name`, `MEMBER_HEADER_RECORD_SKIPPED` attached to that member only, no Python warning; `DiagnosticPolicy.STRICT` refuses |
 | The same malformed field on a name with the UTF-8 flag set | Field not consulted: no diagnostic |
@@ -1172,48 +1170,47 @@ UTF-8 flag is set. `name` is always `raw_name` decoded and normalized.
 
 APPNOTE puts a member comment under the same bit 11 as its name, and gives the archive
 comment no flag. A member comment whose bit 11 is clear or set over a name that is not
-valid UTF-8 (a flag the name's bytes refute), and the archive comment, SHALL decode as an
-unflagged name does: UTF-8 when the bytes are valid UTF-8, else the caller's
-`encoding=`, else `zip_unflagged_fallback_encoding` (default cp437). The `encoding=` and
-fallback steps SHALL be the ones a name uses. A byte the chosen codec leaves undefined
-SHALL survive as a lone surrogate, as it does in a name. Any other member comment whose
-bit 11 is set SHALL decode as UTF-8, with cp437 for bytes that are not valid UTF-8, and
-SHALL ignore `encoding=`. A comment is not a name, so decoding it SHALL NOT emit
-`MEMBER_NAME_ENCODING_INFERRED`.
+valid UTF-8 (a flag the name's bytes refute), and the archive comment, SHALL decode as
+an unflagged name does: UTF-8 when the bytes are valid UTF-8, else the caller's
+`fallback_encoding`, else cp437. The fallback steps SHALL be the ones a name uses. A
+byte the chosen codec leaves undefined SHALL survive as a lone surrogate, as it does in
+a name. Any other member comment whose bit 11 is set SHALL decode as UTF-8, with cp437
+for bytes that are not valid UTF-8, and SHALL ignore `fallback_encoding`. A comment is
+not a name, so decoding it SHALL NOT emit `MEMBER_NAME_FALLBACK_ENCODING`.
 
-An Info-ZIP Unicode Comment extra field (`0x6375`) in the central directory SHALL be read
-for a member comment whose bit 11 is clear, by the Unicode Path field's rules: when
-the field is version 1, its CRC-32 equals the CRC-32 of the stored comment bytes, and its
-text is non-empty valid UTF-8, the comment SHALL be that text, ahead of the sniff and of
-`encoding=`, as 7-Zip reads it. A field whose CRC does not match or whose version is not
-1 SHALL be ignored. A malformed field (shorter than 5 bytes, or with a matching CRC and
-text that is empty, not valid UTF-8 or cut short by the end of the extra field) SHALL be
-dropped, the comment decoded as above, and `MEMBER_HEADER_RECORD_SKIPPED` emitted on the
-member with `record="unicode_comment"` and `record_id=0x6375`. As for a name, the field
-SHALL be consulted only when bit 11 is clear: a comment under a set bit 11, trusted or
-refuted by the name, SHALL NOT read it. A field the comment used SHALL NOT appear
-in `extra["zip.extra_fields"]`.
+An Info-ZIP Unicode Comment extra field (`0x6375`) in the central directory SHALL be
+read for a member comment whose bit 11 is clear, by the Unicode Path field's rules: when
+the field is version 1, its CRC-32 equals the CRC-32 of the stored comment bytes, and
+its text is non-empty valid UTF-8, the comment SHALL be that text, ahead of the sniff
+and of `fallback_encoding`, as 7-Zip reads it. A field whose CRC does not match or whose
+version is not 1 SHALL be ignored. A malformed field (shorter than 5 bytes, or with a
+matching CRC and text that is empty, not valid UTF-8 or cut short by the end of the
+extra field) SHALL be dropped, the comment decoded as above, and
+`MEMBER_HEADER_RECORD_SKIPPED` emitted on the member with `record="unicode_comment"` and
+`record_id=0x6375`. As for a name, the field SHALL be consulted only when bit 11 is
+clear: a comment under a set bit 11, trusted or refuted by the name, SHALL NOT read it.
+A field the comment used SHALL NOT appear in `extra["zip.extra_fields"]`.
 
 #### Scenario: A Unicode Comment field gives the member comment
 
 | Case | Expected |
 | --- | --- |
-| Comment `caf\x82` (cp437), field version 1 with its CRC and `café ü` | `comment == "café ü"`, with or without `encoding="cp1252"`; no diagnostic |
+| Comment `caf\x82` (cp437), field version 1 with its CRC and `café ü` | `comment == "café ü"`, with or without `fallback_encoding="cp1252"`; no diagnostic |
 | The same field with the CRC of other bytes, or version 2 | Field ignored: `comment == "café"` (cp437) |
 | Field of 3 bytes, or matching CRC and invalid UTF-8 text | `comment == "café"`; `MEMBER_HEADER_RECORD_SKIPPED`, `record="unicode_comment"`; `DiagnosticPolicy.STRICT` refuses |
 | Bit 11 set over a valid UTF-8 name, malformed field | Field not consulted: no diagnostic |
-| Bit 11 set over the name `caf\xe9.txt`, which refutes it, good or malformed field | Field not consulted: `comment == "café"`; only the name's `MEMBER_NAME_ENCODING_INFERRED` |
+| Bit 11 set over the name `caf\xe9.txt`, which refutes it, good or malformed field | Field not consulted: `comment == "café"`; only the name's `MEMBER_NAME_FALLBACK_ENCODING` and `MEMBER_NAME_ENCODING_MISMATCH` |
 
-#### Scenario: A flagged member comment ignores `encoding=`
+#### Scenario: A flagged member comment ignores `fallback_encoding`
 
 - **WHEN** a member with bit 11 set and a valid UTF-8 name has a comment whose bytes are
-  not valid UTF-8, and the archive is opened with `encoding="cp1251"`
+  not valid UTF-8, and the archive is opened with `fallback_encoding="cp1251"`
 - **THEN** the comment is the cp437 reading of the bytes, not the cp1251 one
 
 #### Scenario: A flag the name refutes does not cover the comment
 
 - **WHEN** a member with bit 11 set has the name `caf\xe9.txt` and the comment
-  `caf\xe9ine`, and the archive is opened with `encoding="cp1252"`
+  `caf\xe9ine`, and the archive is opened with `fallback_encoding="cp1252"`
 - **THEN** the name is `café.txt` and the comment `caféine`, both decoded as unflagged
 
 ### Requirement: A forward read SHALL go past a local header whose signature alone is damaged

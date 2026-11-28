@@ -28,6 +28,7 @@ from archivey.config import (
     ListingLimits,
     PasswordRequest,
     RarDecompressor,
+    RarOptions,
 )
 from archivey.cost import AccessCost
 from archivey.diagnostics import (
@@ -116,7 +117,7 @@ _WILDCARD_FIXTURES = (
 # Under ``AUTO`` a member unrar cannot name goes to an accepted unar when one is
 # installed (``test_auto_reads_with_unar_a_member_unrar_cannot_name``). The refusal
 # tests pin the unrar side, so they choose unrar explicitly.
-_UNRAR_ONLY = ArchiveyConfig(rar_decompressor="unrar")
+_UNRAR_ONLY = ArchiveyConfig(format_options=[RarOptions(decompressor="unrar")])
 _WILDCARD_DIRGLOB_CONTENTS = {
     "aaa/x.txt": b"aaa\n" + _WILDCARD_PAD,
     "dX/x.txt": b"dX\n" + _WILDCARD_PAD,
@@ -2306,7 +2307,9 @@ def test_rar3_comments_decode_with_explicit_encoding(
         + stored
         + end_hdr
     )
-    with open_archive(io.BytesIO(data), encoding=encoding) as archive:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding=encoding)
+    ) as archive:
         assert archive.info.comment == expected
         old_member = archive.get("old.txt")
         service_member = archive.get("svc.txt")
@@ -2315,7 +2318,7 @@ def test_rar3_comments_decode_with_explicit_encoding(
         assert service_member.comment == expected
         # A comment is not a name: no name diagnostic is reported for it.
         counts = archive.diagnostics.counts
-        assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+        assert DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING not in counts
 
 
 def test_rar3_compressed_comments_take_explicit_encoding(
@@ -2354,7 +2357,9 @@ def test_rar3_compressed_comments_take_explicit_encoding(
         ("cp1251", _CP1251_COMMENT),
         (None, _CP1251_COMMENT.encode("cp1251").decode("windows-1252")),
     ]:
-        with open_archive(io.BytesIO(data), encoding=encoding) as archive:
+        with open_archive(
+            io.BytesIO(data), config=ArchiveyConfig(fallback_encoding=encoding)
+        ) as archive:
             assert archive.info.comment == expected
             got = archive.get("m.txt")
             assert got is not None
@@ -2376,9 +2381,14 @@ def test_rar3_and_zip_comments_agree_on_an_undecodable_byte() -> None:
         z.writestr("a.txt", b"x")
         z.comment = stored
 
-    with open_archive(io.BytesIO(rar_data), encoding="cp1251") as archive:
+    with open_archive(
+        io.BytesIO(rar_data), config=ArchiveyConfig(fallback_encoding="cp1251")
+    ) as archive:
         rar_comment = archive.info.comment
-    with open_archive(io.BytesIO(zip_buf.getvalue()), encoding="cp1251") as archive:
+    with open_archive(
+        io.BytesIO(zip_buf.getvalue()),
+        config=ArchiveyConfig(fallback_encoding="cp1251"),
+    ) as archive:
         zip_comment = archive.info.comment
     assert rar_comment == zip_comment == "a\udc98b"
 
@@ -2673,7 +2683,9 @@ def test_rar3_compressed_service_comment_is_read(name: str) -> None:
 def test_rar3_compressed_service_comment_without_a_decompressor_is_none() -> None:
     """With no program to decode it, the comment is ``None``, as a compressed
     RAR 1.5-2.x comment is, and the listing is unchanged."""
-    config = ArchiveyConfig(rar_decompressor=RarDecompressor.NONE)
+    config = ArchiveyConfig(
+        format_options=[RarOptions(decompressor=RarDecompressor.NONE)]
+    )
     with open_archive(
         _fixture("comment_compressed__rar4.rar"), config=config
     ) as archive:
@@ -2964,7 +2976,9 @@ def test_rar3_salted_compressed_service_comment_is_not_decoded(
         )
         + end_hdr
     )
-    config = ArchiveyConfig(rar_decompressor=RarDecompressor.UNRAR)
+    config = ArchiveyConfig(
+        format_options=[RarOptions(decompressor=RarDecompressor.UNRAR)]
+    )
     with open_archive(io.BytesIO(blob), config=config) as archive:
         assert archive.info.comment is None
     assert spawned == []
@@ -3973,7 +3987,7 @@ def test_unrar_not_installed_message_names_lookalikes() -> None:
     assert "unrar or rar" in msg
     for name in ("unrar-free", "unar", "7z", "7zz"):
         assert name in msg
-    assert "rar_decompressor" in msg
+    assert "RarOptions.decompressor" in msg
     assert "RAR5 check" in msg and "1.10.8+ds1-10" in msg
 
 

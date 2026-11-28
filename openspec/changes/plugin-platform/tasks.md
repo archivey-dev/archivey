@@ -134,10 +134,10 @@
   the recorder test uses a file that would run an outside probe
   and one that would run an outside refinement check under another policy
 - [ ] 2.3d Format options (R24), the manifest's side: the options class named on an
-  entry under a short name, core's `zip` and `rar` included; tests that a field
+  entry under a short name, core's `rar` included; tests that a field
   holding a callable is refused when the class is declared, and that a name with a
   mapping of plain values builds the same object. `ArchiveyConfig.format_options`,
-  the context call, `ZipOptions` and `RarOptions` land earlier, with the config trim
+  the context call and `RarOptions` land earlier, with the config trim
   (R21), which also tests that two objects of one class are refused
 - [ ] 2.4 `register_format` and `register_builtin_format` become one function that
   takes an entry

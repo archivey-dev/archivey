@@ -666,7 +666,7 @@ class RarForwardReader(RarReader):
         if self._decompressor is not RarDecompressor.UNRAR:
             raise StreamNotSeekableError(
                 "A RAR archive is read from a non-seekable source only by RARLAB unrar, "
-                f"and rar_decompressor is {self._decompressor.name}. {_ROLLING_FIX}",
+                f"and RarOptions.decompressor is {self._decompressor.name}. {_ROLLING_FIX}",
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.RAR,
             )

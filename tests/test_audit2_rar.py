@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 
 from archivey import ArchiveyConfig, MemberType, open_archive
-from archivey.config import ListingLimits
+from archivey.config import ListingLimits, RarOptions
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
@@ -48,7 +48,7 @@ from tests.test_audit_rar_iso_dir import (
     _rar5_parse,
 )
 
-_UNRAR_ONLY = ArchiveyConfig(rar_decompressor="unrar")
+_UNRAR_ONLY = ArchiveyConfig(format_options=[RarOptions(decompressor="unrar")])
 
 
 # --- R15: a stored member is sliced by its unpacked size, not its packed size ---
@@ -153,7 +153,7 @@ def _copy_reader_config(decompressor: str) -> ArchiveyConfig:
     if shutil.which("rar") is None or not has_binary(decompressor):
         pytest.skip(f"needs rar and {decompressor}")
     if decompressor == "unar":
-        return ArchiveyConfig(rar_decompressor="unar")
+        return ArchiveyConfig(format_options=[RarOptions(decompressor="unar")])
     return _UNRAR_ONLY
 
 
@@ -514,7 +514,7 @@ def test_externally_killed_decompressor_is_not_reported_as_truncation(
         return proc, stdout
 
     monkeypatch.setattr(module, "spawn_for_stdout", recording_spawn)
-    config = ArchiveyConfig(rar_decompressor=decompressor)
+    config = ArchiveyConfig(format_options=[RarOptions(decompressor=decompressor)])
     with open_archive(_fixture("seek_respawn_solid__.rar"), config=config) as archive:
         member = next(m for m in archive.members() if m.name == "prefix.bin")
         with archive.open(member) as stream:
@@ -577,7 +577,9 @@ def test_rar5_comment_that_is_not_utf8_keeps_its_bytes(tmp_path: Path) -> None:
     path = tmp_path / "cmt.rar"
     path.write_bytes(_rar5_build(blocks))
     # encoding= does not apply: a RAR5 comment is UTF-8 by the format.
-    with open_archive(path, encoding="cp1252") as archive:
+    with open_archive(
+        path, config=ArchiveyConfig(fallback_encoding="cp1252")
+    ) as archive:
         assert archive.info.comment == "caf\udce9 \udcff ok"
 
 

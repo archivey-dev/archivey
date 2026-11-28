@@ -19,7 +19,7 @@ own TAR reader, in the one forward pass.
 | Core dependencies | None for xz, gzip, bzip2 and LZMA tars; a Zstandard tar needs what a `.zst` file needs |
 | Encryption | None |
 | Checksums | MD5 per installed file, from `DEBIAN/md5sums`, in `member.hashes` and checked on a full read |
-| Name encoding | Bytes, as TAR's: UTF-8 first, then `encoding=`, then escaped |
+| Name encoding | Bytes, as TAR's: UTF-8 first, then `fallback_encoding`, then escaped |
 | Refuses | A format version other than 2.x (`UnsupportedFeatureError`); a member other than `_*` before the data tar, a data-tar member in `DEBIAN/`, or a control-tar member outside it (`CorruptionError`) |
 | Spec | `openspec/specs/format-deb/spec.md` |
 

@@ -273,18 +273,21 @@ that directory, such as one inside its own subtree, does not count.
 
 The ISO backend SHALL decode Rock Ridge `NM` names, plain ISO 9660 identifiers and Rock
 Ridge `SL` link targets strictly as UTF-8 first. Bytes that are not valid UTF-8 SHALL
-decode with the caller's `encoding=` and `errors="surrogateescape"`, and without
-`encoding=`, or when that codec raises on the bytes, a Rock Ridge `NM` name SHALL take the
+decode with the caller's `fallback_encoding` and `errors="surrogateescape"`, and without
+one, or when that codec raises on the bytes, a Rock Ridge `NM` name SHALL take the
 name of the same file or directory in the Joliet tree, and the member SHALL carry
-`MEMBER_NAME_ENCODING_INFERRED`. The counterpart is a Joliet file at the same extent, the
+`MEMBER_NAME_FALLBACK_ENCODING`. The counterpart is a Joliet file at the same extent, the
 one whose name fits when several share it, or for a directory the Joliet parent of a file
 found under it; its name is used only when its ASCII runs equal those of the stored bytes.
 A relative `SL` target that falls through the same way SHALL be followed from the
 symlink's directory, and each component that names a record there SHALL decode as that
-record's name does. The diagnostic's `inferred_encoding` and `declared_encoding` SHALL be
-empty, since no decode of the stored bytes produced the name. Failing all of that, the
-bytes SHALL decode as UTF-8 with `errors="surrogateescape"`. Decoding MUST NOT raise.
-Joliet names SHALL decode as UTF-16BE whatever `encoding=` says, with `surrogatepass`: a
+record's name does. The diagnostic's `fallback_encoding` SHALL be empty, since no decode
+of the stored bytes produced the name. Failing all of that, the bytes SHALL decode as
+UTF-8 with `errors="surrogateescape"`. A member whose Rock Ridge or plain stored path is
+not valid UTF-8 and that did not take a Joliet name SHALL carry
+`MEMBER_NAME_FALLBACK_ENCODING` naming the codec used (`"surrogateescape"` for escapes).
+Decoding MUST NOT raise. Joliet names SHALL decode as UTF-16BE whatever
+`fallback_encoding` says, with `surrogatepass`: a
 surrogate without its partner stays in the name as that code unit, a valid pair decodes
 as one character, and only an odd trailing byte becomes U+FFFD. Extraction writes such a
 name by `safe-extraction` "Lone surrogates in a member name". `raw_name` SHALL be the
@@ -293,25 +296,25 @@ stored bytes in the Rock Ridge and plain namespaces. `ReadBackend.USES_ENCODING`
 
 `ArchiveInfo.comment` is the primary volume descriptor's volume identifier, its trailing
 spaces removed, and SHALL decode as a plain ISO 9660 identifier does: UTF-8 first, else
-`encoding=`, else UTF-8 with `errors="surrogateescape"`, in every namespace. It SHALL NOT
+`fallback_encoding`, else UTF-8 with `errors="surrogateescape"`, in every namespace. It SHALL NOT
 borrow the Joliet descriptor's volume identifier.
 
 #### Scenario: ISO name decoding
 
 | Case | Expected |
 | --- | --- |
-| Rock Ridge name stored as Latin-1 `caf\xe9\xe9.txt`, no Joliet tree, no `encoding=` | `name == "caf\udce9\udce9.txt"`; `raw_name == b"caf\xe9\xe9.txt"` |
-| The same image, `encoding="latin-1"` | `name == "caféé.txt"`; a symlink to it has `link_target == "caféé.txt"`; no `ENCODING_ARGUMENT_UNUSED` |
-| Rock Ridge name stored as UTF-8 `café.txt`, `encoding="latin-1"` | `name == "café.txt"` |
-| The Latin-1 image (no Joliet tree), `encoding="utf-32"` or `"idna"` | Lists; `name == "caf\udce9\udce9.txt"` |
-| Latin-1 Rock Ridge names beside a Joliet tree, no `encoding=` (`genisoimage -R -J -input-charset iso8859-1`) | Files and directories take their Joliet names, one `MEMBER_NAME_ENCODING_INFERRED` each; `raw_name` is the stored bytes |
-| The same, where the Joliet name was cut at 64 characters | Escaped, no diagnostic |
+| Rock Ridge name stored as Latin-1 `caf\xe9\xe9.txt`, no Joliet tree, no `fallback_encoding` | `name == "caf\udce9\udce9.txt"`; `raw_name == b"caf\xe9\xe9.txt"`; `MEMBER_NAME_FALLBACK_ENCODING` naming `surrogateescape` |
+| The same image, `fallback_encoding="latin-1"` | `name == "caféé.txt"`; a symlink to it has `link_target == "caféé.txt"`; `MEMBER_NAME_FALLBACK_ENCODING` naming `latin-1` |
+| Rock Ridge name stored as UTF-8 `café.txt`, `fallback_encoding="latin-1"` | `name == "café.txt"`; no diagnostic |
+| The Latin-1 image (no Joliet tree), `fallback_encoding="utf-32"` or `"idna"` | Lists; `name == "caf\udce9\udce9.txt"` |
+| Latin-1 Rock Ridge names beside a Joliet tree, no `fallback_encoding` (`genisoimage -R -J -input-charset iso8859-1`) | Files and directories take their Joliet names, one `MEMBER_NAME_FALLBACK_ENCODING` each with an empty `fallback_encoding`; `raw_name` is the stored bytes |
+| The same, where the Joliet name was cut at 64 characters | Escaped, `MEMBER_NAME_FALLBACK_ENCODING` naming `surrogateescape` |
 | A symlink in that image whose target is `caf\xe9.txt` | `link_target == "café.txt"`, the name the file lists under |
-| The Joliet image, `encoding="cp1252"` | Names decode with cp1252; no diagnostic |
+| The Joliet image, `fallback_encoding="cp1252"` | Names decode with cp1252; `MEMBER_NAME_FALLBACK_ENCODING` naming `cp1252` on each name that is not UTF-8 |
 | Joliet name holds a lone surrogate (`hi` U+D800) | `name == "hi\ud800"`, never U+FFFD; `raw_name == b"hi\xed\xa0\x80"`, the unit as its three `surrogatepass` bytes; a Rock Ridge name that is not UTF-8 borrows it |
 | A Rock Ridge symlink in that image whose target bytes are `hi\xed\xa0\x80.txt` | `link_target == "hi\ud800.txt"`, the name the file lists under |
 | `xorriso -as mkisofs -R -J -V "Café vol"` (stores UTF-8) | `info.comment == "Café vol"` |
-| Volume identifier `caf\xe9 vol`, no `encoding=` / `encoding="cp1252"` | `info.comment == "caf\udce9 vol"` / `"café vol"`, never U+FFFD |
+| Volume identifier `caf\xe9 vol`, no `fallback_encoding` / `fallback_encoding="cp1252"` | `info.comment == "caf\udce9 vol"` / `"café vol"`, never U+FFFD |
 
 ### Requirement: Read zisofs members
 

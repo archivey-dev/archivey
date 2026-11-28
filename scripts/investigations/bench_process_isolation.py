@@ -151,7 +151,6 @@ def _time_one(path: str, mode: str) -> float:
     config = ArchiveyConfig(
         process_isolation=ProcessIsolation(mode),
         use_rapidgzip=AcceleratorMode.OFF,
-        use_indexed_bzip2=AcceleratorMode.OFF,
     )
 
     def read_all() -> None:

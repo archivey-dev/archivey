@@ -27,7 +27,7 @@ from tests.extract_util import open_and_extract
 def test_config_types_are_frozen() -> None:
     cfg = ArchiveyConfig()
     with pytest.raises(dataclasses.FrozenInstanceError):
-        cfg.rar_allow_glob_member_concatenation = True  # type: ignore[misc]
+        cfg.read_link_targets = False  # type: ignore[misc]
     limits = ExtractionLimits()
     with pytest.raises(dataclasses.FrozenInstanceError):
         limits.max_entries = 1  # type: ignore[misc]
@@ -51,14 +51,11 @@ def test_open_archive_without_config_uses_defaults(tmp_path) -> None:
 
 
 def test_stream_config_derived_from_archivey_config() -> None:
-    cfg = ArchiveyConfig(
-        use_rapidgzip=AcceleratorMode.ON,
-        use_indexed_bzip2=AcceleratorMode.OFF,
-    )
+    cfg = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
     stream_cfg = stream_config_from_archivey(cfg, streaming=True)
     assert stream_cfg.streaming is True
     assert stream_cfg.use_rapidgzip is AcceleratorMode.ON
-    assert stream_cfg.use_indexed_bzip2 is AcceleratorMode.OFF
+    assert stream_cfg.use_indexed_bzip2 is AcceleratorMode.ON
 
 
 def test_accelerator_modes_honored_via_config(
@@ -89,10 +86,7 @@ def test_accelerator_modes_honored_via_config(
         return io.BytesIO(tar_bytes)
 
     monkeypatch.setattr(codecs_module, "open_codec_stream", _capture_open)
-    cfg = ArchiveyConfig(
-        use_rapidgzip=AcceleratorMode.ON,
-        use_indexed_bzip2=AcceleratorMode.OFF,
-    )
+    cfg = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as t:
         info = tarfile.TarInfo("a.txt")
@@ -103,7 +97,7 @@ def test_accelerator_modes_honored_via_config(
         ar.members()
     assert captured
     assert captured[0].use_rapidgzip is AcceleratorMode.ON
-    assert captured[0].use_indexed_bzip2 is AcceleratorMode.OFF
+    assert captured[0].use_indexed_bzip2 is AcceleratorMode.ON
 
 
 def test_strict_archive_eof_is_gone() -> None:
@@ -126,7 +120,7 @@ def test_strict_archive_eof_is_gone() -> None:
         ),
         ({"read_link_targets": "yes", "detection_budget": "nope"}, "detection_budget="),
         (
-            {"rar_decompressor": "x", "max_retained_diagnostic_references": -1},
+            {"use_rapidgzip": "x", "max_retained_diagnostic_references": -1},
             "max_retained_diagnostic_references",
         ),
     ],
@@ -245,28 +239,10 @@ def test_config_is_hashable() -> None:
     assert len({strict, ArchiveyConfig(), archivey.config.DEFAULT_ARCHIVEY_CONFIG}) == 2
 
 
-def test_glob_concatenation_flag_is_deprecated_and_warns_only_when_set() -> None:
-    import warnings
-
-    with pytest.warns(DeprecationWarning, match="rar_allow_glob_member_concatenation"):
-        archivey.ArchiveyConfig(rar_allow_glob_member_concatenation=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        archivey.ArchiveyConfig()
-        archivey.ArchiveyConfig(rar_allow_glob_member_concatenation=False)
-
-
-def test_glob_concatenation_flag_warns_once_not_again_from_archiveys_own_copy() -> None:
-    """``open_stream`` copies the caller's config (``always_probe_content=True``);
-    that copy must not warn again from inside the library."""
-    import gzip
-    import warnings
-
-    with pytest.warns(DeprecationWarning):
-        cfg = archivey.ArchiveyConfig(rar_allow_glob_member_concatenation=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        with archivey.open_stream(
-            io.BytesIO(gzip.compress(b"hello")), config=cfg
-        ) as stream:
-            assert stream.read() == b"hello"
+def test_the_glob_concatenation_flag_is_gone() -> None:
+    """Deprecated with no effect in 0.4.0, removed in 0.6.0."""
+    assert "rar_allow_glob_member_concatenation" not in {
+        f.name for f in dataclasses.fields(ArchiveyConfig)
+    }
+    with pytest.raises(TypeError, match="rar_allow_glob_member_concatenation"):
+        ArchiveyConfig(rar_allow_glob_member_concatenation=True)  # type: ignore[call-arg]

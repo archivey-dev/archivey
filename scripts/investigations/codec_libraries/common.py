@@ -26,7 +26,6 @@ from archivey.internal.streams.codecs.registry import open_codec_stream  # noqa:
 CHUNK = 65536
 CONFIG = ArchiveyConfig(
     use_rapidgzip=AcceleratorMode.OFF,
-    use_indexed_bzip2=AcceleratorMode.OFF,
     decoder_limits=DecoderLimits.UNLIMITED,
 )
 STREAM_CONFIG = replace(

@@ -142,8 +142,7 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   restart from as it reads, so a seek jumps to the nearest one instead of decompressing from the
   start. rapidgzip can crash on some damaged data, so it runs in a separate process, for bzip2 too,
   and if it crashes, the standard library's decoder takes over and reports what it finds. To avoid
-  it, pass `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.config.AcceleratorMode.OFF,
-  use_indexed_bzip2=archivey.config.AcceleratorMode.OFF)`.
+  it, pass `config=archivey.ArchiveyConfig(use_rapidgzip=archivey.config.AcceleratorMode.OFF)`.
 
     rapidgzip gives the same results as the standard library except for three crafted shapes. The
     first is a ZIP member or 7z coder holding two DEFLATE streams, with a size and CRC that cover
@@ -249,13 +248,15 @@ the time-limit recipe [above](#where-the-guarantees-stop).
 
 RAR data is decompressed by an external program found on your `PATH`: `unrar` or `rar`, or `unar`
 when neither is installed. On Windows, archivey also looks in WinRAR's folder under Program Files.
-To run a binary you chose instead, set `unrar_path=` (or `unar_path=`) in `ArchiveyConfig` to its
-absolute path: archivey then runs that file and searches nowhere else. Like the optional packages,
-it's [trusted not to be malicious](#what-archivey-relies-on), and archivey checks only that it runs
-and that archivey works with its version, which can be several years old. Older versions can have
+To run a binary you chose instead, pass its absolute path as `RarOptions(unrar_path=...)` (or
+`unar_path=`) in `ArchiveyConfig(format_options=[...])`: archivey then runs that file and
+searches nowhere else. Like the optional packages, it's
+[trusted not to be malicious](#what-archivey-relies-on), and archivey checks only that it runs and
+that archivey works with its version, which can be several years old. Older versions can have
 security bugs that later ones fixed, so an up-to-date version is safer. `unar` receives the password
 on its command line, where other users on the same machine can see it while it runs. If you set
-`rar_decompressor=RarDecompressor.UNRAR` in `ArchiveyConfig`, archivey never runs `unar`. With
+`RarOptions(decompressor=RarDecompressor.UNRAR)` in `format_options`, archivey never runs `unar`.
+With
 `RarDecompressor.NONE` it runs no external program at all, so stored RAR members can still be read
 (archivey decrypts an encrypted one itself if `cryptography` is installed, and raises
 `PackageNotInstalledError` if it isn't), and the rest raise `UnsupportedFeatureError`.
@@ -400,6 +401,12 @@ methods only PKZIP 1.x and earlier wrote, so the readers and pure-Python decoder
 else never run on them ([Configuration](opening.md#configuration)). It narrows which code runs,
 not how long it runs: a 7z member's BCJ2 filter and ZipCrypto still decode in Python, so a time
 bound still needs a worker you can stop.
+
+`ArchiveyConfig.UNTRUSTED` starts from that policy and adds the rest of the settings for
+uploads: `DiagnosticPolicy.STRICT`, every native decoder in a child process, lower listing,
+decoder and extraction limits, and rapidgzip off. The
+[upload recipes](recipes.md#list-hash-and-test-an-upload) start from it and say what each
+setting does.
 
 If you know which formats you accept, a [`FormatPolicy`](opening.md#configuration) with an
 `only=` list refuses the rest before any reader runs on them, including formats a later archivey

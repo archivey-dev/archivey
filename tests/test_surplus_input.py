@@ -310,7 +310,7 @@ _DEFLATE_MODES = [
 _BZIP2_MODES = [
     pytest.param({}, id="off"),
     pytest.param(
-        {"config": ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)},
+        {"config": ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)},
         id="indexed-bzip2",
         marks=requires("rapidgzip"),
     ),
@@ -478,7 +478,7 @@ _7Z_CODECS = [
     pytest.param("bzip2", {}, id="bzip2"),
     pytest.param(
         "bzip2",
-        {"config": ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)},
+        {"config": ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)},
         id="bzip2-indexed",
         marks=requires("rapidgzip"),
     ),

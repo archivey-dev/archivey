@@ -198,7 +198,7 @@ def test_makecab_cabinets(fixture: str, method: CompressionAlgorithm) -> None:
 
 def test_a_code_page_name_decodes_with_encoding() -> None:
     path = LIBARCHIVE / "test_read_format_cab_filename_cp932.cab"
-    with open_archive(path, encoding="cp932") as reader:
+    with open_archive(path, config=ArchiveyConfig(fallback_encoding="cp932")) as reader:
         assert [m.name for m in reader.members()] == [
             "表だよ/漢字.txt",
             "表だよ/一覧表.txt",

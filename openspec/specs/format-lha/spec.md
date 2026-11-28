@@ -54,7 +54,7 @@ refused with `StreamNotSeekableError`.
 | A `-lhd-` symlink with no `|` | `SYMLINK`, no target; `SYMLINK_TARGET_UNAVAILABLE` |
 | Windows timestamps and 64-bit size records | `created`, `accessed`, the 64-bit sizes |
 | An Amiga name with a NUL | The name before it; the note after it as `comment` |
-| A cp932 name opened with `encoding="cp932"` | The Japanese name, whole |
+| A cp932 name opened with `fallback_encoding="cp932"` | The Japanese name, whole |
 | A level-2 header padded by a byte | Read, padding skipped |
 | An invalid DOS time | `modified is None`; `MEMBER_TIMESTAMP_INVALID` |
 | No zero byte after the last member | Every member listed; `ARCHIVE_EOF_MARKER_MISSING` |

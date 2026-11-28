@@ -562,7 +562,7 @@ def test_codec_at_its_unpack_size_reads(codec: str) -> None:
 
 _ACCELERATED = [
     pytest.param("deflate", ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)),
-    pytest.param("bzip2", ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)),
+    pytest.param("bzip2", ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)),
 ]
 
 
@@ -879,9 +879,7 @@ _ONE_STREAM_ACCELERATED = [
     pytest.param(
         "deflate", ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON), id="deflate"
     ),
-    pytest.param(
-        "bzip2", ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON), id="bzip2"
-    ),
+    pytest.param("bzip2", ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON), id="bzip2"),
 ]
 
 

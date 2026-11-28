@@ -525,7 +525,7 @@ def test_bzip2_accelerator_header_errors_are_typed(prefix: bytes) -> None:
     good = bz2.compress(bytes(range(256)) * 64)
     # Either the block-size byte replaced, or five junk bytes before the magic.
     data = prefix + good[4:] if prefix.startswith(b"BZh") else prefix + good
-    config = ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)
+    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
     with (
         pytest.raises(ArchiveyError),
         open_archive(

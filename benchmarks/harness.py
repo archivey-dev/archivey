@@ -254,14 +254,14 @@ def _op_open_list(path: Path) -> tuple[int, int]:
 
 
 def _accel_config(*, enabled: bool) -> ArchiveyConfig:
-    """Force rapidgzip / indexed-bzip2 (via rapidgzip's IndexedBzip2File) on or off.
+    """Force rapidgzip on or off, for bzip2 too (rapidgzip's IndexedBzip2File).
 
     ``ON`` engages the accelerator even without ``seekable_members=True`` (AUTO would
     not). The bzip2 accelerator is rapidgzip's bundled decoder, not the separate
     ``indexed_bzip2`` package — see codecs/deps.py.
     """
     mode = AcceleratorMode.ON if enabled else AcceleratorMode.OFF
-    return ArchiveyConfig(use_rapidgzip=mode, use_indexed_bzip2=mode)
+    return ArchiveyConfig(use_rapidgzip=mode)
 
 
 def _op_read_all(

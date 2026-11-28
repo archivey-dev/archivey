@@ -848,7 +848,9 @@ def test_a_name_that_is_not_utf8_follows_encoding(tmp_path: Path) -> None:
     path = _image(tmp_path, bytes(data))
     with open_archive(path) as archive:
         assert "\udce9.txt" in {m.name.rpartition("/")[2] for m in archive.members()}
-    with open_archive(path, encoding="latin-1") as archive:
+    with open_archive(
+        path, config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as archive:
         assert "\xe9.txt" in {m.name.rpartition("/")[2] for m in archive.members()}
 
 

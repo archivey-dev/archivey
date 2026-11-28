@@ -211,7 +211,7 @@ _STRING_SPELLING_TYPING_SAMPLE = """\
 from typing import assert_type
 
 from archivey import ArchiveFormat, ArchiveyConfig, ContainerFormat, StreamFormat
-from archivey.config import AcceleratorMode, ProcessIsolation, RarDecompressor
+from archivey.config import AcceleratorMode, ProcessIsolation, RarDecompressor, RarOptions
 from archivey.types import PluginContainer, PluginStream
 from archivey.detection_cost import DetectionBudget
 
@@ -219,16 +219,15 @@ from archivey.detection_cost import DetectionBudget
 def check() -> None:
     config = ArchiveyConfig(
         use_rapidgzip="off",
-        use_indexed_bzip2="auto",
         process_isolation="none",
-        rar_decompressor="unrar",
         detection_budget="fast",
     )
+    rar = RarOptions(decompressor="unrar")
     ArchiveyConfig(process_isolation="native-decoders")
     ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
     assert_type(config.use_rapidgzip, AcceleratorMode)
     assert_type(config.process_isolation, ProcessIsolation)
-    assert_type(config.rar_decompressor, RarDecompressor)
+    assert_type(rar.decompressor, RarDecompressor)
     assert_type(config.detection_budget, DetectionBudget)
     fmt = ArchiveFormat("raw_stream", "gz")
     ArchiveFormat("tar", "Z")
@@ -236,7 +235,7 @@ def check() -> None:
     assert_type(fmt.stream, StreamFormat | PluginStream)
     ArchiveyConfig(process_isolation="nonee")
     ArchiveFormat("raw_stream", "gzz")
-    ArchiveyConfig(rar_decompressor="UNAR")
+    ArchiveyConfig(format_options=[RarOptions(decompressor="UNAR")])
 """
 
 
@@ -260,7 +259,10 @@ def test_type_checker_takes_the_documented_string_spellings(
         _line_of(sample, '    ArchiveFormat("raw_stream", "gzz")'),
         # Valid at runtime (a member name), but no Literal lists it: the spec says it
         # still gets a diagnostic.
-        _line_of(sample, '    ArchiveyConfig(rar_decompressor="UNAR")'),
+        _line_of(
+            sample,
+            '    ArchiveyConfig(format_options=[RarOptions(decompressor="UNAR")])',
+        ),
     ]
     assert [int(d.split(":")[1]) for d in diagnostics] == refused, diagnostics
 

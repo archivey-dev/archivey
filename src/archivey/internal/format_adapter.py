@@ -257,7 +257,7 @@ class _PluginAdapter(BaseArchiveReader):
         self._source = source
         self._plugin = plugin
         self._usage.note_backend("reader", handler_name(plugin), format.display_name)
-        # The caller's ``encoding=``, for a nested reader (``_open_nested``).
+        # The caller's ``fallback_encoding``, for a nested reader (``_open_nested``).
         self._encoding = encoding
         # Iterators ReaderContext.open_nested() returned, closed with the archive at the
         # latest.
@@ -363,7 +363,7 @@ class _PluginAdapter(BaseArchiveReader):
             context._listing_draw = self._listing_decode.draw
         # Its speedups' decoder children are given back at close, or here when the
         # open fails: a traceback can keep what the reader made alive.
-        self._context = context
+        self._reader_context = context
         try:
             self._reader = self._open_reader(context)
         except BaseException:
@@ -1396,6 +1396,24 @@ class _PluginAdapter(BaseArchiveReader):
             archive_name=self._archive_name,
             member_id=index,
         )
+        # Decided from the stored bytes, so it holds whichever bytes the reader passed
+        # to decode_name. A member a nested built-in reader listed (a TAR inside a
+        # makeself or deb) carries that reader's report already, and a built-in reader
+        # whose raw_name can be another encoding (ISO's Joliet and UDF) reports itself.
+        codec = (
+            self._reader_context._fallback_codec(member.raw_name)
+            if self._plugin.uses_encoding
+            and member.raw_name
+            and not self._plugin._reports_own_name_fallback
+            else None
+        )
+        if codec is not None and not any(
+            d.code is DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
+            for d in member.diagnostics
+        ):
+            self._emit_name_fallback_encoding(
+                member, index, codec=codec, format_label=self._format.display_name
+            )
         if member.type is MemberType.DIRECTORY and member.size:
             # No format gives a directory content: the bytes are delivered by a read and
             # dropped by extraction, as for a built-in format (data model, DR-3).
@@ -1411,7 +1429,7 @@ class _PluginAdapter(BaseArchiveReader):
             with self._translated_errors(), self._handle_guard():
                 self._reader.close()
         finally:
-            self._context._release_kernels()
+            self._reader_context._release_kernels()
             # A closed reader opens nothing again, and keeps no password it won.
             self._saved_winners.clear()
             if self._shared is not None:

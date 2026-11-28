@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, open_archive
+from archivey.config import RarOptions
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_reader import RarReader
@@ -34,7 +35,7 @@ from tests.test_audit_rar_iso_dir import (
     _rar5_parse,
 )
 
-_UNRAR_ONLY = ArchiveyConfig(rar_decompressor="unrar")
+_UNRAR_ONLY = ArchiveyConfig(format_options=[RarOptions(decompressor="unrar")])
 
 # RAR5: (stored name, host OS as stored: 0 Windows, 1 Unix).
 _RAR5_NAMES: list[tuple[bytes, int]] = [
@@ -586,7 +587,9 @@ def test_encoding_argument_decodes_an_8bit_rar3_name(tmp_path: Path) -> None:
 
     stored = "привет.txt".encode("cp1251")
     path = _rar4_with_name(tmp_path, stored)
-    with open_archive(path, encoding="cp1251") as reader:
+    with open_archive(
+        path, config=ArchiveyConfig(fallback_encoding="cp1251")
+    ) as reader:
         member = reader.members()[0]
         assert member.name == "привет.txt"
         assert member.raw_name == stored
@@ -603,23 +606,19 @@ def test_valid_utf8_rar3_name_wins_over_the_encoding_argument(
 
     stored = "é.txt".encode()
     path = _rar4_with_name(tmp_path, stored, unicode_flag=unicode_flag)
-    with open_archive(path, encoding="latin-1") as reader:
+    with open_archive(
+        path, config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as reader:
         member = reader.members()[0]
         assert member.name == "é.txt"
         assert member.raw_name == stored
     inferred = [
         d
         for d in member.diagnostics
-        if d.code == DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
+        if d.code == DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
     ]
-    if unicode_flag:
-        # The flag declares UTF-8: nothing was inferred.
-        assert inferred == []
-    else:
-        # Reported as ZIP and TAR report it, naming the codec passed over.
-        (diag,) = inferred
-        assert diag.context.inferred_encoding == "utf-8"
-        assert diag.context.declared_encoding == "latin-1"
+    # Valid UTF-8 never reaches the fallback, so no setting could change the name.
+    assert inferred == []
 
 
 @requires_binary("unrar")
@@ -629,19 +628,23 @@ def test_8bit_rar3_name_decoded_with_encoding_still_reads(tmp_path: Path) -> Non
     with open_archive(_fixture("hostile_argv__rar4.rar"), config=_UNRAR_ONLY) as ar:
         expected = ar.read("canary.txt")
     path = _rar4_with_name(tmp_path, "привет.txt".encode("cp1251"))
-    with open_archive(path, encoding="cp1251", config=_UNRAR_ONLY) as reader:
+    with open_archive(
+        path, config=dataclasses.replace(_UNRAR_ONLY, fallback_encoding="cp1251")
+    ) as reader:
         assert reader.read(reader.members()[0]) == expected
 
 
 def test_unicode_flagged_rar3_name_without_a_utf16_field(tmp_path: Path) -> None:
     """The flag declares UTF-8: ``encoding=`` applies only when the bytes are not."""
     path = _rar4_with_name(tmp_path, "café.txt".encode(), unicode_flag=True)
-    with open_archive(path, encoding="latin-1") as reader:
+    with open_archive(
+        path, config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as reader:
         assert reader.members()[0].name == "café.txt"
     path = _rar4_with_name(tmp_path, b"caf\xe9.txt", unicode_flag=True)
     with open_archive(path) as reader:
         assert reader.members()[0].name == "café.txt"
-    with open_archive(path, encoding="cp437") as reader:
+    with open_archive(path, config=ArchiveyConfig(fallback_encoding="cp437")) as reader:
         assert reader.members()[0].name == "cafΘ.txt"
 
 
@@ -650,5 +653,5 @@ def test_encoding_argument_leaves_rar5_names_alone() -> None:
     path = _fixture("hostile_argv__.rar")
     with open_archive(path) as reader:
         names = [member.name for member in reader.members()]
-    with open_archive(path, encoding="cp500") as reader:
+    with open_archive(path, config=ArchiveyConfig(fallback_encoding="cp500")) as reader:
         assert [member.name for member in reader.members()] == names

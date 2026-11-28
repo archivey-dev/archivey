@@ -137,7 +137,7 @@ import sys
 from pathlib import Path
 from archivey import open_archive
 from archivey.config import AcceleratorMode, ArchiveyConfig
-config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF, use_indexed_bzip2=AcceleratorMode.OFF)
+config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
 with open_archive(sys.argv[1], config=config) as reader:
     data = reader.read("a")
 Path(sys.argv[2]).write_bytes(data)

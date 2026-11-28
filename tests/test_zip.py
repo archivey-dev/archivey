@@ -1928,7 +1928,9 @@ def test_explicit_encoding_overrides_cp437_default() -> None:
 
     # Explicit caller encoding wins, and raw_name still round-trips the stored bytes.
     with open_archive(
-        io.BytesIO(data), format=ArchiveFormat.ZIP, encoding="latin-1"
+        io.BytesIO(data),
+        format=ArchiveFormat.ZIP,
+        config=ArchiveyConfig(fallback_encoding="latin-1"),
     ) as reader:
         (member,) = reader.members()
         assert member.name == "é.txt"
@@ -2261,10 +2263,17 @@ def test_a_member_typed_twice_is_one_finding(tmp_path: Path) -> None:
         assert {d.context.member_id for d in member.diagnostics} == {member._member_id}
 
 
-def test_an_inferred_encoding_is_one_finding_per_member(tmp_path: Path) -> None:
-    """The same, for the name-encoding inference, which has its own emit."""
-    code = DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
-    with open_archive(_EXTERNAL_DIR / "encoding_infozip_jules.zip") as opened:
+def test_a_fallback_name_is_one_finding_per_member(tmp_path: Path) -> None:
+    """The same, for a name the fallback decoded, which has its own emit."""
+    code = DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as z:
+        for i in range(4):
+            z.writestr(f"X{i}.txt", b"x")
+    data = buffer.getvalue()
+    for i in range(4):
+        data = data.replace(f"X{i}.txt".encode(), b"\x82%d.txt" % i)
+    with open_archive(io.BytesIO(data)) as opened:
         opened.extract_all(tmp_path, on_problem="continue")
         assert opened.diagnostics.counts.get(code) == 4
         for member in opened.members():
@@ -2279,15 +2288,15 @@ def test_unflagged_utf8_name_is_sniffed() -> None:
         names = {m.name for m in ar.members()}
         counts = ar.diagnostics.counts
     assert names == {"Español.txt", "Català.txt", "Português.txt", "emoji_😀.txt"}
-    # One inference diagnostic per unflagged name that was decoded as UTF-8.
-    assert counts[DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED] == 4
+    # Valid UTF-8 never reaches the fallback, so nothing is reported.
+    assert DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING not in counts
     # The cp437 text the sniff replaced is not reported as a normalization.
     assert DiagnosticCode.MEMBER_NAME_NORMALIZED not in counts
 
 
 def test_unflagged_ascii_name_is_not_an_encoding_override(tmp_path: Path) -> None:
     # Pure ASCII is valid UTF-8 *and* identical under cp437 — the sniff "selecting" UTF-8
-    # is not an observable override, so no MEMBER_NAME_ENCODING_INFERRED spam.
+    # is not an observable override, so no MEMBER_NAME_FALLBACK_ENCODING spam.
     path = tmp_path / "ascii.zip"
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("digital_codex/readme.txt", b"x")
@@ -2303,34 +2312,32 @@ def test_unflagged_ascii_name_is_not_an_encoding_override(tmp_path: Path) -> Non
         "digital_codex/.DS_Store",
         "__MACOSX/digital_codex/._.DS_Store",
     }
-    assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+    assert DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING not in counts
 
 
 def test_explicit_encoding_keeps_the_utf8_sniff() -> None:
-    # encoding= replaces only the legacy fallback: an unflagged name whose bytes are
-    # valid UTF-8 is still UTF-8, and the inference is still reported.
+    # fallback_encoding replaces only the legacy fallback: an unflagged name whose
+    # bytes are valid UTF-8 is still UTF-8, and no setting could change it.
     with open_archive(
-        _EXTERNAL_DIR / "encoding_infozip_jules.zip", encoding="cp437"
+        _EXTERNAL_DIR / "encoding_infozip_jules.zip",
+        config=ArchiveyConfig(fallback_encoding="cp437"),
     ) as ar:
         names = {m.name for m in ar.members()}
         counts = ar.diagnostics.counts
     assert "Español.txt" in names
-    assert counts[DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED] >= 1
+    assert DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING not in counts
 
 
 def test_explicit_encoding_does_not_decode_valid_utf8() -> None:
     # c3 a9 is UTF-8 for "é"; as Latin-1 it would be "Ã©".
     data = _stored_zip(b"\xc3\xa9txt", utf8_flag=False)
-    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as ar:
         (member,) = ar.members()
     assert member.name == "étxt"
     assert member.raw_name == b"\xc3\xa9txt"
-    # The diagnostic names the codec the caller passed, not cp437.
-    (diag,) = member.diagnostics
-    assert diag.code == DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
-    assert diag.context.declared_encoding == "latin-1"
-    assert "'latin-1'" in diag.message
-    assert "cp437" not in diag.message
+    assert member.diagnostics == ()
 
 
 @pytest.mark.parametrize(
@@ -2350,7 +2357,9 @@ def test_name_flagged_utf8_that_is_not_decodes_as_unflagged(
     raw = b"caf\xe9.txt"
     data = _stored_zip(raw, utf8_flag=True, comment=b"caf\xe9ine")
     source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
-    with open_archive(source, encoding=encoding, pipe=streaming) as ar:
+    with open_archive(
+        source, config=ArchiveyConfig(fallback_encoding=encoding), pipe=streaming
+    ) as ar:
         ar.extract_all(tmp_path, on_problem="continue")
         report = ar.members_report_if_available()
         assert report is not None
@@ -2359,19 +2368,24 @@ def test_name_flagged_utf8_that_is_not_decodes_as_unflagged(
     assert member.comment == name.removesuffix(".txt") + "ine"
     assert member.raw_name == raw
     assert [p.name for p in tmp_path.iterdir()] == [name]
-    (diag,) = member.diagnostics
-    assert diag.code == DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
-    assert diag.context.inferred_encoding == codec
-    assert diag.context.declared_encoding == "utf-8"
-    assert "UTF-8 flag is set" in diag.message
+    diag, wrong = member.diagnostics
+    assert diag.code == DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
+    assert diag.context.fallback_encoding == codec
+    assert "UTF-8 flag set" in diag.message
+    assert wrong.code == DiagnosticCode.MEMBER_NAME_ENCODING_MISMATCH
+    assert wrong.context.fallback_encoding == codec
 
 
-def test_strict_refuses_a_name_flagged_utf8_that_is_not() -> None:
-    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+def test_a_policy_can_refuse_a_name_flagged_utf8_that_is_not() -> None:
+    policy = ArchiveyConfig(
+        diagnostic_policy=DiagnosticPolicy(
+            raise_on={DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING}
+        )
+    )
     with (
-        pytest.raises(DiagnosticRaisedError, match="UTF-8 flag is set"),
+        pytest.raises(DiagnosticRaisedError, match="UTF-8 flag set"),
         open_archive(
-            io.BytesIO(_stored_zip(b"caf\xe9.txt", utf8_flag=True)), config=strict
+            io.BytesIO(_stored_zip(b"caf\xe9.txt", utf8_flag=True)), config=policy
         ) as ar,
     ):
         ar.members()
@@ -2405,8 +2419,8 @@ def test_a_flag_overridden_name_collides_as_a_duplicate(
     tmp_path: Path, encoding: str | None, e_acute: bytes
 ) -> None:
     # c3 a9 is valid UTF-8 and sniffed; the second name is flagged UTF-8 and is not, so
-    # it decodes as unflagged, to "é" in the codec used. Only the flagged member is
-    # reported for the flag, and it supersedes the earlier one like any duplicate.
+    # it decodes as unflagged, to "é" in the codec used. Only the flagged member went
+    # through the fallback, and it supersedes the earlier one like any duplicate.
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as z:
         z.writestr("XX.txt", b"first")
@@ -2417,7 +2431,9 @@ def test_a_flag_overridden_name_collides_as_a_duplicate(
         (flags,) = struct.unpack_from("<H", data, header + flags_at)
         struct.pack_into("<H", data, header + flags_at, flags | 0x800)
     data = bytes(data).replace(b"Y.txt", e_acute + b".txt")
-    with open_archive(io.BytesIO(data), encoding=encoding) as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding=encoding)
+    ) as ar:
         first, second = ar.members()
         ar.extract_all(tmp_path, on_problem="continue")
     assert (first.name, second.name) == ("é.txt", "é.txt")
@@ -2425,49 +2441,42 @@ def test_a_flag_overridden_name_collides_as_a_duplicate(
     assert (first.is_current, second.is_current) == (False, True)
     assert (tmp_path / "é.txt").read_bytes() == b"second"
     assert [
-        d.context.declared_encoding
+        d.context.fallback_encoding
         for d in second.diagnostics
-        if isinstance(d.context, NameEncodingContext)
-    ] == ["utf-8"]
-    assert [
-        d.context.declared_encoding
-        for d in first.diagnostics
-        if isinstance(d.context, NameEncodingContext)
+        if d.code is DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
     ] == [encoding or "cp437"]
+    assert not [
+        d for d in first.diagnostics if isinstance(d.context, NameEncodingContext)
+    ]
     # The collision is reported on the later member.
     assert [d.code for d in second.diagnostics][-1:] == [
         DiagnosticCode.MEMBER_NAME_DUPLICATE
     ]
 
 
-def test_utf8_inference_names_the_configured_fallback() -> None:
-    data = _stored_zip(b"\xc3\xa9txt", utf8_flag=False)
-    cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp1252")
-    with open_archive(io.BytesIO(data), config=cfg) as ar:
-        (member,) = ar.members()
-    (diag,) = member.diagnostics
-    assert diag.context.declared_encoding == "cp1252"
-    assert "'cp1252'" in diag.message
-
-
-def test_explicit_encoding_replaces_the_configured_fallback() -> None:
+def test_the_deprecated_encoding_argument_replaces_the_configured_fallback() -> None:
     # 0xE9 alone is not valid UTF-8: encoding= decodes it, ahead of the config's
-    # fallback, and no inference is reported because the caller chose the codec.
+    # fallback, and the report names the codec it used.
     data = _stored_zip(b"caf\xe9.txt", utf8_flag=False)
-    cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp437")
-    with open_archive(io.BytesIO(data), config=cfg, encoding="latin-1") as ar:
+    cfg = ArchiveyConfig(fallback_encoding="cp437")
+    with (
+        pytest.warns(DeprecationWarning),
+        open_archive(io.BytesIO(data), config=cfg, encoding="latin-1") as ar,
+    ):
         (member,) = ar.members()
-        counts = ar.diagnostics.counts
     assert member.name == "café.txt"
     assert member.raw_name == b"caf\xe9.txt"
-    assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+    (diag,) = member.diagnostics
+    assert diag.context.fallback_encoding == "latin-1"
 
 
 def test_explicit_encoding_escapes_bytes_it_cannot_decode() -> None:
     # The caller's codec is used as the fallback is: bytes it cannot decode become
     # surrogate escapes rather than failing the open.
     data = _stored_zip(b"caf\xe9.txt", utf8_flag=False)
-    with open_archive(io.BytesIO(data), encoding="ascii") as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding="ascii")
+    ) as ar:
         (member,) = ar.members()
     assert member.name == "caf\udce9.txt"
     assert member.raw_name == b"caf\xe9.txt"
@@ -2482,7 +2491,7 @@ def test_flag_set_name_is_not_sniffed(tmp_path: Path) -> None:
         member = ar.members()[0]
         counts = ar.diagnostics.counts
     assert member.name == "café.txt"
-    assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+    assert DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING not in counts
 
 
 def test_invalid_utf8_uses_configurable_legacy_fallback() -> None:
@@ -2490,23 +2499,27 @@ def test_invalid_utf8_uses_configurable_legacy_fallback() -> None:
     # sets the fallback so unflagged non-UTF-8 names decode deterministically.
     data = _stored_zip(b"caf\xe9.txt", utf8_flag=False)
     assert zipfile.ZipFile(io.BytesIO(data)).infolist()[0].flag_bits & 0x800 == 0
-    cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp1252")
+    cfg = ArchiveyConfig(fallback_encoding="cp1252")
     with open_archive(io.BytesIO(data), config=cfg) as ar:
         member = ar.members()[0]
         counts = ar.diagnostics.counts
     assert member.name == "café.txt"
-    assert counts[DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED] == 1
+    assert counts[DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING] == 1
+    (diag,) = member.diagnostics
+    assert diag.context.fallback_encoding == "cp1252"
+    assert "'cp1252'" in diag.message
 
 
-def test_invalid_utf8_default_fallback_is_cp437_without_diagnostic() -> None:
-    # With the default cp437 fallback, an unflagged non-UTF-8 name decodes as cp437 and
-    # emits no inference diagnostic (cp437 is the APPNOTE default, not an override).
+def test_invalid_utf8_default_fallback_is_cp437_and_reported() -> None:
+    # With no fallback_encoding, an unflagged non-UTF-8 name decodes as cp437, ZIP's
+    # own fallback, and is reported: another fallback_encoding would change it.
     data = _stored_zip(b"caf\xe9.txt", utf8_flag=False)
     with open_archive(io.BytesIO(data)) as ar:
         member = ar.members()[0]
-        counts = ar.diagnostics.counts
     assert member.name == b"caf\xe9.txt".decode("cp437")
-    assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in counts
+    (diag,) = member.diagnostics
+    assert diag.code is DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
+    assert diag.context.fallback_encoding == "cp437"
 
 
 # Comments carry no encoding of their own: APPNOTE puts a member comment under the
@@ -2549,7 +2562,7 @@ def test_unflagged_comments_decode_with_explicit_encoding(tmp_path: Path) -> Non
     with zipfile.ZipFile(path) as z:
         assert z.infolist()[0].flag_bits & 0x800 == 0
         assert z.comment == _CP1251_ARCHIVE_COMMENT.encode("cp1251")
-    with open_archive(path, encoding="cp1251") as ar:
+    with open_archive(path, config=ArchiveyConfig(fallback_encoding="cp1251")) as ar:
         (member,) = ar.members()
         assert ar.info.comment == _CP1251_ARCHIVE_COMMENT
         assert member.comment == _CP1251_MEMBER_COMMENT
@@ -2560,7 +2573,7 @@ def test_unflagged_comments_take_the_configured_fallback() -> None:
         _CP1251_ARCHIVE_COMMENT.encode("cp1251"),
         _CP1251_MEMBER_COMMENT.encode("cp1251"),
     )
-    cfg = ArchiveyConfig(zip_unflagged_fallback_encoding="cp1251")
+    cfg = ArchiveyConfig(fallback_encoding="cp1251")
     with open_archive(io.BytesIO(data), config=cfg) as ar:
         (member,) = ar.members()
         assert ar.info.comment == _CP1251_ARCHIVE_COMMENT
@@ -2584,12 +2597,14 @@ def test_unflagged_utf8_comments_win_over_explicit_encoding() -> None:
     data = _commented_zip(
         _CP1251_ARCHIVE_COMMENT.encode(), _CP1251_MEMBER_COMMENT.encode()
     )
-    with open_archive(io.BytesIO(data), encoding="cp1251") as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding="cp1251")
+    ) as ar:
         (member,) = ar.members()
         assert ar.info.comment == _CP1251_ARCHIVE_COMMENT
         assert member.comment == _CP1251_MEMBER_COMMENT
         # A comment is not a name: no name diagnostic is reported for it.
-        assert DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED not in ar.diagnostics.counts
+        assert DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING not in ar.diagnostics.counts
 
 
 def test_flagged_member_comment_ignores_explicit_encoding(tmp_path: Path) -> None:
@@ -2604,23 +2619,25 @@ def test_flagged_member_comment_ignores_explicit_encoding(tmp_path: Path) -> Non
         z.writestr(info, b"x")
     with zipfile.ZipFile(path) as z:
         assert z.infolist()[0].flag_bits & 0x800
-    with open_archive(path, encoding="cp1251") as ar:
+    with open_archive(path, config=ArchiveyConfig(fallback_encoding="cp1251")) as ar:
         (member,) = ar.members()
     assert member.comment == stored.decode("cp437")
     assert member.comment != _CP1251_MEMBER_COMMENT
 
 
-def test_encoding_inference_is_escalatable() -> None:
-    # The inference diagnostic flows through DiagnosticPolicy like any other: a caller who
+def test_a_fallback_name_is_escalatable() -> None:
+    # The fallback diagnostic flows through DiagnosticPolicy like any other: a caller who
     # refuses to trust the guess can escalate it to an error.
     from archivey import DiagnosticPolicy
     from archivey.exceptions import DiagnosticRaisedError
 
-    policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED})
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING})
     cfg = ArchiveyConfig(diagnostic_policy=policy)
     with (
         pytest.raises(DiagnosticRaisedError),
-        open_archive(_EXTERNAL_DIR / "encoding_infozip_jules.zip", config=cfg) as ar,
+        open_archive(
+            io.BytesIO(_stored_zip(b"caf\xe9.txt", utf8_flag=False)), config=cfg
+        ) as ar,
     ):
         ar.members()
 

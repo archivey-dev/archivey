@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, open_archive
-from archivey.config import RarDecompressor
+from archivey.config import RarDecompressor, RarOptions
 from archivey.exceptions import (
     PackageNotInstalledError,
     TruncatedError,
@@ -104,7 +104,9 @@ def _write(tmp_path: Path, name: str, data: bytes) -> Path:
 
 
 def _config(decompressor: str) -> ArchiveyConfig:
-    return ArchiveyConfig(rar_decompressor=RarDecompressor(decompressor))
+    return ArchiveyConfig(
+        format_options=[RarOptions(decompressor=RarDecompressor(decompressor))]
+    )
 
 
 @pytest.mark.parametrize("decompressor", ["unrar", "unar"])
@@ -389,7 +391,7 @@ def test_unrar_refuses_a_later_solid_group_for_its_include_mask(
     assert "'a.txt'" in later, later
     assert "is not in that member's solid stream" in later, later
     assert "include mask" in later, later
-    assert "rar_decompressor to 'unar'" in later, later
+    assert "RarOptions.decompressor to 'unar'" in later, later
     assert "switching decompressors does not help" not in later, later
 
 

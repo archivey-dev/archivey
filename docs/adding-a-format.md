@@ -189,7 +189,10 @@ alone, or a directory's added `/`, is not reported. A hard link's `link_target` 
 another member, so archivey normalizes it the same way, as in every format: give it as
 the archive stores it too.
 `ReaderContext.decode_name()` decodes stored bytes the way the built-in formats do: valid
-UTF-8 wins, then the caller's `encoding=`, then UTF-8 with no byte lost.
+UTF-8 wins, then the caller's `fallback_encoding`, then UTF-8 with no byte lost. Set
+`uses_encoding = True` on the handler and the member's `raw_name` to the stored bytes:
+a member whose `raw_name` is not valid UTF-8 is then reported as
+`MEMBER_NAME_FALLBACK_ENCODING`, naming the codec, as in the built-in formats.
 
 Three helpers fill fields many formats store the same way, and report a bad value as a
 built-in format does:
@@ -906,6 +909,14 @@ tells extraction whether the archive holds a target the reader could not reach.
 index itself can bound that work by `config.listing_limits`. archivey applies those
 limits to the members it is handed in any case.
 
+A format with settings of its own gives them an options class: a frozen dataclass whose
+fields hold plain values (text, numbers, booleans, a named choice or a path) and all have
+defaults. The caller passes one object of it in
+`ArchiveyConfig(format_options=[MyFormatOptions(...)])`, and the reader reads it with
+`context.options(MyFormatOptions)`, which returns the caller's object, or
+`MyFormatOptions()` when there is none. The lookup matches the class exactly, so a
+subclass is a different options class.
+
 A reader that keeps members back to yield them later, such as a CPIO hard link held
 until the link that carries its data, passes each one to `ReaderContext.hold()` when it
 keeps it, from `walk()` or `iter_members()`; a call made anywhere else raises
@@ -1098,13 +1109,13 @@ start of the archive. archivey refuses, before `open()` runs, a multi-volume set
 archive behind a prefix (a self-extracting stub or other leading bytes) with
 `UnsupportedFeatureError`, a source that
 cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO,
-since its bytes are not an ISO 9660 image (the built-in reader strips the sectors as it reads). The format's own config options, such as
-`zip_unflagged_fallback_encoding` or `rar_decompressor`, reach the plugin through
-`ReaderContext.config`; honouring them is the plugin's job. `password=` reaches a
-replacement that sets `supports_password` and asks for passwords with `NeedsPassword`, as
-any plugin does; `encoding=` reaches it when the plugin sets `uses_encoding`. A missing module in
-`requires` raises `PackageNotInstalledError` naming the plugin, without falling back to
-the built-in reader.
+since its bytes are not an ISO 9660 image (the built-in reader strips the sectors as it
+reads). The format's own config options, such as `RarOptions.decompressor`, reach the
+plugin through `ReaderContext.options(RarOptions)`; honouring them is the plugin's job.
+`password=` reaches a replacement that sets `supports_password` and asks for passwords
+with `NeedsPassword`, as any plugin does, and `fallback_encoding` reaches it through
+`ReaderContext.decode_name()`. A missing module in `requires` raises
+`PackageNotInstalledError` naming the plugin, without falling back to the built-in reader.
 
 ## Adding a compression format
 

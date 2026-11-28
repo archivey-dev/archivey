@@ -17,7 +17,7 @@ a format added from outside uses, and is registered as a built-in the way ISO an
 | Access cost | `DIRECT` from a source that can seek; inside a compression stream, `SOLID`, as a compressed TAR is |
 | Core dependencies | None |
 | Encryption | None |
-| Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
+| Name encoding | Bytes. UTF-8 first, then `fallback_encoding`, then escaped, as in every format |
 | Checksums | crc only: the header's 32-bit sum of a regular file's data bytes, checked as the data is read (GNU cpio stores none for a symlink) |
 | Refuses | An afio large header that declares extra bytes, with `UnsupportedFeatureError` |
 | Spec | `openspec/specs/format-cpio/spec.md` |

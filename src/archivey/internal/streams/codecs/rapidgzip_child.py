@@ -468,6 +468,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         label: str,
         bzip2: bool = False,
         max_memory: int | None,
+        setting: str = "use_rapidgzip",
     ) -> None:
         # Everything close() reads is assigned before anything that can raise.
         # The process that started the child: a process created by ``fork`` inherits
@@ -476,6 +477,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._label = label
         self._bzip2 = bzip2
         self._max_memory = max_memory
+        # The caller's setting that turns this decoder off, for the messages.
+        self._setting = setting
         # The last index the child sent (``available_block_offsets``), kept so that it
         # still answers after the child has died.
         self._known_offsets: dict[int, int] = {}
@@ -896,7 +899,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             )
         elif returncode == MEMORY_LIMIT_EXIT:
             cls = ResourceLimitError
-            setting = "use_indexed_bzip2" if self._bzip2 else "use_rapidgzip"
+            setting = self._setting
             message = (
                 f"the rapidgzip decoder process for this {label} stream was stopped: "
                 "its memory grew past DecoderLimits.max_decoder_memory="

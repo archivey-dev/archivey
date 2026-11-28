@@ -6,7 +6,7 @@ Module split:
 - :mod:`.rar_parser` — metadata, offsets, encryption headers, multi-volume merge
 - :mod:`.rar_unrar` — find and spawn RARLAB ``unrar p`` (password on stdin; ``-n./member``)
 - :mod:`.rar_unar` — the refusals and pipe layout when the caller selects ``unar``
-  (``ArchiveyConfig.rar_decompressor``); the process itself is
+  (``RarOptions.decompressor``); the process itself is
   :mod:`archivey.internal.external.unar`
 - :mod:`.rar_synthetic` — small RAR files holding only the headers and packed bytes
   one read needs, so ``unrar`` neither walks nor copies the whole archive
@@ -69,7 +69,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Literal, NamedTuple
 
-from archivey.config import ArchiveyConfig, RarDecompressor, SpoolLimits
+from archivey.config import ArchiveyConfig, RarDecompressor, RarOptions, SpoolLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
     ArchiveEofContext,
@@ -174,7 +174,11 @@ from archivey.internal.base_reader import (
     SolidRun,
     pass_has_data,
 )
-from archivey.internal.config import KeyDerivationBudget, check_decoder_memory
+from archivey.internal.config import (
+    KeyDerivationBudget,
+    check_decoder_memory,
+    format_options_of,
+)
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.excluded_libraries import as_reported
 from archivey.internal.external.cli import ProcessOutputStream, signal_exit_error
@@ -424,7 +428,7 @@ def _resolve_decompressor(
 
 
 _NO_DECOMPRESSOR_NOTE = (
-    "ArchiveyConfig.rar_decompressor is 'none', so no external program reads RAR "
+    "RarOptions.decompressor is 'none', so no external program reads RAR "
     "member data. Reading a compressed member, an encrypted member archivey cannot "
     "decrypt itself, or a member split across volumes with a part missing, will be "
     "refused."
@@ -436,7 +440,7 @@ AUTO_CHOSE_UNAR_NOTE = (
     "found. unar "
     "reads fewer archives than unrar, and a password is passed on its command line, "
     "where other local users can see it. Install unrar, or set "
-    "ArchiveyConfig.rar_decompressor to 'unrar', to avoid both."
+    "RarOptions.decompressor to 'unrar', to avoid both."
 )
 
 
@@ -1986,12 +1990,18 @@ class RarReader(BaseArchiveReader):
         self._stage_volume_paths = False
         self._volume0_parse_origin = 0  # set after sibling discovery when origin > 0
         # The data program, with ``AUTO`` resolved once for the life of this reader.
-        # ``ArchiveyConfig.unrar_path`` / ``unar_path``: the one binary each program
+        # ``RarOptions.unrar_path`` / ``unar_path``: the one binary each program
         # may be, or ``None`` to search ``PATH``. Every spawn passes them on.
-        self._unrar_program = _program_path(self._config.unrar_path)
-        self._unar_program = _program_path(self._config.unar_path)
+        self._unrar_program = _program_path(
+            format_options_of(self._config, RarOptions).unrar_path
+        )
+        self._unar_program = _program_path(
+            format_options_of(self._config, RarOptions).unar_path
+        )
         self._decompressor = _resolve_decompressor(
-            self._config.rar_decompressor, self._unrar_program, self._unar_program
+            format_options_of(self._config, RarOptions).decompressor,
+            self._unrar_program,
+            self._unar_program,
         )
         self._open_archive(
             source,
@@ -2134,7 +2144,8 @@ class RarReader(BaseArchiveReader):
             )
         )
         if (
-            self._config.rar_decompressor is RarDecompressor.AUTO
+            format_options_of(self._config, RarOptions).decompressor
+            is RarDecompressor.AUTO
             and self._decompressor is RarDecompressor.UNAR
         ):
             notes = (AUTO_CHOSE_UNAR_NOTE, *notes)
@@ -2553,14 +2564,14 @@ class RarReader(BaseArchiveReader):
                 # it could not be linked into unar's private directory. unrar reads
                 # a path where it is.
                 remedy["remedy"] = (
-                    "Set ArchiveyConfig.rar_decompressor to 'unrar', which reads an "
+                    "Set RarOptions.decompressor to 'unrar', which reads an "
                     "archive file in place, or raise the limit (None removes it)."
                 )
             elif source.volume_paths and self._decompressor is RarDecompressor.UNAR:
                 # unar reads every set from its private directory, so where the
                 # caller keeps the files does not matter; unrar can read them there.
                 remedy["remedy"] = (
-                    "Set ArchiveyConfig.rar_decompressor to 'unrar', which reads "
+                    "Set RarOptions.decompressor to 'unrar', which reads "
                     "volumes in place when they sit in one directory under their "
                     "set's names, or raise the limit (None removes it)."
                 )
@@ -3409,7 +3420,7 @@ class RarReader(BaseArchiveReader):
         ):
             return (
                 "unar does not find a RAR after a prefix, and a prefixed multi-volume "
-                "set is not copied for it. Set ArchiveyConfig.rar_decompressor to "
+                "set is not copied for it. Set RarOptions.decompressor to "
                 "'unrar' to read it with RARLAB unrar."
             )
         if (
@@ -3419,7 +3430,7 @@ class RarReader(BaseArchiveReader):
             return (
                 f"unar reads at most {_UNAR_MAX_OLD_STYLE_VOLUMES} volumes of an "
                 "old-style (.rar, .r00 ...) set and reports the rest as a damaged "
-                "member. Set ArchiveyConfig.rar_decompressor to 'unrar' to read it "
+                "member. Set RarOptions.decompressor to 'unrar' to read it "
                 "with RARLAB unrar."
             )
         return None
@@ -3923,18 +3934,9 @@ class RarReader(BaseArchiveReader):
             self._emit_special_file_has_data(member, index)
         if info.has_unknown_redirect():
             self._emit_unknown_redirect(info, member, index)
-        if info.rar3_utf8_over_encoding:
-            assert self._encoding is not None
-            self._emit_name_encoding_inferred(
-                member,
-                index,
-                inferred_encoding="utf-8",
-                passed_over=self._encoding,
-                message=(
-                    f"RAR member name decoded as 'utf-8' rather than "
-                    f"{self._encoding!r} (the stored bytes are valid UTF-8): "
-                    f"{quoted(member.name)}"
-                ),
+        if info.rar3_fallback_encoding is not None:
+            self._emit_name_fallback_encoding(
+                member, index, codec=info.rar3_fallback_encoding, format_label="RAR"
             )
         for issue in info.timestamp_issues:
             field = _timestamp_field_name(info, issue.field)
@@ -6744,7 +6746,7 @@ class RarReader(BaseArchiveReader):
             why = "it is split across volumes and not every part was found"
         return UnsupportedFeatureError(
             f"Cannot read RAR member {quoted(member.name)}: {why}, and only an external "
-            "program (unrar or unar) can read it. ArchiveyConfig.rar_decompressor is "
+            "program (unrar or unar) can read it. RarOptions.decompressor is "
             "'none', which rules them out. Set it to 'unrar' to read the member.",
             archive_name=self._archive_name,
             member_name=member.name,
@@ -7048,10 +7050,12 @@ class RarReadBackend(ReadBackend):
     @classmethod
     @override
     def missing_programs(cls, config: ArchiveyConfig) -> tuple[MissingComponent, ...]:
-        # Independent of ``rar_decompressor``: the query answers for the default
+        # Independent of ``RarOptions.decompressor``: the query answers for the default
         # ``AUTO``, which uses unrar when one is usable. ``unrar_path`` decides which
         # binary that is.
-        return rarlab_unrar_missing(_program_path(config.unrar_path))
+        return rarlab_unrar_missing(
+            _program_path(format_options_of(config, RarOptions).unrar_path)
+        )
 
     @override
     def open_read(

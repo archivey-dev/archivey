@@ -309,9 +309,8 @@ def test_on_problem_accepts_the_dash_spelling(archive: Path, tmp_path: Path) -> 
 
 def test_archivey_config_stores_the_member_not_the_string() -> None:
     """The field is read with ``is``, so a surviving string would read as AUTO."""
-    config = ArchiveyConfig(use_rapidgzip="on", use_indexed_bzip2="off")
+    config = ArchiveyConfig(use_rapidgzip="on")
     assert config.use_rapidgzip is AcceleratorMode.ON
-    assert config.use_indexed_bzip2 is AcceleratorMode.OFF
 
 
 def test_archivey_config_refuses_a_bad_accelerator_spelling() -> None:

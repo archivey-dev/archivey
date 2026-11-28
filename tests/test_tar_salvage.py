@@ -1368,9 +1368,8 @@ def test_an_on_source_read_error_during_the_search_escapes_unchanged(
         if getattr(progress, "position", 0) > 2 * (1 << 20):
             raise mine
 
-    config = ArchiveyConfig(on_source_read=on_read)
     with (
-        open_archive(path, salvage=True, config=config) as reader,
+        open_archive(path, salvage=True, on_source_read=on_read) as reader,
         pytest.raises(CorruptionError) as raised,
     ):
         reader.members()

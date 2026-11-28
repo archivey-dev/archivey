@@ -569,8 +569,9 @@ The arguments covered:
 | `ArchiveReader.extract_all()`, `ArchiveReader.stream_members()` | `members` |
 | `ArchiveReader.extract_all()` | `filter` |
 | `ArchiveReader.open()` / `.read()` | `member` |
-| `ArchiveyConfig(...)` | `extraction_limits`, `listing_limits`, `diagnostic_policy`, `on_diagnostic`, `zip_unflagged_fallback_encoding`, `max_retained_diagnostic_references`, `detection_budget` (a `DetectionBudget`; a `DetectionBudgetPreset` or its spelling is converted, see below) |
+| `ArchiveyConfig(...)` | `extraction_limits`, `listing_limits`, `diagnostic_policy`, `on_diagnostic`, `format_options`, `fallback_encoding`, `max_retained_diagnostic_references`, `detection_budget` (a `DetectionBudget`; a `DetectionBudgetPreset` or its spelling is converted, see below) |
 | `ExtractionLimits(...)`, `ListingLimits(...)` | every guard field |
+| `RarOptions(...)` | `unrar_path`, `unar_path` |
 | `DetectionBudget(...)` | every field |
 
 `ArchiveyConfig`, the `*Limits` types and `DetectionBudget` SHALL validate their own
@@ -594,7 +595,7 @@ The raw exceptions the contract already permits SHALL continue to escape unchang
 `ValueError` for I/O on a closed stream, and `OSError`. Every public boolean flag SHALL
 be a `bool`, refused otherwise with an `ArchiveyUsageError` that is also a `TypeError`,
 before anything is read: `ArchiveyConfig`'s switches
-(`rar_allow_glob_member_concatenation`, `read_link_targets` and the rest), and the call
+(`read_link_targets`, `always_probe_content` and the rest), and the call
 flags `open_archive(streaming=, seekable_members=, concurrent_operations=)`,
 `open_stream(seekable=)`, `detect_format(follow_stub_volumes=)`,
 `format_availability(check_programs=)`, `extract_all(dry_run=)`,
@@ -623,8 +624,8 @@ otherwise open the current directory as a directory archive or extract into it.
 | `ArchiveyConfig(extraction_limits="none")` then `extract_all(...)` | `ArchiveyUsageError` at construction, not `AttributeError` part-way through the extraction |
 | `ArchiveyConfig(listing_limits="x")` then listing | `ArchiveyUsageError` at construction, not `AttributeError` mid-listing |
 | `ArchiveyConfig(max_retained_diagnostic_references="x")` | `ArchiveyUsageError` at construction |
-| `ArchiveyConfig(on_diagnostic=0)` | `ArchiveyUsageError` at construction, not when the first diagnostic fires |
-| `ArchiveyConfig(rar_allow_glob_member_concatenation="false")` | `ArchiveyUsageError` at construction |
+| `ArchiveyConfig(on_diagnostic=0)`, `open_archive(src, on_diagnostic=0)` | `ArchiveyUsageError` at construction or before the source is read, not when the first diagnostic fires |
+| `ArchiveyConfig(read_link_targets="false")` | `ArchiveyUsageError` at construction |
 | `open_archive(src, streaming="false")`, `open_stream(src, seekable=0)` | `ArchiveyUsageError` that is also a `TypeError`, naming the flag, before the source is read |
 | `ListingLimits(max_members="x")` | `ArchiveyUsageError` at construction, not `TypeError` mid-listing |
 | `DecoderLimits(max_ratio=float("nan"))` | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |
@@ -670,7 +671,7 @@ The parameters covered:
 | Entry point | Parameters |
 | --- | --- |
 | `ArchiveReader.extract_all()` | `policy`, `overwrite`, `on_problem`, and the deprecated `on_error`, `on_blocked`, `abort_on` |
-| `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2`, `process_isolation`, `rar_decompressor`, `detection_budget` (a `DetectionBudget` passes through unconverted) |
+| `ArchiveyConfig(...)` | `use_rapidgzip`, the deprecated `use_indexed_bzip2`, `process_isolation`, `RarOptions.decompressor`, `detection_budget` (a `DetectionBudget` passes through unconverted) |
 | `ArchiveFormat(...)` | `container`, `stream` (a plugin's member passes through unconverted) |
 | `DiagnosticPolicy(...)` | `ignore`, `raise_on` |
 

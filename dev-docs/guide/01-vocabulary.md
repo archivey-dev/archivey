@@ -31,7 +31,7 @@ out the same member object for the same entry.
 
 **`raw_name` vs `name`.** `raw_name` is the bytes the archive stores. `name` is the
 decoded name, normalized under the same rules in every format: a valid-UTF-8 name is
-decoded as UTF-8 whatever `encoding=` says, a Windows-style `\` becomes `/` where the
+decoded as UTF-8 whatever `fallback_encoding` says, a Windows-style `\` becomes `/` where the
 format uses it as a separator, `.` and empty components are dropped, and a directory
 ends in `/`. Normalization only changes the spelling, never the meaning: a leading `/`
 and `..` components stay in `name`, and extraction deals with them. The rules live in

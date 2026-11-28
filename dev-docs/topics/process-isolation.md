@@ -32,7 +32,7 @@ Other pages own parts of this, and this page links them rather than repeating th
 
 - **Three settings.** `KNOWN_CRASHES` (the default) isolates the decoders that have been
   seen to crash, rapidgzip's DEFLATE family (`use_rapidgzip`) and pyppmd (every PPMd
-  member), and rapidgzip's bzip2 decoder (`use_indexed_bzip2`) as a precaution, because
+  member), and rapidgzip's bzip2 decoder (also `use_rapidgzip`) as a precaution, because
   it comes from the same library. libbzip3 (every `.bz3` file) is isolated as a precaution
   too: it is a young library with memory-safety fixes in its 2023 releases, and it decodes
   in a child under every setting but `NONE`. `NATIVE_DECODERS` also isolates zlib, bz2,

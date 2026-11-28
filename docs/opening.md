@@ -135,13 +135,25 @@ encoding, such as cp437 for ZIP. Where there isn't one, it keeps each byte it ca
 escape, the way Python's `surrogateescape` does. An escape is a placeholder character between U+DC80
 and U+DCFF.
 
-If you know the encoding, pass it as `encoding=`, and archivey uses it in place of that default for
-names that aren't valid UTF-8: a Latin-1 `café.txt` in a TAR is listed as `'caf\udce9.txt'` without it
-and `'café.txt'` with `encoding="latin-1"`. Only ZIP, TAR, ISO, RAR, CPIO, ar, RPM, makeself, SquashFS, CAB, XAR, LHA and ARJ read
-`encoding=`. The other formats decode names their own way, and a value passed to them is ignored and
-noted in the diagnostics.
+If you know the encoding, set it as `ArchiveyConfig(fallback_encoding=...)`, and archivey uses it
+in place of that default for names that aren't valid UTF-8: a Latin-1 `café.txt` in a TAR is listed
+as `'caf\udce9.txt'` without it and `'café.txt'` with `fallback_encoding="latin-1"`. Archives opened
+inside that one with `parent=` use it too. Only ZIP, TAR, ISO, RAR, CPIO, ar, RPM, makeself,
+SquashFS, CAB, XAR, LHA and ARJ read it. The other formats decode names their own way.
 
-??? note "Why does valid UTF-8 win over `encoding=`?"
+```python
+config = archivey.ArchiveyConfig(fallback_encoding="cp1252")
+with archivey.open_archive("old.zip", config=config) as archive:
+    ...
+```
+
+Each name a fallback decoded, the format's or yours, gets a `MEMBER_NAME_FALLBACK_ENCODING`
+diagnostic on its member, whose context names the codec used. Those are the names another
+`fallback_encoding` could change, so a program can look for them to decide whether to ask which
+encoding the archive uses. `open_archive(encoding=)` did the same for one call before 0.6.0; it
+still works with a `DeprecationWarning`.
+
+??? note "Why does valid UTF-8 win over `fallback_encoding`?"
     Text in another encoding almost never happens to be valid UTF-8. `café`, `Müller` and `Größe`,
     written in Latin-1, all fail to decode as UTF-8. So a name that decodes as UTF-8 almost
     certainly is UTF-8, even in an archive whose other names use your encoding.

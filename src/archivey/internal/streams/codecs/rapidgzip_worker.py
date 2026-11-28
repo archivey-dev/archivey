@@ -33,7 +33,7 @@ Parent to child:
   ``.bz2`` opened from the caller's ``open(path, "rb")``. The compressed bytes then
   never cross a pipe. A ``.tar.gz`` does not qualify: it is read through detection's
   peek reader (``_BoundedPeekReader``), which ends the walk. Argument 3 is argument 2
-  for a source whose reads the parent reports (``ArchiveyConfig.on_source_read``):
+  for a source whose reads the parent reports (``on_source_read``):
   the child also sends ``RANGE_READ`` with the reads of the range.
 - ``READ`` (argument: at most this many bytes), ``SEEK`` (argument: offset; payload: one
   byte, ``whence``), ``RESUME`` (argument: a decompressed offset; the reply's argument is

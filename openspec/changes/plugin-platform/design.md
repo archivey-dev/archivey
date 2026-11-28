@@ -804,8 +804,9 @@ ships a frozen options class whose fields hold plain values only: text, numbers,
 booleans, a named choice, a path. `ArchiveyConfig(format_options=[...])` takes such
 objects, at most one per class; a reader or codec asks its context for its class and
 gets the caller's object or the class default. Core does not know a plugin's class.
-Core's own formats use the same shape: `ZipOptions` and `RarOptions` replace the four
-per-format fields of `ArchiveyConfig`. The config trim of R21 makes that change and
+Core's own formats use the same shape: the per-format fields of `ArchiveyConfig` become
+options classes of the formats that own them (`RarOptions`; the one ZIP field became
+the format-wide `fallback_encoding`). The config trim of R21 makes that change and
 builds `format_options` and the context call with it, since it lands before step 2;
 step 2 adds only the manifest's side. A
 manifest entry names its options class under a short name, so a name and a mapping of

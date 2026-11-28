@@ -17,7 +17,7 @@ SquashFS and ar are.
 | Access cost | `SOLID` when any folder is compressed, else `DIRECT` |
 | Core dependencies | None. MSZIP through stdlib `zlib`; LZX through `internal/streams/codecs/lzx_decoder.py`, archivey's own, in Python, or `archivey-speedups`' port of it when installed |
 | Encryption | None in the format |
-| Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format. The `_A_NAME_IS_UTF` attribute adds nothing: valid UTF-8 already wins |
+| Name encoding | Bytes. UTF-8 first, then `fallback_encoding`, then escaped, as in every format. The `_A_NAME_IS_UTF` attribute adds nothing: valid UTF-8 already wins |
 | Checksums | A 32-bit XOR checksum per data block, over its stored bytes and two size fields; 0 means none |
 | Refuses | Cabinet sets (a `PREV`/`NEXT` flag) at open; Quantum folders and unknown methods when a member is read; a pipe, with `StreamNotSeekableError` |
 | Spec | `openspec/specs/format-cab/spec.md` |

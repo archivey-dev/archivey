@@ -19,6 +19,23 @@ line. How to write the entry: see
   (`ArchiveyConfig.salvage_limits`): TAR searches past damage for the next header and
   lists what it finds, flagged, even when the archive's start is lost; other formats
   read as before and record `SALVAGE_UNAVAILABLE`.
+- `ArchiveyConfig(format_options=[...])` holds the settings of single formats, one
+  object per format: `archivey.config.RarOptions` for RAR, and a plugin's format can
+  have its own. A reader asks for its own with `ReaderContext.options(cls)`.
+- `ArchiveyConfig(fallback_encoding=)` names the codec for member names that are not
+  valid UTF-8 and whose archive declares no encoding, in every format. Nested archives
+  opened with `parent=` inherit it. By default each format keeps its own fallback:
+  cp437 for ZIP, the host's code page for RAR 1.5-4, surrogate escapes for the others.
+- `ArchiveyConfig.UNTRUSTED`, the settings for files you didn't make, such as uploads:
+  `FormatPolicy.COMMON`, `DiagnosticPolicy.STRICT`, `NATIVE_DECODERS`, lower listing,
+  decoder and extraction limits, and rapidgzip off. Adjust it with
+  `dataclasses.replace()`; the upload recipes start from it.
+- `open_archive(on_source_read=)` and `open_stream(on_source_read=)` report how far
+  archivey has read the archive's own file, detection included, as a `SourceProgress`:
+  about once per MiB for a local file or stream (`source_read_step=0` reports every
+  read, with its range), and around each range request for a URL. A reader opened with
+  `parent=` reports to its parent's callback, one `nest_level` deeper. Raising from the
+  callback stops the read.
 - A format or codec plugin can use archivey-speedups' fast decoders:
   `context.speedup("lzw")` (or `call.speedup()`) returns the speedup, or `None` when it
   can't run. Their interfaces are in the new `archivey.speedups` module.
@@ -65,6 +82,23 @@ line. How to write the entry: see
   the full report as its `report` attribute. A damaged member no longer stops the run at
   once: pass `on_problem="stop"` for that, which also stops at the first refused member.
   `archivey extract --stop-on-error` now stops at a refused member too.
+- **Breaking:** `ArchiveyConfig.use_rapidgzip` decides bzip2 too, so
+  `use_rapidgzip="off"` alone now keeps rapidgzip away from bzip2 as well.
+- **Breaking:** `DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED` is now
+  `MEMBER_NAME_FALLBACK_ENCODING`, and it means something else: the name was not valid
+  UTF-8 and its archive declared no encoding, so it went through the fallback and a
+  different `fallback_encoding` could change it. Every format emits it, also when no
+  codec was given (its context's `fallback_encoding` names the codec used, or
+  `"surrogateescape"`); a valid UTF-8 name no longer emits it. The context fields
+  `inferred_encoding` and `declared_encoding` became one `fallback_encoding`.
+  `DiagnosticPolicy.STRICT` no longer refuses it. A ZIP name whose UTF-8 flag its bytes
+  refute is reported as the new `MEMBER_NAME_ENCODING_MISMATCH` too, which `STRICT`
+  refuses.
+- **Breaking:** the deprecated `ArchiveyConfig` fields `zip_unflagged_fallback_encoding`,
+  `rar_decompressor`, `unrar_path` and `unar_path` always read back as `None`: a value
+  passed to one moves into `fallback_encoding` or `format_options`, so read it there.
+  `use_indexed_bzip2` reads back as `None` unless the caller set it; read
+  `use_rapidgzip`.
 - A streaming pass over a format with an index (a ZIP, 7z, RAR, ISO, CAB and others)
   reads the whole index before its first member, so `members_report_if_available()`
   gives the same answer inside the loop as before it.
@@ -94,6 +128,25 @@ line. How to write the entry: see
   second member at one path under the default `overwrite="error"`, and
   `ExtractionResult.rewrites` lists every rewritten name. `archivey extract --abort-on`
   is deprecated the same way. 0.7.0 removes them.
+- `ArchiveyConfig(rar_decompressor=, unrar_path=, unar_path=)` keep working in 0.6 with
+  a `DeprecationWarning`; pass `format_options=[RarOptions(decompressor=...,
+  unrar_path=..., unar_path=...)]` from `archivey.config`. 0.7.0 removes them.
+- `open_archive(encoding=)`, `ArchiveyFileSystem(encoding=)` and
+  `ArchiveyConfig(zip_unflagged_fallback_encoding=)` keep working in 0.6 with a
+  `DeprecationWarning`; pass `config=ArchiveyConfig(fallback_encoding=...)`, or
+  `dataclasses.replace(config, fallback_encoding=...)` to change only that field. 0.7.0
+  removes them.
+- `ArchiveyConfig.use_indexed_bzip2` keeps working in 0.6 with a `DeprecationWarning`,
+  and decides bzip2 alone while it is set; use `use_rapidgzip`. 0.7.0 removes it.
+- `ArchiveyConfig(on_diagnostic=)` keeps working in 0.6 with a `DeprecationWarning`;
+  pass `on_diagnostic=` to `open_archive`, `open_stream` or `detect_format`. A reader
+  opened with `parent=` reports to its parent's callback unless its call passes another,
+  also when it has a `config=` of its own. 0.7.0 removes the field.
+
+### Removed
+
+- **Breaking:** `ArchiveyConfig.rar_allow_glob_member_concatenation`, deprecated with no
+  effect in 0.4.0. Passing it raises `TypeError`; drop the argument.
 
 ## [0.5.1] - 2026-11-20
 

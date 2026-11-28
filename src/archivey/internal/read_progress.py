@@ -1,12 +1,11 @@
-"""Reports for ``ArchiveyConfig.on_source_read``: how far the archive's file is read.
+"""Reports for ``on_source_read``: how far the archive's file is read.
 
 One :class:`SourceReadReporter` serves one opened source. Two kinds of source feed it:
 
 - :class:`~archivey.internal.source.ArchiveSource` calls
   :meth:`~SourceReadReporter.read` with each count of bytes it takes from a local file
-  or stream. A call reaches the caller about once per
-  ``ArchiveyConfig.source_read_step`` bytes (:data:`LOCAL_REPORT_STEP` by default), or
-  for every read when that is 0.
+  or stream. A call reaches the caller about once per ``source_read_step=`` bytes
+  (:data:`LOCAL_REPORT_STEP` by default), or for every read when that is 0.
 - :class:`~archivey.internal.remote.RangeSource` calls
   :meth:`~SourceReadReporter.request_started` and
   :meth:`~SourceReadReporter.request_ended` around each range request, and over HTTP
@@ -49,8 +48,8 @@ if TYPE_CHECKING:
     from archivey.types import OnSourceRead
 
 LOCAL_REPORT_STEP = 1 << 20
-"""The default ``ArchiveyConfig.source_read_step``: bytes taken from a local source
-between two reports."""
+"""The default ``source_read_step=``: bytes taken from a local source between two
+reports."""
 
 
 class SourceReadReporter:

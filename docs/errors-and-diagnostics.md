@@ -292,7 +292,7 @@ A `.tar.bz2` or `.tar.bz3` archive also has a checksum for each block it is comp
 does a `.tar.xz` written in several blocks, as `xz` does when it compresses with more than one
 thread. A TAR file reaches `CHECKSUM` as soon as every block its data lies in has passed its check,
 without waiting for the end of the archive. When the bzip2 accelerator decompresses the archive
-(`use_indexed_bzip2`; under `AUTO`, a `.tar.bz2` file on disk of 1 MiB or more), no file reaches
+(`use_rapidgzip`; under `AUTO`, a `.tar.bz2` file on disk of 1 MiB or more), no file reaches
 `CHECKSUM` before the end of the archive, as above. If a later block is damaged, the files in the
 earlier blocks keep `CHECKSUM`, except, in a `.tar.xz`, the files that end in the block right before
 the damage: an xz block counts as checked only once the decompressor is past its end. `verify_all()`
@@ -395,10 +395,11 @@ members, and `max_retained_diagnostic_references` in `ArchiveyConfig` changes th
 
 Each diagnostic is also logged as a warning on a logger under `archivey`, such as
 `archivey.normalization`, so a script that calls `logging.basicConfig()` prints a line for each. To
-handle them as they happen instead, pass a function as `on_diagnostic=` in
-`archivey.ArchiveyConfig`. Archivey calls it with each [`Diagnostic`][archivey.Diagnostic] as
-it's recorded, the same record the summaries keep. An exception it raises stops the operation and
-reaches your code.
+handle them as they happen instead, pass a function as `on_diagnostic=` to `open_archive`,
+`open_stream` or `detect_format`. Archivey calls it with each [`Diagnostic`][archivey.Diagnostic]
+as it's recorded, the same record the summaries keep. An exception it raises stops the operation
+and reaches your code. An archive opened from a member with `parent=` reports to the same
+function unless you pass it one of its own.
 
 Two codes are logged at INFO rather than as a warning, because they report how your code reads
 an archive, not a problem with the archive: `STREAM_REWIND_REDECOMPRESSES` (seeking back in a

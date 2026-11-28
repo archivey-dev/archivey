@@ -229,7 +229,7 @@ def test_volume_id_decodes_as_a_byte_name(
     image[_PVD_VOLUME_ID] = b"caf\xe9 vol".ljust(32, b" ")
     path = tmp_path / "v.iso"
     path.write_bytes(image)
-    with open_archive(path, encoding=encoding) as ar:
+    with open_archive(path, config=ArchiveyConfig(fallback_encoding=encoding)) as ar:
         assert ar.info.comment == expected
 
 
@@ -2734,7 +2734,9 @@ def test_a_latin1_rock_ridge_name_decodes_with_encoding() -> None:
         by_name = {m.name: m for m in ar.members()}
         assert set(by_name) == {"caf\udce9\udce9.txt", "lnk"}
         assert by_name["caf\udce9\udce9.txt"].raw_name == b"caf\xe9\xe9.txt"
-    with open_archive(io.BytesIO(data), encoding="latin-1") as ar:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding="latin-1")
+    ) as ar:
         by_name = {m.name: m for m in ar.members()}
         member = by_name["caféé.txt"]
         assert member.raw_name == b"caf\xe9\xe9.txt"
@@ -2824,16 +2826,23 @@ def test_a_latin1_rock_ridge_name_takes_its_joliet_name() -> None:
             name
             for name, member in by_name.items()
             if any(
-                d.code == DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
+                d.code == DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING
                 for d in member.diagnostics
             )
         }
+        # Every name whose stored path is not UTF-8: taken from Joliet, or decoded by
+        # the fallback (a child of such a directory too, since its path holds those
+        # bytes, and a name with no Joliet match, kept with surrogate escapes).
         assert inferred == {
             "répertoire/",
             "répertoire/naïve.txt",
+            "répertoire/up",
             "onlyé/",
+            "onlyé/inner/",
+            "onlyé/inner/f.txt",
             "café.txt",
             "emptyé",
+            "long\udce9name.txt",
         }
         assert by_name["café.txt"].raw_name == b"caf\xe9.txt"
         # A link names its target the way the target's member is named; an absolute
@@ -2844,8 +2853,9 @@ def test_a_latin1_rock_ridge_name_takes_its_joliet_name() -> None:
         assert by_name["abs"].link_target == "/caf\udce9.txt"
         # No decode of the stored bytes made the name, so no encoding is claimed.
         (diagnostic,) = by_name["café.txt"].diagnostics
-        assert diagnostic.context.inferred_encoding == ""
-        assert diagnostic.context.declared_encoding == ""
+        assert diagnostic.context.fallback_encoding == ""
+        (escaped,) = by_name["long\udce9name.txt"].diagnostics
+        assert escaped.context.fallback_encoding == "surrogateescape"
         assert by_name["répertoire/naïve.txt"].raw_name == b"r\xe9pertoire/na\xefve.txt"
         assert ar.read("répertoire/naïve.txt") == b"naive"
 
@@ -3010,11 +3020,16 @@ def test_empty_files_sharing_an_extent_are_matched_in_linear_time(
 
 def test_encoding_wins_over_the_joliet_name() -> None:
     with open_archive(
-        io.BytesIO(_latin1_names_with_joliet_image()), encoding="cp1252"
+        io.BytesIO(_latin1_names_with_joliet_image()),
+        config=ArchiveyConfig(fallback_encoding="cp1252"),
     ) as ar:
         members = list(ar.members())
     assert {m.name for m in members} >= {"café.txt", "longéname.txt"}
-    assert all(not m.diagnostics for m in members)
+    # The fallback decoded each name that is not UTF-8, and says which codec.
+    for m in members:
+        assert [d.context.fallback_encoding for d in m.diagnostics] == (
+            [] if m.raw_name is None or m.raw_name.isascii() else ["cp1252"]
+        )
 
 
 @pytest.mark.parametrize("encoding", ["utf-32", "idna"])
@@ -3023,7 +3038,10 @@ def test_an_encoding_that_cannot_decode_the_name_falls_back_to_escapes(
 ) -> None:
     """A text codec that fails on the bytes, or has no ``surrogateescape``, costs
     neither the listing nor the name: it decodes as with no ``encoding=``."""
-    with open_archive(io.BytesIO(_latin1_name_image()), encoding=encoding) as ar:
+    with open_archive(
+        io.BytesIO(_latin1_name_image()),
+        config=ArchiveyConfig(fallback_encoding=encoding),
+    ) as ar:
         names = {m.name for m in ar.members()}
     assert "caf\udce9\udce9.txt" in names
 
@@ -3032,7 +3050,10 @@ def test_a_utf8_rock_ridge_name_ignores_encoding() -> None:
     def populate(iso: Any) -> None:
         iso.add_fp(io.BytesIO(b"x"), 1, "/CAF.TXT;1", rr_name="café.txt")
 
-    with open_archive(io.BytesIO(_build_rr_iso(populate)), encoding="latin-1") as ar:
+    with open_archive(
+        io.BytesIO(_build_rr_iso(populate)),
+        config=ArchiveyConfig(fallback_encoding="latin-1"),
+    ) as ar:
         [member] = ar.members()
         assert member.name == "café.txt"
         assert member.raw_name == "café.txt".encode()

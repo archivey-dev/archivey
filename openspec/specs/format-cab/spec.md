@@ -46,7 +46,7 @@ with `StreamNotSeekableError`.
 | --- | --- |
 | A cabinet with a stored, MSZIP or LZX folder (verbatim, aligned and uncompressed blocks, E8 translation, every window size) | The same members and bytes; each member `CHECKSUM` |
 | `makecab.exe` cabinets, stored, MSZIP and LZX (libarchive's test files) | The same members and bytes |
-| A cp932 name opened with `encoding="cp932"` | The Japanese name, whole |
+| A cp932 name opened with `fallback_encoding="cp932"` | The Japanese name, whole |
 | Members streamed from a table in data order, reversed, or with folders interleaved | Table order kept unless it would decode a block twice, then by folder and offset; each block decoded once when sorted |
 | A member in the middle of a stored folder | The blocks before it not read |
 | Header, folder and data reserve areas | Skipped |

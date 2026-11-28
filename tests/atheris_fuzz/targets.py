@@ -95,14 +95,12 @@ from tests.streams_util import NonSeekableBytesIO
 _FUZZ_DECODER_LIMITS = DecoderLimits(max_decoder_memory=64 * 1024 * 1024)
 _FUZZ_CONFIG = ArchiveyConfig(
     use_rapidgzip=AcceleratorMode.OFF,
-    use_indexed_bzip2=AcceleratorMode.OFF,
     decoder_limits=_FUZZ_DECODER_LIMITS,
 )
 # The sequential targets run every content probe: a binary CPIO has no reliable magic,
 # and a fuzzed input has no name to let its probe run.
 _PROBING_FUZZ_CONFIG = ArchiveyConfig(
     use_rapidgzip=AcceleratorMode.OFF,
-    use_indexed_bzip2=AcceleratorMode.OFF,
     decoder_limits=_FUZZ_DECODER_LIMITS,
     always_probe_content=True,
 )
@@ -522,7 +520,6 @@ def open_detected_one(data: bytes) -> None:
         detection_budget=BALANCED_BUDGET,
         always_probe_content=True,
         use_rapidgzip=AcceleratorMode.OFF,
-        use_indexed_bzip2=AcceleratorMode.OFF,
         decoder_limits=_FUZZ_DECODER_LIMITS,
     )
     try:

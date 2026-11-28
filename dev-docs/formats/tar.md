@@ -340,15 +340,17 @@ TAR member changes type, name or mode after it is yielded.
 Names keep their bytes until `_to_member` decodes them, once, knowing where each came
 from. A ustar or GNU field (name, link target, `uname`, `gname`) declares no encoding, so
 it is read as UTF-8 when its bytes are valid UTF-8, as every format reads an undeclared
-name (design rules, ruled 2026-10-07), and with the caller's `encoding=` otherwise.
-Without `encoding=` the fallback is UTF-8 with `surrogateescape`, not the process
-locale's codec, so a listing does not depend on the locale. A name taken as UTF-8 where
-`encoding=` would have given a different one emits `MEMBER_NAME_ENCODING_INFERRED` naming
-the caller's codec, as ZIP and RAR 1.5-4 do. A PAX record is decoded strictly as UTF-8
-first and falls back to the archive codec (with `surrogateescape`) only when that fails,
-so `encoding=` changes a PAX name only when its bytes are not UTF-8. A PAX record under
-`hdrcharset=BINARY`, in its own header or in a global header before it that no later
-global header reset, declares no encoding and is read as a ustar field is. UTF-8 is
+name (design rules, ruled 2026-10-07), and with the caller's `fallback_encoding`
+otherwise. Without `fallback_encoding` the fallback is UTF-8 with `surrogateescape`, not
+the process locale's codec, so a listing does not depend on the locale. A name that
+went through the fallback emits `MEMBER_NAME_FALLBACK_ENCODING` naming the codec used
+(`"surrogateescape"` when none was given), as every format does: a different
+`fallback_encoding` could change that name and no other. A PAX record is decoded
+strictly as UTF-8 first and falls back to the archive codec (with `surrogateescape`)
+only when that fails, so `fallback_encoding` changes a PAX name only when its bytes are
+not UTF-8. A PAX record under `hdrcharset=BINARY`, in its own header or in a global
+header before it that no later global header reset, declares no encoding and is read
+as a ustar field is. UTF-8 is
 tried before the codec for ASCII too, so an ASCII name never reaches it: `cp037` read
 `abc` as `/ÂÄ`, and `utf-16` failed the open. A codec that fails on bytes that are not
 UTF-8 (`utf-16` on an odd byte count, `utf-7` on a bad `+` shift, `idna`) gives way to
@@ -780,8 +782,8 @@ ours.
 | GNU tar extracts a device or FIFO whose PAX header carries a `size`, and archivey refuses it with `CorruptionError` | **archivey** | GNU tar 1.35 skips the bytes a PAX `size` declares after such a header and extracts the entry. archivey refuses any size on a device or FIFO header (§6). Only a crafted archive has the shape |
 | A member's data changed and nothing noticed | **format** | No data checksum in a plain tar (§4) |
 | A streaming pass over millions of members uses memory in proportion | **archivey** | The pass keeps one list of members for `members_report()`; the walker keeps nothing behind it (§2.2) |
-| `encoding=` has no effect on some names | **archivey** | PAX names are UTF-8 by definition, and a ustar or GNU name whose bytes are valid UTF-8 is read as UTF-8 too; `encoding=` decodes only bytes that are not valid UTF-8 (§2.2) |
-| `encoding=` is accepted and changes nothing at all (`utf-16`, `idna`) | **archivey** | Where the codec cannot decode a field's stored bytes, the field decodes as with no `encoding=`, with no diagnostic, as ZIP and ISO do; a codec that cannot read ASCII as ASCII fails on most names (§2.2) |
+| `fallback_encoding` has no effect on some names | **archivey** | PAX names are UTF-8 by definition, and a ustar or GNU name whose bytes are valid UTF-8 is read as UTF-8 too; `fallback_encoding` decodes only bytes that are not valid UTF-8 (§2.2) |
+| `fallback_encoding` is accepted and changes nothing at all (`utf-16`, `idna`) | **archivey** | Where the codec cannot decode a field's stored bytes, the field decodes as with no `fallback_encoding`, with no diagnostic, as ZIP and ISO do; a codec that cannot read ASCII as ASCII fails on most names (§2.2) |
 | A tar that GNU tar lists to the end stops listing at an old GNU sparse header, with `CorruptionError` | **archivey** | The header's real size is negative or past 2**63 - 1. GNU tar 1.35 reports it ("out of off_t range"), lists the member with size 0 and reads on; archivey refuses the header, as for an old GNU sparse map slot it cannot read (§6) |
 | A member GNU tar dates 1970-01-01 lists with no `modified` | **archivey** | Its header `mtime` field holds only NULs or blanks, so it records no time; GNU tar 1.35 and `tarfile` read it as 0 (§2.2, §6). A PAX `mtime` record, when there is one, still gives the time |
 
@@ -844,7 +846,7 @@ ours.
 | Random access needs a seekable source; streaming works on a pipe, plain and compressed |
 | Metadata mapping, PAX `mtime`, PAX `atime` and `ctime`, libarchive birth time |
 | `raw_name` for PAX and ustar names under a non-UTF-8 `encoding` |
-| ustar and GNU names, link targets, `uname` and `gname` are UTF-8 by default, not the locale's codec; `encoding=` decodes only bytes that are not valid UTF-8; a PAX record that is not UTF-8 falls back to that same codec |
+| ustar and GNU names, link targets, `uname` and `gname` are UTF-8 by default, not the locale's codec; `fallback_encoding` decodes only bytes that are not valid UTF-8; a PAX record that is not UTF-8 falls back to that same codec |
 | Out-of-range `mtime` degrades |
 | A bad PAX `mtime`, `atime`, `ctime` or `LIBARCHIVE.creationtime` is `None` and reported, each once; a PAX `mtime` of `0` stays the epoch |
 | An all-NUL or all-blank header `mtime` is `None` with no report, an octal zero the epoch, and a PAX `mtime` fills an all-NUL field |

@@ -1323,7 +1323,7 @@ def test_corrupt_bz2_raises_whatever_the_accelerator_mode(
         pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
     path = tmp_path / "garbage.bz2"
     path.write_bytes(_NOT_A_STREAM[contents])
-    config = ArchiveyConfig(use_indexed_bzip2=mode)
+    config = ArchiveyConfig(use_rapidgzip=mode)
     with (
         pytest.raises(CorruptionError),
         open_archive(path, seekable_members=True, config=config) as ar,
@@ -1335,7 +1335,7 @@ _ACCELERATED_CODECS = pytest.mark.parametrize(
     ("suffix", "compress", "field"),
     [
         (".gz", gzip.compress, "use_rapidgzip"),
-        (".bz2", bz2.compress, "use_indexed_bzip2"),
+        (".bz2", bz2.compress, "use_rapidgzip"),
     ],
 )
 

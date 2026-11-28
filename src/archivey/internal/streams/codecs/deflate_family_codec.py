@@ -90,7 +90,7 @@ class _DeflateFamilyCodec(StreamCodec):
         if self._use_accelerator(source, config) and not self._leaves_to_stdlib(
             source, config
         ):
-            _require_rapidgzip_child(self.codec.value)
+            _require_rapidgzip_child(self.codec.value, config)
 
     def _leaves_to_stdlib(self, source: CodecSource, config: StreamConfig) -> bool:
         """Whether an accelerated open hands ``source`` to the standard library before

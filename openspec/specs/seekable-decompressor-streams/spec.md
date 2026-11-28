@@ -41,7 +41,11 @@ a crafted index cannot change what a default read returns. Its accelerator `AUTO
 SHALL still resolve as for an undeclared stream. A streaming open SHALL NOT ask for
 restart points.
 
-`use_rapidgzip` and `use_indexed_bzip2` SHALL resolve their `AUTO` / `ON` / `OFF`
+`use_rapidgzip` SHALL decide gzip, zlib, raw DEFLATE and bzip2. The deprecated
+`use_indexed_bzip2` (0.6.0, removed in 0.7.0) SHALL default to unset; while a caller sets
+it, it decides bzip2 alone, as in 0.5, and constructing the config SHALL warn with
+`DeprecationWarning` at the caller's line. Messages that name the setting to change SHALL
+name the one that decided the stream. Both SHALL resolve their `AUTO` / `ON` / `OFF`
 configuration against declared seek demand, not the `streaming` access-mode
 proxy. For declared-seekable streams, native XZ/lzip indexes, rapidgzip-backed
 gzip/bzip2 indexes, and stdlib fallback rewinds retain their contracts. The
@@ -54,7 +58,7 @@ zlib, gzip), so per-stream accelerator setup is not paid for members too small t
 threshold value is fixed by benchmark and recorded in design. When the input size is not known
 in advance, `AUTO` SHALL behave as it did before this threshold existed (select the accelerator
 when otherwise eligible). `ON` ignores the threshold; `OFF` never selects rapidgzip.
-`use_indexed_bzip2` SHALL have its own documented `AUTO` threshold
+bzip2 SHALL have its own documented `AUTO` threshold
 (`INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`), fixed by benchmark the same way, with the same
 rules for an unknown size, `ON` and `OFF`.
 
@@ -67,7 +71,7 @@ rapidgzip decodes in parallel, which repays the child process on a full read onl
 that is not very compressible, and not on Windows, where the child costs more than it saves
 (`formats/gzip.md` §2.3). The stream stays forward-only.
 
-Without declared seek demand, `use_indexed_bzip2=AUTO` SHALL select rapidgzip for a bzip2
+Without declared seek demand, `use_rapidgzip=AUTO` SHALL select rapidgzip for a bzip2
 stream only when it is otherwise eligible, the platform is Linux or macOS, the source is a path
 or a byte range of a regular file, the compressed input size is known and reaches
 `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`, and the process may run on at least two CPUs.
@@ -89,7 +93,7 @@ it, because every backward seek restarts decryption from the member's start.
 | Declared-seekable deflate/zlib/gzip under `AUTO`, known size < threshold | rapidgzip not selected; stdlib backend used |
 | Declared-seekable DEFLATE-family stream, `use_rapidgzip=ON`, size below threshold | rapidgzip still selected (threshold ignored) |
 | Declared-seekable bzip2 under `AUTO`, known size < `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` | rapidgzip not selected; stdlib backend used |
-| Declared-seekable bzip2, `use_indexed_bzip2=ON`, size below that threshold | rapidgzip still selected (threshold ignored) |
+| Declared-seekable bzip2, `use_rapidgzip=ON`, size below that threshold | rapidgzip still selected (threshold ignored) |
 | Declared-seekable gzip without accelerator, caller seeks backward | Seek re-decompresses from the nearest member or BGZF block start before the target, else from the start; reports `STREAM_REWIND_REDECOMPRESSES`, naming the `[seekable]` accelerator, once the discarded progress reaches `REWIND_REDECODE_WARN_BYTES` |
 | Compressed TAR opened for random access, no `seekable_members` | The codec stream keeps the points a decode finds, reads no file index; accelerator `AUTO` as without seekability |
 | Compressed TAR opened with `streaming=True` | No restart points |
@@ -134,8 +138,7 @@ The system SHALL use `rapidgzip` as the only optional accelerator library for
 both gzip and bzip2: gzip through `rapidgzip.RapidgzipFile`, bzip2 through
 `rapidgzip.IndexedBzip2File`. It MUST NOT import the standalone `indexed_bzip2`
 package because loading both C++ cores in one process can corrupt the heap on
-macOS. `use_indexed_bzip2` remains the bzip2 configuration flag but selects the
-rapidgzip-bundled decoder.
+macOS. `use_rapidgzip` selects the rapidgzip-bundled bzip2 decoder too.
 
 When rapidgzip is unavailable or disabled, gzip and bzip2 SHALL use stdlib
 decoders; backward seek is serviced by re-decompressing from the start, or for gzip
@@ -148,7 +151,7 @@ SHALL run in a child process with the same rules as the DEFLATE family's (next
 requirement): the child opens a path source itself, a stream source stays in the caller's
 process, a child that dies on the data is a verdict the standard library takes over from,
 and where no child can be started `AUTO` decodes with the stdlib backend, logging one
-warning per process that names `use_indexed_bzip2=OFF`, and `ON` raises
+warning per process that names `use_rapidgzip=OFF`, and `ON` raises
 `ResourceUnavailableError`. No crash of that decoder has been seen; it is isolated as a precaution,
 because it comes from the same library as the DEFLATE decoder, whose crashes cannot always be
 avoided. A maintainer script SHALL run each rapidgzip decoder
@@ -160,9 +163,10 @@ signature, so that whether the isolation is still needed stays measurable.
 | Case | Expected |
 | --- | --- |
 | `use_rapidgzip` enabled and package installed | gzip seeks without full re-decompression |
-| `use_indexed_bzip2` enabled and rapidgzip installed | bzip2 uses `rapidgzip.IndexedBzip2File` in a child process; the caller's process imports neither rapidgzip nor standalone `indexed_bzip2` |
-| `use_indexed_bzip2=AUTO`, no child process can start | stdlib decoder; one warning per process naming `use_indexed_bzip2=OFF` |
-| `use_indexed_bzip2=ON`, no child process can start | `ResourceUnavailableError`; never decoded in-process |
+| `use_rapidgzip` enabled and rapidgzip installed, bzip2 | bzip2 uses `rapidgzip.IndexedBzip2File` in a child process; the caller's process imports neither rapidgzip nor standalone `indexed_bzip2` |
+| `use_rapidgzip=AUTO`, no child process can start, bzip2 | stdlib decoder; one warning per process naming `use_rapidgzip=OFF` |
+| `use_rapidgzip=ON`, no child process can start, bzip2 | `ResourceUnavailableError`; never decoded in-process |
+| `ArchiveyConfig(use_rapidgzip="on", use_indexed_bzip2="off")` | `DeprecationWarning`; gzip through rapidgzip, bzip2 with the standard library |
 | rapidgzip absent or flag `OFF` | stdlib decoder; backward seek re-decompresses from the start, or from a known gzip member start or snapshot, and warns when it re-decodes past the threshold |
 
 ### Requirement: DEFLATE-family random access uses rapidgzip
@@ -328,7 +332,7 @@ The same rule SHALL hold for bzip2 through rapidgzip's decoder process: a data e
 raises (on a cut stream an opaque `RuntimeError('std::exception')`), or a crash of the process
 on the data, on a read or a seek, SHALL
 hand the operation to the standard library decoder, so the bytes delivered and the error match
-`use_indexed_bzip2=OFF`. The standard library SHALL start at the newest block from rapidgzip's
+`use_rapidgzip=OFF`. The standard library SHALL start at the newest block from rapidgzip's
 index at or before the position delivered to the caller, among a bounded number of the newest
 such blocks it keeps as seek points; where there is none, at the start of the stream. A bzip2
 block carries no window. A decode started at such a block SHALL check the stream's

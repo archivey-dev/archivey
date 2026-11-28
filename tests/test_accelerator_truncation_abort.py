@@ -1098,8 +1098,9 @@ def test_without_a_child_auto_uses_stdlib_and_on_refuses(
     with open_codec_stream(codec, str(path), config=auto) as stream:
         assert not _has_child_stream(stream)
         assert stream.read() == payload
-    field = "use_indexed_bzip2" if codec is Codec.BZIP2 else "use_rapidgzip"
-    with pytest.raises(ResourceUnavailableError, match=rf"{field}.*\(no child here\)"):
+    with pytest.raises(
+        ResourceUnavailableError, match=r"use_rapidgzip.*\(no child here\)"
+    ):
         open_codec_stream(codec, str(path), config=_ON)
 
 
@@ -1203,7 +1204,7 @@ def test_a_child_that_cannot_start_falls_back_to_stdlib_under_auto(
 
 def _fallback_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
     messages = (r.getMessage() for r in caplog.records if r.name == "archivey.streams")
-    return [m for m in messages if "use_rapidgzip=AcceleratorMode.OFF" in m]
+    return [m for m in messages if "gzip, zlib and deflate streams are" in m]
 
 
 # How each way of having no child is set up, and what the warning and the ON error say.
@@ -1291,7 +1292,8 @@ def test_the_bzip2_fallback_warns_once_and_names_its_own_setting(
             assert not _has_child_stream(stream)
             assert stream.read() == payload
     messages = [r.getMessage() for r in caplog.records if r.name == "archivey.streams"]
-    (message,) = [m for m in messages if "use_indexed_bzip2=AcceleratorMode.OFF" in m]
+    (message,) = [m for m in messages if "bzip2 streams are" in m]
+    assert "use_rapidgzip=AcceleratorMode.OFF" in message
     assert "bzip2 streams are read with the standard library decoder" in message
     assert _fallback_warnings(caplog) == []
 

@@ -432,8 +432,8 @@ that is right on one format and wrong on another breaks callers silently.
   archive called them (2026-10-10, DR-25; applied by PR 730).
 - Timestamp diagnostics name the member attribute (`modified`, not `mtime` or
   `date_time`) in every format (2026-10-07, PR 608).
-- A valid UTF-8 name wins over `encoding=` in every format; `encoding=` only replaces the
-  fallback guess (2026-10-07).
+- A valid UTF-8 name wins over `fallback_encoding` in every format; `fallback_encoding`
+  only replaces the fallback guess (2026-10-07).
 - Plain TAR names decode as UTF-8 everywhere, not by the process locale (2026-09-26).
 - `stream_members()` never seeks, on any format (ADR 0003 amendment, 2026-09-26).
 - Hard links resolve backward-only in both access modes (2026-10-02, PR 532).
@@ -555,11 +555,11 @@ ZIP and ISO have no single official tool; see [Open gaps](#open-gaps).
 ### DR-7. Trust self-validating data over caller hints
 
 **Rule.** When the archive says something verifiable (a UTF-8 flag, a valid UTF-8
-sequence, a stored digest), use it. A caller hint such as `encoding=` fills only the gap
+sequence, a stored digest), use it. A caller hint such as `fallback_encoding` fills only the gap
 the archive leaves. An explicit caller assertion that conflicts with the source, such as
 `format=` on a directory, is refused loudly, never silently overruled.
 
-**Rulings.** Valid UTF-8 names win over `encoding=` (2026-10-07). `format=` on a
+**Rulings.** Valid UTF-8 names win over `fallback_encoding` (2026-10-07). `format=` on a
 directory path raises `ArchiveyUsageError` (#225). An empty listing under an explicit
 `format=` is reported, not refused, because an override is obeyed (diagnostics design,
 2026-08).

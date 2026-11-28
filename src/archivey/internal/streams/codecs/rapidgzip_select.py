@@ -111,29 +111,27 @@ def _rapidgzip_unused_reason(config: StreamConfig) -> str:
     return deps.unused_reason(OptionalLibrary.RAPIDGZIP)
 
 
-# The settings whose AUTO fallback has been logged (_warn_child_fallback).
-_child_fallback_warned: set[str] = set()
+# The (setting, bzip2) pairs whose AUTO fallback has been logged (_warn_child_fallback).
+_child_fallback_warned: set[tuple[str, bool]] = set()
 _child_fallback_lock = threading.Lock()
-# What each accelerator setting covers, for the fallback warning.
-_CHILD_FALLBACK_STREAMS = {
-    "use_rapidgzip": "gzip, zlib and deflate streams are",
-    "use_indexed_bzip2": "bzip2 streams are",
-}
 
 
-def _warn_child_fallback(why: str, setting: str = "use_rapidgzip") -> None:
-    """Log, once per process and setting, that ``AUTO`` reads with the stdlib because no
-    rapidgzip child can start. It is a fact about the environment, not about any one
-    archive, so one warning says it; ``ON`` raises instead and does not come here."""
+def _warn_child_fallback(
+    why: str, setting: str = "use_rapidgzip", *, bzip2: bool = False
+) -> None:
+    """Log, once per process, setting and codec family, that ``AUTO`` reads with the
+    stdlib because no rapidgzip child can start. It is a fact about the environment, not
+    about any one archive, so one warning says it; ``ON`` raises instead and does not
+    come here."""
     with _child_fallback_lock:
-        if setting in _child_fallback_warned:
+        if (setting, bzip2) in _child_fallback_warned:
             return
-        _child_fallback_warned.add(setting)
+        _child_fallback_warned.add((setting, bzip2))
     logs.streams.warning(
         "%s; %s read with the standard library decoder instead of rapidgzip. Set "
         "%s=AcceleratorMode.OFF to silence this warning.",
         why,
-        _CHILD_FALLBACK_STREAMS[setting],
+        "bzip2 streams are" if bzip2 else "gzip, zlib and deflate streams are",
         setting,
     )
 
@@ -407,14 +405,19 @@ def _refuse_forward_only_accelerator(
 
 
 def _accelerator_field(label: str) -> str:
-    """The config setting that turns rapidgzip on for a ``label`` stream."""
+    """The ``StreamConfig`` field that turns rapidgzip on for a ``label`` stream."""
     return "use_indexed_bzip2" if label == "bzip2" else "use_rapidgzip"
 
 
-def _no_child_reason(label: str) -> str:
+def _setting_name(label: str, config: StreamConfig) -> str:
+    """The caller's ``ArchiveyConfig`` setting that turns rapidgzip on for a ``label``
+    stream, for a message that tells the caller what to change."""
+    return config.bzip2_setting if label == "bzip2" else "use_rapidgzip"
+
+
+def _no_child_reason(label: str, field_name: str) -> str:
     """The start of the ``ResourceUnavailableError`` message for a ``label`` stream whose
-    rapidgzip child cannot run."""
-    field_name = _accelerator_field(label)
+    rapidgzip child cannot run; ``field_name`` is the setting to name."""
     return (
         f"the rapidgzip accelerator runs in a child process, and none can be started "
         f"here to decode this {label} stream. Set {field_name}=AcceleratorMode.OFF to "
@@ -422,14 +425,17 @@ def _no_child_reason(label: str) -> str:
     )
 
 
-def _require_rapidgzip_child(label: str) -> None:
+def _require_rapidgzip_child(label: str, config: StreamConfig) -> None:
     """Raise ``ResourceUnavailableError`` where no rapidgzip child process can run here
     (:func:`rapidgzip_child_unavailable_reason`). Starts nothing."""
     unavailable = rapidgzip_child_unavailable_reason()
     if unavailable is not None:
         # A child that cannot start is no verdict on the data (process-isolation §2.5).
         raise mark_no_verdict(
-            ResourceUnavailableError(f"{_no_child_reason(label)} ({unavailable}).")
+            ResourceUnavailableError(
+                f"{_no_child_reason(label, _setting_name(label, config))} "
+                f"({unavailable})."
+            )
         )
 
 
@@ -463,21 +469,23 @@ def _open_rapidgzip(
     """
     bzip2 = label == "bzip2"
     field_name = _accelerator_field(label)
-    reason = _no_child_reason(label)
-    _require_rapidgzip_child(label)
+    setting = _setting_name(label, config)
+    reason = _no_child_reason(label, setting)
+    _require_rapidgzip_child(label, config)
     try:
         child = RapidgzipChildStream(
             source,
             label=label,
             bzip2=bzip2,
             max_memory=config.decoder_limits.max_decoder_memory,
+            setting=setting,
         )
     except RapidgzipChildStartError as exc:
         if getattr(config, field_name) is not AcceleratorMode.AUTO:
             raise mark_no_verdict(
                 ResourceUnavailableError(f"{reason} ({exc}).")
             ) from exc
-        _warn_child_fallback(str(exc), field_name)
+        _warn_child_fallback(str(exc), setting, bzip2=bzip2)
         return None
     if config.usage is not None:
         config.usage.note_backend("library", OptionalLibrary.RAPIDGZIP.value, label)

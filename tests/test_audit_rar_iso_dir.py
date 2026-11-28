@@ -27,7 +27,7 @@ from typing import Any
 import pytest
 
 from archivey import ArchiveyConfig, DiagnosticCode, MemberType, open_archive
-from archivey.config import DecoderLimits
+from archivey.config import DecoderLimits, RarOptions
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
@@ -43,7 +43,7 @@ from archivey.internal.external import unar as unar_cli
 from tests.conftest import requires_binary
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
-_UNRAR_ONLY = ArchiveyConfig(rar_decompressor="unrar")
+_UNRAR_ONLY = ArchiveyConfig(format_options=[RarOptions(decompressor="unrar")])
 
 
 def _fixture(name: str) -> Path:
@@ -492,7 +492,8 @@ _C_LOCALE_READ = textwrap.dedent(
     """
     import sys
     from archivey import ArchiveyConfig, open_archive
-    config = ArchiveyConfig(rar_decompressor="unrar")
+    from archivey.config import RarOptions
+    config = ArchiveyConfig(format_options=[RarOptions(decompressor="unrar")])
     with open_archive(sys.argv[1], config=config) as archive:
         member = archive.members()[0]
         sys.stdout.buffer.write(archive.read(member))
@@ -553,7 +554,9 @@ def test_rar3_8bit_name_is_not_decoded_as_utf16(tmp_path: Path) -> None:
         # The fixture was written on Unix, so the fallback is windows-1252.
         assert member.name == "café.txt"
         assert member.raw_name == b"caf\xe9.txt"
-    with open_archive(path, encoding="cp437") as archive:
+    with open_archive(
+        path, config=ArchiveyConfig(fallback_encoding="cp437")
+    ) as archive:
         member = archive.members()[0]
         assert member.name == "cafΘ.txt"
         assert member.raw_name == b"caf\xe9.txt"
@@ -717,10 +720,10 @@ def _declaring_dictionary(
 
 def _config(program: str, max_decoder_memory: int | None = None) -> ArchiveyConfig:
     if max_decoder_memory is None:
-        return ArchiveyConfig(rar_decompressor=program)
+        return ArchiveyConfig(format_options=[RarOptions(decompressor=program)])
     return ArchiveyConfig(
-        rar_decompressor=program,
         decoder_limits=DecoderLimits(max_decoder_memory=max_decoder_memory),
+        format_options=[RarOptions(decompressor=program)],
     )
 
 

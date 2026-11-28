@@ -19,7 +19,7 @@ exits 0 with empty output. RAR4 is unaffected.
 
 **What archivey does.** `unar` is the second RAR data program (used when no RARLAB program
 is found, under `auto` for a member `unrar` cannot name whose read needs no password, or
-with `ArchiveyConfig.rar_decompressor="unar"`). `internal/backends/rar_unar.py` refuses,
+with `RarOptions(decompressor="unar")`). `internal/backends/rar_unar.py` refuses,
 from the native listing, every RAR5 solid member with data that follows an empty file, a
 directory or a junction (other links are measured harmless), and names only the readable
 members to `unar`, so it never reaches the crash. The same module handles the six other
@@ -53,7 +53,7 @@ check, on an 85-byte RAR5 archive embedded in `internal/external/unar.py` (the
 `unar_drop__.rar` fixture), and requires the member's exact 14 bytes back. A build that
 writes anything else, exits non-zero, or runs out of time is not used, and the answer
 is cached per binary like the banner's. Under `"auto"` that `unar` counts as absent;
-with `rar_decompressor="unar"` a read raises `PackageNotInstalledError`. For the
+with `RarOptions(decompressor="unar")` a read raises `PackageNotInstalledError`. For the
 patch's signature (exit 0, less than the member) it names the patch and says to install
 RARLAB `unrar` or a `unar` without the patch; any other failure says what the run did
 (its exit status, a signal, the wrong bytes). A check that cannot run at all, such as a

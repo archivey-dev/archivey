@@ -90,10 +90,10 @@ destination and `..` is refused there
 ([page 1](01-vocabulary.md), [page 8](08-security.md)). A listing that hid them would
 misreport the archive.
 
-**Why does a valid UTF-8 name ignore `encoding=`?**
-Self-validating data beats a caller hint: `encoding=` fills only the gap the archive
+**Why does a valid UTF-8 name ignore `fallback_encoding`?**
+Self-validating data beats a caller hint: `fallback_encoding` fills only the gap the archive
 leaves ([DR-7](../design-rules.md#dr-7-trust-self-validating-data-over-caller-hints)). A
-wrong `encoding=` cannot then break names that were fine.
+wrong `fallback_encoding` cannot then break names that were fine.
 
 **Why is a FIFO or device entry `OTHER`, when `unzip` writes an empty file?**
 An empty file in place of a device is useless to a caller, so consistency across formats

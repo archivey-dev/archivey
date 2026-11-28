@@ -2002,50 +2002,45 @@ class TarReader(BaseArchiveReader):
 
     def _decode_not_utf8(self, raw: bytes) -> str:
         """Bytes that are not valid UTF-8, decoded with the archive codec: the
-        caller's ``encoding=``, else UTF-8, with undecodable bytes kept as surrogates.
+        caller's ``fallback_encoding``, else UTF-8, with undecodable bytes kept as
+        surrogates.
 
         ``surrogateescape`` can escape only a byte of 0x80 or more, so a codec that
         does not read ASCII bytes as ASCII can still fail: ``utf-16`` on an odd byte
         count, ``utf-32`` on a code point out of range, ``utf-7`` on a ``+`` shift
         that ends badly; ``idna`` refuses the handler outright. Such a name decodes as
-        it would with no ``encoding=``, as in ZIP, RAR and ISO.
-
-        ``_decode_name`` also passes valid UTF-8 here, only to compare readings.
+        it would with no ``fallback_encoding``, as in ZIP, RAR and ISO.
         """
         try:
             return raw.decode(self._codec, "surrogateescape")
         except UnicodeError:
             return raw.decode("utf-8", "surrogateescape")
 
-    def _decode_name(
-        self, raw: bytes, source: NameSource | None, binary: bool
-    ) -> tuple[str, bool]:
-        """A name, link name, user or group name as text, and whether the UTF-8
-        reading was taken over the caller's ``encoding=``.
+    def _decode_name(self, raw: bytes) -> tuple[str, str | None]:
+        """A name, link name, user or group name as text, and the codec the fallback
+        decoded it with (``None`` when it is UTF-8): the caller's fallback encoding, or
+        ``"surrogateescape"``.
 
         A PAX value is UTF-8 unless its block says ``hdrcharset=BINARY``; one that is
         not valid UTF-8 falls back to the archive codec. A ustar or GNU field, or a
         ``BINARY`` PAX value, declares no encoding: it is UTF-8 when its bytes are
-        valid UTF-8, else the caller's ``encoding=`` (UTF-8 with surrogateescape by
-        default), the rule every format follows.
+        valid UTF-8, else the caller's fallback encoding (UTF-8 with surrogateescape by
+        default), the rule every format follows. Whether the field was PAX or a
+        header does not matter here: valid UTF-8 wins either way. This repeats
+        ``_decode_not_utf8``'s step because it also returns the codec it used.
         """
-        # UTF-8 is tried before the codec, ASCII included: ``encoding="cp037"`` would
-        # otherwise turn the ASCII name ``abc`` into ``/ÂÄ``.
+        # UTF-8 is tried before the codec, ASCII included: ``fallback_encoding="cp037"``
+        # would otherwise turn the ASCII name ``abc`` into ``/ÂÄ``.
         try:
-            utf8_text = raw.decode("utf-8")
+            return raw.decode("utf-8"), None
         except UnicodeDecodeError:
-            return self._decode_not_utf8(raw), False
-        if (
-            self._encoding is None
-            or raw.isascii()
-            or (source is NameSource.PAX and not binary)
-        ):
-            return utf8_text, False
-        # Through the helper, not the codec: a codec that cannot decode these bytes
-        # (``idna``, ``utf-16`` on an odd byte count) must not fail the listing, and
-        # would not have named the member, so its fallback reading equals the UTF-8
-        # one and nothing is reported, as RAR's ``_utf8_over_encoding`` does.
-        return utf8_text, utf8_text != self._decode_not_utf8(raw)
+            pass
+        if self._encoding is not None:
+            try:
+                return raw.decode(self._encoding, "surrogateescape"), self._encoding
+            except UnicodeError:
+                pass
+        return raw.decode("utf-8", "surrogateescape"), "surrogateescape"
 
     def _to_member(self, entry: TarEntry, index: int) -> ArchiveMember:
         """Type one member. ``index`` is its position in the walk, the id registration
@@ -2057,9 +2052,7 @@ class TarReader(BaseArchiveReader):
         (:meth:`_report_member_findings`).
         """
         member_type = _member_type(entry)
-        presented, inferred = self._decode_name(
-            entry.name, entry.name_source, entry.name_binary
-        )
+        presented, fallback = self._decode_name(entry.name)
         if entry.name_source is NameSource.PAX or member_type == MemberType.DIRECTORY:
             # A PAX path is read with its trailing slashes removed, as tarfile reads
             # it; a directory's slash is its type.
@@ -2071,9 +2064,7 @@ class TarReader(BaseArchiveReader):
 
         link_target: str | None = None
         if entry.linkname is not None:
-            link_target, _ = self._decode_name(
-                entry.linkname, entry.linkname_source, entry.linkname_binary
-            )
+            link_target, _ = self._decode_name(entry.linkname)
 
         timestamp_issues: list[TimestampIssue] = []
         modified = _modified_time(entry, presented, timestamp_issues)
@@ -2132,7 +2123,7 @@ class TarReader(BaseArchiveReader):
         if entry.sparse_format is not None:
             member.is_sparse = True
         self._report_member_findings(
-            member, entry, index, presented, timestamp_issues, inferred=inferred
+            member, entry, index, presented, timestamp_issues, fallback=fallback
         )
         return member
 
@@ -2179,10 +2170,10 @@ class TarReader(BaseArchiveReader):
         presented: str,
         timestamp_issues: list[TimestampIssue],
         *,
-        inferred: bool,
+        fallback: str | None,
     ) -> None:
         """Emit the diagnostics about one member, once it is built: a normalized
-        name, bad times, a name decoded as UTF-8 over ``encoding=``, and what the
+        name, bad times, a name the fallback decoded, and what the
         walk found in its headers. ``presented`` is the decoded name before
         normalization."""
         # emit_member_name_normalized makes the same check; making it here skips the
@@ -2197,20 +2188,9 @@ class TarReader(BaseArchiveReader):
             )
         for issue in timestamp_issues:
             self._emit_timestamp_invalid(member, index, issue)
-        if inferred:
-            # The UTF-8 reading was taken over the caller's encoding=, which ZIP and
-            # RAR 1.5-4 report the same way.
-            assert self._encoding is not None
-            self._emit_name_encoding_inferred(
-                member,
-                index,
-                inferred_encoding="utf-8",
-                passed_over=self._encoding,
-                message=(
-                    f"TAR member name decoded as 'utf-8' rather than "
-                    f"{self._encoding!r} (the stored bytes are valid UTF-8): "
-                    f"{quoted(member.name)}"
-                ),
+        if fallback is not None:
+            self._emit_name_fallback_encoding(
+                member, index, codec=fallback, format_label="TAR"
             )
         if entry.header.device_number_fault is not None:
             # GNU tar 1.35 reports the field and lists the device with a garbage
@@ -2433,8 +2413,8 @@ class TarReader(BaseArchiveReader):
     def _owner_name(self, header: bytes, pax: PaxValue | None) -> str:
         """``uname`` or ``gname``: a PAX record of that name overrides the header's."""
         if pax is not None:
-            return self._decode_name(pax.value, NameSource.PAX, pax.binary)[0]
-        return self._decode_name(header, NameSource.HEADER, False)[0]
+            return self._decode_name(pax.value)[0]
+        return self._decode_name(header)[0]
 
     @override
     def _translate_exception(self, exc: Exception) -> ArchiveyError | None:

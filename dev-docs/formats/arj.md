@@ -17,7 +17,7 @@ written against `archivey.formats` and registered as a built-in, as LHA and CAB 
 | Access cost | `DIRECT`: each member is its own stream |
 | Core dependencies | None. Methods 1 to 3 through `lzh_decoder.py` (LHA's decoder), method 4 through `arj_fast_decoder.py`, both archivey's own, in Python |
 | Encryption | "Garbling" (`-g`): listed with `is_encrypted`, read with `password=` (§5). ARJ's later GOST cipher (encryption version 2 and later) is refused when read |
-| Name encoding | Bytes. UTF-8 first, then `encoding=` (DOS archives are usually cp437 or cp866), then escaped, as in every format |
+| Name encoding | Bytes. UTF-8 first, then `fallback_encoding` (DOS archives are usually cp437 or cp866), then escaped, as in every format |
 | Checksums | A CRC-32 of each basic header and each extended header, checked when it is read; a CRC-32 of each member's data, checked by the read |
 | Refuses | GOST-encrypted members and members split across volumes, when read; methods past 4, when read; a pipe, with `StreamNotSeekableError` |
 | Spec | `openspec/specs/format-arj/spec.md` |

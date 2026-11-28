@@ -34,13 +34,9 @@ from archivey.terminal import quoted
 # only matters when the data is compressed.
 _FIRST_UNAR_SAFE_EXTRACT_VERSION = 20
 
-UNAR_PURPOSE = (
-    "to read RAR member data with ArchiveyConfig.rar_decompressor set to 'unar'"
-)
+UNAR_PURPOSE = "to read RAR member data with RarOptions.decompressor set to 'unar'"
 
-_USE_UNRAR = (
-    "Set ArchiveyConfig.rar_decompressor to 'unrar' to read it with RARLAB unrar."
-)
+_USE_UNRAR = "Set RarOptions.decompressor to 'unrar' to read it with RARLAB unrar."
 
 REFUSE_RAR4_ENCRYPTED = (
     "unar 1.10 returns no data, and reports success, for encrypted RAR 2.x-4.x data "
@@ -379,7 +375,7 @@ def solid_after_unknown_compression_reason(block: SolidAfterUnknown) -> str:
         "through an "
         "include mask, and unrar then decodes the solid archive from its start and "
         'stops at that member ("Unknown method"). unar reads it: set '
-        "ArchiveyConfig.rar_decompressor to 'unar'."
+        "RarOptions.decompressor to 'unar'."
     )
 
 

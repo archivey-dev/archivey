@@ -447,8 +447,8 @@ data its pass keeps for link targets beside it.
   before the members are made stay within the limit, even where directories share one
   listing or symlink inodes overlap (`SquashfsReader._charge`,
   [formats/squashfs.md](formats/squashfs.md) §2.2). For valid UTF-8 names or a
-  one-byte `encoding=`, the charge is at most the members' weight; a multibyte
-  `encoding=` that decodes to fewer characters
+  one-byte `fallback_encoding`, the charge is at most the members' weight; a multibyte
+  `fallback_encoding` that decodes to fewer characters
   than the stored bytes (UTF-16) can refuse a listing up to about twice early. The
   fixed cost per entry is bounded by `max_members` only (the residual below).
   A DMG image weighs its run tables at open, before any run is kept (256 bytes per table
@@ -992,7 +992,6 @@ stream before the member; that is the cost `AccessCost.SOLID` announces, not a n
 
 **Residual.** None from names. A listing whose walk stopped at a damaged header may miss
 headers `unrar` finds past it, so such an archive reads no member in place by name.
-`rar_allow_glob_member_concatenation` is deprecated and does nothing.
 
 **Tests.** `tests/test_rar_unrar_names.py::test_only_a_plain_name_selects_its_member_alone`,
 `::test_every_rar5_member_reads_its_own_bytes`,
@@ -1280,7 +1279,7 @@ probe reads 64 KiB of input and fails, and detection answers `GZ` in 3 ms.
 **Property.** No archive-controlled string reaches an external program as an option, and
 the program that runs is one whose behaviour we have characterized.
 
-**Mechanism.** `rar_decompressor="auto"` (the default; maintainer 2026-09-26, "auto is
+**Mechanism.** `RarOptions(decompressor="auto")` (the default; maintainer 2026-09-26, "auto is
 default") takes RARLAB `unrar` or `rar` when installed and `unar` otherwise, decided once
 at open. A read `unar` refuses is not retried with `unrar`, and reads `unar` gets wrong
 are refused before it runs; a read `unrar` refuses is not retried with `unar` either.
@@ -1288,7 +1287,7 @@ are refused before it runs; a read `unrar` refuses is not retried with `unar` ei
 failures (empty files with a success exit, a missing plugin, gigabytes written for a
 stored member) are invisible to the caller. A non-RARLAB `unrar` raises
 `PackageNotInstalledError`. Both paths use a banner probe with a timeout and a
-stat-keyed cache. `ArchiveyConfig(unrar_path=, unar_path=)` pins the program to one
+stat-keyed cache. `RarOptions(unrar_path=, unar_path=)` pins the program to one
 absolute path: that file is the only one tried, under the same banner and version checks,
 and `PATH` is not searched; a pinned program that fails them is refused naming the
 setting, never replaced by one from `PATH`. `internal/backends/rar_unrar.py` passes a member name only inside a
@@ -1311,7 +1310,7 @@ password as its own item after `-p`. ADR
 [`investigations/alternative-rar-decompressors.md`](investigations/alternative-rar-decompressors.md).
 
 The public `format_availability()` runs the same `unrar` banner probe with no archive
-in play, whatever `rar_decompressor` says, so `archivey --version -v` runs it too;
+in play, whatever `RarOptions.decompressor` says, so `archivey --version -v` runs it too;
 `check_programs=False` skips it.
 
 **Residual.** Unless pinned, the program is found on the process `PATH` and is part of
@@ -1319,7 +1318,7 @@ the deployment's trust boundary. On Windows `shutil.which` also searches the cur
 directory, so the probe and a read can run a program from there. On POSIX it does the
 same when `PATH` holds an empty entry (a leading, trailing or doubled `:`) or `.`: an
 `./unrar` in the current directory is found as `unrar` (`internal/external/cli.py`
-`find`). A pin (`unrar_path=`, `unar_path=`) removes both. A pinned file is still
+`find`). A pin (`unrar_path=`, `RarOptions(unar_path=)`) removes both. A pinned file is still
 trusted: archivey checks what it reports, not who wrote it. `unar`'s password is
 [visible to other users](#the-unar-password-is-on-its-command-line).
 

@@ -37,7 +37,7 @@ The walk is a loop, not a recursion, and allocates nothing whose size comes from
 header field before the caller's budget allows it: an extended header is charged
 before it is read, and a sparse map is charged by its entry count before its entries
 are parsed. Strings stay ``bytes``; decoding happens in the reader, where the caller's
-``encoding=`` is known.
+``fallback_encoding`` is known.
 
 Where GNU tar 1.35 and ``tarfile`` read a malformed archive differently, this parser
 follows GNU tar, the format's official tool (design rule DR-6), unless a comment says

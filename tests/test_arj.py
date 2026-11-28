@@ -22,6 +22,7 @@ import archivey
 from archivey import (
     ArchiveFormat,
     ArchiveMember,
+    ArchiveyConfig,
     MemberType,
     detect_format,
     open_archive,
@@ -509,7 +510,9 @@ def test_a_dos_name_splits_on_backslash_after_decoding() -> None:
     # would split the character.
     stored = "表\\a.txt".encode("cp932")
     data = _archive((stored, b"alpha"))
-    with open_archive(io.BytesIO(data), encoding="cp932") as reader:
+    with open_archive(
+        io.BytesIO(data), config=ArchiveyConfig(fallback_encoding="cp932")
+    ) as reader:
         (member,) = reader.members()
     assert member.name == "表/a.txt"
     assert member.raw_name == stored

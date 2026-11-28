@@ -733,8 +733,8 @@ class FormatAvailability:
     package that would speed it up is installed. A package that ``config.formats``
     turns off, or that archivey does not use on this interpreter, is listed with its
     ``reason``, as in ``missing``. A package the ``config`` would not use even when
-    installed is left out: rapidgzip under ``use_rapidgzip`` / ``use_indexed_bzip2``
-    ``OFF``, or under ``ProcessIsolation.NONE``.
+    installed is left out: rapidgzip under ``use_rapidgzip=OFF``, or under
+    ``ProcessIsolation.NONE``.
     """
 
 
@@ -2436,11 +2436,11 @@ class ExtractionProgress:
 
 @dataclass(frozen=True)
 class SourceProgress:
-    """Progress snapshot for ``ArchiveyConfig.on_source_read``: how far archivey has
+    """Progress snapshot for ``open_archive(on_source_read=)``: how far archivey has
     read the archive's own file.
 
     A local file or stream reports about once per MiB read
-    (``ArchiveyConfig.source_read_step``), or for every read. A URL source
+    (``open_archive(source_read_step=)``), or for every read. A URL source
     (an ``fsspec.core.OpenFile``) reports before and after each range request, and over
     HTTP about once per MiB of the answer as it comes in; only then are the
     ``request_*`` fields and :attr:`requests` set.
@@ -2482,13 +2482,12 @@ class SourceProgress:
 
     read_start: int | None = None
     """For a local file or stream, where in the file the latest read started: that
-    read took the bytes from here to :attr:`position`. With
-    ``ArchiveyConfig(source_read_step=0)`` every read is reported, so these ranges are
-    every read of the file, except where archivey's own thread reads (the RAR volume
-    feeder): those reports merge, and only the latest range is kept, while
-    :attr:`bytes_read` still counts every byte. ``None`` for a URL source, whose
-    ``request_*`` fields give
-    each request's range."""
+    read took the bytes from here to :attr:`position`. With ``source_read_step=0``
+    every read is reported, so these ranges are every read of the file, except where
+    archivey's own thread reads (the RAR volume feeder): those reports merge, and only
+    the latest range is kept, while :attr:`bytes_read` still counts every byte.
+    ``None`` for a URL source, whose ``request_*`` fields give each request's
+    range."""
 
     nest_level: int = 0
     """Which archive's reads these are: 0 for the file the caller opened, 1 for an
@@ -2498,7 +2497,8 @@ class SourceProgress:
 
 
 OnSourceRead = Callable[[SourceProgress], None]
-"""The ``ArchiveyConfig.on_source_read`` callback."""
+"""The ``on_source_read=`` callback of :func:`~archivey.open_archive` and
+:func:`~archivey.open_stream`."""
 
 
 @dataclass(frozen=True)

@@ -355,7 +355,7 @@ def test_bzip2_the_accelerator_decodes_raises_only_at_the_end(tmp_path) -> None:
     for the end of the stream, as the docs say."""
     path = tmp_path / "a.tar.bz2"
     path.write_bytes(bz2.compress(_tar(), 1))
-    config = archivey.ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)
+    config = archivey.ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
     levels = _levels_while_streaming(b"", source=path, config=config)
     assert Verification.CHECKSUM not in set(levels.values())
 

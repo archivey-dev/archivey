@@ -5,7 +5,7 @@ of event:
 
 - :class:`~archivey.types.ExtractionProgress` from ``test`` and ``extract``: output bytes
   against the selected members' total.
-- :class:`~archivey.types.SourceProgress` from ``ArchiveyConfig.on_source_read``
+- :class:`~archivey.types.SourceProgress` from ``on_source_read``
   (:meth:`ProgressCallback.source_read`), for every verb: how far the archive's own file
   has been read. Before the first member (and in ``list``, ``info`` and ``cat``) it is
   a status line that appears only after :data:`STATUS_DELAY` seconds and is cleared at
@@ -70,7 +70,7 @@ class ProgressCallback:
         self._restore_log: Callable[[], None] = lambda: None
 
     def source_read(self, progress: SourceProgress) -> None:
-        """``ArchiveyConfig.on_source_read``: archivey read more of the archive's file."""
+        """``on_source_read``: archivey read more of the archive's file."""
         if progress.nest_level != 0 or self._closed:
             # A nested archive's reads are part of a member's: the member bar shows them.
             return

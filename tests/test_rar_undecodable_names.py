@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveyConfig, ExtractionPolicy, open_archive
+from archivey.config import RarOptions
 from tests.conftest import requires_binary
 from tests.test_audit_rar_iso_dir import (
     _fixture,
@@ -33,7 +34,7 @@ from tests.test_audit_rar_iso_dir import (
     _rar5_parse,
 )
 
-_UNRAR_ONLY = ArchiveyConfig(rar_decompressor="unrar")
+_UNRAR_ONLY = ArchiveyConfig(format_options=[RarOptions(decompressor="unrar")])
 _NAMES = [b"a\xffq.txt", b"a\xfeq.txt"]
 
 

@@ -19,7 +19,7 @@ hook, for the payload digests (§3).
 | Compressors | gzip, bzip2, xz, zstd, lz4, lzop, bzip3, Unix compress, none; base64 over any of them |
 | Encryption | openssl AES-256-CBC read with `password=` (PBKDF2 since 2.6.0, `EVP_BytesToKey` before; `cryptography`); gpg refused by name |
 | Checksums | The header's CRC (POSIX `cksum`), MD5 and SHA-256 of each payload's stored bytes, all that are stated, as a check over the payload's files |
-| Name encoding | The TAR's: UTF-8 first, then `encoding=`, then escaped |
+| Name encoding | The TAR's: UTF-8 first, then `fallback_encoding`, then escaped |
 | Spec | `openspec/specs/format-makeself/`; rulings in `openspec/changes/archive/2026-11-17-makeself-format/design.md` |
 
 Not here: the startup script is reported (`makeself.script`), never run; the gpg
