@@ -19,7 +19,6 @@ import threading
 from collections.abc import Callable, Container, Iterator, Sequence as ABCSequence
 from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar
-from enum import Enum
 from typing import TypeGuard, TypeVar
 
 from archivey.config import PasswordInput, PasswordProvider, PasswordRequest
@@ -49,25 +48,6 @@ _MAX_CONSECUTIVE_OWN_REPEATS = 3
 _PROVIDER_CALL: ContextVar[object | None] = ContextVar(
     "archivey_password_provider_call", default=None
 )
-
-
-class PasswordConfirmVerdict(Enum):
-    """How sure a check is that one password is the right one.
-
-    A plugin's password check returns one (:class:`archivey.formats.NeedsPassword`),
-    and the ZIP, 7z and RAR readers' confirmation probes use the same levels.
-    ``CONFIRMED`` needs evidence at least as strong as a CRC-32 over 4 or more decoded
-    bytes (a wrong password passes it no more often than 1 time in 2**32), or a
-    cryptographic check of that strength. Anything weaker (a magic number, padding, a
-    CRC over fewer bytes) may reject a password, and otherwise is ``INCONCLUSIVE``.
-    """
-
-    #: This password is not the one: try the next.
-    REJECTED = "rejected"
-    #: The check proves this password.
-    CONFIRMED = "confirmed"
-    #: This password passed every check run so far, and could still be wrong.
-    INCONCLUSIVE = "inconclusive"
 
 
 class _PasswordCandidatesExhausted(EncryptionError):

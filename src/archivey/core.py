@@ -174,6 +174,11 @@ if TYPE_CHECKING:
 #: The names this module's ``__all__`` listed until 0.6.0 that it does not define, and
 #: the module each is imported from now. ``__getattr__`` below still serves them, with
 #: a ``DeprecationWarning``, for the 0.6 series (DR-12a); 0.7.0 deletes this table.
+#: Three more left ``__all__`` and are not here: ``ArchiveyConfig``,
+#: ``DEFAULT_ARCHIVEY_CONFIG`` and ``FormatInfo``. This module's signatures name them,
+#: so they stay bound here (``typing.get_type_hints`` reads the module's globals) and
+#: ``__getattr__`` never sees them; they import with no warning through 0.6, and
+#: ``tests/test_root_tiers.py`` holds them there.
 _MOVED_IN_0_6: dict[str, str] = {
     "AcceleratorMode": "archivey.config",
     "ExtractionLimits": "archivey.config",

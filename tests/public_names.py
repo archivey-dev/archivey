@@ -9,6 +9,7 @@ import ast
 import importlib
 from collections.abc import Iterator
 from pathlib import Path
+from types import FunctionType
 
 import archivey
 
@@ -100,3 +101,54 @@ def foreign_private_reads(path: Path) -> list[str]:
         ),
         key=lambda hit: int(hit.split(" ")[0].rsplit(":", 1)[1]),
     )
+
+
+def _public_modules() -> tuple[str, ...]:
+    """``PUBLIC_MODULES`` from ``scripts/checks/api_surface.py``: the root and every
+    public submodule, the modules whose ``__all__`` carries the compatibility promise."""
+    script = (
+        Path(__file__).resolve().parents[1] / "scripts" / "checks" / "api_surface.py"
+    )
+    tree = ast.parse(script.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "PUBLIC_MODULES"
+        ):
+            return tuple(ast.literal_eval(node.value))
+    raise AssertionError("scripts/checks/api_surface.py defines no PUBLIC_MODULES")
+
+
+def public_objects() -> dict[str, object]:
+    """Every public name, one entry per object, keyed ``module.name``.
+
+    A name is public when the root's or a public submodule's ``__all__`` lists it
+    (the root docstring's two tiers). An object listed by several modules (a root
+    name its submodule lists too) is keyed by the first module, root first, so a guard
+    that sweeps this checks each object once. A module whose optional dependency is
+    missing (``archivey.fsspec``) is skipped.
+    """
+    return {spellings[0]: obj for obj, spellings in _by_object()}
+
+
+def public_spellings() -> list[list[str]]:
+    """Every ``module.name`` spelling of each public object, root first."""
+    return [spellings for _, spellings in _by_object()]
+
+
+def _by_object() -> list[tuple[object, list[str]]]:
+    # A class or function is the same object under each spelling. Any other value (a
+    # constant, an alias) is matched by its bare name, since two unrelated constants
+    # can be equal and share an ``id``.
+    groups: dict[object, tuple[object, list[str]]] = {}
+    for module_name in _public_modules():
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue
+        for name in getattr(module, "__all__", ()):
+            obj = getattr(module, name)
+            key = id(obj) if isinstance(obj, (type, FunctionType)) else name
+            groups.setdefault(key, (obj, []))[1].append(f"{module_name}.{name}")
+    return list(groups.values())

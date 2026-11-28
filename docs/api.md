@@ -103,6 +103,7 @@ See [Configuration](opening.md#configuration), [Passwords](opening.md#passwords)
 ::: archivey.ArchiveyConfig
 ::: archivey.config.DEFAULT_ARCHIVEY_CONFIG
 ::: archivey.types.SourceProgress
+::: archivey.types.OnSourceRead
 ::: archivey.FormatPolicy
 ::: archivey.config.ExtractionLimits
 ::: archivey.config.ListingLimits

@@ -530,7 +530,7 @@ walked the directory runs the walk.
 ### Requirement: ArchiveMember carries its verification level
 
 `ArchiveMember` SHALL expose `verified` and `verifiable`, of type
-`archivey.Verification`, with the meanings the `compressed-streams` verification
+`archivey.types.Verification`, with the meanings the `compressed-streams` verification
 requirement gives them, applied to this entry's data in this archive.
 
 - From the listing, a member that is not encrypted SHALL start at `verified ==

@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from typing import BinaryIO, TypeVar
 
 from archivey.internal.overrides import override
-from archivey.internal.password import PasswordConfirmVerdict, _PasswordCandidates
+from archivey.internal.password import _PasswordCandidates
 from archivey.internal.streams.codecs import Codec
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools.base import DelegatingStream
@@ -50,7 +50,7 @@ from archivey.internal.streams.verification import (
     ask_verification_proofs,
 )
 from archivey.internal.streams.verify import ask_digest_intact
-from archivey.types import ArchiveMember
+from archivey.types import ArchiveMember, PasswordConfirmVerdict
 
 # Codecs measured to fail on random input, which is what a wrong key decrypts to
 # (``tests/test_password_confirm.py`` re-measures every one). A unit where one of them
