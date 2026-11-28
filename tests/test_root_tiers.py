@@ -370,12 +370,14 @@ def test_the_repository_uses_only_the_new_spellings() -> None:
 
 def test_the_api_page_keeps_each_moved_name_s_old_anchor() -> None:
     """A link to ``api/#archivey.<Name>`` from before 0.6 still lands on the entry: the
-    page keeps an anchor with the old id beside each moved name's new heading."""
+    page keeps an anchor with the old id beside each moved name's new heading. Which
+    names have an entry at all is ``test_public_api.py``'s check."""
     page = (REPO / "docs" / "api.md").read_text(encoding="utf-8")
     missing = sorted(
         name
         for name, module in MOVED.items()
-        if name not in EXPERIMENTAL_MOVED
+        if name not in EXPERIMENTAL_MOVED  # never served under the old spelling
+        if f"\n::: {module}.{name}\n" in page
         if f'<span id="archivey.{name}"></span>\n\n::: {module}.{name}\n' not in page
     )
     assert missing == []
