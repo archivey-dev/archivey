@@ -322,4 +322,5 @@ fuzzes the image walk and block reads.
   and squashfs-tools.
 - The kernel's `lib/lzo/lzo1x_decompress_safe.c`, which archivey's LZO decoder follows,
   and liblzo2 2.10's `lzo1x_decompress_safe`, whose end-marker rule it takes.
-- `openspec/changes/plugin-api/tasks.md` §3b, the reader's history as a plugin.
+- `openspec/changes/archive/2026-11-27-plugin-api/tasks.md` §3b, the reader's history as
+  a plugin.

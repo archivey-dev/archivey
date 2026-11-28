@@ -1,7 +1,8 @@
 """Compare archivey's DMG reader with 7-Zip on real disk images (DMG plan, B.10).
 
 The images are third-party apps from GitHub release pages, so they are not committed.
-The URL list is ``openspec/changes/dmg-reader/resources/dmgurls.txt``. Each URL is
+The URL list is
+``openspec/changes/archive/2026-11-27-dmg-reader/resources/dmgurls.txt``. Each URL is
 downloaded once into the cache directory; then each image is listed and extracted by
 archivey and by 7-Zip, and the files are compared by SHA-256, with the differences the
 plan accepts (design §9.3):

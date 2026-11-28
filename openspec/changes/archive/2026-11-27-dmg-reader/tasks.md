@@ -1,3 +1,9 @@
+> **Archived 2026-11-27.** Every code task is done. Still open: C.1, the user docs
+> (`docs/formats.md` still says a `.dmg` is recognised and refused); it is tracked
+> internally with the formats page rework. Two deltas were brought up to date with `main`
+> before the archive: the `pipe=True` rename in `backend-registry` and the four plugin
+> probe rows in the `format-detection` magic table.
+
 ## A0. Evaluate the lzfse package
 
 - [x] A0.1 Investigation PR: wheels, licence, output cap, raw LZVN, fuzz in a child
@@ -110,7 +116,7 @@ Ruled 2026-11-21 (A0.2): the fast path is archivey's own LZFSE and LZVN kernel i
 
 ## On archive
 
-- [ ] Z.1 The `testing-contract` delta in this change moves the UDIF-refusal examples
+- [x] Z.1 The `testing-contract` delta in this change moves the UDIF-refusal examples
   (auto-detect open target, detection-then-bounded-read matrix) to a segmented UDIF
   image (`segment count` 2), which stays refused with `UnsupportedFeatureError`, and
   adds an unencrypted UDIF image that opens and reads its first member. Apply it on

@@ -1,3 +1,8 @@
+> **Archived 2026-11-27.** The first version of this change was archived on 2026-11-07
+> (`archive/2026-11-07-nested-archives`); this copy carried the shared nest budget
+> (design.md §8), which has landed. Its spec delta was not applied: `format-plugins` on
+> `main` already states the budget in newer words, so the archive skipped the specs.
+
 ## 1. Hook
 
 - [x] 1.1 `ForwardStream.take(n)` and its `_TakenBytes` stream.
@@ -12,4 +17,6 @@
 
 ## 2. First user
 
-- [ ] 2.1 The deb reader (its own pull request).
+- [x] 2.1 The deb reader (its own pull request): `deb_reader.py`, `tests/test_deb.py`.
+- [x] 3. The shared budget for the nest (design.md §8): `internal/nesting.py`,
+      `tests/test_nest_limits.py`.
