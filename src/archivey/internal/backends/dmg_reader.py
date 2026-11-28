@@ -1,7 +1,8 @@
 """Apple disk images (``.dmg``): UDIF images holding HFS+ or HFSX volumes, written
 against ``archivey.formats``.
 
-Three layers, one module each (design ``openspec/changes/dmg-reader``):
+Three layers, one module each (design
+``openspec/changes/archive/2026-11-27-dmg-reader``):
 
 1. :mod:`.udif`: the ``koly`` block, the property list and the run tables, and the
    virtual disk they describe, decoded run by run on demand.
@@ -45,6 +46,7 @@ from archivey.exceptions import (
 from archivey.formats import (
     IndexedFormatHandler,
     IndexedReader,
+    Magic,
     MemberData,
     MemberRecord,
     NeedsPassword,
@@ -62,13 +64,11 @@ from archivey.internal.backends import (
     hfsplus,
 )
 from archivey.internal.backends.udif import (
-    MAGIC,
-    TRAILER,
+    KOLY_SIGNATURE,
     UdifImage,
     UdifSource,
     crc32_value,
 )
-from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.listing_limits import str_retained_bytes
 from archivey.internal.overrides import override
 from archivey.internal.streams.callers_source import from_source_callback
@@ -77,9 +77,7 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveInfoExtra,
     ArchiveMember,
-    MagicSignature,
     MemberType,
-    TrailerSignature,
 )
 
 if TYPE_CHECKING:
@@ -1747,9 +1745,11 @@ class DmgHandler(IndexedFormatHandler):
         "its run tables are at the end of the image and the filesystem metadata can "
         "be anywhere in it"
     )
-    # The ``koly`` and encryption signatures go to ``register_builtin_format``: the
-    # trailers are past what a handler's ``magic`` can say.
-    magic = ()
+    # A ``koly`` block or an encrypted (v2) header at the start. The usual ``koly``
+    # block ends the image and the v1 encrypted image ends with ``cdsaencr``: those
+    # trailers are past what a handler's ``magic`` can say, so core's format table
+    # (``internal/format_table.py``) declares them.
+    magic = (Magic(0, KOLY_SIGNATURE), Magic(0, ENCRYPTED_V2))
     uses_encoding = False
     supports_password = True
 
@@ -1761,13 +1761,3 @@ class DmgHandler(IndexedFormatHandler):
             return _open_encrypted(source, context)
         _refuse_version_1(source)
         return DmgReader(source, context)
-
-
-DmgReadBackend = register_builtin_format(
-    DmgHandler,
-    MAGIC=(*MAGIC, MagicSignature(0, ENCRYPTED_V2, ArchiveFormat.DMG)),
-    TRAILER=(
-        *TRAILER,
-        TrailerSignature(len(ENCRYPTED_V1), ENCRYPTED_V1, ArchiveFormat.DMG),
-    ),
-)

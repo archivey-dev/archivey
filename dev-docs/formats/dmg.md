@@ -2,7 +2,7 @@
 
 Current maintainer truth for Apple's disk images. archivey reads UDIF images that hold
 HFS+, HFSX or APFS volumes, encrypted ones (`hdiutil -encryption`) included with their
-password; the plan is `openspec/changes/dmg-reader/`. Detection's
+password; the plan is `openspec/changes/archive/2026-11-27-dmg-reader/`. Detection's
 trailer step is on [`topics/detection.md`](../topics/detection.md) §2.4. This page is
 the format.
 
@@ -14,7 +14,7 @@ the format.
 | Write | **Not shipped** |
 | Source | Seekable only (`required_source` is `SEEKABLE`): the run tables are at the end of the image and the filesystem metadata anywhere in the disk. A pipe is refused, or spooled by the caller |
 | Listing cost | The open reads the `koly` block, the property list and its run tables, the partition map, a 4 KiB probe of each partition, each HFS+ volume header (plus two 512-byte journal reads) and each APFS container's block 0; the first listing walks each HFS+ catalog twice and the attributes tree once, and for APFS scans the checkpoint ring, reads the object maps whole and walks each filesystem tree once |
-| Core dependencies | None. ADC, LZFSE and LZVN are decoded in Python, LZFSE and LZVN by the `archivey-codecs` kernels when that package is installed (in the decoder child under `NATIVE_DECODERS`; same bytes and errors); zlib, bzip2 and xz through `ReaderContext.decompress`. An encrypted image needs `cryptography` (the `[recommended]` extra) |
+| Core dependencies | None. ADC, LZFSE and LZVN are decoded in Python, LZFSE and LZVN by the `archivey-speedups` kernels when that package is installed (in the decoder child under `NATIVE_DECODERS`; same bytes and errors); zlib, bzip2 and xz through `ReaderContext.decompress`. An encrypted image needs `cryptography` (the `[recommended]` extra) |
 | Refuses | Version 1 encrypted images (`cdsaencr`), encrypted images locked only by a certificate or keychain key, encrypted read-write (raw disk) images, segmented images, images with no property list, HFS wrappers, HFS+ volumes whose journal may hold changes, APFS Fusion and prerelease-layout containers, encrypted and sealed APFS volumes, unknown run types (at read), directory hard links (at read) |
 | `format=` | `format="dmg"` opens a file as UDIF; one with no `koly` block is `CorruptionError` |
 
@@ -405,8 +405,9 @@ one encrypted image.
 
 ## 6. Decisions
 
-The plan's decisions D1 to D8 are in `openspec/changes/dmg-reader/design.md` §2.
-Choices made in Part B that the plan left open:
+The plan's decisions D1 to D8 are in
+`openspec/changes/archive/2026-11-27-dmg-reader/design.md` §2. Choices made in Part B
+that the plan left open:
 
 - **One generic diagnostic for structure disagreements.**
   `ARCHIVE_STRUCTURE_INCONSISTENT` with `ArchiveStructureContext.structure` naming
@@ -523,5 +524,5 @@ after a merge that touches the DMG code; the table is its job summary.
 - 7-Zip `CPP/7zip/Archive/DmgHandler.cpp`, `HfsHandler.cpp`, `ApfsHandler.cpp`,
   `ApmHandler.cpp`, `GptHandler.cpp`.
 - UEFI 2.10 §5 (GPT).
-- The plan: `openspec/changes/dmg-reader/`.
+- The plan: `openspec/changes/archive/2026-11-27-dmg-reader/`.
 - User docs: `docs/formats.md` §Disk images.

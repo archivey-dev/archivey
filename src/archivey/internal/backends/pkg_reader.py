@@ -53,7 +53,6 @@ from archivey.internal.backends.xar_reader import (
     _Location,
 )
 from archivey.internal.filters import collision_key, extracted_segments
-from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
 from archivey.terminal import quoted
 from archivey.types import (
@@ -293,8 +292,3 @@ class PkgHandler(IndexedFormatHandler):
     @override
     def open(self, source: ReaderSource, context: ReaderContext) -> PkgReader:
         return PkgReader(source, context)
-
-
-PkgReadBackend = register_builtin_format(
-    PkgHandler, MAGIC_REFINEMENTS=((ArchiveFormat.XAR, is_package),)
-)

@@ -1,4 +1,4 @@
-"""The ARM64 and RISC-V branch filters in Python, as ``archivey_codecs.filters``.
+"""The ARM64 and RISC-V branch filters in Python, as ``archivey_speedups.filters``.
 
 The filters themselves are :mod:`archivey.internal.streams.codecs.arm64_filter` and
 :mod:`archivey.internal.streams.codecs.riscv_filter`; a decoder here runs one over a

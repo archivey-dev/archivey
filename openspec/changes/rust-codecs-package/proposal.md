@@ -12,15 +12,15 @@ use too.
 
 ## What Changes
 
-- New distribution `archivey-codecs` in `packages/archivey-codecs/`, independent
-  version, own changelog and tag namespace (`codecs-v*`), its own publish workflow.
+- New distribution `archivey-speedups` in `packages/archivey-speedups/`, independent
+  version, own changelog and tag namespace (`speedups-v*`), its own publish workflow.
 - Its public Python API follows the standard library: `hashlib`-style hash objects,
   `LZMADecompressor`-style streaming decoders, one-shot block decoders, a
   `CodecError` family, a `KERNELS` revision table, type stubs.
 - archivey gains `internal/native.py` dispatch (from #1416) with per-kernel minimum
   revisions and a Python fallback at every call site.
-- New public names in archivey: the `[codecs]` extra and
-  `OptionalLibrary.ARCHIVEY_CODECS`. Both need the maintainer's ruling.
+- New public names in archivey: the `[speedups]` extra and
+  `OptionalLibrary.ARCHIVEY_SPEEDUPS`. Both need the maintainer's ruling.
 - New CI: a wheel matrix built with `PyO3/maturin-action`, a per-wheel test job, parity
   tests on PRs that touch a kernel or its Python twin, and a post-merge and nightly
   full-suite job with the kernels on.
@@ -29,12 +29,12 @@ use too.
 
 ### New Capabilities
 
-- `codecs-package`: the `archivey-codecs` distribution, its API, versioning, wheels
+- `speedups-package`: the `archivey-speedups` distribution, its API, versioning, wheels
   and release.
 
 ### Modified Capabilities
 
-- `packaging-and-extras`: the `[codecs]` extra and the accelerator's opt-out.
+- `packaging-and-extras`: the `[speedups]` extra and the accelerator's opt-out.
 
 ## Impact
 
@@ -49,6 +49,6 @@ use too.
   no child can start, archivey chooses a decoder as if the package were excluded.
 - Maintenance: a fix to a twinned Python decoder is made in Rust in the same PR (the
   "change it twice" rule, enforced by the parity job).
-- Releases: davi creates `codecs-v*` releases in the GitHub web UI, unticking "Set as
+- Releases: davi creates `speedups-v*` releases in the GitHub web UI, unticking "Set as
   latest release". archivey releases are unchanged.
-- One-time setup: PyPI and TestPyPI pending publishers for `archivey-codecs`.
+- One-time setup: PyPI and TestPyPI pending publishers for `archivey-speedups`.

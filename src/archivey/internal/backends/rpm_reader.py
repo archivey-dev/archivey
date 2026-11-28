@@ -47,8 +47,8 @@ names (MD5 when absent): it is checked as the member is read. Signatures are rep
 the archive info, not checked.
 
 The reader is written against ``archivey.formats`` and archivey's public names only,
-as a format added from outside would be; ``register_builtin_format`` is the one
-internal name it uses (``tests/test_rpm.py`` checks). Handbook page:
+as a format added from outside would be (``tests/test_plugin_modules_use_public_api.py``
+checks); core's format table registers its handler. Handbook page:
 ``dev-docs/formats/rpm.md``.
 """
 
@@ -57,9 +57,10 @@ from __future__ import annotations
 import hashlib
 import io
 import struct
+import typing
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -83,8 +84,6 @@ from archivey.formats import (
     SequentialReader,
     unix_member_type,
 )
-from archivey.internal.format_adapter import register_builtin_format
-from archivey.internal.overrides import override
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -93,6 +92,13 @@ from archivey.types import (
     MemberType,
     StreamFormat,
 )
+
+# ``typing.override`` (Python 3.12) where there is one. A format written outside
+# archivey carries the same lines, so the module imports no internal name for it.
+if TYPE_CHECKING:
+    from typing_extensions import override
+else:
+    override = getattr(typing, "override", lambda method: method)
 
 LEAD_MAGIC = b"\xed\xab\xee\xdb"
 LEAD_SIZE = 96
@@ -1073,6 +1079,3 @@ class RpmHandler(SequentialFormatHandler):
     @override
     def open_sequential(self, context: ReaderContext) -> RpmReader:
         return RpmReader(context)
-
-
-RpmReadBackend = register_builtin_format(RpmHandler)

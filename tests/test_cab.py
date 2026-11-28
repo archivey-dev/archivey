@@ -104,15 +104,15 @@ CASES = {"stored": CabFolder("none"), "mszip": CabFolder("mszip"), **LZX_CASES}
     params=[
         "python",
         pytest.param(
-            "archivey-codecs",
+            "archivey-speedups",
             marks=pytest.mark.skipif(
-                not deps.archivey_codecs.available(), reason="needs archivey-codecs"
+                not deps.archivey_speedups.available(), reason="needs archivey-speedups"
             ),
         ),
     ],
 )
 def lzx_kernel(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
-    """Every test with each LZX decoder: archivey's own, and archivey-codecs'."""
+    """Every test with each LZX decoder: archivey's own, and archivey-speedups'."""
     if request.param == "python":
         use_python_twin(monkeypatch, "lzx")
     return request.param

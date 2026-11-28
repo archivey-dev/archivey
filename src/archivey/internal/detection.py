@@ -133,6 +133,12 @@ from archivey.internal.diagnostics_collector import (
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.logs import detection as logger
 from archivey.internal.overrides import override
+from archivey.internal.probe_verdict import (
+    PROBE_REJECTED,
+    ProbeVerdict,
+    graded,
+    is_match,
+)
 from archivey.internal.registry import BackendRegistry, ContentProbe, get_registry
 from archivey.internal.remote import (
     emit_source_change_undetectable,
@@ -638,7 +644,12 @@ class _InnerCandidates:
         self, head: bytes, *, named: ArchiveFormat | None, always_probe: bool
     ) -> ArchiveFormat | None:
         """The container the decoded ``head`` shows: magic first, then a header that
-        checks itself, then a probe."""
+        checks itself, then a probe. A probe's ``GUESS`` is not enough to switch from
+        the wrapper archivey is sure of, unless the name raises it to ``PROBABLE``.
+
+        No inner container's probe answers ``GUESS`` today (binary CPIO answers
+        ``PROBABLE``), so this rule is untested on real plugins. Revisit it when one
+        does, ours or a third party's."""
         for sig in self.magic:
             if head[sig.offset : sig.offset + len(sig.magic)] == sig.magic:
                 return sig.format
@@ -650,7 +661,9 @@ class _InnerCandidates:
         # says it is that container (the rule and its scope are on _probe_named).
         # Prefix only: the decoded head is all there is.
         for fmt, probe in self.probes:
-            if (always_probe or fmt == named) and head and probe(head):
+            if not (always_probe or fmt == named) or not head:
+                continue
+            if graded(probe(head), named=fmt == named) is DetectionConfidence.PROBABLE:
                 return fmt
         return None
 
@@ -678,11 +691,14 @@ def _inner_candidates(
         for f, c in registry.header_checks()
         if f.container is not ContainerFormat.RAW_STREAM
     ]
-    # A container's probes only: a codec's probe names no container to find here.
+    # A container's probes only, and only of a container read inside a stream (TAR,
+    # CPIO, a sequential plugin): a codec's probe names no container to find here, and
+    # an indexed format's would name a pair nothing reads.
+    pair_bases = set(registry.stream_pair_bases())
     probes = [
         (f, p)
         for f, p in registry.content_probes()
-        if f.container is not ContainerFormat.RAW_STREAM
+        if f.container is not ContainerFormat.RAW_STREAM and f in pair_bases
     ]
     kept_magic = [sig for sig in inner_magic if kept(sig.format.container)]
     kept_checks = [(f, c) for f, c in header_checks if kept(f.container)]
@@ -919,6 +935,7 @@ def _measure_within_completion_window(
 
 def _probe_completes(
     probe: ContentProbe,
+    verdict: ProbeVerdict,
     data: bytes,
     length: int | None,
     read_at: Callable[[int, int], bytes | None],
@@ -926,8 +943,10 @@ def _probe_completes(
     workspace: PrefixWorkspace,
     *,
     stream_format: str,
-) -> bool:
-    """Whether a probe that accepted the prefix still accepts the whole source.
+) -> ProbeVerdict:
+    """The verdict of a probe that matched the prefix (``verdict``), once it has seen
+    the whole source: the whole-source answer when the probe runs again on it, else
+    the window's ``verdict``.
 
     A probe handed only the detection window cannot tell a stream that goes on from one
     that turns invalid past the window: text that happens to decode for 4 KiB is a
@@ -953,25 +972,26 @@ def _probe_completes(
         if _record_tier_limit(
             workspace, "probe_completion", enabled=budget.completion_window_bytes > 0
         ):
-            return True
+            return verdict
         length = _measure_within_completion_window(data, workspace)
     if length is None or length <= len(data):
         # Unknown length: nothing to complete against. At or under the window: the
         # probe already had the whole source and ran its completeness check.
-        return True
+        return verdict
     # Off by policy (``FAST``): say so, since the hit stands on the window alone.
     if _record_tier_limit(
         workspace, "probe_completion", enabled=budget.completion_window_bytes > 0
     ):
-        return True
+        return verdict
     if length > min(budget.completion_window_bytes, workspace.read_ceiling):
         # A size bound, not a disabled tier: nothing is recorded.
-        return True
+        return verdict
     if not _decode_allowance_covers(workspace, length, "probe_completion"):
-        return True
+        return verdict
     whole = workspace.peek_prefix(length)
     workspace.charge_decode(input_bytes=len(whole))
     try:
+        # The probe has seen more: its whole-source answer stands, weaker or stronger.
         return probe(
             whole,
             source_length=length,
@@ -993,7 +1013,7 @@ def _probe_completes(
             "decode the whole source to confirm its format",
             exc,
         )
-        return True
+        return verdict
 
 
 # Short aliases that name a probe-only codec besides the one the extension map gives.
@@ -1066,7 +1086,9 @@ def _resolve_single_file_or_tar(
     A ``RAW_STREAM`` compressor (``.gz``/``.bz2``/``.xz``/…) is probed for an inner
     container (:func:`_probe_inner_container`); on a hit it becomes ``(TAR, <stream>)``
     (e.g. ``TAR_GZ``), or ``(<plugin container>, <stream>)``, reported as ``PROBABLE`` /
-    ``content_probe`` (the inner test is structural, weaker than an exact magic).
+    ``content_probe`` (the inner test is structural, weaker than an exact magic). A
+    container probe's ``GUESS`` the extension does not raise is no hit: it stays the
+    compressor it surely is.
     An inner-container upgrade is corroboration for a probe hit — two independent signals
     had to hold — so ``corroborated`` is set. Otherwise a matching extension (same stream
     format) is the corroborating signal. ``peek_more`` gives the probe a bounded,
@@ -2454,7 +2476,7 @@ def _content_probes(
         # up to 1 MiB, for Brotli's chain decode).
         workspace.charge_decode(input_bytes=len(data))
         try:
-            hit = probe(
+            verdict = probe(
                 data,
                 source_length=length,
                 read_at=read_at,
@@ -2476,17 +2498,21 @@ def _content_probes(
                 f"try the {probe_fmt} content probe",
                 exc,
             )
-            hit = False
-        if hit and _probe_completes(
-            probe,
-            data,
-            length,
-            read_at,
-            charge_decode,
-            workspace,
-            stream_format=_stream_name(probe_fmt),
-        ):
-            confidence = DetectionConfidence.PROBABLE
+            verdict = PROBE_REJECTED
+        if is_match(verdict):
+            verdict = _probe_completes(
+                probe,
+                verdict,
+                data,
+                length,
+                read_at,
+                charge_decode,
+                workspace,
+                stream_format=_stream_name(probe_fmt),
+            )
+        if is_match(verdict):
+            # The probe grades its match; core adds that the extension agrees.
+            confidence = graded(verdict, named=_probe_named(probe_fmt, ext_match))
             if probe_fmt.stream is StreamFormat.BROTLI:
                 confidence = _brotli_probe_confidence(data, ext_match)
             info = _resolve_single_file_or_tar(

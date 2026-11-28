@@ -23,6 +23,7 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
+    DetectionConfidence,
     FormatDetectionError,
     ProcessIsolation,
     detect_format,
@@ -37,6 +38,7 @@ from archivey.internal.detection_workspace import (
     DETECTION_LIMIT,
     PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE,
 )
+from archivey.internal.probe_verdict import PROBE_MATCH
 from archivey.internal.streams.codecs import BrotliCodec
 from archivey.internal.streams.codecs.brotli_codec import _ForwardProbeSample
 from archivey.internal.streams.codecs.brotli_framing import (
@@ -71,7 +73,7 @@ def _read_at(blob: bytes):
     return read_at
 
 
-def _probe(blob: bytes, **kwargs) -> bool:
+def _probe(blob: bytes, **kwargs) -> DetectionConfidence:
     return BrotliCodec().content_probe(
         blob[:DETECTION_LIMIT],
         source_length=len(blob),
@@ -171,7 +173,7 @@ def test_data_that_fails_past_the_window_is_not_brotli(tmp_path: Path, make) -> 
     compressed_at = _passes_the_earlier_checks(blob)
     assert compressed_at + CHAIN_DECODE_MARGIN < PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE
 
-    assert _probe(blob) is False
+    assert _probe(blob) is DetectionConfidence.REJECTED
     # Detection keeps only the extension guess; the decode was charged.
     info = _detect_named(tmp_path, blob)
     assert info.detected_by == "extension"
@@ -191,7 +193,7 @@ def test_random_blobs_over_the_completion_window_are_not_claimed() -> None:
     claimed = 0
     for seed in range(400):
         blob = random.Random(seed).randbytes(80 * 1024)
-        claimed += _probe(blob)
+        claimed += _probe(blob) is not DetectionConfidence.REJECTED
     assert claimed == 0
 
 
@@ -215,7 +217,7 @@ def test_real_stream_with_a_long_uncompressed_first_block_is_kept(
         charged.append(n)
         return True
 
-    assert _probe(data, charge_decode=charge) is True
+    assert _probe(data, charge_decode=charge) is PROBE_MATCH
     # The decode ran, and reached past the compressed block's header.
     assert charged == [min(compressed_at + CHAIN_DECODE_MARGIN, len(data))]
     info = _detect_named(tmp_path, data)
@@ -228,7 +230,7 @@ def test_real_stream_with_a_long_metadata_first_block_is_kept(tmp_path: Path) ->
     data = _metadata_first_stream(200)
     assert parse_metablock(data).outcome is BrotliBlock.METADATA
     _passes_the_earlier_checks(data)
-    assert _probe(data) is True
+    assert _probe(data) is PROBE_MATCH
     info = _detect_named(tmp_path, data)
     assert info.format == ArchiveFormat.BROTLI
     assert info.detected_by == "content_probe"
@@ -244,7 +246,7 @@ def test_compressed_first_stream_decodes_nothing_more() -> None:
     def charge(n: int) -> bool:
         raise AssertionError("a compressed first block needs no chain decode")
 
-    assert _probe(data, charge_decode=charge) is True
+    assert _probe(data, charge_decode=charge) is PROBE_MATCH
 
 
 # --- where the check cannot run: the walk's verdict stands ------------------------------
@@ -275,7 +277,7 @@ def test_compressed_block_past_the_reach_is_not_decoded(
         BrotliCodec().content_probe(
             blob[:DETECTION_LIMIT], source_length=len(blob), read_at=read_at
         )
-        is True
+        is PROBE_MATCH
     )
     # Cheap header seeks still run, but the larger decode has its own input cap.
     info = _detect_named(tmp_path, blob)
@@ -288,7 +290,7 @@ def test_compressed_block_past_the_reach_is_not_decoded(
 @requires("brotli")
 def test_declined_charge_or_read_keeps_the_claim() -> None:
     blob = _claimed_random_blob()
-    assert _probe(blob, charge_decode=lambda n: False) is True
+    assert _probe(blob, charge_decode=lambda n: False) is PROBE_MATCH
 
     def read_at(offset: int, length: int) -> bytes | None:
         # Header reads only: the decode's long read is declined.
@@ -298,7 +300,7 @@ def test_declined_charge_or_read_keeps_the_claim() -> None:
         BrotliCodec().content_probe(
             blob[:DETECTION_LIMIT], source_length=len(blob), read_at=read_at
         )
-        is True
+        is PROBE_MATCH
     )
 
 
@@ -331,7 +333,7 @@ def test_link_cap_residual_is_still_claimed() -> None:
     blob = brotli_link_cap_residual()
     walk = walk_chain(blob[:DETECTION_LIMIT], len(blob), read_at=_read_at(blob))
     assert not walk.proves_invalid and walk.compressed_at is None
-    assert _probe(blob) is True
+    assert _probe(blob) is PROBE_MATCH
 
 
 @requires("brotli")

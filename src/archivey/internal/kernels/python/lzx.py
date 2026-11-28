@@ -1,4 +1,4 @@
-"""LZX in Python, as ``archivey_codecs.lzx``: one LZX stream (a CAB folder) with the
+"""LZX in Python, as ``archivey_speedups.lzx``: one LZX stream (a CAB folder) with the
 :class:`lzma.LZMADecompressor` interface, plus ``flush()`` and ``set_output_size()``.
 
 The decoder is :class:`archivey.internal.streams.codecs.lzx_decoder.LzxDecoder` in push
@@ -130,6 +130,9 @@ class Decompressor:
             self._d.feed(data)
             self._starved = False
         return self._run(max_length)
+
+    def close(self) -> None:
+        """Nothing to give back: this decoder runs in this process."""
 
     def flush(self, max_length: int = -1) -> bytes:
         """Mark the end of the input and return the rest of the output, at most

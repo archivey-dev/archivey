@@ -1,9 +1,9 @@
-"""archivey-codecs' decoding kernels in a decoder child, for ``NATIVE_DECODERS``.
+"""archivey-speedups' decoding kernels in a decoder child, for ``NATIVE_DECODERS``.
 
 ``ProcessIsolation.NATIVE_DECODERS`` promises that no native decoder runs in this
 process, so under it the decoding kernels (ARM64, RISC-V, LZW, LZO1X, LZX, LZFSE,
 LZVN) run in archivey's decoder child, as zlib and lzma do (openspec change ``rust-codecs-package``,
-question 13). :func:`open_kernels` gives a stand-in for the ``archivey_codecs`` module
+question 13). :func:`open_kernels` gives a stand-in for the ``archivey_speedups`` module
 whose kernel objects each live in a child of their own (``decoder_worker._Codecs``):
 the wrappers in :mod:`archivey.internal.kernels.rust` use it as they use the module, so the
 bytes and errors are the same as in-process. The package is never imported here.
@@ -35,8 +35,8 @@ from archivey.internal.streams.codecs.decoder_child import (
 from archivey.internal.streams.codecs.isolated import _ChildProxy
 from archivey.types import OptionalLibrary
 
-# The decoder worker's name for archivey-codecs (``decoder_worker.LOADERS``).
-_CODEC = "archivey_codecs"
+# The decoder worker's name for archivey-speedups (``decoder_worker.LOADERS``).
+_CODEC = "archivey_speedups"
 
 
 class ChildPanic(Exception):
@@ -44,36 +44,36 @@ class ChildPanic(Exception):
 
 
 class ChildCodecError(ValueError):
-    """Stand-in for ``archivey_codecs.CodecError`` raised in the decoder child."""
+    """Stand-in for ``archivey_speedups.CodecError`` raised in the decoder child."""
 
 
 class ChildCorruptDataError(ChildCodecError):
-    """Stand-in for ``archivey_codecs.CorruptDataError``."""
+    """Stand-in for ``archivey_speedups.CorruptDataError``."""
 
 
 class ChildTruncatedDataError(ChildCodecError):
-    """Stand-in for ``archivey_codecs.TruncatedDataError``."""
+    """Stand-in for ``archivey_speedups.TruncatedDataError``."""
 
 
 class ChildUnsupportedDataError(ChildCodecError):
-    """Stand-in for ``archivey_codecs.UnsupportedDataError``."""
+    """Stand-in for ``archivey_speedups.UnsupportedDataError``."""
 
 
 _ERRORS: dict[tuple[str, str], type[Exception]] = {
-    # ``_codecs`` is the ``__module__`` PyO3 gives the exceptions the extension module
-    # creates (``create_exception!(_codecs, ...)`` in lib.rs), not the package's name;
+    # ``_speedups`` is the ``__module__`` PyO3 gives the exceptions the extension module
+    # creates (``create_exception!(_speedups, ...)`` in lib.rs), not the package's name;
     # ``test_the_packages_errors_have_the_module_the_child_matches`` checks it.
-    ("_codecs", "CodecError"): ChildCodecError,
-    ("_codecs", "CorruptDataError"): ChildCorruptDataError,
-    ("_codecs", "TruncatedDataError"): ChildTruncatedDataError,
-    ("_codecs", "UnsupportedDataError"): ChildUnsupportedDataError,
+    ("_speedups", "CodecError"): ChildCodecError,
+    ("_speedups", "CorruptDataError"): ChildCorruptDataError,
+    ("_speedups", "TruncatedDataError"): ChildTruncatedDataError,
+    ("_speedups", "UnsupportedDataError"): ChildUnsupportedDataError,
     # The worker runs as ``__main__``, so the module is not matched.
     ("*", "KernelPanic"): ChildPanic,
 }
 
 
 def _start() -> DecoderChild:
-    """A decoder child holding archivey-codecs, or ``ResourceUnavailableError`` when
+    """A decoder child holding archivey-speedups, or ``ResourceUnavailableError`` when
     none can start: one started already (:func:`open_kernels`), so a later one failing
     is an environment fault, reported as for the other decoders."""
     reason = decoder_child_unavailable_reason(_CODEC)
@@ -154,7 +154,8 @@ class ChildLzwDecompressor(_Counted):
 
     @property
     def clear_offsets(self) -> list[tuple[int, int]]:
-        return cast("Any", self._child.reported("clear_offsets"))
+        # A fresh list, as the Rust getter and the twin give: the report is reused.
+        return list(cast("Any", self._child.reported("clear_offsets")))
 
     @property
     def unused_data(self) -> bytes:
@@ -204,7 +205,7 @@ class _ChildLzx:
 
 
 class ChildCodecs:
-    """The parts of ``archivey_codecs`` that :mod:`archivey.internal.kernels.rust` uses, with
+    """The parts of ``archivey_speedups`` that :mod:`archivey.internal.kernels.rust` uses, with
     each kernel object in a decoder child of its own, taken from the pool."""
 
     CodecError = ChildCodecError
@@ -268,20 +269,20 @@ _table: list[dict[str, int]] = []
 
 
 def open_kernels(excluded: frozenset[OptionalLibrary]) -> ChildCodecs | None:
-    """archivey-codecs in decoder children, or ``None`` when the call's policy turns it
+    """archivey-speedups in decoder children, or ``None`` when the call's policy turns it
     off (``excluded``), it is not installed, or no child can start or import it.
 
     A failure is remembered for the rest of the process, whatever its cause (no
     interpreter, a refused start, an import that fails in the child): without that,
     every stream built would start a child only to see it fail, one per CAB folder or
-    SquashFS block. An import failure is recorded on ``deps.archivey_codecs`` and logged
-    once at WARNING, as for compress-utils; the others once at DEBUG."""
-    if OptionalLibrary.ARCHIVEY_CODECS in excluded:
+    SquashFS block. An import failure is recorded on ``deps.archivey_speedups`` and
+    logged once at WARNING, as for compress-utils; the others once at DEBUG."""
+    if OptionalLibrary.ARCHIVEY_SPEEDUPS in excluded:
         return None
-    if not deps.archivey_codecs.available():
+    if not deps.archivey_speedups.available():
         return None
     if not _table:
-        if _failed or deps.archivey_codecs.child_import_failed:
+        if _failed or deps.archivey_speedups.child_import_failed:
             return None
         table = _read_table()
         if table is None:
@@ -301,7 +302,7 @@ def _read_table() -> dict[str, int] | None:
         child = DecoderChild(_CODEC, known=_ERRORS)
     except DecoderChildImportError as exc:
         _failed.append(str(exc))
-        deps.archivey_codecs.failed_in_child(exc)
+        deps.archivey_speedups.failed_in_child(exc)
         return None
     except DecoderChildStartError as exc:
         _no_child(str(exc))
@@ -320,14 +321,14 @@ def _read_table() -> dict[str, int] | None:
     return cast("dict[str, int]", table)
 
 
-# Why no child could run archivey-codecs, once one failed (see :func:`open_kernels`).
+# Why no child could run archivey-speedups, once one failed (see :func:`open_kernels`).
 _failed: list[str] = []
 
 
 def _no_child(reason: str) -> None:
     _failed.append(reason)
     logs.streams.debug(
-        "archivey-codecs cannot run in a decoder process (%s), so archivey uses its "
+        "archivey-speedups cannot run in a decoder process (%s), so archivey uses its "
         "Python decoders",
         reason,
     )

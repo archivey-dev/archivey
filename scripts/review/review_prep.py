@@ -411,12 +411,12 @@ DEEP_CORE = (
 NEW_PARSER_DIRS = (
     "src/archivey/internal/backends/",
     "src/archivey/internal/streams/codecs/",
-    "packages/archivey-codecs/src/kernels/",
+    "packages/archivey-speedups/src/kernels/",
 )
 # The public API: archivey's (generated, `scripts/checks/api_surface.py`) and
-# archivey-codecs' type stubs, which are that package's API.
+# archivey-speedups' type stubs, which are that package's API.
 API_SURFACE = "dev-docs/api-surface.txt"
-CODECS_API = "packages/archivey-codecs/python/archivey_codecs/"
+SPEEDUPS_API = "packages/archivey-speedups/python/archivey_speedups/"
 # The trailer that raises a pull request to deep, in any of its commit messages:
 # `Review-Tier: deep (why)`. History keeps it, so a later push cannot lower the tier.
 # Git parses the trailers (`%(trailers)`: the last paragraph only), so a body line that
@@ -768,7 +768,7 @@ class Tier:
     # The release's and the review loop's files it touches: the security pass, with the
     # pull request's author as the attacker.
     process: list[str] = field(default_factory=list)
-    # The public API files it changes: archivey's surface and archivey-codecs' stubs.
+    # The public API files it changes: archivey's surface and archivey-speedups' stubs.
     api_paths: list[str] = field(default_factory=list)
 
     @property
@@ -793,7 +793,7 @@ def tier(
     new_parsers = sorted(
         p for p in added if _matches(p, NEW_PARSER_DIRS) and not p.endswith(".md")
     )
-    api = [p for p in paths if p == API_SURFACE or _matches(p, (CODECS_API,))]
+    api = [p for p in paths if p == API_SURFACE or _matches(p, (SPEEDUPS_API,))]
     api = [p for p in api if p == API_SURFACE or p.endswith(".pyi")]
     core = [p for p in paths if _matches(p, DEEP_SECURITY + DEEP_CORE) and changed(p)]
     process = [p for p in paths if _matches(p, PROCESS_FILES)]

@@ -10,7 +10,7 @@ registered as a built-in the way ISO, CPIO and ar are.
 
 | | |
 | --- | --- |
-| Read | Yes. `internal/backends/squashfs_reader.py`, a `SquashfsHandler` (`IndexedFormatHandler`) and a `SquashfsReader` (`IndexedReader`), registered with `register_builtin_format` |
+| Read | Yes. `internal/backends/squashfs_reader.py`, a `SquashfsHandler` (`IndexedFormatHandler`) and a `SquashfsReader` (`IndexedReader`), registered from core's format table |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
 | Source | A file or a stream that can seek. Not a pipe: the directory and inode tables come after the data |
 | Listing cost | From the index (the inode and directory tables) |
@@ -125,11 +125,11 @@ level or variant the same decoder reads.
 Every compressed block goes through `ReaderContext.decompress`, so archivey's decoder
 limits apply, or, for LZ4, through `lz4.block` capped at the block's size. LZO blocks
 are raw LZO1X (`CompressionAlgorithm.LZO`), decoded by the codec a `.lzo` file uses:
-`archivey-codecs` when it is installed (in the decoder child under `NATIVE_DECODERS`),
+`archivey-speedups` when it is installed (in the decoder child under `NATIVE_DECODERS`),
 then `compress-utils` when it is installed, in a child process under `NATIVE_DECODERS`,
-and otherwise archivey's port of the kernel's `lzo1x_decompress_safe`. `archivey-codecs`
-takes the exact decoded size, so a block shorter than the most it may decode to is
-decoded again at the size its refusal names. All three refuse an end
+and otherwise archivey's port of the kernel's `lzo1x_decompress_safe`.
+`archivey-speedups` takes the exact decoded size, so a block shorter than the most it
+may decode to is decoded again at the size its refusal names. All three refuse an end
 marker whose length is not 3, as the kernel does (liblzo2 accepts any length; no writer
 produces another). LZO1X stores no decoded length, so the block size is passed as the
 most it may decode to (§6).
@@ -322,4 +322,5 @@ fuzzes the image walk and block reads.
   and squashfs-tools.
 - The kernel's `lib/lzo/lzo1x_decompress_safe.c`, which archivey's LZO decoder follows,
   and liblzo2 2.10's `lzo1x_decompress_safe`, whose end-marker rule it takes.
-- `openspec/changes/plugin-api/tasks.md` §3b, the reader's history as a plugin.
+- `openspec/changes/archive/2026-11-27-plugin-api/tasks.md` §3b, the reader's history as
+  a plugin.
