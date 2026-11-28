@@ -131,6 +131,9 @@ class Decompressor:
             self._starved = False
         return self._run(max_length)
 
+    def close(self) -> None:
+        """Nothing to give back: this decoder runs in this process."""
+
     def flush(self, max_length: int = -1) -> bytes:
         """Mark the end of the input and return the rest of the output, at most
         ``max_length`` bytes a call; a frame the input still does not cover raises

@@ -53,6 +53,12 @@ that other formats use, and solve the import cost with the same mechanism.
   package.
 - **Typed `extra` keys. Breaking for type checking.** One `ExtraKey` mechanism for
   every format replaces the per-key overloads in core.
+- **Format options.** A format that has settings of its own ships a frozen options
+  class with plain-value fields, passed in `ArchiveyConfig(format_options=...)` and
+  named on its manifest entry. `ZipOptions` and `RarOptions` replace the four
+  per-format fields of `ArchiveyConfig`, through the config trim of 0.6.0 (R24).
+- **Test kit.** The shared reader checks become a public module with the pilot
+  package, `archivey.testing` unless another name is chosen then (R19).
 - **Process isolation for package codecs.** A codec names its native object, and
   archivey runs it in the decoder child under `NATIVE_DECODERS`.
 
@@ -72,6 +78,7 @@ Deltas are written with each implementation step, not in this plan.
 - `compressed-streams`: codecs by name, method bindings, second implementations.
 - `packaging-and-extras`: the five packages and the extras that include them.
 - `archive-data-model`: open name types.
+- `testing-contract`: the test kit a package runs against an installed core.
 - The format specs of the formats that move: where they live, nothing else.
 
 ## Impact
@@ -97,6 +104,7 @@ Deltas are written with each implementation step, not in this plan.
   lists, a plugin's too. Under `NATIVE_DECODERS`, a package codec that declares its
   native object runs in the child.
 - **Plugin authors.** The interface changes shape once more (it is experimental), then
-  gets a version number.
+  gets a version number. A package can declare options of its own and run the test
+  kit from its own tests.
 - **Releases.** Five more distributions published with each archivey release, in the
   same workflow as `archivey-cli`.

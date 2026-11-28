@@ -374,7 +374,7 @@ use a per-input wall-clock kill timeout.
 | ISO `open_archive` + member list + bounded file read | Shallow; MUST use a hard wall-clock kill timeout |
 | Native RAR header parse | Deep coverage of the pure-Python RAR3/RAR5 metadata parser (CRC mutate-then-fixup) |
 | RAR `open_archive` + member list + bounded member read | Reader/spine path after parse, including the external decoder. MUST pass password candidates |
-| `open_archive` with format detection, then a bounded member read | SFX payload offset, the single-file reader, compressed tar, and UDIF refusal. A pipe pass MUST run when the detected format can be read from a non-seekable source |
+| `open_archive` with format detection, then a bounded member read | SFX payload offset, the single-file reader, compressed tar, an unencrypted UDIF image read with `format-dmg`, and a segmented UDIF image refused. A pipe pass MUST run when the detected format can be read from a non-seekable source |
 | Filter decoders (BCJ2, ARM64, RISC-V, Delta, liblzma branch filters) | Hostile payloads for filters a container mutation does not assemble |
 | Stream/codec: unix-compress, xz, lzip, gzip, bzip2, lzma-alone, zlib | Direct `open_codec_stream` hostile input per standalone archivey-owned codec; seekable indexing on when the codec supports it; MUST use a per-input wall-clock kill timeout when hang classes are known |
 | Stream/codec optional extras (zstd, brotli, lz4, deflate64) | Same pattern when the backend is installed; skip-clean when absent |
@@ -390,23 +390,21 @@ Full member **extract** remains out of scope for this harness (covered by the
 mutation harness). Filter-only codecs (BCJ, Delta) are not required as standalone
 stream targets.
 
-CI SHALL run a **short** partitioned harness on every merge-queue group that changes
-a library, test, dependency or CI path (the list in `scripts/ci/ci_scope.py`; the fuzz
+CI SHALL run a **short** partitioned harness on every merge-queue group that changes a
+library, test, dependency or CI path (the list in `scripts/ci/ci_scope.py`; the fuzz
 targets live under `tests/`, so a change to one always counts), and its failure SHALL
 keep the group from merging; a group that changes none of those paths, and pull request
-pushes, need not run it (same
-target set, reduced per-target budgets, and MAY shard targets across parallel jobs so
-wall time stays on the order of a few minutes — each Atheris target pays a large
-process cold-start cost). The **full** partition SHALL run off the merge path as a
-separate scheduled nightly job, guarded so the expensive run is SKIPPED unless
-the default branch changed within roughly the past 3 days (commit-recency
-guard), and MAY be forced on demand via `workflow_dispatch` (longer budgets
-allowed). A plain always-on nightly and a full partition on every `main` push
-are NOT required — same bursty / dormant trade-off as the change-guarded
-benchmark wall job. On failure the job SHALL upload reproducing inputs as
-artifacts and print a one-line local re-run command. The workflow job timeout
-MUST accommodate the active partition (short for the merge queue; full for
-nightly/dispatch).
+pushes, need not run it (same target set, reduced per-target budgets, and MAY shard
+targets across parallel jobs so wall time stays on the order of a few minutes — each
+Atheris target pays a large process cold-start cost). The **full** partition SHALL run
+off the merge path as a separate scheduled nightly job, guarded so the expensive run is
+SKIPPED unless the default branch changed within roughly the past 3 days (commit-recency
+guard), and MAY be forced on demand via `workflow_dispatch` (longer budgets allowed). A
+plain always-on nightly and a full partition on every `main` push are NOT required —
+same bursty / dormant trade-off as the change-guarded benchmark wall job. On failure the
+job SHALL upload reproducing inputs as artifacts and print a one-line local re-run
+command. The workflow job timeout MUST accommodate the active partition (short for the
+merge queue; full for nightly/dispatch).
 
 The existing corpus mutation harness and Hypothesis property tests remain
 mandatory complementary layers; Atheris does not replace them. `atheris` is
@@ -430,7 +428,7 @@ installed only via the CI `fuzz` dependency group (`packaging-and-extras`).
 | TAR target with checksum fixup | Most iterations present a matching header checksum and enter post-checksum parse; a zero block stays a zero block |
 | ZIP target with fixup + bounded read | Post-CRC / post-local-header path reaches archivey codec or AES+codec stream; the forward reader runs on the same bytes; typed errors only |
 | 7z / RAR / ISO open target | Bounded member reads run; typed errors only |
-| Auto-detect open target | A prefixed archive opens at the payload; a UDIF image is refused with a typed error; a compressed tar is read as tar and as a single-file stream |
+| Auto-detect open target | A prefixed archive opens at the payload; an unencrypted UDIF image opens and its first member reads; a segmented UDIF image is refused with `UnsupportedFeatureError`; a compressed tar is read as tar and as a single-file stream |
 | Filter target | BCJ2, ARM64, RISC-V, Delta and a liblzma branch filter each run; typed errors only |
 | Each required stream/codec target | Hostile inputs exercise decode (and seek-index when enabled) without raw exceptions; hang → slice failure with artifact |
 | Optional stream extra backend absent | That codec's target skipped; required stream targets still run |

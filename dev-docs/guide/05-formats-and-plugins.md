@@ -149,7 +149,7 @@ the same kind of class and registers it **after** all built-in backends.
 
 The interface was designed after the maintainer asked for an architecture that carries
 streaming formats like TAR from the first version, not an indexed-only one (2026-10-25,
-`openspec/changes/plugin-api/design.md` §2a), and asked for it
+`openspec/changes/archive/2026-11-27-plugin-api/design.md` §2a), and asked for it
 to be checked against real third-party format libraries (ARJ, CAB and others) before it was
 built. ISO moved onto it first, with a benchmark to catch regressions; then CPIO, ar and
 SquashFS; then the new formats (RPM, CAB, XAR, deb) were written on it from the start.

@@ -286,6 +286,7 @@ Exact matches only (no fuzzy/weak magic). Recognised:
 | SquashFS | `hsqs` at 0 (little-endian SquashFS 4); `sqsh` at 0 (big-endian SquashFS 3 and older, claimed so `format-squashfs` can refuse it by name) |
 | ISO 9660, raw CD sector image | `00 FF×10 00` sector sync at 0 (`format-iso` reads Mode 1 and Mode 2 Form 1 and refuses other layouts by name) |
 | UDIF | `6B 6F 6C 79 00 00 00 04 00 00 02 00` (`koly`, version 4, header size 512) at offset 0, or at the start of the last 512 bytes |
+| Encrypted DMG | `encrcdsa` at offset 0 (v2); `cdsaencr` as the last 8 bytes (v1, claimed so `format-dmg` can refuse it by name) |
 | TAR | `ustar` at 257 |
 | ar | `!<arch>\n` at 0; `!<thin>\n` at 0 (claimed so `format-ar` can refuse it by name) |
 | CPIO | `070707`, `070701`, `070702` or `070727` at 0 (odc, newc, crc, afio's large header). The binary variant's 2-byte magic `C7 71` / `71 C7` is too weak: a content probe that also checks the name, run only when the extension names CPIO |
@@ -297,11 +298,12 @@ Formats without reliable exact magic (notably **zlib**) SHALL NOT appear here �
 content probe only.
 
 A zstd **skippable frame** — magic in `0x184D2A50 .. 0x184D2A5F` followed by a
-little-endian `uint32` payload size — carries no compressed data and MAY precede the first
-regular frame. Detection SHALL walk consecutive skippable frames by their declared sizes
-within the peeked prefix and match the regular frame that follows. A source of skippable
-frames alone, or one whose declared size runs past the prefix, SHALL NOT be claimed as
-zstd: the walk is arithmetic over already-peeked bytes and never extends the read.
+little-endian `uint32` payload size — carries no compressed data and MAY precede the
+first regular frame. Detection SHALL walk consecutive skippable frames by their declared
+sizes within the peeked prefix and match the regular frame that follows. A source of
+skippable frames alone, or one whose declared size runs past the prefix, SHALL NOT be
+claimed as zstd: the walk is arithmetic over already-peeked bytes and never extends the
+read.
 
 #### Scenario: magic matrix
 
@@ -319,8 +321,9 @@ zstd: the walk is arithmetic over already-peeked bytes and never extends the rea
 | gzip of a plugin sequential format whose probe answers `GUESS`, no name, `always_probe_content`; the same named `.<ext>.gz` | `GZ`: a weak inner match does not switch formats; named, `(<plugin>, GZIP)`, `PROBABLE`, corroborated |
 | A plugin probe answers `None`, `True`, `CERTAIN` or another non-verdict | No match; one WARNING on `archivey.detection` |
 | Raw CD sector sync at 0 | ISO, `CERTAIN`, `magic`; a Mode 1 or Mode 2 Form 1 image opens, other layouts raise `UnsupportedFeatureError` |
-| `koly` block at offset 0 | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
-| `koly` trailer, and no earlier step matched | `DMG`, `CERTAIN`, `magic`; opening it raises `UnsupportedFeatureError` |
+| `koly` block at offset 0 | `DMG`, `CERTAIN`, `magic`; read by `format-dmg` |
+| `koly` trailer, and no earlier step matched | `DMG`, `CERTAIN`, `magic`; read by `format-dmg` |
+| `encrcdsa` at offset 0 | `DMG`, `CERTAIN`, `magic`; `format-dmg` asks for the password |
 | `CD001` at 32 769 and a `koly` trailer, no `koly` at offset 0 | `ISO`, `CERTAIN`, `magic` — far magic already matched, so the trailer is not consulted |
 | Starts `02 21 4C 18` (legacy LZ4) | LZ4, `CERTAIN`, `magic` |
 
@@ -1284,31 +1287,6 @@ evidence strength only, with no error-reporting consequence attached.
 | Corroborated hit at `PROBABLE`, read fails | Not stamped |
 | A future retune of Brotli's confidence split | Changes reported confidence only; no error behaviour moves |
 
-### Requirement: Refuse a UDIF disk image by name
-
-The system SHALL report a UDIF image as `ArchiveFormat.DMG` / `CERTAIN` / `magic`, and
-`open_archive` SHALL raise `UnsupportedFeatureError` naming UDIF, when the `koly` block
-is at offset 0, or at the start of the last 512 bytes and no earlier step matched.
-Far magic runs first, so an uncompressed image whose disk is an ISO 9660 filesystem
-(`CD001` at 32 769) SHALL be reported as `ISO` and read as one; the trailer is not
-consulted. `format_availability(DMG)` SHALL be `NONE` with an empty `missing`: known,
-not supported, nothing to install. The `.dmg` suffix SHALL NOT select the format.
-
-#### Scenario: UDIF matrix
-
-| Case | Expected |
-| --- | --- |
-| Seekable image, zlib, bzip2 or xz first block, `koly` trailer | `DMG` / `CERTAIN` / `magic`; `open_archive` raises `UnsupportedFeatureError` naming UDIF |
-| `koly` block at offset 0 | `DMG` / `CERTAIN` / `magic`; the same refusal |
-| `CD001` at 32 769 and a `koly` trailer, no `koly` at offset 0 | `ISO` / `CERTAIN` / `magic`; the image is read as an ISO |
-| Real zlib, bzip2 or xz stream, no `koly` block | Unchanged |
-| Version other than 4 | Not `DMG` |
-| ZIP whose name ends in `.dmg` | `ZIP` |
-| `format=ZLIB` on a zlib-first image | The first block is read; detection does not run |
-| `format=DMG` or `format="dmg"` | `UnsupportedFeatureError` naming UDIF |
-| Non-seekable source longer than the far-magic window, zlib first block, `koly` at the end | `ZLIB`; the trailer is not seeked to |
-| `format_availability(DMG)` | `NONE`, `missing` empty; in `list_known_formats()`, absent from `list_supported_formats()` |
-
 ### Requirement: A known non-archive signature stops the content probes
 
 When the source starts with a recognized **non-archive signature**, detection SHALL NOT run
@@ -1426,3 +1404,32 @@ at byte 0: the TAR backend declares no SFX magic, so no forced-format locator ru
 | A script whose text holds a gzip, bzip2 or xz magic with a header that fails its check | `FormatDetectionError` |
 | A script followed by an uncompressed TAR | `FormatDetectionError` |
 | An `MZ` stub followed by a `.tar.gz` | `FormatDetectionError` |
+
+### Requirement: Detect a DMG disk image
+
+The system SHALL report a UDIF image as `ArchiveFormat.DMG` / `CERTAIN` / `magic` when
+the `koly` block is at offset 0, or at the start of the last 512 bytes and no earlier
+step matched, and an encrypted image the same way when it starts with `encrcdsa` or ends
+with `cdsaencr`. `open_archive` SHALL read it with the `format-dmg` reader. Far magic
+runs first, so an uncompressed image whose disk is an ISO 9660 filesystem (`CD001` at
+32 769) SHALL be reported as `ISO` and read as one; the trailer is not consulted. The
+`.dmg` suffix SHALL NOT select the format: a file named `.dmg` with none of these
+signatures (a raw `hdiutil` UDRW disk, a renamed ZIP) is detected by its own bytes, as
+today. `format_availability(DMG)` SHALL be `FULL` with no optional package, with or
+without `cryptography`, as for encrypted members of other formats; opening an encrypted
+image without it SHALL raise `PackageNotInstalledError`.
+
+#### Scenario: DMG detection matrix
+
+| Case | Expected |
+| --- | --- |
+| Seekable image, zlib, bzip2, xz or LZFSE first block, `koly` trailer | `DMG` / `CERTAIN` / `magic`; opens and lists |
+| `koly` block at offset 0 | `DMG` / `CERTAIN` / `magic` |
+| `encrcdsa` at offset 0 | `DMG` / `CERTAIN` / `magic` |
+| `CD001` at 32 769 and a `koly` trailer, no `koly` at offset 0 | `ISO` / `CERTAIN` / `magic`; the image is read as an ISO |
+| Real zlib, bzip2 or xz stream, no `koly` block | Unchanged |
+| Version other than 4 | Not `DMG` |
+| ZIP whose name ends in `.dmg` | `ZIP` |
+| Raw disk named `.dmg` (no `koly`, GPT backup header in the last sector) | Not `DMG`; behaviour unchanged |
+| `format=ZLIB` on a zlib-first image | The first block is read; detection does not run |
+| Non-seekable source longer than the far-magic window, zlib first block, `koly` at the end | `ZLIB`; the trailer is not seeked to |

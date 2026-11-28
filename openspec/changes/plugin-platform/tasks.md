@@ -27,8 +27,10 @@
   detection, whole-file read, container method, block). Group 4 then reads the same
   declarations from the manifest. Brotli's port passes its probe and read tests, the
   7z member path and the isolation checks in this step
-- [ ] 0.4 The public kernel helper (revision check, panic guard, child), used by core
-  and by the moved readers; `archivey-speedups` unchanged (R1)
+- [x] 0.4 The public kernel helper (revision check, panic guard, child), used by core
+  and by the moved readers; `archivey-speedups` unchanged (R1). Shape: `speedup(name)`
+  on `ReaderContext` and `CodecCall`, returning the kernel or `None`; the interfaces in
+  `archivey.speedups`
 - [ ] 0.5 `ReaderContext.decompress` by name, with the single-stream option (xar); the
   block call (SquashFS, DMG)
 - [ ] 0.6 Public listing-limit, timestamp and Unix-mode helpers (ISO, xar, CAB, DMG,
@@ -42,6 +44,8 @@
   checks, decoded-byte and decoder-use accounting, listing budgets, source origin,
   range hints and progress), each with the reader that needs it
 - [ ] 0.9 `ReaderSource` source helpers (ISO, DMG)
+- [ ] 0.9a The test kit as a helper in the repository (R19): the first port that
+  needs a check adds it there, and every later port runs the whole kit on its reader
 - [ ] 0.10 No behaviour change: the full suite and the corpus comparison pass
   unchanged after each port
 
@@ -126,10 +130,17 @@
   2026-10-28 "left out of detection" tests are rewritten. Until this lands, a plugin
   format the policy turns off stays out of detection
 - [ ] 2.3b `FormatPolicy.COMMON` gains `providers={"archivey"}` (R11) with 2.3a, with a
-  **Breaking:** line; the docstring's recipe for building on `COMMON` rewritten to
-  carry `providers`, with a test that its result bars an outside probe (review F9);
+  **Breaking:** line; the docstring's recipe for building on `COMMON` rewritten as
+  `dataclasses.replace` (R22), with a test that its result carries `providers` and
+  bars an outside probe (review F9);
   the recorder test uses a file that would run an outside probe
   and one that would run an outside refinement check under another policy
+- [ ] 2.3d Format options (R24), the manifest's side: the options class named on an
+  entry under a short name, core's `zip` and `rar` included; tests that a field
+  holding a callable is refused when the class is declared, and that a name with a
+  mapping of plain values builds the same object. `ArchiveyConfig.format_options`,
+  the context call, `ZipOptions` and `RarOptions` land earlier, with the config trim
+  (R21), which also tests that two objects of one class are refused
 - [ ] 2.4 `register_format` and `register_builtin_format` become one function that
   takes an entry
 - [ ] 2.5 `CHANGELOG.md` **Breaking:** lines; `dev-docs/api-surface.txt` updated
@@ -191,9 +202,20 @@
   whatever the version; `format_availability()` and an open by name pinned for an
   incompatible outside format, a missing known package and an unknown name; an older
   and a newer plugin tried against two host versions
-- [ ] 3.9a The conformance recipe
+- [ ] 3.9a The test kit of 0.9a published as a public module with the pilot wheel
+  (R19), run from the package's own tests against an installed core wheel
 - [ ] 3.9b Timing: cold import and first successful operation, on a core-only, a
   recommended and a crowded environment
+- [ ] 3.9c The CI rule of R18: which jobs a core change and a package change run,
+  with the edges read from the manifests' `speedups` lists and each package's test
+  dependency group; a package's tests run with core, the package and that group
+  only; skipped jobs report success; the nightly and pre-release full matrix
+- [ ] 3.9d Before the wheel is first published, check that its name is free on PyPI
+  (R20); the same check opens each step that publishes a package
+- [ ] 3.9e `docs/security.md` and the threat model, in the step where discovery
+  lands: an installed package's probe runs by default, a plugin is trusted code like
+  any dependency, the pure-Python claim covers archivey's own packages, and
+  `FormatPolicy.COMMON` is the setting for files you did not make
 - [ ] 3.10 A session that did not work on the migration writes the guide's indexed
   example from the guide alone; its unchanged wheel is tried against the next minor
 - [ ] 3.11 Spec deltas: `format-manifest`, `format-plugins`, `packaging-and-extras`
@@ -266,16 +288,16 @@
   streams, their `ArchiveFormat` constants, the moved methods), clean under both type
   checkers; importing archivey warns nothing
 - [ ] 5.7 Spec deltas: `packaging-and-extras`, the moved format specs
-- [ ] 5.8 Remove `openspec/changes/plugin-api`, which this change replaces, only
+- [x] 5.8 Remove `openspec/changes/plugin-api`, which this change replaces, only
   after its requirements that survive are in `openspec/specs/` (review AG10): the
   reader contract, `hold()`, `data_on_demand`, inner-stream detection and
-  `CodecHandler` exist only in that change's deltas today. Either `plugin-api` is
+  `CodecHandler` existed only in that change's deltas. Either `plugin-api` is
   archived first, or the implementing change of step 2 folds them into its
   `format-plugins` and `compressed-streams` deltas; a dry-run `openspec archive`
-  shows it
-- [ ] 5.8a Archive `nested-archives`, `plugin-passwords` and `dmg-reader` before the
+  shows it. *Archived first, in PR 1854 (2026-11-27).*
+- [x] 5.8a Archive `nested-archives`, `plugin-passwords` and `dmg-reader` before the
   readers they describe move, so their format specs are in `openspec/specs/` when
-  step 5 edits them
+  step 5 edits them. *Archived in PR 1854 (2026-11-27).*
 
 ## 6. Afterwards
 
