@@ -50,7 +50,7 @@ line. How to write the entry: see
   string no longer matches; the old spellings themselves still convert (see
   Deprecated). Each merged code stays in `ARCHIVE_INTEGRITY_CODES`.
 - **Breaking:** `from archivey import *` and `from archivey.core import *` bind only the
-  names their `__all__` lists now, 30 and 6, with no warning about the others. Import a
+  names their `__all__` lists now, 31 and 6, with no warning about the others. Import a
   moved name by name, from its submodule (see Deprecated).
 - **Breaking:** a plugin's `probe` (on `FormatHandler` and `CodecHandler`) returns a
   verdict, not a bool: the new `DetectionConfidence.REJECTED` for no,
