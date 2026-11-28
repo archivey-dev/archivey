@@ -19,6 +19,11 @@ line. How to write the entry: see
   (`ArchiveyConfig.salvage_limits`). No format has a salvage search yet, so every format
   reads as before and records `SALVAGE_UNAVAILABLE`.
 
+### Experimental
+
+- `PluginContainer` and `PluginStream` left the package root with no deprecation
+  release; import them from `archivey.types`.
+
 ### Changed
 
 - **Breaking:** a plugin's `probe` (on `FormatHandler` and `CodecHandler`) returns a
@@ -59,9 +64,8 @@ line. How to write the entry: see
   such as `archivey.config.DecoderLimits`, `archivey.types.OverwritePolicy` and
   `archivey.exceptions.ReadError`; the [API page](docs/api.md) heads each entry with
   its full name. `archivey.<name>` still works for 65 of them in 0.6 with a
-  `DeprecationWarning` that names the new import, and 0.7.0 removes it. The other two,
-  the experimental `PluginContainer` and `PluginStream`, left the root at once and come
-  from `archivey.types`. `sanitize_names` moved to `archivey.paths`. A reference to
+  `DeprecationWarning` that names the new import, and 0.7.0 removes it. The other two
+  are experimental (see below). `sanitize_names` moved to `archivey.paths`. A reference to
   `sanitize_names`, `list_known_formats` or `list_supported_formats` pickled by 0.5 or
   earlier names `archivey`, so it loads in 0.6 with the warning and not in 0.7.0.
   `archivey.core.__all__` keeps only its six functions: `AcceleratorMode`,

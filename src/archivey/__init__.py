@@ -178,7 +178,8 @@ _MOVED_IN_0_6: dict[str, str] = {
 
 if TYPE_CHECKING:
     # A type checker does not run ``__getattr__``: these give the old spellings their
-    # real types, so a typed caller sees the deprecation and not an error.
+    # real types, so a typed caller keeps type-checking. The deprecation shows only at
+    # run time, as a ``DeprecationWarning``.
     from archivey.config import (
         DEFAULT_ARCHIVEY_CONFIG as DEFAULT_ARCHIVEY_CONFIG,
         AcceleratorMode as AcceleratorMode,
@@ -281,11 +282,14 @@ def _pin_public_module() -> None:
     reference 0.5 pickled loads in 0.6 with a warning and not in 0.7.0. The internal
     layout stays free to change; ``internal`` imports still see the same objects.
 
-    Computed over each public module's ``__all__`` rather than listed, so a function
-    added later is covered too. Classes are not pinned: a class's string annotations
-    and ``inspect.getsource`` both go through its ``__module__``, and a pin would send
-    them to the wrong namespace. A public class belongs in a public module, and
-    ``tests/test_public_api.py`` fails on one defined under ``internal``.
+    Computed over the ``__all__`` of the root, ``archivey.core`` and ``archivey.paths``,
+    the modules that export functions defined under ``internal``, rather than listed, so
+    a function added to one of them later is covered too; for any other public module,
+    ``tests/test_public_api.py`` fails on such a function. Classes are not pinned: a
+    class's string annotations and ``inspect.getsource`` both go through its
+    ``__module__``, and a pin would send them to the wrong namespace. A public class
+    belongs in a public module, and ``tests/test_public_api.py`` fails on one defined
+    under ``internal``.
     """
     import sys
     from types import FunctionType
