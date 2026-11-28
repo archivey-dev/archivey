@@ -412,9 +412,11 @@ class ListingLimits:
     ``max_metadata_bytes`` as it reads it, at open, and refuses a header that lists more
     payloads than ``max_members``. TAR refuses, in every mode, an extended header (PAX
     or GNU long name) that declares more than is left of ``max_metadata_bytes``, before
-    reading it. While it parses a PAX header, TAR also charges 256 bytes for each
-    distinct keyword, once: a repeated keyword does not count again.
-    A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
+    reading it. In salvage mode, a header the search found whose data the archive cannot
+    hold (it runs past the end of a file, or a sparse map does not fit its member's
+    data) is passed over as noise instead. While it parses a PAX header, TAR also
+    charges 256 bytes for each distinct keyword, once: a repeated keyword does not count
+    again. A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
     ``DEBIAN/md5sums`` whole, and refuses the one whose size takes their sum past
     ``max_metadata_bytes``, before reading it. It also counts against ``max_members``
     the path steps of the data tar's symlink resolutions that grow faster than the tar:

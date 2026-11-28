@@ -358,7 +358,6 @@ class _PluginAdapter(BaseArchiveReader):
         context._spanning_pass = self._spanning_passes.append
         # Only verify_all() runs the passes (``_run_spanning_passes``).
         context._checkpoint = functools.partial(self._state.check_open, "verify_all()")
-        context._decompress_coder = self._decompress_coder
         context._keep_metadata = self._listing_tracker.keep
         if self._listing_decode is not None:
             context._listing_draw = self._listing_decode.draw
@@ -602,29 +601,28 @@ class _PluginAdapter(BaseArchiveReader):
                 refusal, source_format=self._format, archive_name=self._archive_name
             )
 
-    def _decompress_coder(
-        self, data: BinaryIO, stream_format: StreamFormat, size: int | None
-    ) -> BinaryIO:
-        """``ReaderContext._decompress_coder``: ``stream_format`` data that is a
-        container coder's whole data, decoded as a member's method is: bzip2 and LZMA
-        Alone end at their first stream, and a byte after the end is refused."""
-        return self._decompress(data, stream_format, size, None, whole_file=False)
-
     def _decompress(
         self,
         data: BinaryIO,
         method: CompressionAlgorithm | AnyStreamFormat,
         size: int | None,
         properties: bytes | None,
-        *,
-        whole_file: bool = True,
+        one_stream: bool = False,
     ) -> BinaryIO:
         """``ReaderContext.decompress``: ``data`` through archivey's codec layer.
 
-        ``whole_file=False`` (``_decompress_coder``) keeps the member decoder
-        config's ``refuse_input_after_end`` for a stream format too."""
+        ``one_stream`` keeps the member decoder config's ``refuse_input_after_end``
+        for a stream format too, and bzip2 and LZMA Alone end at their first stream."""
+        whole_file = not one_stream
         self._refuse_codec_off_by_policy(method)
         is_stream = isinstance(method, (StreamFormat, PluginStream))
+        if one_stream and is_stream and method not in _ONE_STREAM_FORMATS:
+            raise UnsupportedFeatureError(
+                f"ReaderContext.decompress(one_stream=True) does not decode "
+                f"{method.name}: its decoder cannot refuse bytes after its end",
+                source_format=self._format,
+                archive_name=self._archive_name,
+            )
         codec: CodecId | None
         if is_stream:
             try:
@@ -681,11 +679,11 @@ class _PluginAdapter(BaseArchiveReader):
         """The codec parameters for one ``decompress`` call: what ``codec`` needs
         beyond the bytes, read from the call's ``size`` and ``properties``.
         ``is_stream`` says ``method`` is a stream format read as a whole file
-        (``decompress``), not a member's method or a container coder's data
-        (``_decompress_coder``)."""
+        (``decompress``), not a member's method or a stream format read with
+        ``one_stream``."""
         # A bzip2 member is one stream, as in ZIP and 7z: a further stream after its
         # end is refused. So is LZMA Alone, which has no further streams of its own,
-        # in a container coder (``_decompress_coder``, a XAR member). Zstd and LZ4 data
+        # read with ``one_stream`` (a XAR member). Zstd and LZ4 data
         # may be several frames, read together (RFC 8878, the LZ4 frame format), and xz
         # several streams with their padding, as a ZIP xz member may. A stream format
         # read as a file (``decompress``) is read as a file of that format is, so a
@@ -3773,6 +3771,22 @@ def _plugin_bug(error: _ErrorT) -> _ErrorT:
 
 # The ``MemberDigest`` names archivey computes itself, with its own hasher.
 _ALGORITHMS = {str(algorithm): algorithm for algorithm in HashAlgorithm}
+
+# The stream formats ``ReaderContext.decompress(one_stream=True)`` reads: those whose
+# decoder refuses a byte after its end, as a ZIP or 7z member's does (under rapidgzip,
+# zlib streams with a forged last trailer read as one, as in a ZIP member). gzip, whose
+# decoders skip what follows its last member, and the others are refused there.
+_ONE_STREAM_FORMATS = frozenset(
+    {
+        StreamFormat.ZLIB,
+        StreamFormat.BZIP2,
+        StreamFormat.XZ,
+        StreamFormat.LZMA_ALONE,
+        StreamFormat.ZSTD,
+        StreamFormat.LZ4,
+        StreamFormat.BROTLI,
+    }
+)
 
 # The methods ``ReaderContext.decompress`` decodes. PPMd, the branch filters and RAR
 # need parameters or framing a plain method name cannot carry.

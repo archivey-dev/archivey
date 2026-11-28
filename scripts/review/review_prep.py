@@ -770,6 +770,9 @@ class Tier:
     process: list[str] = field(default_factory=list)
     # The public API files it changes: archivey's surface and archivey-speedups' stubs.
     api_paths: list[str] = field(default_factory=list)
+    # For each public module whose count of public names changed, the line the report
+    # prints under "public API:" (surface_count_lines).
+    surface_counts: list[str] = field(default_factory=list)
 
     @property
     def api_changed(self) -> bool:
@@ -935,7 +938,46 @@ def review_tier(base: str, head: str) -> Tier:
     t.maintainer = maintainer_decisions(
         files, added, both.get("pyproject.toml"), both.get(THREAT_MODEL), known
     )
+    if API_SURFACE in paths:
+        t.surface_counts = surface_count_lines(
+            base_text(fork, API_SURFACE), base_text(head, API_SURFACE)
+        )
     return t
+
+
+def public_name_counts(surface: str) -> dict[str, int]:
+    """How many public names each module of a surface file (``API_SURFACE``) exports:
+    the items named one level below a ``module`` line, not their fields or methods."""
+    modules = [
+        line.split(" ", 1)[1].strip()
+        for line in surface.splitlines()
+        if line.startswith("module ")
+    ]
+    names: dict[str, set[str]] = {module: set() for module in modules}
+    for line in surface.splitlines():
+        kind, _, rest = line.partition(" ")
+        if kind in ("", "#", "module", "item") or kind.startswith("cli"):
+            continue
+        name = re.match(r"[\w.]*", rest).group(0)
+        owners = [m for m in modules if name.startswith(m + ".")]
+        if not owners:
+            continue
+        module = max(owners, key=len)
+        if "." not in name[len(module) + 1 :]:
+            names[module].add(name)
+    return {module: len(found) for module, found in names.items()}
+
+
+def surface_count_lines(before: str | None, after: str | None) -> list[str]:
+    """One line for each module whose number of public names differs between two
+    surface files: ``  archivey.formats: 28 to 31 public names``."""
+    old = public_name_counts(before or "")
+    new = public_name_counts(after or "")
+    return [
+        f"  {module}: {old.get(module, 0)} to {new.get(module, 0)} public names"
+        for module in sorted(old.keys() | new.keys())
+        if old.get(module, 0) != new.get(module, 0)
+    ]
 
 
 def _not_light(reasons: list[str]) -> str:
@@ -968,6 +1010,7 @@ def tier_report(t: Tier) -> list[str]:
     lines.append(
         f"public API: {'changed (' + ', '.join(t.api_paths) + ')' if t.api_paths else 'unchanged'}"
     )
+    lines += t.surface_counts
     if t.maintainer:
         lines.append("merge: the maintainer merges this one")
         shown = t.maintainer[:8]
