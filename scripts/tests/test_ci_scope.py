@@ -171,9 +171,15 @@ def test_every_local_action_the_workflows_use_is_a_full_path() -> None:
     assert not sorted(u for u in used if not scope.needs_full([u]))
 
 
-#: Script paths a library test names only in prose or as a member name inside an
-#: archive, so not a file the test reads.
-_NAMED_NOT_READ = {"scripts/release/release.py", "scripts/py7zr"}
+#: Script paths a library test names only in prose, as a member name inside an
+#: archive, or as a path it skips, so not a file the test reads.
+_NAMED_NOT_READ = {
+    "scripts/release/release.py",
+    "scripts/py7zr",
+    # tests/test_root_tiers.py: files its old-spelling scan skips.
+    "scripts/docs/old_api_anchors.py",
+    "scripts/tests/test_old_api_anchors.py",
+}
 
 
 _PART = r"""\s*/\s*["']([\w.-]+)["']"""
