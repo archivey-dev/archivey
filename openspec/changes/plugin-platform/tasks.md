@@ -27,8 +27,10 @@
   detection, whole-file read, container method, block). Group 4 then reads the same
   declarations from the manifest. Brotli's port passes its probe and read tests, the
   7z member path and the isolation checks in this step
-- [ ] 0.4 The public kernel helper (revision check, panic guard, child), used by core
-  and by the moved readers; `archivey-speedups` unchanged (R1)
+- [x] 0.4 The public kernel helper (revision check, panic guard, child), used by core
+  and by the moved readers; `archivey-speedups` unchanged (R1). Shape: `speedup(name)`
+  on `ReaderContext` and `CodecCall`, returning the kernel or `None`; the interfaces in
+  `archivey.speedups`
 - [ ] 0.5 `ReaderContext.decompress` by name, with the single-stream option (xar); the
   block call (SquashFS, DMG)
 - [ ] 0.6 Public listing-limit, timestamp and Unix-mode helpers (ISO, xar, CAB, DMG,

@@ -23,9 +23,10 @@ Design: openspec change ``rust-codecs-package``, D4 and D5.
 from __future__ import annotations
 
 import functools
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, overload
+from typing import Any, Literal, Protocol, get_args
 
 from archivey.internal.kernels._select import (
     caused_by_panic,
@@ -34,6 +35,16 @@ from archivey.internal.kernels._select import (
     kernels,
     panic_of,
 )
+from archivey.internal.overrides import override
+from archivey.speedups import (
+    BlockDecompress,
+    Crc16,
+    LzwDecompressor,
+    LzwFactory,
+    LzxDecompressor,
+    LzxFactory,
+    SpeedupName,
+)
 from archivey.types import OptionalLibrary
 
 __all__ = [
@@ -41,12 +52,13 @@ __all__ = [
     "Bcj2",
     "Bcj2Decompressor",
     "Bcj2Factory",
+    "BlockDecompress",
     "BranchDecoder",
     "BranchFactory",
     "Crc16",
     "Filters",
+    "KernelLease",
     "Lzo1x",
-    "Lzo1xDecompress",
     "Lzw",
     "LzwDecompressor",
     "LzwFactory",
@@ -61,6 +73,7 @@ __all__ = [
     "caused_by_panic",
     "crc16_arc",
     "filters",
+    "for_plugin",
     "is_panic",
     "lzfse",
     "lzo1x",
@@ -77,12 +90,6 @@ _CODECS = OptionalLibrary.ARCHIVEY_SPEEDUPS
 
 
 # ── The API ───────────────────────────────────────────────────────────────────────────
-
-
-class Crc16(Protocol):
-    """``crc16_arc(data, value=0)``: CRC-16/ARC of ``data`` going on from ``value``."""
-
-    def __call__(self, data: Buffer, value: int = 0, /) -> int: ...
 
 
 class Readable(Protocol):
@@ -114,67 +121,6 @@ class BranchDecoder(Protocol):
 
     @property
     def total_in(self) -> int: ...
-
-    @property
-    def total_out(self) -> int: ...
-
-
-class LzwDecompressor(Protocol):
-    """``lzw.Decompressor(*, max_width=None, block_mode=None, nine_bit_widens=None)``:
-    Unix ``compress`` with the ``lzma.LZMADecompressor`` interface plus ``flush()``."""
-
-    def decompress(self, data: Buffer, max_length: int = -1) -> bytes: ...
-
-    def flush(self, max_length: int = -1) -> bytes: ...
-
-    @property
-    def eof(self) -> bool: ...
-
-    @property
-    def needs_input(self) -> bool: ...
-
-    @property
-    def unused_data(self) -> bytes: ...
-
-    @property
-    def truncation(self) -> str | None: ...
-
-    @property
-    def header_params(self) -> tuple[int, bool] | None: ...
-
-    @property
-    def nine_bit_widens(self) -> bool | None: ...
-
-    @property
-    def clear_offsets(self) -> list[tuple[int, int]]: ...
-
-    @property
-    def total_in(self) -> int: ...
-
-    @property
-    def total_out(self) -> int: ...
-
-
-class LzxDecompressor(Protocol):
-    """``lzx.Decompressor(window_bits, *, output_size=None)``: one LZX stream (a CAB
-    folder), with the ``lzma.LZMADecompressor`` interface plus ``flush()`` and
-    ``set_output_size()``. It has no ``unused_data`` or ``total_in``: the stream ends
-    at its output size, and the Python decoder reads its input ahead of the output."""
-
-    def set_output_size(self, output_size: int, /) -> None: ...
-
-    def decompress(self, data: Buffer, max_length: int = -1) -> bytes: ...
-
-    def flush(self, max_length: int = -1) -> bytes: ...
-
-    @property
-    def eof(self) -> bool: ...
-
-    @property
-    def needs_input(self) -> bool: ...
-
-    @property
-    def output_size(self) -> int | None: ...
 
     @property
     def total_out(self) -> int: ...
@@ -213,41 +159,6 @@ class BranchFactory(Protocol):
     def __call__(self, start_offset: int = 0) -> BranchDecoder: ...
 
 
-class Lzo1xDecompress(Protocol):
-    """Exactly one of ``out_size=`` and ``max_size=``."""
-
-    @overload
-    def __call__(self, block: Buffer, /, *, out_size: int) -> bytes: ...
-
-    @overload
-    def __call__(self, block: Buffer, /, *, max_size: int) -> bytes: ...
-
-    def __call__(
-        self,
-        block: Buffer,
-        /,
-        *,
-        out_size: int | None = None,
-        max_size: int | None = None,
-    ) -> bytes: ...
-
-
-class LzwFactory(Protocol):
-    def __call__(
-        self,
-        *,
-        max_width: int | None = None,
-        block_mode: bool | None = None,
-        nine_bit_widens: bool | None = None,
-    ) -> LzwDecompressor: ...
-
-
-class LzxFactory(Protocol):
-    def __call__(
-        self, window_bits: int, *, output_size: int | None = None
-    ) -> LzxDecompressor: ...
-
-
 class Bcj2Factory(Protocol):
     def __call__(
         self,
@@ -283,7 +194,7 @@ class Filters:
 class Lzo1x:
     """``archivey_speedups.lzo1x``."""
 
-    decompress: Lzo1xDecompress
+    decompress: BlockDecompress
     library: OptionalLibrary | None
 
 
@@ -292,7 +203,7 @@ class AppleLz:
     """``archivey_speedups.lzfse`` or ``archivey_speedups.lzvn``: a one-shot
     ``decompress`` with ``lzo1x.decompress``'s shape."""
 
-    decompress: Lzo1xDecompress
+    decompress: BlockDecompress
     library: OptionalLibrary | None
 
 
@@ -456,3 +367,108 @@ def _apple_lz(
     from archivey.internal.kernels import rust
 
     return AppleLz(decompress=rust.apple_lz_decompress(module, kernel), library=_CODECS)
+
+
+# ── The plugin helper ─────────────────────────────────────────────────────────────────
+
+
+class KernelLease:
+    """The kernel objects one plugin call site was handed (``ReaderContext.speedup``,
+    ``CodecCall.speedup``), so that :meth:`release` gives back their decoder children
+    when the reader or the stream closes, not when the collector frees them.
+
+    It keeps weak references: an object the plugin drops is freed, and its child given
+    back, as before. Every object made is kept, wherever it runs: :meth:`release` closes
+    it, which gives back a decoder child and does nothing to an object in this process.
+    The set is made at the first object, so a call site that makes none costs nothing.
+    """
+
+    __slots__ = ("__weakref__", "_made")
+
+    def __init__(self) -> None:
+        self._made: weakref.WeakSet[Any] | None = None
+
+    def track(self, factory: Callable[..., Any]) -> Callable[..., Any]:
+        """``factory``, noting each object it makes."""
+
+        @functools.wraps(factory)
+        def make(*args: Any, **kwargs: Any) -> Any:
+            made = factory(*args, **kwargs)
+            if self._made is None:
+                self._made = weakref.WeakSet()
+            self._made.add(made)
+            return made
+
+        return make
+
+    def release(self) -> None:
+        """Close every object still alive, giving back its decoder child."""
+        if self._made is None:
+            return
+        for made in list(self._made):
+            self._made.discard(made)
+            made.close()
+
+
+class CallSpeedups:
+    """What :meth:`archivey.formats.CodecCall.speedup` needs for one
+    ``decompressor(call)``: the caller's excluded libraries and isolation, and the
+    lease of what it hands out. archivey passes it to the call it builds as the
+    init-only argument ``CodecCall._speedups``, which ``__post_init__`` keeps on the
+    instance, so a ``dataclasses.replace`` copy keeps the caller's policy and lease;
+    :meth:`__reduce__` keeps the record picklable."""
+
+    __slots__ = ("excluded", "isolated", "lease")
+
+    def __init__(self, excluded: frozenset[OptionalLibrary], *, isolated: bool) -> None:
+        self.excluded = excluded
+        self.isolated = isolated
+        self.lease = KernelLease()
+
+    @override
+    def __reduce__(self) -> tuple[Any, ...]:
+        # A copy asks with the same policy and owns what it hands out itself.
+        return (_call_speedups, (self.excluded, self.isolated))
+
+
+def _call_speedups(
+    excluded: frozenset[OptionalLibrary], isolated: bool
+) -> CallSpeedups:
+    return CallSpeedups(excluded, isolated=isolated)
+
+
+def for_plugin(
+    name: SpeedupName,
+    excluded: frozenset[OptionalLibrary],
+    *,
+    isolated: bool,
+    lease: KernelLease,
+) -> object | None:
+    """The kernel ``name`` for a plugin, or ``None`` when its Python decoder must run:
+    archivey-speedups is missing, too old for it, or excluded, or no decoder child can
+    run it under ``isolated``. A usage error for a name that is not a
+    :data:`~archivey.speedups.SpeedupName`."""
+    if name == "crc16_arc":
+        from archivey.internal.kernels import python
+
+        crc = crc16_arc(excluded)
+        return None if crc is python.crc16_arc else crc
+    if name == "lzo1x":
+        block = lzo1x(excluded, isolated=isolated)
+        return None if block.library is None else block.decompress
+    if name in ("lzfse", "lzvn"):
+        apple = _apple_lz(name, excluded, isolated=isolated)
+        return None if apple.library is None else apple.decompress
+    if name == "lzw":
+        stream: Lzw | Lzx = lzw(excluded, isolated=isolated)
+    elif name == "lzx":
+        stream = lzx(excluded, isolated=isolated)
+    else:
+        from archivey.exceptions import ArchiveyUsageError
+        from archivey.terminal import quoted
+
+        names = ", ".join(quoted(n) for n in get_args(SpeedupName))
+        raise ArchiveyUsageError(
+            f"no speedup is named {quoted(str(name))}; the speedups are {names}"
+        )
+    return None if stream.library is None else lease.track(stream.Decompressor)

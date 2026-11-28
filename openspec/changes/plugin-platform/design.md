@@ -956,12 +956,15 @@ Review A1 showed that it cannot:
 
 So `archivey-speedups` stays what it is: an optional library, named by
 `OptionalLibrary("archivey_speedups")`, that speeds up decoders and changes no result.
-What becomes public is the switch. A reader asks `ReaderContext` for a kernel by name
-and passes its own Python decoder as the other side; it gets the Rust kernel, wrapped
-with the revision check, the panic guard and the child, or its own decoder back. Core
-(ZIP, 7z), `archivey-dmg` (LZFSE, LZVN), `archivey-package-formats` (CAB's LZX)
-and `archivey-legacy-formats` (LHA's CRC-16, `.Z`'s LZW) call the same helper, and each Python
-twin moves with its format.
+What becomes public is the switch. A reader asks `ReaderContext.speedup(name)` (a codec,
+`CodecCall.speedup(name)`); it gets the Rust kernel, wrapped with the revision check,
+the panic guard and the child, or `None`, and then uses its own Python decoder
+(`context.speedup("lzw") or twin.Decompressor`, maintainer, 2026-11-28, who also chose
+the name `speedup` over `kernel`). The interface of each kernel is public in
+`archivey.speedups`. Core gives back the decoder child of each kernel object when the
+member stream or the reader closes. Core (ZIP, 7z), `archivey-dmg` (LZFSE, LZVN),
+`archivey-package-formats` (CAB's LZX) and `archivey-legacy-formats` (LHA's CRC-16,
+`.Z`'s LZW) call the same helper, and each Python twin moves with its format.
 
 Other rules:
 
@@ -1367,8 +1370,8 @@ For the next rounds of this plan. None blocks the start of step 0.
 8. For the decoder child of package codecs (R4): how an error from the child is handed
    to `translate_exception`, and the process-pool and memory-limit rules, which have
    special cases for pyppmd today.
-9. The exact shape of the kernel helper, and whether a package may bring a kernel of
-   its own or only use those of `archivey-speedups`.
+9. Whether a package may bring a kernel of its own or only use those of
+   `archivey-speedups`. The helper's shape is settled (§6, "Kernels").
 10. Parallel decoding for readers on `IndexedReader`. Today every stream such a reader
     returns is read under the per-reader lock. A stream that archivey itself builds
     over the shared source (a slice, or a decoder over one) touches no reader state

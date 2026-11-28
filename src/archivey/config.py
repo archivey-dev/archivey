@@ -1019,6 +1019,12 @@ class ArchiveyConfig:
     10,000 entries per extraction. It turns rapidgzip off, so the result does not
     depend on the machine. Every other field keeps its default. Adjust it with
     ``dataclasses.replace(ArchiveyConfig.UNTRUSTED, ...)``.
+
+    It guards against the archive's contents, not against the machine it runs on. It
+    keeps ``RarOptions()``, so RAR data may go to ``unar``, which receives a password
+    on its command line, where other users of the machine can see it. On a shared
+    machine, add ``RarOptions(decompressor=RarDecompressor.UNRAR)`` to its
+    ``format_options``.
     """
 
     UNTRUSTED: ClassVar[ArchiveyConfig]

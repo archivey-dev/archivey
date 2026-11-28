@@ -248,6 +248,12 @@ reaches the end raises if the data is damaged. No password is given, so an encry
 To change one of them, start from the preset:
 `dataclasses.replace(archivey.ArchiveyConfig.UNTRUSTED, decoder_limits=...)`.
 
+The preset guards against what is in the archive, not against other users of your machine. RAR
+data may go to `unar`, which receives the password on its command line, where other users of the
+machine can see it. On a shared machine, also pass
+`format_options=[RarOptions(decompressor=RarDecompressor.UNRAR)]`, both from `archivey.config`
+([Hardening](security.md#hardening)).
+
 `max_extracted_bytes` and `max_entries` cover only what `extract_all` writes, so a loop that reads
 member data keeps its own count of bytes. `max_ratio` holds the reads too, so a member that expands
 past it raises `ResourceLimitError` from the read.

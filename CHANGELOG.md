@@ -29,6 +29,9 @@ line. How to write the entry: see
   `FormatPolicy.COMMON`, `DiagnosticPolicy.STRICT`, `NATIVE_DECODERS`, lower listing,
   decoder and extraction limits, and rapidgzip off. Adjust it with
   `dataclasses.replace()`; the upload recipes start from it.
+- A format or codec plugin can use archivey-speedups' fast decoders:
+  `context.speedup("lzw")` (or `call.speedup()`) returns the speedup, or `None` when it
+  can't run. Their interfaces are in the new `archivey.speedups` module.
 
 ### Experimental
 
