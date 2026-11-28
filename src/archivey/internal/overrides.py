@@ -15,7 +15,10 @@ checker reads the stand-in any more; the Python 3.11 test jobs, which import it,
 what keep it working.
 
 The decoder worker scripts a child loads by path may import neither ``archivey`` nor
-``typing``; ``rapidgzip_worker.py`` keeps a copy of the stand-in for that reason.
+``typing``; ``rapidgzip_worker.py`` keeps a copy of the stand-in for that reason. The
+readers on the public-names list (``tests/test_plugin_modules_use_public_api.py``)
+keep a three-line copy too, as a format written outside archivey would, since they
+may not import this module.
 """
 
 from __future__ import annotations

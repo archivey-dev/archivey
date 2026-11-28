@@ -11,7 +11,7 @@ hook, for the payload digests (§3).
 
 | | |
 | --- | --- |
-| Read | Yes. `internal/backends/makeself_reader.py`, a `MakeselfHandler` (`SequentialFormatHandler`) and a `MakeselfReader` (`SequentialReader`), registered with `register_builtin_format` |
+| Read | Yes. `internal/backends/makeself_reader.py`, a `MakeselfHandler` (`SequentialFormatHandler`) and a `MakeselfReader` (`SequentialReader`), registered from core's format table |
 | Versions | makeself 2.2.0 and later (fixtures from 2.2.0, 2.4.0, 2.4.5 and 2.7.1) |
 | Source | A file, a stream that can seek, or a pipe (`pipe=True`) |
 | Listing cost | `REQUIRES_DECOMPRESSION`: each payload is a compressed TAR |

@@ -19,6 +19,9 @@ line. How to write the entry: see
   (`ArchiveyConfig.salvage_limits`). RAR searches past damage for the next header and
   lists what it finds (`MEMBER_FOUND_BY_SCAN`); every other format reads as before and
   records `SALVAGE_UNAVAILABLE`.
+- A format or codec plugin can use archivey-speedups' fast decoders:
+  `context.speedup("lzw")` (or `call.speedup()`) returns the speedup, or `None` when it
+  can't run. Their interfaces are in the new `archivey.speedups` module.
 
 ### Changed
 

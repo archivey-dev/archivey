@@ -51,9 +51,14 @@ its revision; a decoder's `getstate()` names that revision, and `from_state()` r
 a state from another one. Decoders release the GIL while they read `bytes` input (the
 CRC only above 64 KiB, where the release pays off); other buffers are copied first.
 The BCJ2 decoder holds the GIL, because it reads its four input streams by calling
-their `read()` methods. Two LZX refusals that only a caller can reach (a frame size
-off the 32 KiB grid) raise `CorruptDataError` where Python raises `IndexError` or grows
-its window; see `src/kernels/lzx.rs`. The kernel modules (`src/kernels/`) forbid `unsafe` code.
+their `read()` methods. Use each decoder or decryptor object from one thread at a time,
+or give each thread its own `copy()` (the BCJ2 decoder has none, as its input streams
+are shared). Unlike `zlib` and `lzma` objects, which make a second thread wait, these
+raise `RuntimeError` on a call made while another thread's call on the same object runs;
+the running call is not affected. Two LZX refusals that only a caller can reach (a frame
+size off the 32 KiB grid) raise `CorruptDataError` where Python raises `IndexError` or
+grows its window; see `src/kernels/lzx.rs`. The kernel modules (`src/kernels/`) forbid
+`unsafe` code.
 
 ## Develop
 

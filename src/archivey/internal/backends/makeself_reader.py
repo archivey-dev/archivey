@@ -65,7 +65,6 @@ from archivey.formats import (
     SequentialFormatHandler,
     SequentialReader,
 )
-from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
 from archivey.internal.streams.crypto import (
     AES_BLOCK_SIZE,
@@ -1180,6 +1179,3 @@ class MakeselfHandler(SequentialFormatHandler):
     @override
     def open_sequential(self, context: ReaderContext) -> MakeselfReader:
         return MakeselfReader(context)
-
-
-MakeselfReadBackend = register_builtin_format(MakeselfHandler)

@@ -3,7 +3,8 @@ Reference*, 2020).
 
 This module parses; it makes no ``ArchiveMember``, as :mod:`.hfsplus` makes none.
 :class:`ApfsContainer` checks block 0 when the image opens (design §7 of
-``openspec/changes/dmg-reader``) and reads the rest at the first listing (§6A):
+``openspec/changes/archive/2026-11-27-dmg-reader``) and reads the rest at the first
+listing (§6A):
 
 - the checkpoint: the newest container superblock in the checkpoint descriptor ring
   whose checkpoint is complete (every checkpoint-map block valid);

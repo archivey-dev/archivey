@@ -104,7 +104,7 @@ class BackendRegistry:
 | --- | --- |
 | Detection reports `ArchiveFormat.SEVEN_Z` | `reader_for_format()` returns native `SevenZReadBackend` |
 | Detected backend's optional dependency is missing | `PackageNotInstalledError` names missing package and install hint |
-| Detected format whose backend sets `READ_IMPLEMENTED` false (`DMG`) | `UnsupportedFeatureError` naming the format; `missing` is empty |
+| Detected format whose backend sets `READ_IMPLEMENTED` false (none ships today) | `UnsupportedFeatureError` naming the format; `missing` is empty |
 | No magic/probe/extension matches | `FormatDetectionError`; no backend lookup |
 
 ### Requirement: Read backends declare detection signals as data
@@ -293,12 +293,8 @@ enforces — and MUST NOT be declared separately per backend:
 
 | `SUPPORTS_STREAMING_NON_SEEKABLE` | `required_source` | Formats |
 | --- | --- | --- |
-| `True` | `StreamCapability.FORWARD_ONLY` | TAR and its compressed combos, ZIP, RAR, the single-file compressors, UDIF |
-| `False` | `StreamCapability.SEEKABLE` | ISO, 7z, directory |
-
-`DMG` sets the flag even though nothing reads it. `open_archive` raises
-`UnsupportedFeatureError` before the seekability check, and `SEEKABLE` would send
-the published spool recipe through a copy that ends in the same refusal.
+| `True` | `StreamCapability.FORWARD_ONLY` | TAR and its compressed combos, ZIP, RAR, the single-file compressors |
+| `False` | `StreamCapability.SEEKABLE` | ISO, 7z, DMG, directory |
 
 `required_source` SHALL be reported independently of `support`: a format whose
 optional dependency is missing still answers the source-shape question. For a format
@@ -329,7 +325,7 @@ conservative answer.
 | `format_availability(TAR).required_source` | `FORWARD_ONLY` |
 | `format_availability(TAR_GZ).required_source` | `FORWARD_ONLY` |
 | `format_availability(GZ).required_source` | `FORWARD_ONLY` |
-| `format_availability(DMG).required_source` | `FORWARD_ONLY` — open refuses before the seekability check; the field keeps the spool recipe from copying the file |
+| `format_availability(DMG).required_source` | `SEEKABLE` — the run table is at the end of the image and the filesystem metadata can be anywhere in it |
 | `format_availability(ZIP).required_source` | `FORWARD_ONLY` — `pipe=True` reads a ZIP forward over its local headers |
 | `format_availability(RAR).required_source` | `FORWARD_ONLY` — `pipe=True` reads a single-volume RAR forward with RARLAB `unrar` 7.00 or later; without it the open raises `StreamNotSeekableError` naming the fix |
 | `format_availability(ISO \| SEVEN_Z \| FOLDER).required_source` | `SEEKABLE` |

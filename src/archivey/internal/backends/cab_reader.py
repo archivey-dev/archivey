@@ -56,7 +56,6 @@ from archivey.formats import (
 )
 from archivey.internal import kernels
 from archivey.internal.config import check_decoder_memory
-from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.listing_limits import metadata_limit_error
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.lzx_decoder import (
@@ -1034,6 +1033,3 @@ class CabHandler(IndexedFormatHandler):
     @override
     def open(self, source: ReaderSource, context: ReaderContext) -> CabReader:
         return CabReader(source, context)
-
-
-CabReadBackend = register_builtin_format(CabHandler)

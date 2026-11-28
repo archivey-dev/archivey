@@ -56,7 +56,6 @@ from archivey.formats import (
     ReaderContext,
     ReaderSource,
 )
-from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.listing_limits import str_retained_bytes
 from archivey.internal.overrides import override
 from archivey.terminal import quoted
@@ -766,6 +765,3 @@ class XarHandler(IndexedFormatHandler):
     @override
     def open(self, source: ReaderSource, context: ReaderContext) -> XarReader:
         return XarReader(source, context)
-
-
-XarReadBackend = register_builtin_format(XarHandler)

@@ -1,10 +1,10 @@
 """Does ``unrar`` read a synthetic RAR built from one member's headers and data?
 
-Supporting ``openspec/changes/rar-synthetic-archives``. Instead of handing ``unrar``
-the original archive and a ``-n`` include mask, archivey would write a small RAR
-holding only what the read needs: a signature, a made-up MAIN header, the member's
-own FILE header (patched), its packed bytes copied verbatim, and an ENDARC header.
-This script checks that ``unrar`` accepts every shape the design relies on, and
+Supporting ``openspec/changes/archive/2026-11-27-rar-synthetic-archives``. Instead of
+handing ``unrar`` the original archive and a ``-n`` include mask, archivey would write a
+small RAR holding only what the read needs: a signature, a made-up MAIN header, the
+member's own FILE header (patched), its packed bytes copied verbatim, and an ENDARC
+header. This script checks that ``unrar`` accepts every shape the design relies on, and
 times the read against today's masked read of the original.
 
 Two parts:
