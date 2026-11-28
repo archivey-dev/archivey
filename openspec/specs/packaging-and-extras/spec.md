@@ -310,9 +310,9 @@ A name that left the root in 0.6.0 SHALL still work as `archivey.<name>` for the
 series, with a `DeprecationWarning` that names its submodule and points at the
 caller's line (DR-12a); 0.7.0 removes that spelling. The experimental `PluginContainer`
 and `PluginStream` left the root with no deprecation release. A name that left
-`archivey.core.__all__` follows the same rule, except `ArchiveyConfig`,
-`DEFAULT_ARCHIVEY_CONFIG` and `FormatInfo`, which `archivey.core`'s signatures name and
-which stay importable from it, with no warning, through 0.6.
+`archivey.core.__all__` follows the same rule, except `ArchiveyConfig` and
+`FormatInfo`, which `archivey.core`'s signatures name and which stay importable from
+it, with no warning, through 0.6.
 
 A public class SHALL be defined in a public module, so its own `__module__` is a
 stable public path, `inspect.getsource` works on it, and data a caller persists does

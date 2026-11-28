@@ -246,8 +246,8 @@ A `filter` sees each member before these checks run, so it can rename one they w
 exception: there the checks also run on each member's name as it arrives, before its data is kept,
 so a member they refuse fails even if the filter renames it. Device files are refused whatever
 the filter does, and a link pointing outside is refused unless the filter also changes its target.
-`archivey.paths.sanitize_names` is a ready-made filter for this, passed as `filter=` to
-`extract_all`. It drops a leading `/` or drive letter, resolves or drops `..`, removes those
+`sanitize_names`, from `archivey.paths`, is a ready-made filter for this, passed as `filter=`
+to `extract_all`. It drops a leading `/` or drive letter, resolves or drops `..`, removes those
 reordering characters, and adds `_` to names Windows reserves, such as `CON`. In a symlink's target
 it makes only the character and reserved-name fixes, and it leaves a hard link's target unchanged.
 It does not rewrite a `\`, a control character or bytes that are not UTF-8, which `STRICT` refuses:
