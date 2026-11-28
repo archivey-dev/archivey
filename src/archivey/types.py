@@ -2579,8 +2579,6 @@ class ExtractionResult:
     the member's times were applied."""
 
 
-#: The public names of this module. The most used of them are also re-exported at
-#: the package root (see archivey.__all__).
 # Public as ``archivey.formats.PasswordConfirmVerdict``. It is defined here, in a
 # public module, so its ``__module__`` (which ``pickle`` records) is a stable path, and
 # here rather than in ``archivey.formats`` because the password code under
@@ -2604,7 +2602,8 @@ class PasswordConfirmVerdict(Enum):
     INCONCLUSIVE = "inconclusive"
 
 
-# The public names of this module. Importable names left out on purpose: the
+# The public names of this module; the most used are also re-exported at the package
+# root (``archivey.__all__``). Importable names left out on purpose: the
 # ``EXTRA_*`` key constants (``ArchiveMember.extra`` says why) and the ``…Str`` literal
 # aliases of the enums, which spell out the strings a signature accepts and are typing
 # aids rather than API; ``BackendKindStr`` is listed because ``BackendUse.kind`` holds one.
