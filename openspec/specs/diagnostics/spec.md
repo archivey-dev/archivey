@@ -210,8 +210,9 @@ unchecked was delivered.
 
 `DiagnosticSummary` snapshots SHALL expose `total_count`, exact per-code `counts`,
 retained occurrences in emission order, and `dropped_count`. Counts include every
-emitted event regardless of disposition/retention. `dropped_count` = aggregate
-occurrences not retained.
+emitted event regardless of disposition/retention, so they add up to `total_count`,
+and the constructor SHALL refuse counts that do not with `ArchiveyUsageError`.
+`dropped_count` = aggregate occurrences not retained.
 
 Each standalone detection, reader lifetime, top-level extraction, or standalone
 stream SHALL enforce one `ArchiveyConfig.max_retained_diagnostic_references`

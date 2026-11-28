@@ -2021,7 +2021,8 @@ class DiagnosticSummary:
     counts: Mapping[DiagnosticCode, int] = field(
         default_factory=lambda: MappingProxyType({})
     )
-    """The exact count for each code, ignored ones included."""
+    """The exact count for each code, ignored ones included. They add up to
+    ``total_count``, and the constructor refuses counts that do not."""
 
     retained: tuple[Diagnostic, ...] = ()
     """The diagnostics kept in full, in the order they were emitted. Ignored codes are
@@ -2035,12 +2036,12 @@ class DiagnosticSummary:
         object.__setattr__(self, "counts", _freeze_mapping(self.counts))
         counted = sum(self.counts.values())
         if counted != self.total_count:
-            # A summary pickled before 0.6.0 that counted two codes since merged into
-            # one: pickle builds its counts with one key for both, so one count is lost.
-            raise ValueError(
+            # Also how a summary pickled before 0.6.0 that counted two codes since
+            # merged into one arrives: pickle builds its counts with one key for both.
+            raise _UsageValueError(
                 f"DiagnosticSummary counts add up to {counted}, not total_count="
-                f"{self.total_count}. A summary pickled by archivey before 0.6.0 cannot "
-                "be restored when it counted two codes that 0.6.0 merged."
+                f"{self.total_count}. A summary pickled before 0.6.0 that counted two "
+                "codes 0.6.0 merged cannot be restored."
             )
 
     @override

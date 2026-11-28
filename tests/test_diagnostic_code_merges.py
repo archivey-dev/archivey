@@ -224,9 +224,14 @@ def test_an_old_pickle_whose_codes_merged_is_refused() -> None:
     )
     with (
         pytest.warns(DeprecationWarning),
-        pytest.raises(ValueError, match="total_count"),
+        pytest.raises(ArchiveyUsageError, match="total_count"),
     ):
         pickle.loads(data)
+
+
+def test_a_summary_whose_counts_miss_its_total_is_refused() -> None:
+    with pytest.raises(ArchiveyUsageError, match="add up to 0, not total_count=1"):
+        DiagnosticSummary(total_count=1)
 
 
 def test_an_old_pickle_with_one_code_per_group_still_loads() -> None:

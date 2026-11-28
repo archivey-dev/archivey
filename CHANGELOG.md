@@ -56,8 +56,9 @@ line. How to write the entry: see
   whose method or offset differs. A policy that ignores one old code and raises on
   another merged with it, such as `MEMBER_LOCAL_NAME_DIFFERS` and
   `MEMBER_LOCAL_METHOD_DIFFERS`, now raises `ArchiveyUsageError`: pick one for the
-  merged code. A `DiagnosticSummary` pickled by an earlier version that counted two
-  codes merged into one no longer loads.
+  merged code. `DiagnosticSummary` refuses counts that do not add up to its
+  `total_count`, so one pickled by an earlier version that counted two codes merged
+  into one no longer loads.
 - **Breaking:** `from archivey import *` and `from archivey.core import *` bind only the
   names their `__all__` lists now, 31 and 6, with no warning about the others. Import a
   moved name by name, from its submodule (see Deprecated).
