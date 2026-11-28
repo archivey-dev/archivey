@@ -159,8 +159,21 @@ choice).
   the rest of the payload drained after the CPIO ends, and a mismatch raises
   `CorruptionError`. A payload file, or a hard link's target, that extracts outside its
   folder (`../Bom`, `a/../../Scripts/x`) is refused: it would replace another member of
-  the package. Symlinks inside a payload are not followed for that check; extraction's
-  own link checks apply.
+  the package. So is a file under a symlink of the payload (`l -> ..`, then `l/Bom`):
+  archivey's extraction refuses a path through a symlink it created, but a caller
+  writing files from `stream_members()` would write through it, so the listing holds
+  the border as a `.deb` does. The payload is read with
+  `ReaderContext.open_nested(under=)`, and core follows its symlinks. Until the deb
+  port moved that check into core, pkg checked names and hard links only. And no other
+  XAR member may land in a payload's folder (a XAR directory `Payload/` beside the
+  payload file, holding `l/Bom`): pkg knows every payload folder from the table of
+  contents before it lists anything, and refuses such a member, compared with
+  `extracted_segments` and folded with `collision_key`, before or after the payload.
+  Another payload is such a member too: each payload's symlinks are checked against its
+  own files only, so pkg refuses two payloads at one folder (two XAR files `Payload`)
+  and a payload inside another's folder (a file `Payload` with a child `Scripts`). A
+  component folder that is no folder (`../x`, `x\..\y`, `C:`) keeps its `Payload` as
+  the file it is.
 - **Opening a file.** `open_member` opens the payload again and calls `open_nested`,
   which yields the one span asked for (`format-plugins`, "An indexed reader reads an
   archive stored inside its archive"). The adapter mutes the inner reader's reports on
