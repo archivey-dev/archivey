@@ -109,7 +109,6 @@ if TYPE_CHECKING:
     from archivey.internal.kernels import KernelLease
     from archivey.internal.nesting import NestDraws
     from archivey.internal.resource_usage import ResourceUsageRecorder
-    from archivey.types import OptionalLibrary
 
 __all__ = [
     "CodecCall",
@@ -1018,8 +1017,9 @@ class ReaderContext:
             crc = context.speedup("crc16_arc") or my_crc16
 
         ``None`` when archivey-speedups is not installed, too old for this speedup, or
-        excluded by the caller's library policy, and under
-        ``ProcessIsolation.NATIVE_DECODERS`` when no decoder child can run it. The
+        excluded by the caller's library policy, and, for a decoder (every name but the
+        ``"crc16_arc"`` checksum, which runs in this process under every setting),
+        under ``ProcessIsolation.NATIVE_DECODERS`` when no decoder child can run it. The
         names and their interfaces are in :mod:`archivey.speedups`. archivey gives
         back the decoder child of every object made from the result when the
         reader closes. Another name raises ``ArchiveyUsageError``."""
@@ -1514,12 +1514,6 @@ class Decompressor(Protocol):
         ...
 
 
-def _new_kernel_lease() -> KernelLease:
-    from archivey.internal.kernels import KernelLease
-
-    return KernelLease()
-
-
 @dataclass(frozen=True)
 class CodecCall:
     """What archivey knows about the data one :meth:`CodecHandler.decompressor` call
@@ -1547,16 +1541,6 @@ class CodecCall:
     data declares may raise ``ResourceLimitError`` instead, which detection reads as
     "can't tell". ``None`` for every other read."""
 
-    # What ``speedup()`` needs: the caller's excluded libraries and isolation, and the
-    # objects it handed out, given back when the stream closes. Set by archivey.
-    _excluded: frozenset[OptionalLibrary] = field(
-        default=frozenset(), repr=False, compare=False
-    )
-    _isolated: bool = field(default=False, repr=False, compare=False)
-    _lease: KernelLease = field(
-        default_factory=_new_kernel_lease, repr=False, compare=False
-    )
-
     @overload
     def speedup(self, name: Literal["crc16_arc"]) -> Crc16 | None: ...
     @overload
@@ -1576,11 +1560,19 @@ class CodecCall:
             make = call.speedup("lzw") or my_lzw.Decompressor
 
         archivey gives back the decoder child of every object made from the
-        result when the stream closes."""
+        result when the stream closes, or when ``decompressor()`` raises. The
+        decompressor it returns may compare equal to another, or have no hash: each
+        one gives back only its own."""
         from archivey.internal import kernels
 
+        # archivey attaches the caller's policy to the calls it builds
+        # (``codec_adapter``); a call built by hand asks with the defaults.
+        state = self.__dict__.get("_speedups")
+        if state is None:
+            state = kernels.CallSpeedups(frozenset(), isolated=False)
+            object.__setattr__(self, "_speedups", state)
         return kernels.for_plugin(
-            name, self._excluded, isolated=self._isolated, lease=self._lease
+            name, state.excluded, isolated=state.isolated, lease=state.lease
         )
 
 

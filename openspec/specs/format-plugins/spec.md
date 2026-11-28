@@ -488,12 +488,15 @@ codec off, and `FormatInfo.from_plugin` SHALL be true for a format that uses it.
 
 `ReaderContext.speedup(name)` and `CodecCall.speedup(name)` SHALL return the named fast
 decoder of archivey-speedups when it can run: the package is installed and recent
-enough, the caller's library policy allows it, and, under
-`ProcessIsolation.NATIVE_DECODERS`, a decoder child can run it. Otherwise they SHALL
-return `None`. A name that is not a speedup SHALL raise `ArchiveyUsageError`.
+enough, the caller's library policy allows it, and, for the five decoders, under
+`ProcessIsolation.NATIVE_DECODERS`, a decoder child can run it. The `"crc16_arc"`
+checksum SHALL follow the in-process checksum rule under every isolation setting.
+Otherwise they SHALL return `None`. A name that is not a speedup SHALL raise `ArchiveyUsageError`.
 `archivey.speedups` SHALL name the interface of each speedup. archivey SHALL give back
 the decoder child of each object it handed out when the member stream (for a codec) or
-the reader closes.
+the reader closes, and when the codec's `decompressor()` or the reader's open raises.
+Each decompressor SHALL own what its call handed out, whatever its equality or hash.
+`CodecCall` SHALL keep only its documented fields.
 
 #### Scenario: asking for a speedup
 
@@ -501,7 +504,10 @@ the reader closes.
 | --- | --- |
 | archivey-speedups installed, default config | each name returns a callable |
 | `FormatPolicy(exclude_libraries={"archivey-speedups"})` | each name returns `None` |
-| `ProcessIsolation.NATIVE_DECODERS` | the speedup is asked to run in a decoder child |
+| `ProcessIsolation.NATIVE_DECODERS` | a decoder is asked to run in a decoder child |
+| the same, no decoder child can run | `"crc16_arc"` returns a callable; the decoders return `None` |
+| two live decompressors that compare equal; the first stream closes | only the first one's child is given back |
+| `decompressor()` or the reader's open raises after making an LZW decompressor | the child is given back before the error reaches the caller |
 | `speedup("bcj2")` | `ArchiveyUsageError` |
 | a reader made an LZW decompressor in a decoder child; the reader closes | the child is given back |
 | the same, the object is in this process | nothing is closed |

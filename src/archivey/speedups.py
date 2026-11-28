@@ -6,9 +6,10 @@ archivey-speedups, archivey's optional Rust package, has fast versions of some d
 A plugin asks for one by name with :meth:`archivey.formats.ReaderContext.speedup` or
 :meth:`archivey.formats.CodecCall.speedup`. The call returns the speedup when it can
 run: the package is installed, recent enough, and allowed by the caller's library
-policy, and, under ``ProcessIsolation.NATIVE_DECODERS``, a decoder child can run it.
-Otherwise it returns ``None``, and the plugin uses a Python decoder of its own with the
-same interface::
+policy, and, for a decoder under ``ProcessIsolation.NATIVE_DECODERS``, a decoder child
+can run it. ``"crc16_arc"`` is a checksum, and checksums run in this process under every
+isolation setting. Otherwise it returns ``None``, and the plugin uses a Python decoder
+of its own with the same interface::
 
     make = context.speedup("lzw") or my_lzw.Decompressor
 

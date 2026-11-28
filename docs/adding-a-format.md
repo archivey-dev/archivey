@@ -991,8 +991,10 @@ archivey-speedups, archivey's optional Rust package, has fast versions of some
 decoders. A reader asks for one by name with `context.speedup()`, and a codec with
 `call.speedup()`. The call returns the speedup when it can run, and `None` when it can't:
 the package is not installed or too old, the caller's `FormatPolicy` turns it off, or,
-under `ProcessIsolation.NATIVE_DECODERS`, no decoder child can run it. Keep a Python
-decoder with the same interface for that case:
+for a decoder under `ProcessIsolation.NATIVE_DECODERS`, no decoder child can run it.
+`"crc16_arc"` is a checksum, and checksums run in this process under every isolation
+setting, so that one is not affected. Keep a Python decoder with the same interface for
+the `None` case:
 
 ```python
 make = context.speedup("lzw") or my_lzw.Decompressor
@@ -1004,7 +1006,8 @@ The names are `"crc16_arc"`, `"lzfse"`, `"lzo1x"`, `"lzvn"`, `"lzw"` and `"lzx"`
 raises the same errors as a correct Python decoder of the same interface, so the
 choice changes speed only. When a speedup runs in a decoder child, archivey gives
 the child back when the reader closes (for `context.speedup()`) or when the member
-stream closes (for `call.speedup()`), so the plugin does not close it.
+stream closes (for `call.speedup()`), so the plugin does not close it. It does so too
+when the reader's `open` or the handler's `decompressor()` raises.
 
 ## Replacing a built-in reader
 

@@ -34,14 +34,12 @@ import io
 import lzma
 import math
 import os
-import weakref
 import zlib
 from collections.abc import Callable, Container, Generator, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import (
-    TYPE_CHECKING,
     Any,
     BinaryIO,
     Generic,
@@ -50,9 +48,6 @@ from typing import (
     TypeVar,
     cast,
 )
-
-if TYPE_CHECKING:
-    from archivey.internal.kernels import KernelLease
 
 from archivey.diagnostics import (
     ArchiveEofContext,
@@ -1205,6 +1200,10 @@ class DecompressorStream(ReadOnlyIOStream):
             owned = self._owned_inner
             self._owned_inner = None
             try:
+                # A decoder already made gives back what it holds (a child process).
+                decoder = self.__dict__.get("_decoder")
+                if decoder is not None:
+                    decoder.close()
                 if owned is not None:
                     owned.close()
             except Exception:  # noqa: BLE001, S110 - the refusal below is the error to report
@@ -2782,33 +2781,6 @@ def report_trailing_data(
 _CODECS_PACKAGE = "archivey.internal.streams.codecs."
 
 
-# The kernel objects a plugin codec's decompressor took through ``CodecCall.kernel``
-# (``own_kernels``): a plugin's module is outside the codecs package, so the walk of
-# ``release_decoder_children`` does not look inside it, and this is how it finds them.
-_PLUGIN_KERNELS: weakref.WeakKeyDictionary[object, KernelLease] = (
-    weakref.WeakKeyDictionary()
-)
-
-
-def own_kernels(decompressor: object, lease: KernelLease) -> None:
-    """Note that ``decompressor`` owns the kernel objects of ``lease``, to give back
-    their decoder children when it is released. A decompressor that takes no weak
-    reference (a C type of a library) takes no kernel from archivey either."""
-    try:
-        _PLUGIN_KERNELS[decompressor] = lease
-    except TypeError:
-        pass
-
-
-def _release_plugin_kernels(decoder: object) -> None:
-    try:
-        lease = _PLUGIN_KERNELS.pop(decoder, None)
-    except TypeError:
-        return
-    if lease is not None:
-        lease.release()
-
-
 def release_decoder(decoder: object) -> None:
     """Give back the child process ``decoder`` holds now, and end it now when it is an
     in-process liblzma decoder (``native_memory.end_lzma_decoder``).
@@ -2819,7 +2791,6 @@ def release_decoder(decoder: object) -> None:
     stays leased until that runs. A wrapper (the lz4 picker, the clamped Alone header)
     is looked through as :func:`release_decoder_children` does.
     """
-    _release_plugin_kernels(decoder)
     if getattr(type(decoder), "holds_decoder_child", False):
         cast(Any, decoder).close()
     elif type(decoder) is lzma.LZMADecompressor:
@@ -2840,7 +2811,6 @@ def release_decoder_children(holder: object, depth: int = 3) -> None:
     decoders it finds, which matters on PyPy only (``native_memory.end_lzma_decoder``).
     """
     for value in list(getattr(holder, "__dict__", {}).values()):
-        _release_plugin_kernels(value)
         if getattr(type(value), "holds_decoder_child", False):
             value.close()
         elif type(value) is lzma.LZMADecompressor:

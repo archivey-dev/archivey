@@ -6,17 +6,21 @@ closes."""
 
 from __future__ import annotations
 
+import dataclasses
 import io
+import pickle
 import zlib
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, get_type_hints
 
 import pytest
 
 from archivey import (
     ArchiveyConfig,
+    ArchiveyError,
     ArchiveyUsageError,
+    CorruptionError,
     FormatPolicy,
     MemberType,
     ProcessIsolation,
@@ -283,3 +287,174 @@ def test_the_kernel_types_are_public() -> None:
         "LzxFactory",
     ):
         assert hasattr(public, name), name
+
+
+# --- review round (Codex): ownership per decoder, setup failures, CRC, the record ---
+
+
+class _Equal(ToyDecompressor):
+    """A decoder wrapper with value equality: every one equals every other."""
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _Equal)
+
+    def __hash__(self) -> int:
+        return 0
+
+
+class _Unhashable(ToyDecompressor):
+    __hash__ = None  # type: ignore[assignment]
+
+
+class _EqualToyHandler(ToyHandler):
+    made: ClassVar[type[ToyDecompressor]] = _Equal
+
+    def decompressor(self, call: CodecCall) -> ToyDecompressor:
+        make = call.speedup("lzw")
+        assert make is not None
+        make()
+        return type(self).made()
+
+
+def test_two_equal_decoders_give_back_only_their_own_children(fake_lzw: None) -> None:
+    with registration_scope():
+        register_codec(_EqualToyHandler)
+        first = open_stream(io.BytesIO(_toy_stream()), format=TOY)
+        second = open_stream(io.BytesIO(_toy_stream()), format=TOY)
+        assert first.read() == second.read() == b"hello"
+        first.close()
+        assert [c.closed for c in _FakeChild.made] == [1, 0]
+        second.close()
+    assert [c.closed for c in _FakeChild.made] == [1, 1]
+
+
+def test_an_unhashable_decoder_gives_back_its_children(
+    fake_lzw: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_EqualToyHandler, "made", _Unhashable)
+    with registration_scope():
+        register_codec(_EqualToyHandler)
+        with open_stream(io.BytesIO(_toy_stream()), format=TOY) as stream:
+            assert stream.read() == b"hello"
+    assert [c.closed for c in _FakeChild.made] == [1]
+
+
+class _SetupError(Exception):
+    pass
+
+
+class _FailingToyHandler(ToyHandler):
+    def decompressor(self, call: CodecCall) -> ToyDecompressor:
+        make = call.speedup("lzw")
+        assert make is not None
+        make()
+        raise _SetupError("bad header")
+
+    def translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        if isinstance(exc, _SetupError):
+            return CorruptionError(str(exc))
+        return None
+
+
+def test_a_codec_whose_setup_fails_gives_back_its_children(fake_lzw: None) -> None:
+    with registration_scope():
+        register_codec(_FailingToyHandler)
+        with (
+            pytest.raises(ArchiveyError) as raised,
+            open_stream(io.BytesIO(_toy_stream()), format=TOY) as stream,
+        ):
+            stream.read()
+        # The traceback still holds the call; the children are back all the same.
+        assert raised.value is not None
+        assert _FakeChild.made
+        assert all(c.closed == 1 for c in _FakeChild.made)
+
+
+class _FailingReader(ToyReader):
+    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
+        super().__init__(source, context)
+        make = context.speedup("lzw")
+        assert make is not None
+        make()
+        raise CorruptionError("bad header")
+
+
+class _FailingToyaHandler(ToyaHandler):
+    def open(self, source: ReaderSource, context: ReaderContext) -> ToyReader:
+        return _FailingReader(source, context)
+
+
+def test_a_reader_whose_open_fails_gives_back_its_children(
+    fake_lzw: None, tmp_path: Path
+) -> None:
+    with registration_scope():
+        register_format(_FailingToyaHandler)
+        with pytest.raises(CorruptionError) as raised:
+            open_archive(_toya(tmp_path))
+        assert raised.value is not None
+        assert [c.closed for c in _FakeChild.made] == [1]
+
+
+def test_crc16_runs_in_process_when_no_decoder_child_can_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A checksum runs in this process under every isolation setting, so
+    ``"crc16_arc"`` is handed out under ``NATIVE_DECODERS`` while the decoders,
+    with no decoder child to run them, are not."""
+
+    def crc(data: bytes, value: int = 0, /) -> int:
+        return value
+
+    monkeypatch.setattr(kernels, "kernels", lambda name, excluded: True)
+    monkeypatch.setattr(kernels, "crc16_arc", lambda excluded: crc)
+    monkeypatch.setattr(kernels, "decoding_kernels", lambda *a, **k: None)
+    with registration_scope():
+        register_codec(_AskingToyHandler)
+        register_format(_AskingToyaHandler)
+        with open_archive(_toya(tmp_path), config=_ISOLATED) as archive:
+            archive.members()
+        with open_stream(
+            io.BytesIO(_toy_stream()), format=TOY, config=_ISOLATED
+        ) as stream:
+            assert stream.read() == b"hello"
+    for asked in (_AskingReader.asked, _AskingToyHandler.asked):
+        assert asked.pop("crc16_arc") is crc
+        assert set(asked.values()) == {None}
+
+
+def test_codec_call_stays_a_plain_record() -> None:
+    call = CodecCall(size=5)
+    assert pickle.loads(pickle.dumps(call)) == call
+    assert set(get_type_hints(CodecCall)) == {
+        "size",
+        "properties",
+        "limits",
+        "probe_bound",
+    }
+    assert set(dataclasses.asdict(call)) == {
+        "size",
+        "properties",
+        "limits",
+        "probe_bound",
+    }
+
+
+def test_a_stream_whose_setup_fails_closes_the_decoder_it_made() -> None:
+    from archivey.internal.streams.decompressor_stream import DecompressorStream
+
+    class Source(io.BufferedReader):
+        def seekable(self) -> bool:
+            raise OSError("gone")
+
+    closed: list[bool] = []
+
+    class Decoder:
+        def close(self) -> None:
+            closed.append(True)
+
+    with pytest.raises(OSError, match="gone"):
+        DecompressorStream(
+            Source(io.BytesIO(b"x")),
+            make_decoder=lambda point, inner: Decoder(),  # type: ignore[arg-type,return-value]
+        )
+    assert closed == [True]

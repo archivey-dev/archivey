@@ -27,6 +27,7 @@ from archivey.internal.format_args import (
     add_plugin_spellings,
     plugin_spelling_clash,
 )
+from archivey.internal.kernels import CallSpeedups, KernelLease
 from archivey.internal.overrides import override
 from archivey.internal.registry import _optional, get_registry
 from archivey.internal.resource_usage import handler_name
@@ -35,7 +36,6 @@ from archivey.internal.streams.codecs.base import (
     StreamCodec,
 )
 from archivey.internal.streams.codecs.registry import add_stream_codec, stream_codecs
-from archivey.internal.streams.decompressor_stream import own_kernels
 from archivey.types import (
     ArchiveFormat,
     BackendKindStr,
@@ -123,16 +123,52 @@ class PluginCodec(StreamCodec):
 
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
+        speedups = CallSpeedups(
+            config.excluded_libraries, isolated=config.natives.isolated
+        )
         call = codec_call(params, config)
-        decompressor = self.handler.decompressor(call)
-        # The kernel objects the handler took through ``call.speedup()`` are given
+        object.__setattr__(call, "_speedups", speedups)
+        try:
+            decompressor = self.handler.decompressor(call)
+        except BaseException:
+            # A traceback can keep what the handler made alive: give it back now.
+            speedups.lease.release()
+            raise
+        # What the handler took through ``call.speedup()``, now or later, is given
         # back when the stream releases this decompressor (``release_decoder``).
-        own_kernels(decompressor, call._lease)
-        return decompressor
+        return LeasedDecompressor(decompressor, speedups.lease)
 
     @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
         return self.handler.translate_exception(exc)
+
+
+class LeasedDecompressor:
+    """A plugin codec's decompressor, and the lease of the speedups its handler took
+    for it. It passes every attribute through to the decompressor. Its
+    ``close()`` gives back those speedups' decoder children, and the stream calls it
+    when it releases its decoder (``release_decoder``, ``release_decoder_children``
+    in decompressor_stream.py look for ``holds_decoder_child``). The lease belongs to
+    this object, so two decompressors that compare equal, or one that cannot be
+    hashed, each give back their own."""
+
+    __slots__ = ("_lease", "_plugin")
+
+    holds_decoder_child = True
+
+    def __init__(self, plugin: Decompressor, lease: KernelLease) -> None:
+        self._plugin = plugin
+        self._lease = lease
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        return self._plugin.decompress(data, max_length)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._plugin, name)
+
+    def close(self) -> None:
+        """Give back the decoder children of the speedups the handler took."""
+        self._lease.release()
 
 
 def codec_call(params: CodecParams, config: StreamConfig) -> CodecCall:
@@ -146,8 +182,6 @@ def codec_call(params: CodecParams, config: StreamConfig) -> CodecCall:
         properties=params.properties,
         limits=config.decoder_limits,
         probe_bound=config.probe_read_bound,
-        _excluded=config.excluded_libraries,
-        _isolated=config.natives.isolated,
     )
 
 

@@ -35,6 +35,7 @@ from archivey.internal.kernels._select import (
     kernels,
     panic_of,
 )
+from archivey.internal.overrides import override
 from archivey.speedups import (
     BlockDecompress,
     Crc16,
@@ -372,8 +373,8 @@ def _apple_lz(
 
 
 class KernelLease:
-    """The kernel objects one plugin call site was handed (``ReaderContext.kernel``,
-    ``CodecCall.kernel``), so that :meth:`release` gives back their decoder children
+    """The kernel objects one plugin call site was handed (``ReaderContext.speedup``,
+    ``CodecCall.speedup``), so that :meth:`release` gives back their decoder children
     when the reader or the stream closes, not when the collector frees them.
 
     It keeps weak references: an object the plugin drops is freed, and its child given
@@ -402,6 +403,32 @@ class KernelLease:
         for made in list(self._made):
             self._made.discard(made)
             made.close()
+
+
+class CallSpeedups:
+    """What :meth:`archivey.formats.CodecCall.speedup` needs for one
+    ``decompressor(call)``: the caller's excluded libraries and isolation, and the
+    lease of what it hands out. archivey attaches it to the call it builds, outside
+    the record's fields, so the record pickles, converts and resolves its type hints
+    as a plain dataclass does."""
+
+    __slots__ = ("excluded", "isolated", "lease")
+
+    def __init__(self, excluded: frozenset[OptionalLibrary], *, isolated: bool) -> None:
+        self.excluded = excluded
+        self.isolated = isolated
+        self.lease = KernelLease()
+
+    @override
+    def __reduce__(self) -> tuple[Any, ...]:
+        # A copy asks with the same policy and owns what it hands out itself.
+        return (_call_speedups, (self.excluded, self.isolated))
+
+
+def _call_speedups(
+    excluded: frozenset[OptionalLibrary], isolated: bool
+) -> CallSpeedups:
+    return CallSpeedups(excluded, isolated=isolated)
 
 
 def for_plugin(

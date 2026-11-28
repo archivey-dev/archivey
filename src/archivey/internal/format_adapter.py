@@ -362,9 +362,14 @@ class _PluginAdapter(BaseArchiveReader):
         context._keep_metadata = self._listing_tracker.keep
         if self._listing_decode is not None:
             context._listing_draw = self._listing_decode.draw
-        # Its kernel objects' decoder children are given back at close.
+        # Its speedups' decoder children are given back at close, or here when the
+        # open fails: a traceback can keep what the reader made alive.
         self._context = context
-        self._reader = self._open_reader(context)
+        try:
+            self._reader = self._open_reader(context)
+        except BaseException:
+            context._release_kernels()
+            raise
         self._reader_open = True
         # What kept the first ``info`` from being published at open
         # (``_validate_at_open``), if anything.
