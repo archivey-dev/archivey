@@ -55,8 +55,9 @@ that other formats use, and solve the import cost with the same mechanism.
   every format replaces the per-key overloads in core.
 - **Format options.** A format that has settings of its own ships a frozen options
   class with plain-value fields, passed in `ArchiveyConfig(format_options=...)` and
-  named on its manifest entry. `ZipOptions` and `RarOptions` replace the four
-  per-format fields of `ArchiveyConfig`, through the config trim of 0.6.0 (R24).
+  named on its manifest entry. The per-format fields of `ArchiveyConfig` become
+  options classes of the formats that own them, through the config trim of 0.6.0
+  (R24).
 - **Test kit.** The shared reader checks become a public module with the pilot
   package, `archivey.testing` unless another name is chosen then (R19).
 - **Process isolation for package codecs.** A codec names its native object, and
