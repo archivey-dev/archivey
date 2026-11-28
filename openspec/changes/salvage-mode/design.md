@@ -205,12 +205,13 @@ Choices the decisions above left open, made while building PR 1:
   `parent=` is taken (`nesting.joining`). `open_archive` and `ReaderContext.open_nested`
   are the two openers; no `open_read` signature changed. A reader reads
   `self._salvage_mode` (`SalvageState`): `.enabled`, `.limits`.
-- **Nested readers** are built forward-only (`streaming=True` over the member's
-  stream). One search reads forward, so it can run there. Going back after it, into
-  the data of an unconfirmed member, is the format's call: TAR holds up to 4 MiB of
-  it, and CPIO and ar on a forward-only reader record `SALVAGE_UNAVAILABLE` with
-  `reason="forward_only_reader"` (a format with no search at all records
-  `reason="no_salvage_search"`).
+- **Nested readers** are built forward-only (`streaming=True` over the member's stream),
+  except a deb's tars on a plain file, which the TAR PR's second step reads with random
+  access (see "the two-pass rule" below). One search reads forward, so it can run there.
+  Going back after it, into the data of an unconfirmed member, is the format's call: TAR
+  holds up to 4 MiB of it, and CPIO and ar on a forward-only reader record
+  `SALVAGE_UNAVAILABLE` with `reason="forward_only_reader"` (a format with no search at
+  all records `reason="no_salvage_search"`).
 - **Walks.** The reader's `SalvageState` holds the listing walk's budget, records and
   layer positions. A listing walk started over calls `restart()`. Another walk from
   the start (to reach a member's data, possibly beside the listing walk) searches with
@@ -264,13 +265,17 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
   The search's start puts back what the chain changed (the PAX global records), and a
   confirmation keeps it. A member is confirmed only when the block after its data passes
   the search's own checks, or is the clean end. A member a forward-only walk trusts
-  (below) is confirmed when the walk reads that block, on the same checks. So a found
-  `g` header counts for later members only once its member is confirmed (davi,
-  2026-11-26). The `g` header still applies to its own unconfirmed member, and that
-  member's `MEMBER_FOUND_BY_SCAN` message says so. This departs from GNU tar on purpose:
-  GNU tar `--ignore-zeros` applies such a header to later members, but a chain with no
-  confirmed member is noise. A `g` header the walk itself reaches applies to later
-  members as in GNU tar.
+  (below) is confirmed when the walk reads that block, on the same checks. The two-pass
+  walk on a codec stream keeps the rule: a gap is a search the first pass defers, so it
+  keeps the state that search would start from (before an unconfirmed member's chain),
+  and pass 2 starts each gap from it; the re-walk after a gap carries a re-read chain's
+  records to the next held member only when that member is confirmed or the walk reached
+  it. So a found `g` header counts for later members only once its member is confirmed
+  (davi, 2026-11-26). The `g` header still applies to its own unconfirmed member, and
+  that member's `MEMBER_FOUND_BY_SCAN` message says so. This departs from GNU tar on
+  purpose: GNU tar `--ignore-zeros` applies such a header to later members, but a chain
+  with no confirmed member is noise. A `g` header the walk itself reaches applies to
+  later members as in GNU tar.
 - **A found chain hits a limit only for what the archive can hold.** A found header's
   numbers may be noise. When a charge against `max_metadata_bytes` fails for data a
   found header claims (an extended header's data, a PAX 1.0 sparse map's entry count)
@@ -297,36 +302,139 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
   it (CPIO's variant). TAR does not read it: a first header that does not parse is
   damage at offset 0 under salvage, whatever the detection said, and the search runs at
   open, so a file with no header still fails at open.
-- **A forward-only walk** (a nested reader such as a deb's `data.tar`) reads through a
-  window that, from the first search on, keeps the last 4 MiB (the pipe span) it
-  read, so the search inside an unconfirmed member's data reads that data again and
+- **A forward-only walk** (a nested reader such as a makeself payload's TAR) reads
+  through a window that, from the first search on, keeps the last 4 MiB (the pipe span)
+  it read, so the search inside an unconfirmed member's data reads that data again and
   the walk goes back to the found header. Bytes it read past and no longer keeps (the
   damaged block itself, data read further than the span) read as zeros, which never
-  pass. A compressed TAR's walk reads its codec stream through the same window from
-  the first search on, because a seek back on a codec stream decodes again from a
-  restart point.
-- **Confirmation is bounded on a layer that is costly to go back on.** A plain file
-  seeks, so any size is confirmed. A forward-only walk looks at the block after a
-  member's data only when it is within the 4 MiB span of where the walk stands (the pipe
-  span). Past that span, a found member's size is trusted, as GNU tar reads a pipe: it
-  is listed unconfirmed, its data reads in full through the walk, and the walk goes on
-  from where the size points. When the block there does not confirm it, or the stream
-  ends before it (the data then ends quietly there, as a held read does), the search
-  goes back inside the member's data, from the first byte the walk's window still keeps,
-  which is at most 4 MiB before where the read ended. So a real member bigger than the
-  span reads whole and a tar stored in it is not listed, and a size that lies by more
-  than the span loses the members whose headers are in all but the last 4 MiB of the
-  read. This fallback stays for forward-only walks: such a walk cannot see the block
-  after the data, so it trusts the size and reads on. A codec stream confirms past the
-  span by decoding forward to the block, which the walk decodes next anyway when the
-  member is confirmed. That look is free for a member the
-  walk reached, whose walk goes on from the block whatever it holds, and for a found
-  member that it confirms. When it fails for a found member, the search goes back into
-  the data and decodes again from a restart point, so the failed looks share a budget:
-  their offsets may add up to the furthest offset the walk has decoded, and past that a
-  found member's look is capped at the span. The clean-end check reads each byte once
-  per walk: an end more than the 1 MiB scan away answers without a read, and the zeros
-  before the end are scanned once.
+  pass. A compressed TAR's walk reads its codec stream through the same window from the
+  first search on, because a seek back on a codec stream decodes again from a restart
+  point.
+- **Confirmation on a layer that is costly to go back on: the two-pass rule**
+  (maintainer ruling, 2026-11-22, project thread). A plain file seeks, so any size is
+  confirmed. A codec stream (`.tar.gz`, `.tar.xz`, ...) seeks back by decoding again
+  from a restart point, so a salvage walk there makes two passes, not one restart per
+  found member:
+  - **Pass 1** reads the layer forward once. It trusts each found member's size and
+    looks for a header where the size points; reading forward always reaches that
+    block, so the look costs nothing, and the walk reads it through its window,
+    which keeps the last 4 MiB before it. When the block confirms the member, the
+    walk goes on from there. When it does not, the search goes on from the first
+    byte the window still keeps, and the found member's data before that byte is a
+    gap: pass 1 records it and does not search it.
+  - **Pass 2** runs once pass 1 has ended, when pass 1 recorded a gap. It goes back
+    to the first gap (one restart of the decode) and reads forward, searching only
+    inside the gaps, in order, each search bounded by its gap's end. A member found
+    there is checked as in pass 1 while the block after its data is inside the gap
+    or within 4 MiB; a block past the gap and the hold is not decoded to: it
+    confirms the member when pass 1 listed a member at that offset or found the
+    clean end there. A search pass 2 would need behind where it stands searches the
+    4 MiB window it keeps (option (b) of PR 1768), never a third pass.
+  - **The listing** keeps archive order: the members pass 1 lists after its first
+    gap are held until pass 2 has searched the gaps, then listed with pass 2's in
+    order of their offsets. Each byte is examined once per layer: a gap is a range
+    pass 1's search position stepped over without examining it, and pass 2 searches
+    it under `SalvageState.revisiting`. A held member counts against the listing
+    limits from when it is held (`ListingLimitTracker.hold`, at least the metadata its
+    member keeps), so a listing that crosses a limit stops at that member, as a
+    one-pass walk does. Pass 2 starts each gap with the state a search from its start
+    has in a one-pass walk (the PAX global records), kept with the gap: a global header
+    pass 1 read later applies only to what follows it.
+  - **The re-walk after a gap** (maintainer ruling, review round 4 of PR 1774, K10;
+    round 5, K12). Pass 2 learns two things pass 1 could not know, and both change
+    how the one pass reads the held members. A global header inside a gap reaches
+    only pass 2, so the held members were parsed with older records. And a member
+    pass 2 confirms may end where the one pass goes on: the held members before
+    that end are inside its data and dropped, and the chain there is reached, not
+    found by a search, so it is not provisional (a `g` header in it applies to later
+    members, and a member pass 1 found there is listed as reached). The re-walk
+    decides the held members again, in order, from that point, with the same check
+    the passes use (`_check_found`), each found chain provisional as in pass 1. A
+    member it confirms makes the next chain reached in turn; when the one pass
+    would reach a chain pass 1 passed over as noise, the re-walk reads it, so a `g`
+    header in it applies. It stops at the first held member that it reaches in the
+    state pass 1 read it in (the same records, and reached or found as there), or at
+    the next gap's start, whose search then starts from the records the re-walk
+    ended with. It reads forward from where pass 2 stands, so it decodes nothing a
+    second time, and the layer still decodes at most twice. **Limits:** the re-walk
+    stops, and pass 1's later members keep its decisions, when a chain no longer
+    makes a member, when a reached chain makes a member pass 1 did not list, when
+    it starts before what the window keeps, or when a confirmed end lies past the
+    next gap's start. A header pass 1 read as data inside a member that is now
+    confirmed is not looked at again, and the re-walk records no new gap. With the
+    search taking v7 and ustar headers everywhere, pass 1's searches no longer depend
+    on what pass 2 lists in a gap: 2000 generated ustar archives, 500 all-v7 and 500
+    mixed ones list the same plain and gzipped (2026-11-26; 13 of the 500 mixed ones
+    differed under the v7 rule).
+  - Total decode: two passes over the layer, whatever the member count (about
+    1.1 to 2 times the compressed size on the test shapes: 40 found members that
+    each claim 6 MiB, 20 that claim 12 MiB, 300 dense ones that claim 16 MiB). This
+    replaces the per-look budget of PR 1768 (`_far_look_allowed` / `_far_spent`,
+    review round 3, K5/K7). The look past the hold reads forward to the block
+    (`_Window.skip_to`) and stops at the stream's end: a seek past the end counted
+    as decoded bytes, and the ratio guard stopped a listing whose found member
+    claimed 8 MiB past the end.
+- **A reached member that nothing confirms.** A member the walk reaches after a
+  found one is treated as a found member that nothing confirms, and the search goes
+  inside its data, when its size points past the archive's end as far as the walk
+  knows it (a file's size, or where a read of the stream came back short), or when
+  the block at its claimed end is not a header (round 2 of PR 1774; the same on the
+  base PR: `a, m0, liar` lost the members inside the liar's claim). The walk does
+  not step to where its size points. In the second pass, a reached member that what
+  pass 1 listed does not confirm is searched inside too. A search from an offset at
+  or past the end finds nothing. A forward-only walk trusts a reached member's size
+  past the hold as it trusts a found one's. The default walk does not change: this
+  applies only past the default end.
+- **How the window moves forward on a codec stream** (round 2 of PR 1774, K5/K6). Past
+  what it holds, the window seeks the codec only when a restart point lies between where
+  the stream stands and the offset (`RestartPoints.jumps`, answered by
+  `_DecodeThroughSkips` from the decoder's own `nearest_resume_offset`): the seek then
+  skips decoding the bytes in between and keeps none of them. Otherwise a seek would
+  decode those bytes anyway, so the window reads through and keeps the 4 MiB hold. A
+  seek back to a gap's start is cheap, and pass 1 records no gap there, once a seek has
+  jumped a restart point (`_Window.indexed`) and the restart point the codec gives for
+  that offset (`RestartPoints.resume_before`) is at most 4 MiB before it
+  (`TarWalker.rewind_cheap`). The restart point is asked for each gap: the codec picks
+  one for each target, so one cheap seek says nothing of the next. Either move stops at
+  the stream's end: `_DecodeThroughSkips.seek` reads to the restart point's offset or
+  through, and returns where the stream ended rather than seeking past it, since a seek
+  past the end counts bytes no decoder produced and the ratio guard refuses them. The
+  default walk uses the same handle, so a `.tar.gz` whose last size points past the end
+  now ends in `TruncatedError`, as the plain tar does, where it raised the ratio error
+  before. A read right after a seek that comes back empty says the stream ends at or
+  before that offset (`_Window.ended_by`). The decoder reads a file's own index (a BGZF
+  scan, a Seekable Zstandard seek table) only on declared seek demand, and the plain
+  resume query does not build it, so in a TAR walk the restart points ahead are the ones
+  a decode already found: in pass 2, after pass 1 decoded the layer. The default walk
+  asks the same question, so neither walk jumps more than base did.
+- **A deb's tars on a plain file** read with random access. A deb opened with random
+  access hands its control and data tars to `open_nested` as seekable views of the
+  file (`ForwardStream._take_view`, internal: the public `take()` contract does not
+  change), and the inner reader is built without `streaming=True`. The view is taken
+  only when the file holds the bytes the ar header gives; a tar cut short is read
+  through `take()`, which raises `TruncatedError` at the cut. A plain data.tar
+  then confirms as the plain `.tar` does, so a deb's data.tar lists exactly what the
+  same tar lists; a compressed one follows the two-pass rule. The inner reader's
+  limits are the outer one's as before: its listing tracker charges outward, its
+  decoders share `max_decoder_memory` (`_nested_config`), its codec stages charge
+  `max_decoded_bytes`. The outer walk resumes after the view's bytes by its own
+  position (`_end_take` skips them), not by where the inner reader left the file.
+  The outer walk no longer drains such a member's data: the inner reader reads it
+  by offset when asked, as a `data_on_demand` reader's (`_NestedData.on_demand`).
+  So a plain data.tar's stored bytes are no longer drawn from `max_decoded_bytes`
+  during the listing, as for the same plain `.tar`. A forward-only walk keeps the
+  4 MiB hold (option (b)): a deb read with `streaming=True` or nested in another
+  reader, a makeself payload (its bytes are hashed as they pass, so a view does not
+  fit cheaply), a pkg payload. Such a walk trusts a found member's size past the
+  span, as GNU tar reads a pipe: it is listed unconfirmed, its data reads in full
+  through the walk, and the walk goes on from where the size points. When the
+  block there does not confirm it, or the stream ends before it, the search goes
+  back inside the member's data from the first byte the walk's window still keeps.
+  So a real member bigger than the span reads whole and a tar stored in it is not
+  listed, and a size that lies by more than the span loses the members whose
+  headers are in all but the last 4 MiB of the read. The clean-end check reads each
+  byte once per walk: an end more than the 1 MiB scan away answers without a read,
+  and the zeros before the end are scanned once.
 - **An unconfirmed found member's data, on a forward-only walk,** when the block
   after it is within the span and does not confirm it, is read from the window
   without moving the walk, and ends quietly where the stream ends: its size is not

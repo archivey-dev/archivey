@@ -528,7 +528,7 @@ class DebReader(SequentialReader):
                     raise CorruptionError(
                         "Debian package has no control.tar member after debian-binary"
                     )
-                yield from self._control(stream.take(size), fmt)
+                yield from self._control(stream._take_view(size), fmt)
                 control = True
             else:
                 fmt = _tar_format(name, b"data", _DATA_STREAMS)
@@ -536,7 +536,7 @@ class DebReader(SequentialReader):
                     raise CorruptionError(
                         "Debian package has an unexpected member before its data.tar"
                     )
-                yield from self._data(stream.take(size), fmt)
+                yield from self._data(stream._take_view(size), fmt)
                 # dpkg-deb reads no further: members after the data tar are not part
                 # of the package.
                 return

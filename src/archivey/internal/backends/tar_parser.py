@@ -55,7 +55,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
-from typing import BinaryIO, Literal, cast
+from typing import BinaryIO, Literal, Protocol, cast
 
 from archivey.exceptions import (
     ArchiveyError,
@@ -1327,7 +1327,8 @@ class _Charger:
     one budget. The limit message names the member once :meth:`name_member` has
     given its name, and "a TAR member" before.
 
-    ``lacks`` is set for a chain a salvage search found (:meth:`TarWalker._ends_before`):
+    ``lacks`` is set for a chain a salvage search found
+    (:meth:`TarWalker._ends_before`):
     see :meth:`claim`."""
 
     __slots__ = ("_lacks", "_name", "_raw_name", "cap", "left")
@@ -1479,6 +1480,7 @@ class TarWalker:
         end: int | None = None,
         source_seekable: bool = False,
         rewind_costly: bool = False,
+        restarts: RestartPoints | None = None,
     ) -> None:
         self._stream = stream
         self._seekable = seekable
@@ -1492,6 +1494,9 @@ class TarWalker:
         # codec stream): salvage reads it through a window (:meth:`_window`), as it
         # reads a forward-only one.
         self._rewind_costly = rewind_costly
+        # The codec stream's restart points (bgzip, Seekable Zstandard): a move past
+        # the window that one lets skip decoding seeks, and keeps nothing behind.
+        self._restarts = restarts
         # Byte length of the archive when it is a fact (a plain file). A read is then
         # clamped to what the file holds, so one member is one read. Unknown (a
         # compressed stream, a test buffer) keeps the stepped read.
@@ -1534,6 +1539,9 @@ class TarWalker:
         # 100-byte name field (no NUL in it).
         self._found_at = -1
         self.found_name_full = False
+        # The PAX global records in force where the last chain read starts: what a
+        # salvage re-walk compares (TarReader._rewalk).
+        self.chain_records = GlobalRecords(self._global, self._global_view, False)
         # Where the block after the data of a found member whose size the walk
         # trusted starts (salvage_confirms): that block confirms the member only if
         # it passes the search's checks.
@@ -1547,9 +1555,9 @@ class TarWalker:
         # (end, start, exact): the bytes from start to end are all zero, and with
         # exact the byte before start is not (:meth:`_zeros_before`).
         self._zero_tail: tuple[int, int, bool] | None = None
-        # A codec walk's looks past its hold that failed and sent the search back
-        # into a found member's data, as the sum of their offsets (salvage_confirms).
-        self._far_spent = 0
+        # Whether the last salvage_confirms decoded forward past the hold to look
+        # (a codec walk): its window then keeps the last hold before the block.
+        self.looked_far = False
         # A forward-only walk: the furthest offset of the bytes the data of members
         # nothing confirms has handed out (open_held_data), which each count once.
         self._held_drawn_to = 0
@@ -1717,7 +1725,12 @@ class TarWalker:
     # Salvage (open_archive(salvage=True)) --------------------------------------
 
     def salvage_search(
-        self, state: SalvageState, start: int, *, layer: str
+        self,
+        state: SalvageState,
+        start: int,
+        *,
+        layer: str,
+        end: int | None = None,
     ) -> SearchResult:
         """Search forward from ``start`` for the next header that passes
         :func:`passes_header_search`, and put the walk there when one does.
@@ -1731,24 +1744,26 @@ class TarWalker:
         header within them. Bytes a forward-only walk has read past and no longer
         keeps are not searched: they read as zeros, which never pass. With a header
         found, the walk's next :meth:`next_entry` parses it as it parses any header.
+        ``end`` bounds the search: the second salvage pass searches one range the
+        first pass stepped over (``TarReader._second_pass``).
 
-        A ``start`` past the archive's known end searches nothing: the walk can end
-        there, past a member whose size the archive cuts short, and the shared
-        search takes a start past its end as a bug.
+        A ``start`` at or past the end (``end``, or the archive's known end) searches
+        nothing: the walk can end there, past a member whose size the archive cuts
+        short, and the shared search takes a start past its end as a bug.
         """
+        if self._end is not None:
+            end = self._end if end is None else min(end, self._end)
+        if end is not None and start >= end:
+            # Nothing is left to search: a size that points past the archive's end.
+            return SearchResult(found=None)
         if not self._seekable or self._rewind_costly:
             self._window().keep_behind(_FORWARD_HOLD)
-        if self._end is not None:
-            # A start built from a size the archive gives (where the walk ended
-            # past a member whose data the archive cuts short) may lie past the
-            # known end: nothing is left to search there.
-            start = min(start, self._end)
         result = search_forward(
             state,
             self._salvage_read,
             tar_header_search(),
             start=start,
-            end=self._end,
+            end=end,
             layer=layer,
         )
         found = result.found
@@ -1787,7 +1802,13 @@ class TarWalker:
         self._held_block = None
         if window is None:
             offset, head = held if held is not None else (self._stream_pos, b"")
-            window = _Window(self._stream, offset, head=head, seekable=self._seekable)
+            window = _Window(
+                self._stream,
+                offset,
+                head=head,
+                seekable=self._seekable,
+                restarts=self._restarts,
+            )
             self._stream = cast(BinaryIO, window)
             self._win = window
         elif held is not None:
@@ -1810,6 +1831,21 @@ class TarWalker:
         self._unchecked_data_end = None
         self._damage_run = 0
         self._confirm_at = None
+
+    def reread_at(self, offset: int) -> bool:
+        """Put the walk at ``offset``, where a chain the walk parsed before starts,
+        to parse it again with other PAX global records (``TarReader._rewalk``).
+        On a codec or forward-only walk, only when that does not go back before
+        what the window keeps, so nothing is decoded again; ``False``, with the
+        walk where it was, otherwise."""
+        if not self._seekable or self._rewind_costly:
+            window = self._window()
+            if offset < window.start:
+                return False
+            window.seek(offset)
+            self._stream_pos = offset
+        self.resume_at(offset)
+        return True
 
     def global_records(self) -> GlobalRecords:
         """The PAX global records in force where the walk stands, to put back with
@@ -1845,59 +1881,93 @@ class TarWalker:
         the zero block before ``pos``, the archive's clean end."""
         return self._clean_tail(pos, BLOCKSIZE) is True
 
-    def salvage_confirms(self, *, searched: bool = False) -> bool | None:
+    def salvage_confirms(self, *, far_to: int | None = None) -> bool | None:
         """Whether the block where the next header starts confirms the member listed
         past the default walk's end: a header that passes the search's own check, or
         the archive's clean end (the end-of-archive marker, then only zeros).
-        ``searched`` says a salvage search found the member; otherwise the normal
-        walk reached it.
 
-        ``None`` on a forward-only walk when the block is more than
-        :data:`_FORWARD_HOLD` bytes past where the walk stands (:meth:`_look_ahead`):
-        nothing can look there before the walk reads the member's data. The reader
-        then trusts the member's size, as GNU tar reads a pipe, and searches the
-        last bytes the window keeps if the block there does not confirm it
-        (:meth:`search_floor`). The walk checks that block when it reads it: one
-        that is not a zero block and does not pass the same checks ends the walk
-        there as a header that does not parse, so a later entry confirms the
-        member only on the checks a look makes.
+        ``None`` when the block is more than :data:`_FORWARD_HOLD` bytes past where
+        the walk stands (:meth:`_look_ahead`) and the walk does not look there: a
+        forward-only walk cannot before it reads the member's data, so the reader
+        trusts the member's size, as GNU tar reads a pipe, and searches the last
+        bytes the window keeps if the block there does not confirm it
+        (:meth:`search_floor`). The forward-only walk checks that block when it
+        reads it: one that is not a zero block and does not pass the same checks
+        ends the walk there as a header that does not parse, so a later entry
+        confirms the member only on the checks a look makes.
 
-        A walk over a codec stream looks further by decoding forward to the block,
-        which the walk decodes next anyway when the member is confirmed. For a
-        member the walk reached, that look is free: the walk goes on from the block
-        whatever it holds. For a member a search found, a look that fails sends the
-        search back into its data, which decodes again from a restart point. So each
-        failed look counts its offset against a budget of the furthest offset the
-        walk has decoded (``_far_spent``); once that is spent, a found member's
-        look is capped at the hold too."""
+        A walk over a codec stream looks past the hold by decoding forward to the
+        block, which it reads next anyway: the first salvage pass reads the layer
+        forward once (design.md, "the two-pass rule"). The window then keeps the
+        last :data:`_FORWARD_HOLD` bytes before the block, and :attr:`looked_far`
+        is set. ``far_to`` bounds that look in the second pass: past it the answer
+        is ``None``, and the reader answers from what the first pass listed.
+        """
+        self.looked_far = False
         if self.end is not None:
             return False
         pos = self._pos
-        far = self._far_look_allowed(pos, charged=searched)
-        if far:
-            # Decode forward to the block: the window then holds what follows it.
-            self._seek(pos)
-        look = self._look_ahead(pos, BLOCKSIZE)
+        if self._far_look(pos) and (far_to is None or pos < far_to):
+            # Decode forward to the block through the window, which keeps the hold
+            # before it for a search, or stops at the stream's end and keeps the
+            # hold before that; a restart point ahead is seeked to (_Window.skip_to).
+            self.looked_far = True
+            window = self._window()
+            window.skip_to(pos, keep=_FORWARD_HOLD)
+            self._stream_pos = window.tell()
+            look: bytes | _HoldExceeded = self._peek(pos, BLOCKSIZE)
+        else:
+            look = self._look_ahead(pos, BLOCKSIZE)
         if isinstance(look, _HoldExceeded):
-            if self._seekable:
-                return False
-            if searched:
+            if not self._seekable:
                 self._confirm_at = pos
             return None
-        confirmed = len(look) == BLOCKSIZE and (
+        return len(look) == BLOCKSIZE and (
             passes_header_search(look)
             or (look == _ZERO_BLOCK and self.zeros_to_end(pos + BLOCKSIZE))
         )
-        if far and searched and not confirmed:
-            self._far_spent += pos
-        return confirmed
+
+    def points_past_end(self) -> bool:
+        """Whether the next header's offset is past the archive's end, as far as the
+        walk knows it: a file's size, or where a read of the stream came back
+        short. Called after :meth:`salvage_confirms`, whose look reads there."""
+        pos = self._pos
+        end = self._end
+        if end is None:
+            end = self._eof_at
+        if end is None and self._win is not None:
+            end = self._eof_at = self._win.eof_at
+            if end is None:
+                end = self._win.ended_by
+        if end is None and self._seekable and self._win is None and pos > 0:
+            # A seekable stream of unknown length: the byte before ``pos`` says.
+            self._seek(pos - 1)
+            return not self._read(1)
+        return end is not None and pos > end
+
+    def rewind_cheap(self, target: int) -> bool:
+        """Whether a seek back to ``target`` decodes little: a plain file, or an
+        indexed codec stream (one whose seek has jumped a restart point,
+        _Window.indexed) with a restart point at most :data:`_FORWARD_HOLD` bytes
+        before ``target``. The codec picks the restart point for each target, so
+        one cheap seek says nothing of the next."""
+        if not self._seekable:
+            return False
+        if not self._rewind_costly:
+            return True
+        win = self._win
+        if win is None or not win.indexed:
+            return False
+        resume = win.resume_before(target)
+        return resume is not None and target - resume <= _FORWARD_HOLD
 
     def search_floor(self, start: int) -> int:
-        """Where a search back into a trusted member's data starts (see
-        :meth:`salvage_confirms`): ``start``, or on a forward-only walk the first
-        byte its window still keeps, if that is later. The window keeps the last
-        :data:`_FORWARD_HOLD` bytes before where the walk's read ended."""
-        if self._seekable or self._win is None:
+        """Where a search back into a member's data starts after the walk read past
+        it (see :meth:`salvage_confirms`): ``start``, or on a forward-only walk or a
+        codec walk the first byte its window still keeps, if that is later. The
+        window keeps the last :data:`_FORWARD_HOLD` bytes before where the walk's
+        read ended."""
+        if self._win is None or (self._seekable and not self._rewind_costly):
             return start
         return max(start, self._win.start)
 
@@ -1932,6 +2002,7 @@ class TarWalker:
         is trusted, an error included.
         """
         chain = _Chain(self._pos)
+        self.chain_records = self.global_records()
         try:
             result = self._read_chain(budget, chain)
         except ArchiveyError:
@@ -2192,8 +2263,13 @@ class TarWalker:
                 if self._peek(limit, 1):
                     return None
                 window = self._window()
+                if window.eof_at is None:
+                    # The stream ends at or before where a seek put the window.
+                    assert window.ended_by is not None, (
+                        "a window read short only at its end"
+                    )
+                    return window.ended_by if window.ended_by <= limit else None
                 end = window.eof_at
-                assert end is not None, "a window read short only at its stream's end"
             self._eof_at = end
         return end if end <= limit else None
 
@@ -2234,16 +2310,14 @@ class TarWalker:
             return _HOLD_EXCEEDED
         return self._peek(pos, count)
 
-    def _far_look_allowed(self, pos: int, *, charged: bool) -> bool:
-        """Whether a codec walk may decode forward past its hold to ``pos``: always
-        for a look that costs nothing (``charged`` false), and while the failed
-        looks have not spent the budget otherwise."""
-        window = self._win
+    def _far_look(self, pos: int) -> bool:
+        """Whether ``pos`` is past the hold on a codec walk, which can decode
+        forward to it."""
         return (
             self._seekable
-            and window is not None
+            and self._rewind_costly
+            and self._win is not None
             and self._beyond_hold(pos)
-            and (not charged or self._far_spent < window.furthest)
         )
 
     def _beyond_hold(self, pos: int) -> bool:
@@ -2966,6 +3040,26 @@ class _ReplayStream:
         return out
 
 
+class RestartPoints(Protocol):
+    """A codec stream's restart points, as a codec walk's window asks about them
+    (``TarReader``'s ``_DecodeThroughSkips``)."""
+
+    @property
+    def jumped(self) -> bool:
+        """Whether a forward seek has jumped a restart point."""
+        ...
+
+    def jumps(self, target: int) -> bool:
+        """Whether a seek forward to ``target`` would jump a restart point past
+        where the stream stands, and so skip decoding the bytes in between."""
+        ...
+
+    def resume_before(self, target: int) -> int | None:
+        """The restart point at or before ``target`` that a seek there decodes
+        from, or ``None`` when the codec gives none."""
+        ...
+
+
 class _Window:
     """A walk's stream that keeps bytes around where it reads: those a look ahead
     fetched before the walk reads them, and up to ``keep_behind`` of those it has
@@ -2974,16 +3068,32 @@ class _Window:
     The bytes it holds run from :attr:`start` to :attr:`end`, where the inner stream
     stands. A seek inside them moves only the read position, and :meth:`peek`
     copies out only what it returns, so a look ahead or a search that reads the
-    same bytes again reads none of the inner stream again. The inner stream moves
-    forward only, except that on a seekable inner a seek outside the held bytes
-    seeks it.
+    same bytes again reads none of the inner stream again.
+
+    A forward-only inner is only read forward. A seekable inner (a codec stream)
+    is seeked back to an offset before the held bytes. Past them, it is seeked only
+    when a restart point lies between the held bytes and the offset
+    (:class:`RestartPoints`: bgzip, Seekable Zstandard): the seek then skips
+    decoding the bytes in between, and keeps none of them. Otherwise the codec
+    would decode those bytes on a seek anyway, so the window reads through to the
+    offset and keeps the hold it is asked for. Either way the move stops at the
+    stream's end, where a seek past it would count bytes no decoder produced (a
+    size that lies past the end, which the ratio guard then refuses); a read
+    through also learns where the stream ends.
     """
 
     def __init__(
-        self, inner: BinaryIO, offset: int, *, head: bytes, seekable: bool
+        self,
+        inner: BinaryIO,
+        offset: int,
+        *,
+        head: bytes,
+        seekable: bool,
+        restarts: RestartPoints | None = None,
     ) -> None:
         self._inner = inner
         self._seekable = seekable
+        self._restarts = restarts if seekable else None
         self._buf = bytearray(head)
         self._start = offset
         self._pos = offset
@@ -2992,8 +3102,26 @@ class _Window:
         self._keep = BLOCKSIZE
         # Where the inner stream ended, once a read of it came back empty.
         self.eof_at: int | None = None
+        # The stream ends at or before this offset: a read right after a seek past
+        # its end came back empty (_note_end).
+        self.ended_by: int | None = None
+        self._blind = False
         # The furthest end the held bytes had before a seek moved them.
         self._max_end = offset
+
+    @property
+    def indexed(self) -> bool:
+        """Whether a seek of the inner has jumped a restart point: the codec is
+        indexed, so a seek back costs no decode from the start."""
+        return self._restarts is not None and self._restarts.jumped
+
+    def resume_before(self, target: int) -> int | None:
+        """The restart point a seek of the inner to ``target`` decodes from."""
+        return None if self._restarts is None else self._restarts.resume_before(target)
+
+    def _jumps(self, offset: int) -> bool:
+        """Whether a seek of the inner to ``offset`` skips decoding to it."""
+        return self._restarts is not None and self._restarts.jumps(offset)
 
     @property
     def furthest(self) -> int:
@@ -3020,10 +3148,11 @@ class _Window:
         if self._start <= offset <= self.end:
             self._pos = offset
             return offset
-        if not self._seekable:
-            assert offset > self.end, "a forward-only window never goes back"
+        if offset > self.end and not self._jumps(offset):
+            # Forward: the next read reads the inner on to it (_reach).
             self._pos = offset
             return offset
+        assert self._seekable, "a forward-only window never goes back"
         self._inner.seek(offset)
         self._restart(offset)
         return offset
@@ -3033,26 +3162,43 @@ class _Window:
         self._buf = bytearray()
         self._start = self._pos = offset
         self.eof_at = None
+        # A seek put the held bytes here, and nothing is read yet: when the stream
+        # gives none, it ends at or before ``offset``, not exactly there.
+        self._blind = True
+        self.ended_by = None
 
     def _reach(self, offset: int) -> None:
-        """Make the held bytes reach ``offset``: past the end, a forward-only inner
-        is read through to it."""
+        """Make the held bytes reach ``offset``, keeping none of what is passed."""
+        self.skip_to(offset)
+        self._pos = offset
+
+    def skip_to(self, offset: int, keep: int = 0) -> None:
+        """Move the held bytes forward to end at ``offset``, or at the stream's end
+        if that comes first, keeping the last ``keep`` bytes before it, and put the
+        read position at their start. A codec with a restart point ahead is seeked
+        there, keeping nothing; any other inner is read through (see the class
+        docstring)."""
         if offset <= self.end:
             return
-        if self._seekable:
+        if self._jumps(offset):
             self._inner.seek(offset)
             self._restart(offset)
             return
-        # Nothing between the held bytes and ``offset`` is kept, so neither is
-        # anything before it.
+        self._max_end = max(self._max_end, self.end)
+        # Nothing before the read is kept, past what ``keep`` asks for.
         self._start = self.end
         self._buf = bytearray()
         while self.end < offset:
-            got = len(self._inner.read(min(offset - self.end, 1 << 20)))
-            if not got:
+            data = self._inner.read(min(offset - self.end, 1 << 20))
+            if not data:
                 self.eof_at = self.end
-                return
-            self._start += got
+                break
+            self._buf += data
+            drop = len(self._buf) - keep
+            if drop > 0:
+                del self._buf[:drop]
+                self._start += drop
+        self._pos = self._start
 
     def peek(self, offset: int, count: int) -> bytes:
         """Up to ``count`` bytes from ``offset`` (at or after :attr:`start`), fewer
@@ -3068,14 +3214,24 @@ class _Window:
         at = offset - self._start
         return bytes(self._buf[at : at + count])
 
+    def _note_end(self) -> None:
+        """A read of the inner came back empty at :attr:`end`: that is the stream's
+        end, unless a seek put the held bytes there and nothing was read since, when
+        the end is only known to be at or before it."""
+        if self._blind and not self._buf:
+            self.ended_by = self.end
+        else:
+            self.eof_at = self.end
+
     def _fill(self, offset: int) -> None:
         """Read the inner stream on until the held bytes reach ``offset`` or the
         stream ends."""
         while self.end < offset:
             data = self._inner.read(offset - self.end)
             if not data:
-                self.eof_at = self.end
+                self._note_end()
                 return
+            self._blind = False
             self._buf += data
 
     def read(self, size: int = -1, /) -> bytes:
@@ -3092,7 +3248,9 @@ class _Window:
             # One read of the inner for the rest, as a full-count stream does.
             data = self._inner.read(size - len(out))
             if not data:
-                self.eof_at = self.end
+                self._note_end()
+            else:
+                self._blind = False
             self._buf += data
             out += data
         self._pos += len(out)

@@ -1597,7 +1597,14 @@ so 8 levels cannot use 8 times the caps:
   payloads otherwise decoded payload count times the cap, and a `.deb`'s tar headers
   went uncharged to the outer listing. An inner walk outside the outer listing (an
   `open_member` that reads a payload again) counts on its own count alone, as any
-  reader's member read does.
+  reader's member read does. An inner reader over a seekable view of the outer
+  source (a `.deb`'s tars on a plain file, `ForwardStream._take_view`) reads the
+  outer source's own bytes, not decoded ones: it charges what its codec decodes, and
+  nothing for stored bytes, as a plain `.tar` does (maintainer ruling, 2026-11-22:
+  bytes not read do not count). The outer walk does not drain that member data
+  (`_NestedData.on_demand`), so a plain data.tar's stored bytes are read only when a
+  caller reads them. The view is taken only when the source holds the bytes the ar
+  header gives; otherwise `take()` reads them and raises `TruncatedError` at the cut.
 - `max_ratio`: every level is held to the ratio of the outermost archive's compressed
   size (or the bytes taken from it so far, from a pipe), not of its own input, so a nest
   of `n` levels decodes at most `n` times the ratio of the caller's bytes, not the ratio
@@ -1609,7 +1616,8 @@ counts it. These readers draw decoded bytes from the nest's account, and add not
 the nest ratio: their bytes are in the outer reader's number. Code:
 `archivey.internal.nesting`, `ListingLimitTracker._charge_outward`,
 `ListingDecodeCount` (its `parent`), `_PluginAdapter._nested_config`,
-`BaseArchiveReader._trusted_source_size`.
+`BaseArchiveReader._trusted_source_size`, `ForwardStream._take_view`,
+`_NestedData.on_demand`.
 
 ### Reads have no output bound
 

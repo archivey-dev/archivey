@@ -243,6 +243,24 @@ class SalvageState:
         when none has searched it)."""
         return self._positions.get(layer, 0)
 
+    @contextmanager
+    def revisiting(self, layer: str, start: int, stop: int) -> Generator[None]:
+        """Let the searches in the block examine ``layer`` from ``start``, below its
+        position, up to ``stop``: a range an earlier search stepped over without
+        examining it, such as the data of a member whose size a first pass trusted
+        (TAR's second pass). Each search in the block takes ``end=stop``, so no byte
+        is examined twice. The layer's position is the larger of the two after it.
+        ``stop`` may be past the position when the search that stepped over the
+        range examined nothing after it (the layer ended first)."""
+        saved = self.position(layer)
+        if start > stop:
+            raise AssertionError(f"the {layer} range {start}..{stop} is empty")
+        self._positions[layer] = start
+        try:
+            yield
+        finally:
+            self._positions[layer] = max(saved, self.position(layer))
+
     def remaining_bytes(self) -> int | None:
         """Bytes the searches may still examine, or ``None`` for no cap."""
         cap = self.limits.max_search_bytes
