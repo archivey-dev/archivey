@@ -65,6 +65,7 @@ PUBLIC_MODULES = (
     "archivey.diagnostics",
     "archivey.paths",
     "archivey.formats",
+    "archivey.speedups",
     "archivey.terminal",
     "archivey.fsspec",
 )

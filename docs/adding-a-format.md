@@ -979,6 +979,83 @@ reason is internal, so a plugin writes its own.
 A library that needs a file name rather than a stream can use `ReaderSource.path`, which is
 the path the archive was opened from, or `None` when it was opened from a stream.
 
+## Fast decoders from archivey-speedups
+
+archivey-speedups, archivey's optional Rust package, has fast versions of some
+decoders. A reader asks for one by name with `context.speedup()`, and a codec with
+`call.speedup()`. The call returns the speedup when it can run, and `None` when it can't:
+the package is not installed or too old, the caller's `FormatPolicy` turns it off, or,
+for a decoder under `ProcessIsolation.NATIVE_DECODERS`, no decoder child can run it.
+`"crc16_arc"` is a checksum, and checksums run in this process under every isolation
+setting, so that one is not affected. Keep a Python decoder with the same interface for
+the `None` case:
+
+```python
+make = context.speedup("lzw") or my_lzw.Decompressor
+decoder = make(max_width=16, block_mode=True)
+```
+
+The names are `"crc16_arc"`, `"lzfse"`, `"lzo1x"`, `"lzvn"`, `"lzw"` and `"lzx"`;
+`archivey.speedups` has the interface each one returns. A speedup gives the same bytes and
+raises the same errors as a correct Python decoder of the same interface, so the
+choice changes speed only. When a speedup runs in a decoder child, archivey gives
+the child back when the reader closes (for `context.speedup()`) or when the member
+stream closes (for `call.speedup()`). It does so too when the reader's `open` or the
+handler's `decompressor()` raises. A reader that makes an `"lzw"` or `"lzx"`
+decompressor for each member calls its `close()` when the member is done, so it does
+not hold a decoder child per member until the reader closes. Closing twice is harmless,
+so archivey's own close at the end does no harm. The Python decoder you keep for the
+`None` case needs a `close()` too, one that does nothing.
+
+Under `NATIVE_DECODERS`, the first `speedup()` call in a process may start a decoder
+child, to learn what the package can run. Making a decoder or decoding a block then
+takes a decoder child of its own. If none can start then, that call raises
+`ResourceUnavailableError`, as archivey's own decoders do. The fallback happens at the
+`speedup()` call only.
+
+An `"lzw"` decompressor has its own interface, with a `flush()` that marks the end of
+the input. A codec's decompressor signals the end with `end_input()` (see
+`Decompressor`), so a codec that returns one wraps it:
+
+```python
+class LzwCodecDecompressor:
+    def __init__(self, make):
+        self._lzw = make()
+        self._ended = False
+
+    def decompress(self, data, max_length=-1):
+        if not self._ended:
+            return self._lzw.decompress(data, max_length)
+        out = self._lzw.flush(max_length)
+        if not out and self._lzw.truncation is not None:
+            raise EOFError(self._lzw.truncation)
+        return out
+
+    def end_input(self):
+        self._ended = True
+
+    @property
+    def eof(self):
+        # A cut-short stream is not complete: the next call raises.
+        return self._lzw.eof and self._lzw.truncation is None
+
+    @property
+    def needs_input(self):
+        return self._lzw.needs_input and not self._ended
+
+    @property
+    def unused_data(self):
+        return self._lzw.unused_data
+```
+
+When the stream was cut short, `flush()` returns the output decoded before the cut and
+sets `truncation` to the reason. The wrapper then keeps `eof` false and raises
+`EOFError` with that reason from the next call, which archivey reports as
+`TruncatedError` after the output it already returned.
+
+An `"lzx"` decompressor ends at its output size and has no `unused_data`: it decodes
+a CAB folder inside a format reader, not a codec's stream.
+
 ## Replacing a built-in reader
 
 A plugin can also read a format archivey already reads, in place of the built-in
