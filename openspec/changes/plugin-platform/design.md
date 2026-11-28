@@ -937,15 +937,15 @@ Review A1 showed that it cannot:
 
 So `archivey-speedups` stays what it is: an optional library, named by
 `OptionalLibrary("archivey_speedups")`, that speeds up decoders and changes no result.
-What becomes public is the switch. A reader asks `ReaderContext.kernel(name)` (a codec,
-`CodecCall.kernel(name)`) for a kernel; it gets the Rust kernel, wrapped with the
-revision check, the panic guard and the child, or `None`, and then uses its own Python
-decoder (`context.kernel("lzw") or twin.Decompressor`, maintainer, 2026-11-28). The
-interface of each kernel is public in `archivey.kernels`. Core gives back the decoder
-child of each kernel object when the member stream or the reader closes. Core
-(ZIP, 7z), `archivey-dmg` (LZFSE, LZVN), `archivey-package-formats` (CAB's LZX)
-and `archivey-legacy-formats` (LHA's CRC-16, `.Z`'s LZW) call the same helper, and each Python
-twin moves with its format.
+What becomes public is the switch. A reader asks `ReaderContext.speedup(name)` (a codec,
+`CodecCall.speedup(name)`); it gets the Rust kernel, wrapped with the revision check,
+the panic guard and the child, or `None`, and then uses its own Python decoder
+(`context.speedup("lzw") or twin.Decompressor`, maintainer, 2026-11-28, who also chose
+the name `speedup` over `kernel`). The interface of each kernel is public in
+`archivey.speedups`. Core gives back the decoder child of each kernel object when the
+member stream or the reader closes. Core (ZIP, 7z), `archivey-dmg` (LZFSE, LZVN),
+`archivey-package-formats` (CAB's LZX) and `archivey-legacy-formats` (LHA's CRC-16,
+`.Z`'s LZW) call the same helper, and each Python twin moves with its format.
 
 Other rules:
 

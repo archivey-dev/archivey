@@ -19,8 +19,8 @@ line. How to write the entry: see
   (`ArchiveyConfig.salvage_limits`). No format has a salvage search yet, so every format
   reads as before and records `SALVAGE_UNAVAILABLE`.
 - A format or codec plugin can use archivey-speedups' fast decoders:
-  `context.kernel("lzw")` (or `call.kernel()`) returns the kernel, or `None` when it
-  can't run. Their interfaces are in the new `archivey.kernels` module.
+  `context.speedup("lzw")` (or `call.speedup()`) returns the speedup, or `None` when it
+  can't run. Their interfaces are in the new `archivey.speedups` module.
 
 ### Changed
 

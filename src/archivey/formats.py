@@ -86,12 +86,12 @@ from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.streamtools import ensure_bufferedio
 from archivey.internal.timestamps import dos_to_datetime, unix_to_datetime
 from archivey.internal.unix_mode import special_file_type
-from archivey.kernels import (
+from archivey.speedups import (
     BlockDecompress,
     Crc16,
-    KernelName,
     LzwFactory,
     LzxFactory,
+    SpeedupName,
 )
 from archivey.terminal import quoted
 from archivey.types import (
@@ -753,7 +753,7 @@ class ReaderContext:
     # unlike ``charge_metadata`` the charge outlives the walk. Internal, set by the
     # adapter; not for plugins.
     _keep_metadata: Callable[[int, str], None] | None = None
-    # The kernel objects ``kernel()`` handed out, given back at close. Internal.
+    # The kernel objects ``speedup()`` handed out, given back at close. Internal.
     _kernel_lease: KernelLease | None = None
 
     def __init__(
@@ -1000,28 +1000,28 @@ class ReaderContext:
         return self._open_nested(cast(BinaryIO, data), format)
 
     @overload
-    def kernel(self, name: Literal["crc16_arc"]) -> Crc16 | None: ...
+    def speedup(self, name: Literal["crc16_arc"]) -> Crc16 | None: ...
     @overload
-    def kernel(
+    def speedup(
         self, name: Literal["lzfse", "lzo1x", "lzvn"]
     ) -> BlockDecompress | None: ...
     @overload
-    def kernel(self, name: Literal["lzw"]) -> LzwFactory | None: ...
+    def speedup(self, name: Literal["lzw"]) -> LzwFactory | None: ...
     @overload
-    def kernel(self, name: Literal["lzx"]) -> LzxFactory | None: ...
+    def speedup(self, name: Literal["lzx"]) -> LzxFactory | None: ...
     @overload
-    def kernel(self, name: KernelName) -> object | None: ...
-    def kernel(self, name: KernelName) -> object | None:
-        """archivey-speedups' kernel ``name``, or ``None`` when it can't run here, so
+    def speedup(self, name: SpeedupName) -> object | None: ...
+    def speedup(self, name: SpeedupName) -> object | None:
+        """archivey-speedups' fast decoder ``name``, or ``None`` when it can't run here, so
         the reader falls back to a Python decoder of its own with the same interface::
 
-            crc = context.kernel("crc16_arc") or my_crc16
+            crc = context.speedup("crc16_arc") or my_crc16
 
-        ``None`` when archivey-speedups is not installed, too old for this kernel, or
+        ``None`` when archivey-speedups is not installed, too old for this speedup, or
         excluded by the caller's library policy, and under
         ``ProcessIsolation.NATIVE_DECODERS`` when no decoder child can run it. The
-        kernels and their interfaces are in :mod:`archivey.kernels`. archivey gives
-        back the decoder child of every kernel object made from the result when the
+        names and their interfaces are in :mod:`archivey.speedups`. archivey gives
+        back the decoder child of every object made from the result when the
         reader closes. Another name raises ``ArchiveyUsageError``."""
         from archivey.internal import kernels
         from archivey.internal.config import ProcessIsolation
@@ -1037,7 +1037,7 @@ class ReaderContext:
         )
 
     def _release_kernels(self) -> None:
-        """Give back the decoder children of the kernel objects :meth:`kernel` handed
+        """Give back the decoder children of the kernel objects :meth:`speedup` handed
         out. The adapter calls it when the reader closes."""
         if self._kernel_lease is not None:
             self._kernel_lease.release()
@@ -1547,7 +1547,7 @@ class CodecCall:
     data declares may raise ``ResourceLimitError`` instead, which detection reads as
     "can't tell". ``None`` for every other read."""
 
-    # What ``kernel()`` needs: the caller's excluded libraries and isolation, and the
+    # What ``speedup()`` needs: the caller's excluded libraries and isolation, and the
     # objects it handed out, given back when the stream closes. Set by archivey.
     _excluded: frozenset[OptionalLibrary] = field(
         default=frozenset(), repr=False, compare=False
@@ -1558,24 +1558,24 @@ class CodecCall:
     )
 
     @overload
-    def kernel(self, name: Literal["crc16_arc"]) -> Crc16 | None: ...
+    def speedup(self, name: Literal["crc16_arc"]) -> Crc16 | None: ...
     @overload
-    def kernel(
+    def speedup(
         self, name: Literal["lzfse", "lzo1x", "lzvn"]
     ) -> BlockDecompress | None: ...
     @overload
-    def kernel(self, name: Literal["lzw"]) -> LzwFactory | None: ...
+    def speedup(self, name: Literal["lzw"]) -> LzwFactory | None: ...
     @overload
-    def kernel(self, name: Literal["lzx"]) -> LzxFactory | None: ...
+    def speedup(self, name: Literal["lzx"]) -> LzxFactory | None: ...
     @overload
-    def kernel(self, name: KernelName) -> object | None: ...
-    def kernel(self, name: KernelName) -> object | None:
-        """archivey-speedups' kernel ``name``, or ``None`` when it can't run for this
-        call, as :meth:`ReaderContext.kernel` gives it::
+    def speedup(self, name: SpeedupName) -> object | None: ...
+    def speedup(self, name: SpeedupName) -> object | None:
+        """archivey-speedups' fast decoder ``name``, or ``None`` when it can't run for
+        this call, as :meth:`ReaderContext.speedup` gives it::
 
-            make = call.kernel("lzw") or my_lzw.Decompressor
+            make = call.speedup("lzw") or my_lzw.Decompressor
 
-        archivey gives back the decoder child of every kernel object made from the
+        archivey gives back the decoder child of every object made from the
         result when the stream closes."""
         from archivey.internal import kernels
 

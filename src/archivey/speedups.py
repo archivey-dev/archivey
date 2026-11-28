@@ -1,22 +1,22 @@
-"""The interfaces of the decoding kernels a format or codec plugin can ask archivey for.
+"""The interfaces of the speedups a format or codec plugin can ask archivey for.
 
 **Experimental**, as :mod:`archivey.formats` is: any release may change it.
 
-archivey-speedups, archivey's optional Rust package, has fast versions of some
-decoders. A plugin asks for one by name with :meth:`archivey.formats.ReaderContext.kernel`
-or :meth:`archivey.formats.CodecCall.kernel`. The call returns the kernel when it can
+archivey-speedups, archivey's optional Rust package, has fast versions of some decoders.
+A plugin asks for one by name with :meth:`archivey.formats.ReaderContext.speedup` or
+:meth:`archivey.formats.CodecCall.speedup`. The call returns the speedup when it can
 run: the package is installed, recent enough, and allowed by the caller's library
 policy, and, under ``ProcessIsolation.NATIVE_DECODERS``, a decoder child can run it.
 Otherwise it returns ``None``, and the plugin uses a Python decoder of its own with the
 same interface::
 
-    make = context.kernel("lzw") or my_lzw.Decompressor
+    make = context.speedup("lzw") or my_lzw.Decompressor
 
-A kernel gives the same bytes and raises the same errors as a correct Python decoder
-of the same interface: the choice changes speed only. A kernel's own fault (a Rust
+A speedup gives the same bytes and raises the same errors as a correct Python decoder
+of the same interface: the choice changes speed only. A speedup's own fault (a Rust
 panic) raises ``CorruptionError``. archivey gives back the decoder child of every
-kernel object it handed out when the reader closes (for ``ReaderContext.kernel``) or
-when the member stream closes (for ``CodecCall.kernel``), so a plugin does not close
+object it handed out when the reader closes (for ``ReaderContext.speedup``) or when
+the member stream closes (for ``CodecCall.speedup``), so a plugin does not close
 them.
 """
 
@@ -27,15 +27,15 @@ from typing import Literal, Protocol, overload
 __all__ = [
     "BlockDecompress",
     "Crc16",
-    "KernelName",
     "LzwDecompressor",
     "LzwFactory",
     "LzxDecompressor",
     "LzxFactory",
+    "SpeedupName",
 ]
 
-KernelName = Literal["crc16_arc", "lzfse", "lzo1x", "lzvn", "lzw", "lzx"]
-"""The kernels a plugin can ask for, and what each one returns:
+SpeedupName = Literal["crc16_arc", "lzfse", "lzo1x", "lzvn", "lzw", "lzx"]
+"""The speedups a plugin can ask for, and what each one returns:
 
 - ``"crc16_arc"``: :class:`Crc16`, CRC-16/ARC (LHA).
 - ``"lzfse"``, ``"lzvn"``: :class:`BlockDecompress`, Apple's LZFSE and raw LZVN (DMG).

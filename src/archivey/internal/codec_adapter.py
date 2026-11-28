@@ -125,7 +125,7 @@ class PluginCodec(StreamCodec):
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
         call = codec_call(params, config)
         decompressor = self.handler.decompressor(call)
-        # The kernel objects the handler took through ``call.kernel()`` are given
+        # The kernel objects the handler took through ``call.speedup()`` are given
         # back when the stream releases this decompressor (``release_decoder``).
         own_kernels(decompressor, call._lease)
         return decompressor

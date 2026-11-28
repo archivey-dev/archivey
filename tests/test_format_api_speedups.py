@@ -1,4 +1,4 @@
-"""``ReaderContext.kernel`` and ``CodecCall.kernel``: a plugin asks for one of
+"""``ReaderContext.speedup`` and ``CodecCall.speedup``: a plugin asks for one of
 archivey-speedups' kernels by name. It gets the kernel when it can run, and ``None``
 when it can't, so the plugin falls back to its own Python decoder. archivey gives back
 the decoder child of every kernel object it handed out when the stream or the reader
@@ -33,12 +33,12 @@ from archivey.formats import (
 from archivey.internal import kernels
 from archivey.internal.format_adapter import registration_scope
 from archivey.internal.streams.codecs import deps
-from archivey.kernels import KernelName
+from archivey.speedups import SpeedupName
 from archivey.types import OptionalLibrary
 from tests.test_codec_api import TOY, ToyDecompressor, ToyHandler
 from tests.test_format_api import ToyHandler as ToyaHandler, ToyReader, build_toya
 
-_NAMES: tuple[KernelName, ...] = ("crc16_arc", "lzfse", "lzo1x", "lzvn", "lzw", "lzx")
+_NAMES: tuple[SpeedupName, ...] = ("crc16_arc", "lzfse", "lzo1x", "lzvn", "lzw", "lzx")
 _OFF = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={"archivey-speedups"}))
 
 
@@ -49,7 +49,7 @@ class _AskingReader(ToyReader):
 
     def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         super().__init__(source, context)
-        _AskingReader.asked = {name: context.kernel(name) for name in _NAMES}
+        _AskingReader.asked = {name: context.speedup(name) for name in _NAMES}
 
 
 class _AskingToyaHandler(ToyaHandler):
@@ -61,7 +61,7 @@ class _AskingToyHandler(ToyHandler):
     asked: ClassVar[dict[str, object]] = {}
 
     def decompressor(self, call: CodecCall) -> ToyDecompressor:
-        _AskingToyHandler.asked = {name: call.kernel(name) for name in _NAMES}
+        _AskingToyHandler.asked = {name: call.speedup(name) for name in _NAMES}
         return super().decompressor(call)
 
 
@@ -117,7 +117,7 @@ def test_an_unknown_kernel_name_is_a_usage_error() -> None:
     call = CodecCall()
     with pytest.raises(ArchiveyUsageError, match="'bcj2'"):
         # A name that is not a kernel, on purpose.
-        call.kernel("bcj2")  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
+        call.speedup("bcj2")  # pyrefly: ignore[no-matching-overload]  # ty: ignore[no-matching-overload]
 
 
 # --- giving back the decoder children ---------------------------------------------------
@@ -153,7 +153,7 @@ def fake_lzw(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 class _LzwToyHandler(ToyHandler):
     def decompressor(self, call: CodecCall) -> ToyDecompressor:
-        make = call.kernel("lzw")
+        make = call.speedup("lzw")
         assert make is not None
         make()
         return super().decompressor(call)
@@ -162,7 +162,7 @@ class _LzwToyHandler(ToyHandler):
 class _LzwReader(ToyReader):
     def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         super().__init__(source, context)
-        make = context.kernel("lzw")
+        make = context.speedup("lzw")
         assert make is not None
         make()
 
@@ -271,12 +271,12 @@ def test_a_kernel_object_not_in_a_child_is_not_closed(
 
 
 def test_the_kernel_types_are_public() -> None:
-    import archivey.kernels as public
+    import archivey.speedups as public
 
     for name in (
         "BlockDecompress",
         "Crc16",
-        "KernelName",
+        "SpeedupName",
         "LzwDecompressor",
         "LzwFactory",
         "LzxDecompressor",

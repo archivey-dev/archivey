@@ -35,14 +35,14 @@ from archivey.internal.kernels._select import (
     kernels,
     panic_of,
 )
-from archivey.kernels import (
+from archivey.speedups import (
     BlockDecompress,
     Crc16,
-    KernelName,
     LzwDecompressor,
     LzwFactory,
     LzxDecompressor,
     LzxFactory,
+    SpeedupName,
 )
 from archivey.types import OptionalLibrary
 
@@ -405,7 +405,7 @@ class KernelLease:
 
 
 def for_plugin(
-    name: KernelName,
+    name: SpeedupName,
     excluded: frozenset[OptionalLibrary],
     *,
     isolated: bool,
@@ -414,7 +414,7 @@ def for_plugin(
     """The kernel ``name`` for a plugin, or ``None`` when its Python decoder must run:
     archivey-speedups is missing, too old for it, or excluded, or no decoder child can
     run it under ``isolated``. A usage error for a name that is not a
-    :data:`~archivey.kernels.KernelName`."""
+    :data:`~archivey.speedups.SpeedupName`."""
     if name == "crc16_arc":
         return crc16_arc(excluded) if kernels("crc16_arc", excluded) else None
     if name == "lzo1x":
@@ -431,8 +431,8 @@ def for_plugin(
         from archivey.exceptions import ArchiveyUsageError
         from archivey.terminal import quoted
 
-        names = ", ".join(quoted(n) for n in get_args(KernelName))
+        names = ", ".join(quoted(n) for n in get_args(SpeedupName))
         raise ArchiveyUsageError(
-            f"no kernel is named {quoted(str(name))}; the kernels are {names}"
+            f"no speedup is named {quoted(str(name))}; the speedups are {names}"
         )
     return None if stream.library is None else lease.track(stream.Decompressor)

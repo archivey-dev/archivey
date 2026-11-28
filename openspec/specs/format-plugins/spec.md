@@ -484,22 +484,24 @@ codec off, and `FormatInfo.from_plugin` SHALL be true for a format that uses it.
 | `open_stream(format=ToyStream.TOY)` before `register_codec()` | `UnsupportedFeatureError` naming `register_codec`, as `open_archive` refuses an unregistered format |
 | `stream_format = StreamFormat.GZIP`, or a value a built-in uses | `ArchiveyUsageError` at registration |
 
-### Requirement: A plugin asks for an archivey-speedups kernel by name
+### Requirement: A plugin asks for an archivey-speedups speedup by name
 
-`ReaderContext.kernel(name)` and `CodecCall.kernel(name)` SHALL return the named kernel
-of archivey-speedups when it can run: the package is installed and recent enough, the
-caller's library policy allows it, and, under `ProcessIsolation.NATIVE_DECODERS`, a
-decoder child can run it. Otherwise they SHALL return `None`. A name that is not a
-kernel SHALL raise `ArchiveyUsageError`. `archivey.kernels` SHALL name the interface of
-each kernel. archivey SHALL give back the decoder child of each kernel object it
-handed out when the member stream (for a codec) or the reader closes.
+`ReaderContext.speedup(name)` and `CodecCall.speedup(name)` SHALL return the named fast
+decoder of archivey-speedups when it can run: the package is installed and recent
+enough, the caller's library policy allows it, and, under
+`ProcessIsolation.NATIVE_DECODERS`, a decoder child can run it. Otherwise they SHALL
+return `None`. A name that is not a speedup SHALL raise `ArchiveyUsageError`.
+`archivey.speedups` SHALL name the interface of each speedup. archivey SHALL give back
+the decoder child of each object it handed out when the member stream (for a codec) or
+the reader closes.
 
-#### Scenario: asking for a kernel
+#### Scenario: asking for a speedup
 
 | Case | Expected |
 | --- | --- |
-| archivey-speedups installed, default config | each kernel name returns a callable |
+| archivey-speedups installed, default config | each name returns a callable |
 | `FormatPolicy(exclude_libraries={"archivey-speedups"})` | each name returns `None` |
-| `kernel("bcj2")` | `ArchiveyUsageError` |
+| `ProcessIsolation.NATIVE_DECODERS` | the speedup is asked to run in a decoder child |
+| `speedup("bcj2")` | `ArchiveyUsageError` |
 | a reader made an LZW decompressor in a decoder child; the reader closes | the child is given back |
 | the same, the object is in this process | nothing is closed |

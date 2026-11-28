@@ -988,23 +988,23 @@ the path the archive was opened from, or `None` when it was opened from a stream
 ## Fast decoders from archivey-speedups
 
 archivey-speedups, archivey's optional Rust package, has fast versions of some
-decoders. A reader asks for one by name with `context.kernel()`, and a codec with
-`call.kernel()`. The call returns the kernel when it can run, and `None` when it can't:
+decoders. A reader asks for one by name with `context.speedup()`, and a codec with
+`call.speedup()`. The call returns the speedup when it can run, and `None` when it can't:
 the package is not installed or too old, the caller's `FormatPolicy` turns it off, or,
 under `ProcessIsolation.NATIVE_DECODERS`, no decoder child can run it. Keep a Python
 decoder with the same interface for that case:
 
 ```python
-make = context.kernel("lzw") or my_lzw.Decompressor
+make = context.speedup("lzw") or my_lzw.Decompressor
 decoder = make(max_width=16, block_mode=True)
 ```
 
 The names are `"crc16_arc"`, `"lzfse"`, `"lzo1x"`, `"lzvn"`, `"lzw"` and `"lzx"`;
-`archivey.kernels` has the interface each one returns. A kernel gives the same bytes and
+`archivey.speedups` has the interface each one returns. A speedup gives the same bytes and
 raises the same errors as a correct Python decoder of the same interface, so the
-choice changes speed only. When a kernel object runs in a decoder child, archivey gives
-the child back when the reader closes (for `context.kernel()`) or when the member
-stream closes (for `call.kernel()`), so the plugin does not close it.
+choice changes speed only. When a speedup runs in a decoder child, archivey gives
+the child back when the reader closes (for `context.speedup()`) or when the member
+stream closes (for `call.speedup()`), so the plugin does not close it.
 
 ## Replacing a built-in reader
 
