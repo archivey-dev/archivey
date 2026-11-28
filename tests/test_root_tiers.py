@@ -195,6 +195,57 @@ def test_a_name_core_signatures_use_stays_importable_from_core(name: str) -> Non
     assert name not in archivey.core.__all__
 
 
+def test_a_type_checker_sees_the_names_core_keeps_bound() -> None:
+    """``core`` imports each name of ``CORE_STILL_BOUND`` as ``X as X``, the spelling a
+    type checker takes as a re-export, so a typed ``from archivey.core import X`` is
+    not refused a release early (pyright's ``reportPrivateImportUsage``)."""
+    tree = ast.parse(
+        Path(importlib.import_module("archivey.core").__file__).read_text()
+    )
+    reexported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.asname == alias.name
+    }
+    assert set(CORE_STILL_BOUND) <= reexported
+
+
+@pytest.mark.parametrize("module_name", ["archivey", "archivey.core"])
+def test_a_star_import_binds_only_the_listed_names(module_name: str) -> None:
+    """``import *`` reads ``__all__``, which no longer lists the moved names, so it
+    binds only the names that stay and warns about none (CHANGELOG **Breaking:**)."""
+    namespace: dict[str, object] = {}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        exec(f"from {module_name} import *", namespace)  # noqa: S102
+    names = {n for n in namespace if n != "__builtins__"}
+    assert names == set(importlib.import_module(module_name).__all__)
+
+
+@pytest.mark.parametrize(
+    ("module_name", "name"),
+    [
+        ("archivey", "sanitize_names"),
+        ("archivey", "list_known_formats"),
+        ("archivey", "list_supported_formats"),
+    ],
+)
+def test_a_reference_pickled_by_0_5_loads_with_a_warning(
+    module_name: str, name: str
+) -> None:
+    """A function reference pickled before 0.6 names the root. It loads through the
+    shim with the warning in 0.6; re-saving it records the new module."""
+    import pickle
+
+    data = f"c{module_name}\n{name}\n.".encode()  # protocol 0, as 0.5 wrote it
+    with pytest.warns(DeprecationWarning):
+        function = pickle.loads(data)
+    assert pickle.loads(pickle.dumps(function)) is function
+    assert f"{function.__module__}.{name}" != f"{module_name}.{name}"
+
+
 @pytest.mark.parametrize("name", sorted(CORE_MOVED))
 def test_a_name_that_left_core_still_works_with_a_warning(name: str) -> None:
     import archivey.core
@@ -284,10 +335,14 @@ def _old_spellings(text: str) -> list[str]:
     return found
 
 
+_OLD_ANCHOR = re.compile(r'<span id="archivey\.\w+"></span>')
+
+
 def test_the_repository_uses_only_the_new_spellings() -> None:
     """Code, tests, user docs and specs import each moved name from its submodule.
 
-    The changelog is history, and this file names the old spellings on purpose.
+    The changelog is history, and this file names the old spellings on purpose. The
+    API page's old-anchor spans keep the old spelling as an id on purpose too.
     """
     paths = [
         *(REPO / "src").rglob("*.py"),
@@ -302,6 +357,23 @@ def test_the_repository_uses_only_the_new_spellings() -> None:
         str(path.relative_to(REPO)): hits
         for path in paths
         if path != Path(__file__)
-        and (hits := _old_spellings(path.read_text(encoding="utf-8")))
+        and (
+            hits := _old_spellings(
+                _OLD_ANCHOR.sub("", path.read_text(encoding="utf-8"))
+            )
+        )
     }
     assert offenders == {}
+
+
+def test_the_api_page_keeps_each_moved_name_s_old_anchor() -> None:
+    """A link to ``api/#archivey.<Name>`` from before 0.6 still lands on the entry: the
+    page keeps an anchor with the old id beside each moved name's new heading."""
+    page = (REPO / "docs" / "api.md").read_text(encoding="utf-8")
+    missing = sorted(
+        name
+        for name, module in MOVED.items()
+        if name not in EXPERIMENTAL_MOVED
+        if f'<span id="archivey.{name}"></span>\n\n::: {module}.{name}\n' not in page
+    )
+    assert missing == []
