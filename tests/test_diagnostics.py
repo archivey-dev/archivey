@@ -26,7 +26,11 @@ from archivey import (
 )
 from archivey.diagnostics import (
     ARCHIVE_INTEGRITY_CODES,
+    DiagnosticContext,
     DiagnosticSummary,
+    DirectoryDataContext,
+    LinkDataContext,
+    LocalHeaderContext,
     MemberTimestampContext,
     NameNormalizationContext,
     ScanRaceContext,
@@ -315,7 +319,7 @@ def test_replaying_stops_at_an_emit_that_differs_from_the_log() -> None:
     }
     # The log was cut at the difference and now describes the second run, so a third
     # run like it replays instead of counting again.
-    assert log.codes == [
+    assert [code for code, _, _ in log.cases] == [
         DiagnosticCode.SCAN_ENTRY_VANISHED,
         DiagnosticCode.MEMBER_NAME_NORMALIZED,
     ]
@@ -323,6 +327,43 @@ def test_replaying_stops_at_an_emit_that_differs_from_the_log() -> None:
         _emit_race(collector)
         _emit_norm(collector)
     assert collector.snapshot().total_count == 4
+
+
+@pytest.mark.parametrize(
+    ("code", "first", "then"),
+    [
+        (
+            DiagnosticCode.SCAN_ENTRY_VANISHED,
+            ScanRaceContext(entry_kind="directory"),
+            ScanRaceContext(entry_kind="entry"),
+        ),
+        (
+            DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS,
+            LocalHeaderContext(field="name"),
+            LocalHeaderContext(field="method"),
+        ),
+        (
+            DiagnosticCode.MEMBER_DATA_IGNORED,
+            DirectoryDataContext(),
+            LinkDataContext(),
+        ),
+    ],
+    ids=lambda value: getattr(value, "name", ""),
+)
+def test_replaying_tells_the_cases_of_one_code_apart(
+    code: DiagnosticCode, first: DiagnosticContext, then: DiagnosticContext
+) -> None:
+    # A retry that meets the other case of the code at the same point (a directory
+    # listing that fails on an entry this time, not on the directory) is a new event.
+    strict = DiagnosticCollector(policy=DiagnosticPolicy(raise_on={code}))
+    log = EmitLog()
+    with pytest.raises(DiagnosticRaisedError) as raised, strict.replaying(log):
+        strict.emit(code=code, message="first", context=first)
+    with pytest.raises(DiagnosticRaisedError) as again, strict.replaying(log):
+        strict.emit(code=code, message="then", context=then)
+    assert again.value is not raised.value
+    assert again.value.diagnostic.context == then
+    assert strict.snapshot().counts == {code: 2}
 
 
 def test_replaying_a_run_that_emits_less_does_not_grow_the_log() -> None:
@@ -334,14 +375,14 @@ def test_replaying_a_run_that_emits_less_does_not_grow_the_log() -> None:
     for _ in range(3):
         with collector.replaying(log):
             _emit_race(collector)
-    assert log.codes == [DiagnosticCode.SCAN_ENTRY_VANISHED]
+    assert [code for code, _, _ in log.cases] == [DiagnosticCode.SCAN_ENTRY_VANISHED]
     assert collector.snapshot().counts == {
         DiagnosticCode.MEMBER_NAME_NORMALIZED: 1,
         DiagnosticCode.SCAN_ENTRY_VANISHED: 2,
     }
 
 
-def test_a_settled_log_replays_from_its_codes_alone() -> None:
+def test_a_settled_log_replays_from_its_cases_alone() -> None:
     strict = DiagnosticCollector(
         policy=DiagnosticPolicy(raise_on={DiagnosticCode.SCAN_ENTRY_VANISHED})
     )

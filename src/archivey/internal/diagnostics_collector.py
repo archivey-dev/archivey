@@ -39,6 +39,8 @@ from archivey.diagnostics import (
     DiagnosticPolicy,
     DiagnosticSummary,
     OnDiagnostic,
+    _diagnostic_case,
+    _DiagnosticCase,
     validate_code_context,
 )
 from archivey.exceptions import ArchiveyUsageError, DiagnosticRaisedError
@@ -157,14 +159,15 @@ class EmitLog:
     """The emits one piece of repeatable work made, in order.
 
     ``DiagnosticCollector.replaying`` records into it the first time and replays it
-    after. ``codes`` and ``raised`` (the exception an emit itself raised, by index) are
-    what a replay matches and repeats. ``details`` keeps each emit's diagnostic and
+    after. ``cases`` (each emit's code and the case of it its context reports) and
+    ``raised`` (the exception an emit itself raised, by index) are what a replay
+    matches and repeats. ``details`` keeps each emit's diagnostic and
     whether it was attached, for a repeat that must re-attach them, only until
     ``settle``: work whose result is kept, such as a member object a walk already
-    built, carries its attachments itself and needs only the codes.
+    built, carries its attachments itself and needs only the cases.
     """
 
-    codes: list[DiagnosticCode] = field(default_factory=list)
+    cases: list[_DiagnosticCase] = field(default_factory=list)
     raised: dict[int, BaseException] | None = None
     details: list[_EmitDetail] | None = field(default_factory=list)
 
@@ -173,7 +176,7 @@ class EmitLog:
         self.details = None
 
     def _truncate(self, at: int) -> None:
-        del self.codes[at:]
+        del self.cases[at:]
         if self.details is not None:
             del self.details[at:]
         if self.raised is not None:
@@ -582,8 +585,8 @@ class DiagnosticCollector:
             logged_at: int | None = None
             if replay is not None:
                 emit_log = replay.log
-                logged_at = len(emit_log.codes)
-                emit_log.codes.append(code)
+                logged_at = len(emit_log.cases)
+                emit_log.cases.append(_diagnostic_case(code, context))
                 if emit_log.details is not None:
                     emit_log.details.append(_EmitDetail(diagnostic, attached))
                 replay.cursor = logged_at + 1
@@ -677,13 +680,15 @@ class DiagnosticCollector:
         Returns the recorded diagnostic (re-attached to ``member`` if it was attached
         the first time), or raises the exception the first run raised here (held
         instead for an open :meth:`deferring_raises` block, and the diagnostic
-        returned). Returns
-        ``None`` when the log holds no emit of ``code`` at this point: the log is cut
-        there, and the caller records this emit as a new one. The caller holds the lock.
+        returned). Returns ``None`` when the log holds no emit of this case of ``code``
+        here: the log is cut there, and the caller records this emit as a new one. The
+        caller holds the lock.
         """
         emit_log = replay.log
         at = replay.cursor
-        if at >= len(emit_log.codes) or emit_log.codes[at] is not code:
+        if at >= len(emit_log.cases) or emit_log.cases[at] != _diagnostic_case(
+            code, context
+        ):
             emit_log._truncate(at)
             return None
         replay.cursor += 1

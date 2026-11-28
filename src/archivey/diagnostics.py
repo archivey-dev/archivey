@@ -86,6 +86,13 @@ _MERGED_IN_0_6: Mapping[str, str] = MappingProxyType(
 )
 
 
+# The old values, mapped to the old names: a value converts only as it was spelled.
+# ``str.upper`` would also take near matches such as a long s for ``s``.
+_MERGED_BY_OLD_VALUE: Mapping[str, str] = MappingProxyType(
+    {old.lower(): old for old in _MERGED_IN_0_6}
+)
+
+
 def _warn_merged(old: str, new: str) -> None:
     import warnings
 
@@ -285,8 +292,9 @@ class DiagnosticCode(StrEnum, metaclass=_DiagnosticCodeType):
     is at the member's stored offset, not where the central directory's own position
     puts it, so bytes were lost from the archive (or added to it) between the member
     and the directory; the member is read from its stored offset, where a local header
-    with its name, method, CRC-32 and sizes is. The data is still checked against its
-    CRC-32."""
+    with its name, method, CRC-32 and sizes is. In each case a complete read still
+    checks the data as for any member: by its CRC-32, or by its HMAC for a WinZip AE-2
+    member."""
     MEMBER_LOCAL_CRC_USED = "member_local_crc_used"
     """A ZIP member's central directory entry stores CRC-32 0 and its local header
     another value, which the data is checked against. Adobe AIR writes such files."""
@@ -373,12 +381,12 @@ class DiagnosticCode(StrEnum, metaclass=_DiagnosticCodeType):
     def _missing_(cls, value: object) -> DiagnosticCode | None:
         """Convert a merged code's old value, spelled exactly; ``coerce_enum`` folds the
         other spellings a policy takes before it asks."""
-        if not isinstance(value, str) or value != value.lower():
+        if not isinstance(value, str):
             return None
-        old = value.upper()
-        new = _MERGED_IN_0_6.get(old)
-        if new is None:
+        old = _MERGED_BY_OLD_VALUE.get(value)
+        if old is None:
             return None
+        new = _MERGED_IN_0_6[old]
         _warn_merged(old, new)
         return cls[new]
 
@@ -1241,8 +1249,9 @@ class LocalHeaderContext(_JsonSafeContext):
     it (``central_offset``) but at the offset the entry stores (``local_offset``), both
     absolute positions in the file. Bytes were lost from the archive, or added to it,
     between the member and the directory; the member is read from ``local_offset``,
-    where a header with its name, method, CRC-32 and sizes is, and the CRC-32 still
-    checks the data. ``STRICT`` refuses the member.
+    where a header with its name, method, CRC-32 and sizes is, and the data is
+    checked as for any member (by its CRC-32, or by its HMAC for a WinZip AE-2
+    member). ``STRICT`` refuses the member.
 
     ``"crc32"``: the central directory stores CRC-32 0 and the local header a non-zero
     value (``local_crc32``). The data is checked against the local value, as unzip
@@ -1882,6 +1891,45 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
 )
 
 
+# Codes with a context kind of their own whose cases one context field tells apart, as
+# for the codes above. ``SCAN_ENTRY_VANISHED`` took over ``SCAN_DIRECTORY_VANISHED``
+# in 0.6.0, and ``entry_kind`` says which case it reports.
+_CASE_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]] = (
+    MappingProxyType(
+        {
+            DiagnosticCode.SCAN_ENTRY_VANISHED: (
+                "entry_kind",
+                frozenset({"directory", "entry"}),
+            ),
+        }
+    )
+)
+
+
+#: What a replayed emit is matched by: see :func:`_diagnostic_case`.
+_DiagnosticCase = tuple[DiagnosticCode, str, object]
+
+
+def _discriminator(code: DiagnosticCode) -> tuple[str, frozenset[str]] | None:
+    found = _SHARED_KIND_DISCRIMINATORS.get(code)
+    return found if found is not None else _CASE_DISCRIMINATORS.get(code)
+
+
+def _diagnostic_case(
+    code: DiagnosticCode, context: DiagnosticContext
+) -> _DiagnosticCase:
+    """The case of ``code`` that ``context`` reports: the code, the context's kind and
+    the value of the field that tells the code's cases apart.
+
+    Work that repeats its emits (a listing's retry) matches each one by its case, so
+    two cases of one code, such as a directory and an entry that vanished, are not
+    taken for each other.
+    """
+    discriminator = _discriminator(code)
+    value = None if discriminator is None else getattr(context, discriminator[0], None)
+    return (code, context.kind, value)
+
+
 def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> None:
     """Reject unregistered or mismatched code→context pairings.
 
@@ -1889,7 +1937,8 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
     ``MEMBER_DATA_IGNORED`` takes either of two. Codes that share a kind
     (``member_name_controls``, ``unused_argument``, ``unconfirmed_format``,
     ``archive_eof``, ``local_header``, ``name_encoding``) are told apart by one context
-    field, and every one of them is checked against the values its code allows.
+    field, and every one of them is checked against the values its code allows, as is
+    ``SCAN_ENTRY_VANISHED``'s ``entry_kind``.
     """
     expected = _CODE_CONTEXT_KINDS.get(code)
     if expected is None:
@@ -1901,7 +1950,7 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
             f"Diagnostic code {code.value!r} requires context kind {required}, "
             f"got {context.kind!r}"
         )
-    discriminator = _SHARED_KIND_DISCRIMINATORS.get(code)
+    discriminator = _discriminator(code)
     if discriminator is not None:
         field_name, allowed = discriminator
         actual = getattr(context, field_name, None)
@@ -1984,6 +2033,15 @@ class DiagnosticSummary:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "counts", _freeze_mapping(self.counts))
+        counted = sum(self.counts.values())
+        if counted != self.total_count:
+            # A summary pickled before 0.6.0 that counted two codes since merged into
+            # one: pickle builds its counts with one key for both, so one count is lost.
+            raise ValueError(
+                f"DiagnosticSummary counts add up to {counted}, not total_count="
+                f"{self.total_count}. A summary pickled by archivey before 0.6.0 cannot "
+                "be restored when it counted two codes that 0.6.0 merged."
+            )
 
     @override
     def __reduce__(self) -> tuple[object, ...]:

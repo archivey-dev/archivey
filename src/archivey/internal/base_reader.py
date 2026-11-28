@@ -2848,11 +2848,11 @@ class BaseArchiveReader(ArchiveReader):
             self._spare_emit_log = None
             self._walk_emits[position] = log
         member = self._diagnostics_collector.call_replaying(log, self._walk.__next__)
-        if not log.codes:
+        if not log.cases:
             del self._walk_emits[position]
             if fresh:
                 # Nothing was recorded, so the log is as new: ``emit`` records a
-                # detail or a raise only beside a code, and ``call_replaying`` has
+                # detail or a raise only beside a case, and ``call_replaying`` has
                 # dropped its reference to the log.
                 assert log.details == [] and log.raised is None
                 self._spare_emit_log = log

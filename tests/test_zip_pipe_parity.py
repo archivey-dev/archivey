@@ -810,9 +810,12 @@ def test_a_directory_offset_past_the_directory_reads_the_stored_offsets_either_w
             for _member, stream in reader.stream_members():
                 if stream is not None:
                     stream.read()
-            codes = [d.code for d in reader.diagnostics.retained]
-        shifted = DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
-        assert codes.count(shifted) == len(tree), (piped, codes)
+            reported = [
+                getattr(d.context, "field", None)
+                for d in reader.diagnostics.retained
+                if d.code is DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
+            ]
+        assert reported == ["offset"] * len(tree), (piped, reported)
 
 
 def _stored_members(*sizes: int) -> bytearray:

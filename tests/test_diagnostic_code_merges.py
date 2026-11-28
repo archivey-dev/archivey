@@ -8,6 +8,7 @@ line (DR-12a); 0.7.0 removes them.
 
 from __future__ import annotations
 
+import pickle
 import warnings
 
 import pytest
@@ -16,12 +17,14 @@ from archivey.diagnostics import (
     ARCHIVE_INTEGRITY_CODES,
     DiagnosticCode,
     DiagnosticPolicy,
+    DiagnosticSummary,
     DirectoryDataContext,
     LinkDataContext,
     LocalHeaderContext,
     ScanRaceContext,
     validate_code_context,
 )
+from archivey.exceptions import ArchiveyUsageError
 
 _MERGED = {
     "SCAN_DIRECTORY_VANISHED": "SCAN_ENTRY_VANISHED",
@@ -148,3 +151,86 @@ def test_an_unknown_name_still_fails() -> None:
         DiagnosticCode["NO_SUCH_CODE"]
     with pytest.raises(ValueError):
         DiagnosticCode("no_such_code")
+
+
+def test_the_scan_race_code_checks_its_entry_kind() -> None:
+    with pytest.raises(ValueError, match="SCAN_ENTRY_VANISHED requires entry_kind"):
+        validate_code_context(
+            DiagnosticCode.SCAN_ENTRY_VANISHED,
+            ScanRaceContext(entry_kind="unknown"),  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "ſcan_directory_vanished",  # long s, which upper-cases to S
+        "scan_dırectory_vanished",  # dotless i, which upper-cases to I
+    ],
+)
+def test_a_near_match_of_an_old_value_is_refused(spelling: str) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(ValueError):
+            DiagnosticCode(spelling)
+        with pytest.raises(ArchiveyUsageError):
+            DiagnosticPolicy(ignore={spelling})
+
+
+def test_a_policy_cannot_ignore_one_merged_case_and_raise_on_another() -> None:
+    # Both old names now mean the one merged code, which a policy cannot both ignore
+    # and raise on.
+    with (
+        pytest.warns(DeprecationWarning),
+        pytest.raises(ArchiveyUsageError, match="member_local_header_differs"),
+    ):
+        DiagnosticPolicy(
+            ignore={"member_local_name_differs"},
+            raise_on={"member_local_method_differs"},
+        )
+
+
+class _OldCode:
+    """Pickles as a code did before 0.6.0: the enum called with the old value."""
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def __reduce__(self) -> tuple[object, ...]:
+        return (DiagnosticCode, (self.value,))
+
+
+class _OldSummary:
+    """Pickles as a ``DiagnosticSummary`` did before 0.6.0."""
+
+    def __init__(self, counts: dict[_OldCode, int]) -> None:
+        self.counts = counts
+
+    def __reduce__(self) -> tuple[object, ...]:
+        total = sum(self.counts.values())
+        return (DiagnosticSummary, (total, self.counts, (), total))
+
+
+def test_an_old_pickle_whose_codes_merged_is_refused() -> None:
+    # Pickle builds the counts with the new keys before the summary sees them, so
+    # two old codes that merged into one overwrite each other's count.
+    data = pickle.dumps(
+        _OldSummary(
+            {
+                _OldCode("member_local_name_differs"): 2,
+                _OldCode("member_local_method_differs"): 3,
+            }
+        )
+    )
+    with (
+        pytest.warns(DeprecationWarning),
+        pytest.raises(ValueError, match="total_count"),
+    ):
+        pickle.loads(data)
+
+
+def test_an_old_pickle_with_one_code_per_group_still_loads() -> None:
+    data = pickle.dumps(_OldSummary({_OldCode("scan_directory_vanished"): 2}))
+    with pytest.warns(DeprecationWarning):
+        summary = pickle.loads(data)
+    assert summary.counts == {DiagnosticCode.SCAN_ENTRY_VANISHED: 2}
