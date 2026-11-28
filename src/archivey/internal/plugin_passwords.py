@@ -17,12 +17,12 @@ from typing import Any, NamedTuple
 
 from archivey.exceptions import EncryptionError
 from archivey.internal.password import (
-    PasswordConfirmVerdict,
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
     unverified_data_error,
     wrong_password_error,
 )
+from archivey.types import PasswordConfirmVerdict
 
 _Check = Callable[[bytes], Any]
 

@@ -105,7 +105,7 @@ is reject/raise, with one rewrite:
   all strip the root. A re-root is a name rewrite: `AbortOn.NAME_SANITIZED` raises
   `NameRewrittenError` on it and `presented_name` records it, unless the filter
   dropped the member or renamed it.
-- **`archivey.sanitize_names`** is a public `MemberFilter` that rewrites instead of
+- **`archivey.paths.sanitize_names`** is a public `MemberFilter` that rewrites instead of
   refusing, at any policy: it strips a root, resolves `..` against the segment before
   it and drops a `..` with nothing to climb out of (`a/../b` → `b`, `../x` → `x`),
   removes bidi override/isolate characters, appends `_` to a Windows-reserved stem

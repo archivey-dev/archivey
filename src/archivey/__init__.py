@@ -275,9 +275,11 @@ def _pin_public_module() -> None:
     and ``sanitize_names``. ``pickle`` records a function's ``__module__``, so a
     persisted reference to one would otherwise name an internal path that could then
     never move without breaking the caller's data. Pinned here, it names the public
-    module that exports it, the root first, which is stable, and ``repr()``, ``help()``
-    and ``inspect.getmodule`` say the same. The internal layout stays free to change;
-    ``internal`` imports still see the same objects.
+    module that exports it, the root first, and ``repr()``, ``help()`` and
+    ``inspect.getmodule`` say the same. That path moves only with the public spelling,
+    under the deprecation rule: 0.6.0 moved three of these functions off the root, so a
+    reference 0.5 pickled loads in 0.6 with a warning and not in 0.7.0. The internal
+    layout stays free to change; ``internal`` imports still see the same objects.
 
     Computed over each public module's ``__all__`` rather than listed, so a function
     added later is covered too. Classes are not pinned: a class's string annotations
@@ -349,7 +351,9 @@ def __getattr__(name: str) -> object:
     ``DeprecationWarning`` that names the new import, at the caller's line, for
     ``archivey.Name`` and ``from archivey import Name`` alike
     (:func:`~archivey.internal.moved_names.moved_name`). The value is not cached in the
-    module globals, so every use warns.
+    module globals, so every use warns (a ``from archivey import Name`` warns twice
+    under an ``always`` filter, as :func:`moved_name
+    <archivey.internal.moved_names.moved_name>` says).
 
     ``importlib.metadata`` is a measurable part of ``import archivey`` on a core-only
     install, for a string most callers never read. (Some optional codec packages import

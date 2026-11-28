@@ -61,10 +61,15 @@ line. How to write the entry: see
   its full name. `archivey.<name>` still works for 65 of them in 0.6 with a
   `DeprecationWarning` that names the new import, and 0.7.0 removes it. The other two,
   the experimental `PluginContainer` and `PluginStream`, left the root at once and come
-  from `archivey.types`. `sanitize_names` moved to `archivey.paths`. `archivey.core`
-  keeps only its six functions: `AcceleratorMode`, `ExtractionLimits`, `ListingLimits`,
-  `DetectionConfidence`, `FormatAvailability`, `FormatSupport` and `MissingComponent`
-  still work from it in 0.6 with the same warning.
+  from `archivey.types`. `sanitize_names` moved to `archivey.paths`. A reference to
+  `sanitize_names`, `list_known_formats` or `list_supported_formats` pickled by 0.5 or
+  earlier names `archivey`, so it loads in 0.6 with the warning and not in 0.7.0.
+  `archivey.core.__all__` keeps only its six functions: `AcceleratorMode`,
+  `ExtractionLimits`, `ListingLimits`, `DetectionConfidence`, `FormatAvailability`,
+  `FormatSupport` and `MissingComponent` still work from it in 0.6 with the same
+  warning. `ArchiveyConfig`, `DEFAULT_ARCHIVEY_CONFIG` and `FormatInfo` still import from
+  `archivey.core` with no warning, because its signatures name them, and stay through
+  0.6; import them from `archivey.config` and `archivey.detection`.
 
 ## [0.5.1] - 2026-11-20
 

@@ -161,7 +161,7 @@ def test_a_moved_name_still_works_from_the_root_with_a_warning(name: str) -> Non
     with pytest.warns(DeprecationWarning, match=re.escape(new_path)) as caught:
         value = getattr(archivey, name)
     assert value is getattr(importlib.import_module(MOVED[name]), name)
-    # stacklevel=2: the warning points at the caller's line, not at archivey.
+    # The warning points at the caller's line, not at archivey (DR-12a).
     assert caught[0].filename == __file__
 
 
@@ -170,7 +170,29 @@ def test_from_import_of_a_moved_name_warns_at_the_import_line() -> None:
         DeprecationWarning, match=r"archivey\.config\.DecoderLimits"
     ) as caught:
         from archivey import DecoderLimits  # noqa: F401
-    assert caught[0].filename == __file__
+    # A from-import of a package's moved name warns twice (``moved_name``); each
+    # warning points at the import line.
+    assert {w.filename for w in caught} == {__file__}
+
+
+#: Names that left ``archivey.core.__all__`` and stay bound there, with no warning,
+#: because ``archivey.core``'s signatures name them (``core._MOVED_IN_0_6``'s comment).
+CORE_STILL_BOUND = {
+    "ArchiveyConfig": "archivey.config",
+    "DEFAULT_ARCHIVEY_CONFIG": "archivey.config",
+    "FormatInfo": "archivey.detection",
+}
+
+
+@pytest.mark.parametrize("name", sorted(CORE_STILL_BOUND))
+def test_a_name_core_signatures_use_stays_importable_from_core(name: str) -> None:
+    import archivey.core
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        value = getattr(archivey.core, name)
+    assert value is getattr(importlib.import_module(CORE_STILL_BOUND[name]), name)
+    assert name not in archivey.core.__all__
 
 
 @pytest.mark.parametrize("name", sorted(CORE_MOVED))
@@ -263,7 +285,7 @@ def _old_spellings(text: str) -> list[str]:
 
 
 def test_the_repository_uses_only_the_new_spellings() -> None:
-    """Code, tests and user docs import each moved name from its submodule.
+    """Code, tests, user docs and specs import each moved name from its submodule.
 
     The changelog is history, and this file names the old spellings on purpose.
     """
@@ -273,6 +295,7 @@ def test_the_repository_uses_only_the_new_spellings() -> None:
         *(REPO / "scripts").rglob("*.py"),
         *(REPO / "benchmarks").rglob("*.py"),
         *(REPO / "docs").rglob("*.md"),
+        *(REPO / "openspec" / "specs").rglob("*.md"),
         REPO / "README.md",
     ]
     offenders = {
