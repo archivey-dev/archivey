@@ -429,9 +429,10 @@ def for_plugin(
         stream = lzx(excluded, isolated=isolated)
     else:
         from archivey.exceptions import ArchiveyUsageError
+        from archivey.terminal import quoted
 
-        names = ", ".join(repr(n) for n in get_args(KernelName))
+        names = ", ".join(quoted(n) for n in get_args(KernelName))
         raise ArchiveyUsageError(
-            f"no kernel is named {name!r}; the kernels are {names}"
+            f"no kernel is named {quoted(str(name))}; the kernels are {names}"
         )
     return None if stream.library is None else lease.track(stream.Decompressor)
