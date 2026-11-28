@@ -16,8 +16,9 @@ line. How to write the entry: see
 ### Added
 
 - `open_archive(salvage=True)` opts into salvage mode, capped by the new `SalvageLimits`
-  (`ArchiveyConfig.salvage_limits`). No format has a salvage search yet, so every format
-  reads as before and records `SALVAGE_UNAVAILABLE`.
+  (`ArchiveyConfig.salvage_limits`): TAR searches past damage for the next header and
+  lists what it finds, flagged, even when the archive's start is lost; other formats
+  read as before and record `SALVAGE_UNAVAILABLE`.
 - `ArchiveyConfig(format_options=[...])` holds the settings of single formats, one
   object per format: `archivey.config.RarOptions` for RAR, and a plugin's format can
   have its own. A reader asks for its own with `ReaderContext.options(cls)`.

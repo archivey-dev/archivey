@@ -288,6 +288,13 @@ Where the compressed data ends depends on the method:
 - For every method, bytes left after that end raise `CorruptionError`.
 - A **stream format** ends where its format says. Bytes after that end are reported as
   `ARCHIVE_TRAILING_DATA`, as they are for a file of that format.
+- A **stream format with `one_stream=True`** is a member's data that is one stream and
+  nothing else, as in XAR. Bytes after its end raise `CorruptionError`, as for a
+  method, and a second bzip2 or LZMA Alone stream is such bytes. It takes `ZLIB`,
+  `BZIP2`, `XZ`, `LZMA_ALONE`, `ZSTD`, `LZ4` and `BROTLI`; any other stream format
+  raises `UnsupportedFeatureError`. One exception, as for a ZIP member: when rapidgzip
+  decodes, several zlib streams whose last trailer matches the Adler-32 of them all
+  read as one.
 
 **A file in independent blocks.** Some formats store a file as fixed-size blocks, each
 compressed on its own, so a reader can start at any block: SquashFS, CAB, WIM and CSO all
@@ -589,6 +596,14 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
   member first: rename it (and a hard link's `link_target` with it: the inner listing
   has normalized it already, and archivey normalizes the renamed one again), or add
   `MemberSpan.digests` from a checksum list the outer archive keeps.
+- **Keep a renamed member in its folder.** A walk that puts the inner members under
+  a folder (`Payload/` of a macOS package) checks that each one extracts there:
+  `extracted_segments(name)` gives the segments of the furthest-reaching path a name
+  can extract to (root dropped, `..` resolved as `sanitize_names` resolves it), and
+  `collision_key(segment, ExtractionPolicy.STANDARD)` folds each segment at least as
+  much as any case-insensitive filesystem would. Compare the member's first segments
+  with the folder's, both folded. A member named `Payload/../Bom` would otherwise
+  replace the outer `Bom`.
 - **Cost.** Inner members are decoded data, so the rules of the next section hold: a
   pass reads them once, and `open()` of one afterwards walks the archive again to it.
   Have `archive_info()` return `ReaderArchiveInfo(is_solid=True)`.

@@ -431,6 +431,8 @@ def test_no_public_name_reports_an_internal_module() -> None:
         (archivey.core.list_known_formats, "archivey.core"),
         (archivey.core.list_supported_formats, "archivey.core"),
         (archivey.paths.sanitize_names, "archivey.paths"),
+        (archivey.formats.collision_key, "archivey.formats"),
+        (archivey.formats.str_retained_bytes, "archivey.formats"),
         (archivey.detect_format, "archivey"),
     ],
     ids=lambda v: getattr(v, "__name__", v),

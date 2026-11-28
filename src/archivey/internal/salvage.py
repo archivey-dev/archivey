@@ -57,14 +57,17 @@ _local = threading.local()
 class SalvageRequest:
     """What the opener of a reader says about salvage: whether the caller asked for
     it, whether the backend that builds the reader has a salvage search
-    (``ReadBackend.SUPPORTS_SALVAGE``), and whether the reader reads again what an
-    earlier reader of the same archive reported (``repeat``): an inner archive
-    built again by a walk started over to reach member data. A repeat reader
-    salvages as the first one did, and records none of the salvage codes, since
-    the first one recorded them."""
+    (``ReadBackend.SUPPORTS_SALVAGE``), whether the archive's start may be lost, and
+    whether the reader reads again what an earlier reader of the same archive
+    reported. ``lost_start`` is set when the format came from ``format=`` or the
+    source name's extension, not from the archive's own bytes (design decision 9).
+    ``repeat`` marks an inner archive built again by a walk started over to reach
+    member data: a repeat reader salvages as the first one did, and records none of
+    the salvage codes, since the first one recorded them."""
 
     requested: bool = False
     supported: bool = False
+    lost_start: bool = False
     repeat: bool = False
 
 
@@ -73,7 +76,11 @@ _NO_REQUEST = SalvageRequest()
 
 @contextmanager
 def requesting_salvage(
-    requested: bool, *, supported: bool, repeat: bool = False
+    requested: bool,
+    *,
+    supported: bool,
+    lost_start: bool = False,
+    repeat: bool = False,
 ) -> Generator[None]:
     """Let the next reader built on this thread take this salvage request.
 
@@ -82,12 +89,17 @@ def requesting_salvage(
     with the outer reader's request, so an archive archivey opens inside another
     salvages when the outer one was asked to. The first reader built in the block
     takes the request (:func:`take_salvage_request`); one a password provider or a
-    diagnostic callback opens later in the same open does not. ``repeat`` marks a
-    reader that reads again what an earlier one reported (:class:`SalvageRequest`).
+    diagnostic callback opens later in the same open does not. ``lost_start`` is
+    :attr:`SalvageRequest.lost_start`; it counts only with ``requested``. ``repeat``
+    marks a reader that reads again what an earlier one reported
+    (:class:`SalvageRequest`).
     """
     before = getattr(_local, "request", _NO_REQUEST)
     _local.request = SalvageRequest(
-        requested=requested, supported=supported, repeat=repeat
+        requested=requested,
+        supported=supported,
+        lost_start=requested and lost_start,
+        repeat=repeat,
     )
     try:
         yield
@@ -164,6 +176,9 @@ class SalvageState:
     ``requested`` is whether the reader was opened with ``salvage=True``; ``enabled``
     is whether it salvages, which also needs its backend to have a salvage search.
     A reader asks ``enabled`` before it searches, and reads ``limits`` for the caps.
+    ``lost_start`` says the format came from ``format=`` or the name's extension, so
+    the archive's first header may be lost (design decision 9), for a format whose
+    search depends on it (CPIO's and ar's, in a later PR; TAR does not read it).
 
     A format calls :func:`search_forward` with this state, and :meth:`finish` when its
     walk ends, which records the ``report_limit`` record if any range went
@@ -190,9 +205,11 @@ class SalvageState:
         collector: DiagnosticCollector,
         archive_name: str | None,
         format_name: str,
+        lost_start: bool = False,
     ) -> None:
         self.requested = requested
         self.enabled = enabled
+        self.lost_start = enabled and lost_start
         self.limits = limits
         self._collector = collector
         self._archive_name = archive_name
@@ -395,7 +412,8 @@ def search_forward(
     forward, each read starting where the one before ended, so a decoded stream can
     serve it without seeking back. ``end``, when known, is where the layer ends; the
     search reads nothing at or past it, and an ``end`` before ``start`` or before the
-    layer's search position is a bug (``AssertionError``). Under a budget the search
+    layer's search position is a bug (``AssertionError``): a format whose start comes
+    from a size the archive gives clamps it to ``end`` first. Under a budget the search
     reads no further than the last header the budget lets it reach (one byte more
     when ``end`` is not known and the budget pays for every byte read, to see
     whether the layer ends there), and with no budget left it reads nothing.
