@@ -30,6 +30,11 @@ nav:
 # `docs/` behind an exclusion list, which would need a second list to keep in sync.
 # `scripts/checks/check_docs_nav.py` enforces both halves of that invariant.
 
+# Keeps the API page's pre-0.6 anchors (`#archivey.DecoderLimits`) for the names that
+# moved to a submodule; see the script's docstring.
+hooks:
+  - scripts/docs/old_api_anchors.py
+
 plugins:
   - search
   - mkdocstrings:

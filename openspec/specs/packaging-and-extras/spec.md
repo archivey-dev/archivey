@@ -300,11 +300,14 @@ functions, the reader, member, format, policy and report types, and the most-cau
 errors. Every other public name SHALL be listed in the `__all__` of the public
 submodule that defines it (`archivey.core`, `reader`, `types`, `detection`, `config`,
 `cost`, `diagnostics`, `exceptions`, `format_policy`, `detection_cost`, `terminal`,
-`paths`, `formats`, and `fsspec` with its extra), with the same compatibility promise
-as the root's. Supported callers SHALL NOT need to import from `archivey.internal.*`.
-Every attribute of the package root SHALL be in `archivey.__all__`, be a real submodule
-of `archivey` (`internal` included: importing a submodule binds it on its parent
-package), or be private.
+`paths`, `formats`, and `fsspec`, which needs fsspec installed separately), with the
+same compatibility promise as the root's, except for the names the stability policy
+marks experimental (`EXPERIMENTAL` in `scripts/checks/api_surface.py`: all of
+`archivey.formats`, among others), which may change in a minor release. Supported
+callers SHALL NOT need to import from `archivey.internal.*`. Every attribute of the
+package root SHALL be in `archivey.__all__`, be a real submodule of `archivey`
+(`internal` included: importing a submodule binds it on its parent package), or be
+private.
 
 A name that left the root in 0.6.0 SHALL still work as `archivey.<name>` for the 0.6
 series, with a `DeprecationWarning` that names its submodule and points at the

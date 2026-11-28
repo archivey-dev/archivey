@@ -337,15 +337,17 @@ def _old_spellings(text: str) -> list[str]:
     return found
 
 
-_OLD_ANCHOR = re.compile(r'<span id="archivey\.\w+"></span>')
-
-
 def test_the_repository_uses_only_the_new_spellings() -> None:
     """Code, tests, user docs and specs import each moved name from its submodule.
 
-    The changelog is history, and this file names the old spellings on purpose. The
-    API page's old-anchor spans keep the old spelling as an id on purpose too.
+    The changelog is history, and this file and the API page's old-anchor hook (with
+    its test) name the old spellings on purpose.
     """
+    on_purpose = {
+        Path(__file__),
+        REPO / "scripts" / "docs" / "old_api_anchors.py",
+        REPO / "scripts" / "tests" / "test_old_api_anchors.py",
+    }
     paths = [
         *(REPO / "src").rglob("*.py"),
         *(REPO / "tests").rglob("*.py"),
@@ -358,26 +360,7 @@ def test_the_repository_uses_only_the_new_spellings() -> None:
     offenders = {
         str(path.relative_to(REPO)): hits
         for path in paths
-        if path != Path(__file__)
-        and (
-            hits := _old_spellings(
-                _OLD_ANCHOR.sub("", path.read_text(encoding="utf-8"))
-            )
-        )
+        if path not in on_purpose
+        and (hits := _old_spellings(path.read_text(encoding="utf-8")))
     }
     assert offenders == {}
-
-
-def test_the_api_page_keeps_each_moved_name_s_old_anchor() -> None:
-    """A link to ``api/#archivey.<Name>`` from before 0.6 still lands on the entry: the
-    page keeps an anchor with the old id beside each moved name's new heading. Which
-    names have an entry at all is ``test_public_api.py``'s check."""
-    page = (REPO / "docs" / "api.md").read_text(encoding="utf-8")
-    missing = sorted(
-        name
-        for name, module in MOVED.items()
-        if name not in EXPERIMENTAL_MOVED  # never served under the old spelling
-        if f"\n::: {module}.{name}\n" in page
-        if f'<span id="archivey.{name}"></span>\n\n::: {module}.{name}\n' not in page
-    )
-    assert missing == []
