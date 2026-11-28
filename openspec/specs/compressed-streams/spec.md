@@ -890,7 +890,7 @@ so the next read tries again.
 ### Requirement: A stream reports the verification it has reached and can reach
 
 Every public `ArchiveStream` SHALL expose two read-only properties of type
-`archivey.Verification`, an `IntEnum` ordered `NONE < UNLOCKED < LENGTH < CHECKSUM`:
+`archivey.types.Verification`, an `IntEnum` ordered `NONE < UNLOCKED < LENGTH < CHECKSUM`:
 
 - `verified`: the highest level the stream has proved. It SHALL NOT decrease, and a
   read that raises SHALL NOT raise it.

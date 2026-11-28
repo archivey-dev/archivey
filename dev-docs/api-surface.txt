@@ -530,6 +530,7 @@ value archivey.types.OnError.STOP = 'stop'
 value archivey.types.OnError.CONTINUE = 'continue'
 value archivey.types.OnError.KEEP_PARTIAL = 'keep_partial'
 reexport archivey.types.OnProblem = archivey.OnProblem
+alias archivey.types.OnSourceRead = Callable[[SourceProgress], None]
 class archivey.types.OptionalLibrary(StrEnum)
 enum archivey.types.OptionalLibrary
 value archivey.types.OptionalLibrary.PYPPMD = 'pyppmd'

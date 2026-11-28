@@ -57,7 +57,6 @@ from collections.abc import Callable, Generator, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
-    TYPE_CHECKING,
     Any,
     BinaryIO,
     ClassVar,
@@ -79,8 +78,9 @@ from archivey.diagnostics import (
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, TruncatedError
 from archivey.internal.arg_checks import check_bool
 from archivey.internal.naming import normalize_member_name
+from archivey.internal.nesting import NestDraws
 from archivey.internal.overrides import override
-from archivey.internal.password import PasswordConfirmVerdict
+from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.streams.blocks import BlockStream
 from archivey.internal.streams.streamtools import ensure_bufferedio
 from archivey.internal.timestamps import dos_to_datetime, unix_to_datetime
@@ -91,15 +91,12 @@ from archivey.types import (
     ArchiveMember,
     CompressionAlgorithm,
     MemberType,
+    PasswordConfirmVerdict,
     PluginContainer,
     PluginStream,
     SpecialFileType,
     StreamFormat,
 )
-
-if TYPE_CHECKING:
-    from archivey.internal.nesting import NestDraws
-    from archivey.internal.resource_usage import ResourceUsageRecorder
 
 __all__ = [
     "CodecCall",

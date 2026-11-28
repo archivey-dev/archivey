@@ -1997,7 +1997,7 @@ API.
 #### Scenario: no published constructor
 
 `dev-docs/api-surface.txt` lists no `init` line for `archivey.ArchiveStream` or
-`archivey.MemberPass`.
+`archivey.reader.MemberPass`.
 
 ### Requirement: verify_all checks every member and keeps going
 

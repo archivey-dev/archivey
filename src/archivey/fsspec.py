@@ -28,7 +28,7 @@ import fsspec
 from fsspec.archive import AbstractArchiveFileSystem
 from fsspec.core import OpenFile
 
-from archivey.config import DEFAULT_ARCHIVEY_CONFIG
+from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, PasswordInput
 from archivey.core import open_archive
 from archivey.diagnostics import DiagnosticCode, PathRefusedContext
 from archivey.exceptions import DiagnosticRaisedError, FilterRejectionError
@@ -45,15 +45,18 @@ from archivey.internal.filters import (
 )
 from archivey.internal.overrides import override
 from archivey.internal.reader_state import LifecycleState, closed_reader_error
+from archivey.reader import ArchiveReader, ArchiveStream
 from archivey.terminal import quoted
-from archivey.types import ArchiveMember, ExtractionPolicy, MemberType
+from archivey.types import (
+    ArchiveFormat,
+    ArchiveMember,
+    ExtractionPolicy,
+    ExtractionPolicyStr,
+    MemberType,
+)
 
 if TYPE_CHECKING:
-    from archivey.config import ArchiveyConfig, PasswordInput
-    from archivey.formats import ArchiveFormat
     from archivey.internal.base_reader import BaseArchiveReader
-    from archivey.reader import ArchiveReader, ArchiveStream
-    from archivey.types import ExtractionPolicyStr
 
 __all__ = ["ArchiveyFileSystem"]
 

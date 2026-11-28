@@ -1635,7 +1635,9 @@ class ArchiveMember:
 
     Known keys and their value types are :class:`~archivey.types.MemberExtra`. Unknown keys
     (third-party or future) stay legal and read as ``object``. The ``EXTRA_*``
-    constants on this module remain the names for the keys they cover.
+    constants on this module remain the names for the keys they cover; they import from
+    here but are not in ``__all__``, so the compatibility promise covers the keys, not
+    the constants' names.
     """
 
     # Private internal fields (not part of the public contract)
@@ -2579,6 +2581,33 @@ class ExtractionResult:
 
 #: The public names of this module. The most used of them are also re-exported at
 #: the package root (see archivey.__all__).
+# Public as ``archivey.formats.PasswordConfirmVerdict``. It is defined here, in a
+# public module, so its ``__module__`` (which ``pickle`` records) is a stable path, and
+# here rather than in ``archivey.formats`` because the password code under
+# ``archivey.internal`` uses it and ``archivey.formats`` imports that code.
+class PasswordConfirmVerdict(Enum):
+    """How sure a check is that one password is the right one.
+
+    A plugin's password check returns one (:class:`archivey.formats.NeedsPassword`),
+    and the ZIP, 7z and RAR readers' confirmation probes use the same levels.
+    ``CONFIRMED`` needs evidence at least as strong as a CRC-32 over 4 or more decoded
+    bytes (a wrong password passes it no more often than 1 time in 2**32), or a
+    cryptographic check of that strength. Anything weaker (a magic number, padding, a
+    CRC over fewer bytes) may reject a password, and otherwise is ``INCONCLUSIVE``.
+    """
+
+    #: This password is not the one: try the next.
+    REJECTED = "rejected"
+    #: The check proves this password.
+    CONFIRMED = "confirmed"
+    #: This password passed every check run so far, and could still be wrong.
+    INCONCLUSIVE = "inconclusive"
+
+
+# The public names of this module. Importable names left out on purpose: the
+# ``EXTRA_*`` key constants (``ArchiveMember.extra`` says why) and the ``…Str`` literal
+# aliases of the enums, which spell out the strings a signature accepts and are typing
+# aids rather than API; ``BackendKindStr`` is listed because ``BackendUse.kind`` holds one.
 __all__ = [
     "AbortOn",
     "ArchiveFormat",
@@ -2606,6 +2635,7 @@ __all__ = [
     "OnBlocked",
     "OnError",
     "OnProblem",
+    "OnSourceRead",
     "OptionalLibrary",
     "OverwritePolicy",
     "PluginContainer",

@@ -29,17 +29,13 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from collections.abc import Callable
 from pathlib import PurePath
-from typing import TYPE_CHECKING
 
 from archivey.exceptions import _UsageValueError
 from archivey.internal.filters import sanitize_names
 from archivey.internal.overrides import override
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from archivey.types import ArchiveMember
+from archivey.types import ArchiveMember
 
 __all__ = ["match_glob", "match_tar_glob", "numbered_name", "sanitize_names"]
 

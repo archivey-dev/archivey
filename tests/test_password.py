@@ -21,13 +21,12 @@ from archivey.exceptions import ArchiveyUsageError, EncryptionError
 from archivey.internal.backends.sevenzip_reader import SevenZipReader
 from archivey.internal.measurement import enable_measurement
 from archivey.internal.password import (
-    PasswordConfirmVerdict,
     _PasswordCandidates,
     wrong_password_error,
 )
 from archivey.internal.password_confirm import attempt_with_confirm
 from archivey.internal.plugin_passwords import SavedWinner, resolve_request
-from archivey.types import ArchiveMember, MemberType
+from archivey.types import ArchiveMember, MemberType, PasswordConfirmVerdict
 from tests.conftest import requires, requires_binary
 
 
