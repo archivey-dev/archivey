@@ -630,7 +630,7 @@ class ForwardArchiveReader(ABC):
 
         The stream is ``None`` for every member that has no data of its own: links,
         special entries, tombstones and most directories. A directory that declares
-        data (``MEMBER_DIRECTORY_DATA_IGNORED``, in ZIP, TAR and RAR) gets a stream
+        data (``MEMBER_DATA_IGNORED``, in ZIP, TAR and RAR) gets a stream
         with the bytes :meth:`~ArchiveReader.open` delivers for it, under the same
         checks, so a forward-only reader reaches them too. The exception is a ZIP
         directory written with a data descriptor, read from a source that cannot

@@ -33,15 +33,15 @@ After a full walk, :meth:`TarReader._verify_tar_eof` checks the end, from the
 - A non-zero byte within ``_MAX_TRAILING_SCAN`` bytes of a complete trailer, or of a
   damaged second trailer block → ``ARCHIVE_TRAILING_DATA``. Zero padding passes.
 - A ``DIRTYPE`` header with a size as the last member, the walk stopped on a zero block
-  inside the span that size declares → ``MEMBER_DIRECTORY_DATA_IGNORED`` naming the
-  directory: the declared blocks, if there, were read as the marker and hid the members
-  behind them, and nothing tells that from a trailer after a header whose blocks were
+  inside the span that size declares → ``MEMBER_DATA_IGNORED`` naming the directory:
+  the declared blocks, if there, were read as the marker and hid the members behind
+  them, and nothing tells that from a trailer after a header whose blocks were
   never written (:meth:`TarReader._report_directory_span`). A block that is neither a
   header nor zero where the data would begin → ``CorruptionError`` naming the directory.
   A walk that stopped at or past the span's end read all of it: ordinary checks only.
 
 A directory listed from an old-style regular-file header named ``d/`` keeps its declared
-``size`` and is reported with ``MEMBER_DIRECTORY_DATA_IGNORED`` at listing; ``open()``
+``size`` and is reported with ``MEMBER_DATA_IGNORED`` at listing; ``open()``
 and ``stream_members()`` deliver the bytes, extraction creates the directory (DR-3). A
 ``DIRTYPE`` header whose size is a PAX record is read the same way, as GNU tar skips
 those bytes.
@@ -49,7 +49,7 @@ those bytes.
 A symlink or hard link header with a size is listed as a link with no ``size``. When
 the block after it is not a member header, or the size is a PAX record, the walker
 skips the declared blocks (see ``TarWalker._place_link_data``) and the link is reported
-with ``MEMBER_LINK_DATA_IGNORED`` at listing; extraction creates the link.
+with ``MEMBER_DATA_IGNORED`` at listing; extraction creates the link.
 
 These codes follow the diagnostic policy like any other: a caller who wants one to fail
 sets it to ``RAISE`` (``DiagnosticPolicy.STRICT`` does so for all of them).
@@ -1553,7 +1553,7 @@ class TarReader(BaseArchiveReader):
         declared blocks are zeros, read as the end-of-archive marker with the members
         behind them dropped, or they were never written and the trailer follows the
         header. :meth:`_report_directory_span` says so with
-        ``MEMBER_DIRECTORY_DATA_IGNORED``, the weight DR-3 gives a directory's
+        ``MEMBER_DATA_IGNORED``, the weight DR-3 gives a directory's
         declared data, and the marker checks below run unchanged. When the block
         where the data would begin does not parse, :meth:`_refuse_directory_blocks`
         names the directory in the ``CorruptionError`` the rejected header is anyway.
@@ -1635,7 +1635,7 @@ class TarReader(BaseArchiveReader):
     def _report_directory_span(
         self, member: ArchiveMember, directory: TarSpan, *, member_id: int
     ) -> None:
-        """Report ``MEMBER_DIRECTORY_DATA_IGNORED`` for a ``DIRTYPE`` header with a
+        """Report ``MEMBER_DATA_IGNORED`` for a ``DIRTYPE`` header with a
         size when the walk ended on a zero block inside the span that size declares.
 
         The bytes have two readings: the declared blocks are zeros, which the walker
@@ -1654,7 +1654,7 @@ class TarReader(BaseArchiveReader):
         is why the walk keeps its last member and not only its last entry.
         """
         self._diagnostics_collector.emit(
-            code=DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
+            code=DiagnosticCode.MEMBER_DATA_IGNORED,
             message=(
                 f"Directory {quoted(member.name)} declares {directory.size} bytes of "
                 "data and the archive ends on a zero block inside the span those bytes "
@@ -2333,15 +2333,15 @@ class TarReader(BaseArchiveReader):
     def _emit_link_data_ignored(
         self, member: ArchiveMember, member_id: int, entry: TarEntry
     ) -> None:
-        """Report ``MEMBER_LINK_DATA_IGNORED`` for a link header whose declared
+        """Report ``MEMBER_DATA_IGNORED`` for a link header whose declared
         blocks the walk took as its data (:class:`LinkData`).
 
         A TAR link has no data area. The walker skipped the declared blocks, so a
         zero block among them did not end the listing, as the maintainer ruled
         (2026-10-17); GNU tar and ``tarfile`` stop at such a block and drop the members
-        after it. The code is in ``ARCHIVE_INTEGRITY_CODES``, as
-        ``MEMBER_DIRECTORY_DATA_IGNORED`` is: a warning by default, refused under
-        ``DiagnosticPolicy.STRICT``. The finding is attached to the member.
+        after it. The code is in ``ARCHIVE_INTEGRITY_CODES``: a warning by default,
+        refused under ``DiagnosticPolicy.STRICT``. The finding is attached to the
+        member.
         """
         kind = "Symlink" if member.type == MemberType.SYMLINK else "Hard link"
         declares = f"{kind} {quoted(member.name)} declares {entry.size} bytes of data"
@@ -2364,7 +2364,7 @@ class TarReader(BaseArchiveReader):
                 "blocks were never written, and the listing ends there."
             )
         self._diagnostics_collector.emit(
-            code=DiagnosticCode.MEMBER_LINK_DATA_IGNORED,
+            code=DiagnosticCode.MEMBER_DATA_IGNORED,
             message=(
                 f"{what} Extraction creates the link and does not write the bytes."
             ),

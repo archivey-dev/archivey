@@ -56,7 +56,7 @@ The directory reader SHALL expose these properties:
 The directory backend SHALL propagate genuine directory-walk `OSError`s
 unchanged. If a listed entry or subdirectory vanishes before inspection, the
 reader SHALL skip it, continue scanning, and emit `SCAN_ENTRY_VANISHED` or
-`SCAN_DIRECTORY_VANISHED` with a JSON-safe relative path and entry kind. These
+`SCAN_ENTRY_VANISHED` with a JSON-safe relative path and entry kind. These
 events are reader-operation aggregate data and SHALL NOT attach to a member that
 does not exist.
 

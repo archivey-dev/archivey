@@ -51,9 +51,9 @@ root/                   walk order (depth-first preorder, per-directory name ord
 backend reads bytes that do not change between listing and reading. Here nothing is
 frozen. The walk reads one directory at a time and types each entry from its own `lstat`,
 so an entry that vanishes between `scandir` and `lstat` (or `readlink`) is skipped with a
-`SCAN_ENTRY_VANISHED` or `SCAN_DIRECTORY_VANISHED` diagnostic and the walk goes on
-(§2.2). Every other `OSError`, a permission error on a subdirectory included, fails the
-whole listing, because a listing with a hole in it would look complete. A member's
+`SCAN_ENTRY_VANISHED` diagnostic and the walk goes on (§2.2). Every other `OSError`, a
+permission error on a subdirectory included, fails the whole listing, because a listing
+with a hole in it would look complete. A member's
 `size`, `mode` and times are what `lstat` said when the walk passed. Reading opens the
 path again later, so the open checks that it still finds the listed file at the listed
 size and refuses anything else (§2.3). This is the same gap a TAR walk has between a
@@ -132,7 +132,7 @@ with `FileNotFoundError` (a path past `MAX_PATH` without long-path support), the
 the cached data and lists as `FILE`, not as vanished.
 
 **Races.** `FileNotFoundError` from `scandir` skips that directory with
-`SCAN_DIRECTORY_VANISHED`; from `lstat` or `readlink` it skips that entry with
+`SCAN_ENTRY_VANISHED`; from `lstat` or `readlink` it skips that entry with
 `SCAN_ENTRY_VANISHED`. A subdirectory swapped for something else before its scan
 fails the listing instead (§4). The diagnostic carries the relative path and the entry kind, never
 a `DirEntry`, `Path` or exception, and attaches to the reader, not to a member. Under a

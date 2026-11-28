@@ -392,7 +392,7 @@ def test_a_zip_directory_by_attribute_with_data_drops_it() -> None:
     assert member.type is MemberType.DIRECTORY
     assert [d.code for d in member.diagnostics] == [
         DiagnosticCode.MEMBER_READERS_DISAGREE,
-        DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
+        DiagnosticCode.MEMBER_DATA_IGNORED,
     ]
 
 

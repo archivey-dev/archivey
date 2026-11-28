@@ -548,7 +548,7 @@
     "tree": "44136fa355b3678a"
    },
    "codes": [
-    "member_directory_data_ignored"
+    "member_data_ignored"
    ],
    "trusted": {
     "outcome": "other",
@@ -1302,7 +1302,7 @@
     "tree": "e23d42fcf8c5ff2a"
    },
    "codes": [
-    "member_link_data_ignored"
+    "member_data_ignored"
    ],
    "trusted": {
     "outcome": "other",

@@ -488,7 +488,7 @@ What archivey does with the spans:
 - **Other members' data.** The data of a member that is not a file, a directory or such
   a symlink is skipped. A directory with data keeps it as its `size`: a read delivers
   the bytes, extraction creates the directory, and the listing reports
-  `MEMBER_DIRECTORY_DATA_IGNORED`, as for a built-in format.
+  `MEMBER_DATA_IGNORED`, as for a built-in format.
 
 `SequentialFormatHandler` takes the same class attributes as `IndexedFormatHandler`, except
 `non_seekable_reason`: it reads a pipe. Both share the base class `FormatHandler`, which

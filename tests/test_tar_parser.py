@@ -2282,9 +2282,9 @@ def test_a_size_that_names_no_data_is_reported(data: bytes, names: list[str]) ->
 @pytest.mark.parametrize(
     "data",
     [
-        # A PAX size gives the directory a data area: MEMBER_DIRECTORY_DATA_IGNORED.
+        # A PAX size gives the directory a data area: MEMBER_DATA_IGNORED.
         _pax({"size": "1"}) + _block(b"d/", typeflag=b"5") + _data(b"x"),
-        # The link's blocks are data, skipped: MEMBER_LINK_DATA_IGNORED.
+        # The link's blocks are data, skipped: MEMBER_DATA_IGNORED.
         _block(b"s", typeflag=b"2", size=1, linkname=b"t") + _data(b"x"),
         # The name a GNU long name overrode is not used, so its tail is not either.
         _long(b"L", b"long") + _block(patch=_field(0, 100, b"a\x00b")),

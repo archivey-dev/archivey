@@ -109,7 +109,7 @@ deletion/tombstone marker (`is_file` false, no payload); it SHALL NOT be treated
 
 A directory entry whose header declares data (ZIP, TAR, RAR; no format gives a
 directory content) SHALL stay `MemberType.DIRECTORY` with `size` as declared, SHALL
-be reported with `MEMBER_DIRECTORY_DATA_IGNORED` (in `ARCHIVE_INTEGRITY_CODES`) once
+be reported with `MEMBER_DATA_IGNORED` (in `ARCHIVE_INTEGRITY_CODES`) once
 per member at listing, and SHALL be created as a directory by extraction, as every
 official tool does. The one exception is GNU tar's dumpdir (`D`, from `tar -G`): its
 data is the directory's contents list at dump time, structure that GNU tar defines and
@@ -164,12 +164,12 @@ whose data-stored target has not been read yet (`read_link_targets=False`).
 | TAR header with an unknown typeflag (`9`) and 5 bytes of data; the same with none | `FILE` with `size == 5` that reads and extracts; `OTHER` with no `size`. Both report `MEMBER_TYPE_UNKNOWN`; neither has `extra["special_file_type"]` |
 | ZIP (Unix creator) or RAR (Unix host) entry whose mode is a device, FIFO or socket †, or a 7z one (`0x8000` set), with no data | `member.type == MemberType.OTHER`; `extra["special_file_type"]` names the kind |
 | The same entry storing data (`zip -FI` on a named pipe), or an ISO Rock Ridge special mode over a non-empty extent | `member.type == MemberType.FILE`; `size` is the stored size; `extra["special_file_type"]` set; `MEMBER_SPECIAL_FILE_HAS_DATA` with `SpecialFileDataContext`; `STRICT` does not raise |
-| ZIP or RAR directory entry declaring 12 bytes of data | `member.type == MemberType.DIRECTORY`, `size == 12`; `MEMBER_DIRECTORY_DATA_IGNORED`; `read()` returns the 12 bytes, and so does the stream `stream_members()` yields for it; extraction creates the directory; `STRICT` raises |
+| ZIP or RAR directory entry declaring 12 bytes of data | `member.type == MemberType.DIRECTORY`, `size == 12`; `MEMBER_DATA_IGNORED`; `read()` returns the 12 bytes, and so does the stream `stream_members()` yields for it; extraction creates the directory; `STRICT` raises |
 | ZIP directory entry declaring 12 bytes whose stored body was altered | `read()` raises `CorruptionError` (CRC-32 mismatch), as for a file |
-| ZIP directory entry declaring 12 bytes with a CRC-32 field of 0 | `hashes` empty; `MEMBER_DIRECTORY_DATA_IGNORED` and `DIGEST_UNVERIFIABLE`; `read()` returns the 12 bytes |
+| ZIP directory entry declaring 12 bytes with a CRC-32 field of 0 | `hashes` empty; `MEMBER_DATA_IGNORED` and `DIGEST_UNVERIFIABLE`; `read()` returns the 12 bytes |
 | ZIP directory entry with compressed size 2 and size 0 (the `jar` shape) | `DIRECTORY`; no diagnostic; `read()` → `ArchiveyUsageError` |
-| ZIP or RAR directory entry with size 0 over a 2000-byte stored body | `DIRECTORY`, `size == 0`, `compressed_size == 2000`; `MEMBER_DIRECTORY_DATA_IGNORED` with both sizes; `read()` → `ArchiveyUsageError`; `STRICT` raises |
-| RAR directory entry with compressed or encrypted data | `MEMBER_DIRECTORY_DATA_IGNORED`; `read()` → `UnsupportedFeatureError`, and so does the first read of the stream `stream_members()` yields for it |
+| ZIP or RAR directory entry with size 0 over a 2000-byte stored body | `DIRECTORY`, `size == 0`, `compressed_size == 2000`; `MEMBER_DATA_IGNORED` with both sizes; `read()` → `ArchiveyUsageError`; `STRICT` raises |
+| RAR directory entry with compressed or encrypted data | `MEMBER_DATA_IGNORED`; `read()` → `UnsupportedFeatureError`, and so does the first read of the stream `stream_members()` yields for it |
 | ZIP whose member carries a junction's reparse data † | `member.type == MemberType.SYMLINK`; `member.extra["is_junction"] is True`; `link_target` is the buffer's substitute name |
 | ZIP whose member has the reparse bit and no reparse data | `member.type == MemberType.SYMLINK`; `link_target is None`; `is_junction` unset, the tag that would establish it being in the data that was not written |
 | 7z ANTI-bit entry † | `member.type == MemberType.ANTI`; `member.is_anti`; not `is_file` |

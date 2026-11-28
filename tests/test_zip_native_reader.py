@@ -406,11 +406,11 @@ def _shifts(reader: ArchiveReader) -> list[LocalHeaderContext]:
     found = [
         d.context
         for d in reader.diagnostics.retained
-        if d.code is DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED
+        if d.code is DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
     ]
     contexts = [c for c in found if isinstance(c, LocalHeaderContext)]
     assert contexts == found
-    return contexts
+    return [c for c in contexts if c.field == "offset"]
 
 
 def test_a_zip_missing_bytes_in_its_middle_reads_the_members_before_them(
@@ -451,7 +451,7 @@ def test_a_zip_missing_bytes_in_its_middle_reads_the_members_before_them(
     with open_archive(path, config=strict) as reader:
         with pytest.raises(DiagnosticRaisedError) as ei:
             reader.read("a.txt")
-        assert ei.value.diagnostic.code is DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED
+        assert ei.value.diagnostic.code is DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS
         assert reader.read("c.txt") == b"c.txtc.txtc.txt"
 
 

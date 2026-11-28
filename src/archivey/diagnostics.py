@@ -30,13 +30,14 @@ import base64
 import dataclasses
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import EnumType, StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import ClassVar, Literal, NoReturn, TypeVar, overload
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, TypeVar, overload
 
 from archivey.exceptions import ArchiveyError, _UsageTypeError, _UsageValueError
 from archivey.internal.enum_args import coerce_enum_collection
+from archivey.internal.moved_names import caller_stacklevel
 from archivey.internal.overrides import override
 from archivey.internal.resource_usage import ResourceUsage
 from archivey.terminal import escape_control_chars
@@ -70,7 +71,67 @@ class _JsonSafeContext:
         }
 
 
-class DiagnosticCode(StrEnum):
+#: The codes merged in 0.6.0 (DR-13): each old member name, and the member it became.
+#: Through the 0.6 series the old name and its value still convert to the new member,
+#: with a ``DeprecationWarning`` at the caller's line (DR-12a). 0.7.0 deletes this table.
+_MERGED_IN_0_6: Mapping[str, str] = MappingProxyType(
+    {
+        "SCAN_DIRECTORY_VANISHED": "SCAN_ENTRY_VANISHED",
+        "MEMBER_LOCAL_NAME_DIFFERS": "MEMBER_LOCAL_HEADER_DIFFERS",
+        "MEMBER_LOCAL_METHOD_DIFFERS": "MEMBER_LOCAL_HEADER_DIFFERS",
+        "MEMBER_LOCAL_OFFSET_SHIFTED": "MEMBER_LOCAL_HEADER_DIFFERS",
+        "MEMBER_DIRECTORY_DATA_IGNORED": "MEMBER_DATA_IGNORED",
+        "MEMBER_LINK_DATA_IGNORED": "MEMBER_DATA_IGNORED",
+    }
+)
+
+
+# The old values, mapped to the old names: a value converts only as it was spelled.
+# ``str.upper`` would also take near matches such as a long s for ``s``.
+_MERGED_BY_OLD_VALUE: Mapping[str, str] = MappingProxyType(
+    {old.lower(): old for old in _MERGED_IN_0_6}
+)
+
+
+def _warn_merged(old: str, new: str) -> None:
+    import warnings
+
+    warnings.warn(
+        f"DiagnosticCode.{old} ({old.lower()!r}) is deprecated: it merged into "
+        f"DiagnosticCode.{new} in archivey 0.6.0, whose context tells the cases "
+        "apart, so a policy that names it covers every case merged with it. "
+        "Diagnostics carry the new code. The old spelling is removed in 0.7.0.",
+        DeprecationWarning,
+        stacklevel=caller_stacklevel(),
+    )
+
+
+class _DiagnosticCodeType(EnumType):
+    """Serves the member names merged in 0.6.0, with a ``DeprecationWarning``.
+
+    ``__getattr__`` runs only when the normal lookup fails, so a current member never
+    reaches it.
+    """
+
+    def __getattr__(cls, name: str) -> Any:
+        new = _MERGED_IN_0_6.get(name)
+        if new is None:
+            raise AttributeError(
+                f"type object {cls.__name__!r} has no attribute {name!r}"
+            )
+        _warn_merged(name, new)
+        return cls._member_map_[new]
+
+    @override
+    def __getitem__(cls, name: str) -> Any:
+        new = _MERGED_IN_0_6.get(name)
+        if new is not None:
+            _warn_merged(name, new)
+            name = new
+        return cls._member_map_[name]
+
+
+class DiagnosticCode(StrEnum, metaclass=_DiagnosticCodeType):
     """Stable machine codes for advisory events.
 
     The codes in :data:`ARCHIVE_INTEGRITY_CODES` report the archive's own bytes or
@@ -136,12 +197,10 @@ class DiagnosticCode(StrEnum):
     a single-file format), or for a format whose replacement reader
     (``FormatPolicy(replace=)``) takes no password. A password provider callable is not
     reported, since such a reader never calls it."""
-    SCAN_DIRECTORY_VANISHED = "scan_directory_vanished"
-    """A directory opened as an archive changed while it was read: a subdirectory
-    listed earlier was gone."""
     SCAN_ENTRY_VANISHED = "scan_entry_vanished"
     """A directory opened as an archive changed while it was read: an entry listed
-    earlier was gone."""
+    earlier was gone. The context's ``entry_kind`` says whether it was a subdirectory
+    the walk was about to list (``"directory"``) or another entry (``"entry"``)."""
     ARCHIVE_EOF_MARKER_MISSING = "archive_eof_marker_missing"
     """The record that marks the end of the archive is missing or short, such as a
     TAR's two zero blocks or a ZIP's end of central directory record. The archive may
@@ -157,24 +216,16 @@ class DiagnosticCode(StrEnum):
     not read (an HFS volume, an APFS container it refuses, or no filesystem it knows),
     or an APFS volume it refuses (encrypted or sealed) beside the volumes it lists."""
     ARCHIVE_UNREAD_SESSION = "archive_unread_session"
-    """A CD image holds a session its listing does not read, which another reading
-    of the same file does. A raw image (a ``.bin``) read without its ``.cue`` sheet
-    whose sector addresses place no readable later session there, but which holds
-    another ISO 9660 volume after the one listed: the first track is listed, and a
-    sheet beside it may choose the other volume. Or a ``.cue`` sheet chose a session,
-    but the sector addresses of a later data track start another one: the listing
-    follows the sheet, and the image read without it lists that session."""
+    """A disc image holds a later session or volume that its listing does not read,
+    and another reading of the same file does: the image read with or without the
+    sheet that describes its tracks, for example. The listing follows one reading;
+    the context says where the other one starts."""
     ARCHIVE_STRUCTURE_INCONSISTENT = "archive_structure_inconsistent"
-    """A disk image's structures are damaged or disagree with each other in a way the
-    read works around, and the context's ``structure`` says which: a UDIF code signature
-    outside the file (ignored), a primary GPT that fails its checks (the backup is
-    read), a partition map that fails its checks (the run tables' ranges are read), a
-    partition map or run table name that disagrees with the filesystem the partition
-    holds (the filesystem decides), an HFS+ file whose mode and Finder type disagree on
-    whether it is a symlink (the mode decides), an APFS directory entry whose type
-    disagrees with its inode's mode (the mode decides), a newest APFS checkpoint that
-    is incomplete (an older one is read). The listing comes from what the
-    read could check; another tool may read the damaged structure."""
+    """An archive's structures are damaged or disagree with each other in a way the
+    read works around, and the context's ``structure`` says which: a structure that
+    fails its checks, which is ignored or replaced by a backup copy or another record,
+    or two records that disagree, where one of them decides. The listing comes from
+    what the read could check; another tool may read the damaged structure."""
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
     """A stored timestamp could not be used, so that time is left unset."""
     MEMBER_HEADER_DAMAGED = "member_header_damaged"
@@ -201,12 +252,11 @@ class DiagnosticCode(StrEnum):
     DIGEST_UNVERIFIABLE = "digest_unverifiable"
     """A member's data cannot be checked against a stored checksum, so damage may go
     unnoticed."""
-    MEMBER_DIRECTORY_DATA_IGNORED = "member_directory_data_ignored"
-    """A directory entry declares data, which extraction does not write. The
-    directory is still created."""
-    MEMBER_LINK_DATA_IGNORED = "member_link_data_ignored"
-    """A TAR symlink or hard link header declares data, which nothing reads. The link
-    is listed and extracted as a link."""
+    MEMBER_DATA_IGNORED = "member_data_ignored"
+    """A member whose type holds no data declares some, which extraction does not
+    write. A directory entry (context ``DirectoryDataContext``) is still created; a
+    TAR symlink or hard link (``LinkDataContext``) is listed and extracted as a
+    link."""
     MEMBER_HEADER_AMBIGUOUS = "member_header_ambiguous"
     """A member's TAR headers state a field in a way no known writer produces, and
     readers disagree on the result: both a GNU long name and a PAX ``path``, a field
@@ -233,23 +283,21 @@ class DiagnosticCode(StrEnum):
     MEMBER_SPECIAL_FILE_HAS_DATA = "member_special_file_has_data"
     """An entry stored as a device, FIFO or socket carries data, so it is listed as a
     ``FILE`` with that data, as unzip, 7-Zip and bsdtar extract it."""
-    MEMBER_LOCAL_NAME_DIFFERS = "member_local_name_differs"
-    """A ZIP member's local header stores another name than its central directory
-    entry. The member keeps the central directory's name, as unzip and 7-Zip read it;
-    a tool that trusts the local header shows the other one."""
-    MEMBER_LOCAL_METHOD_DIFFERS = "member_local_method_differs"
-    """A ZIP member's local header names another compression method than its central
-    directory entry. The member is decoded by the local header's method, the one a
-    read from a pipe uses, and the data is still checked against its CRC-32."""
+    MEMBER_LOCAL_HEADER_DIFFERS = "member_local_header_differs"
+    """A ZIP member's local header disagrees with its central directory entry, and the
+    context's ``field`` says on what. ``"name"``: the member keeps the central
+    directory's name, as unzip and 7-Zip read it, and a tool that trusts the local
+    header shows the other one. ``"method"``: the member is decoded by the local
+    header's method, the one a read from a pipe uses. ``"offset"``: the local header
+    is at the member's stored offset, not where the central directory's own position
+    puts it, so bytes were lost from the archive (or added to it) between the member
+    and the directory; the member is read from its stored offset, where a local header
+    with its name, method, CRC-32 and sizes is. In each case a complete read still
+    checks the data as for any member: by its CRC-32, or by its HMAC for a WinZip AE-2
+    member."""
     MEMBER_LOCAL_CRC_USED = "member_local_crc_used"
     """A ZIP member's central directory entry stores CRC-32 0 and its local header
     another value, which the data is checked against. Adobe AIR writes such files."""
-    MEMBER_LOCAL_OFFSET_SHIFTED = "member_local_offset_shifted"
-    """A ZIP member's local header is at its stored offset, not where the central
-    directory's own position puts it: bytes were lost from the archive (or added to
-    it) between the member and the directory. The member is read from its stored
-    offset, where a local header with its name, method, CRC-32 and sizes is, and its
-    data is still checked against its CRC-32."""
     ARCHIVE_OFFSET_WRAPPED = "archive_offset_wrapped"
     """A ZIP stores an offset past 4 GiB in a 32-bit field without ZIP64, as macOS
     Archive Utility does, and archivey corrected it."""
@@ -275,8 +323,8 @@ class DiagnosticCode(StrEnum):
     a name: no append, no update, no file versions. A writer never produces it, so
     archivey reads it as damage or as crafted input. The member is listed and read
     like any other, and the later member supersedes the earlier one, as for
-    ``MEMBER_NAME_DUPLICATE``, which the same member also reports. Reported by the
-    CAB reader; another format with no append, such as XAR, may report it too."""
+    ``MEMBER_NAME_DUPLICATE``, which the same member also reports. Any reader of such
+    a format may report it."""
     SOURCE_CHANGE_UNDETECTABLE = "source_change_undetectable"
     """The archive is read by range requests from an ``fsspec`` file system that
     archivey cannot pin to one version of the object, so a replacement of the same
@@ -317,6 +365,31 @@ class DiagnosticCode(StrEnum):
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
 
+    if TYPE_CHECKING:
+        # The names merged in 0.6.0, for type checkers; ``_MERGED_IN_0_6`` serves them
+        # at run time, with a warning. They come after the members, so a type checker
+        # takes them as the aliases and the current names as the members.
+        SCAN_DIRECTORY_VANISHED = "scan_entry_vanished"
+        MEMBER_LOCAL_NAME_DIFFERS = "member_local_header_differs"
+        MEMBER_LOCAL_METHOD_DIFFERS = "member_local_header_differs"
+        MEMBER_LOCAL_OFFSET_SHIFTED = "member_local_header_differs"
+        MEMBER_DIRECTORY_DATA_IGNORED = "member_data_ignored"
+        MEMBER_LINK_DATA_IGNORED = "member_data_ignored"
+
+    @classmethod
+    @override
+    def _missing_(cls, value: object) -> DiagnosticCode | None:
+        """Convert a merged code's old value, spelled exactly; ``coerce_enum`` folds the
+        other spellings a policy takes before it asks."""
+        if not isinstance(value, str):
+            return None
+        old = _MERGED_BY_OLD_VALUE.get(value)
+        if old is None:
+            return None
+        new = _MERGED_IN_0_6[old]
+        _warn_merged(old, new)
+        return cls[new]
+
 
 #: The string spellings of :class:`DiagnosticCode` a type checker accepts: each value, and
 #: its dash form. The runtime also accepts a member's name in any case.
@@ -347,8 +420,6 @@ DiagnosticCodeStr = Literal[
     "encoding-argument-unused",
     "password_argument_unused",
     "password-argument-unused",
-    "scan_directory_vanished",
-    "scan-directory-vanished",
     "scan_entry_vanished",
     "scan-entry-vanished",
     "archive_eof_marker_missing",
@@ -383,20 +454,14 @@ DiagnosticCodeStr = Literal[
     "member-selector-unmatched",
     "member_special_file_has_data",
     "member-special-file-has-data",
-    "member_local_name_differs",
-    "member-local-name-differs",
-    "member_local_method_differs",
-    "member-local-method-differs",
+    "member_local_header_differs",
+    "member-local-header-differs",
     "member_local_crc_used",
     "member-local-crc-used",
-    "member_directory_data_ignored",
-    "member-directory-data-ignored",
-    "member_link_data_ignored",
-    "member-link-data-ignored",
+    "member_data_ignored",
+    "member-data-ignored",
     "member_header_ambiguous",
     "member-header-ambiguous",
-    "member_local_offset_shifted",
-    "member-local-offset-shifted",
     "archive_offset_wrapped",
     "archive-offset-wrapped",
     "member_size_wrapped",
@@ -421,6 +486,20 @@ DiagnosticCodeStr = Literal[
     "archive-region-skipped",
     "salvage_unavailable",
     "salvage-unavailable",
+    # The codes merged in 0.6.0 (``_MERGED_IN_0_6``), which convert with a warning
+    # through the 0.6 series; 0.7.0 drops them.
+    "scan_directory_vanished",
+    "scan-directory-vanished",
+    "member_local_name_differs",
+    "member-local-name-differs",
+    "member_local_method_differs",
+    "member-local-method-differs",
+    "member_local_offset_shifted",
+    "member-local-offset-shifted",
+    "member_directory_data_ignored",
+    "member-directory-data-ignored",
+    "member_link_data_ignored",
+    "member-link-data-ignored",
 ]
 
 
@@ -1152,27 +1231,32 @@ class LocalHeaderContext(_JsonSafeContext):
     """A ZIP member's local header disagrees with its central directory entry, and the
     member is read anyway.
 
-    ``field`` says on what, and matches the code. ``"name"``
-    (``MEMBER_LOCAL_NAME_DIFFERS``): the local header stores other name bytes
-    (``local_raw_name_base64``), such as another code page or ``\\`` for ``/``. The
-    member keeps the central directory's name, as unzip and 7-Zip read it; a tool that
-    trusts the local header shows another name, so ``STRICT`` refuses the member.
-    ``"method"`` (``MEMBER_LOCAL_METHOD_DIFFERS``): the local header names another
-    compression method (``local_method``) than the directory (``central_method``). The
-    member is decoded by the local method, which sits next to the data and is the one
-    a read from a pipe uses, so a file and a pipe read the same bytes; the CRC-32 still
-    checks them. A tool that trusts the directory decodes other bytes or fails, so
-    ``STRICT`` refuses the member.
-    ``"crc32"`` (``MEMBER_LOCAL_CRC_USED``): the central directory stores CRC-32 0 and
-    the local header a non-zero value (``local_crc32``). The data is checked against
-    the local value, as unzip checks it, and ``hashes`` holds it. Every Adobe AIR
-    package stores ``META-INF/AIR/hash`` this way; ``STRICT`` reads it.
-    ``"offset"`` (``MEMBER_LOCAL_OFFSET_SHIFTED``): the local header is not where the
-    central directory's position puts it (``central_offset``) but at the offset the
-    entry stores (``local_offset``), both absolute positions in the file. Bytes were
-    lost from the archive, or added to it, between the member and the directory; the
-    member is read from ``local_offset``, where a header with its name, method, CRC-32
-    and sizes is, and the CRC-32 still checks the data. ``STRICT`` refuses the member.
+    ``field`` says on what. ``"name"``, ``"method"`` and ``"offset"`` come with
+    ``MEMBER_LOCAL_HEADER_DIFFERS``, ``"crc32"`` with ``MEMBER_LOCAL_CRC_USED``.
+
+    ``"name"``: the local header stores other name bytes (``local_raw_name_base64``),
+    such as another code page or ``\\`` for ``/``. The member keeps the central
+    directory's name, as unzip and 7-Zip read it; a tool that trusts the local header
+    shows another name, so ``STRICT`` refuses the member.
+
+    ``"method"``: the local header names another compression method (``local_method``)
+    than the directory (``central_method``). The member is decoded by the local method,
+    which sits next to the data and is the one a read from a pipe uses, so a file and a
+    pipe read the same bytes; the CRC-32 still checks them. A tool that trusts the
+    directory decodes other bytes or fails, so ``STRICT`` refuses the member.
+
+    ``"offset"``: the local header is not where the central directory's position puts
+    it (``central_offset``) but at the offset the entry stores (``local_offset``), both
+    absolute positions in the file. Bytes were lost from the archive, or added to it,
+    between the member and the directory; the member is read from ``local_offset``,
+    where a header with its name, method, CRC-32 and sizes is, and the data is
+    checked as for any member (by its CRC-32, or by its HMAC for a WinZip AE-2
+    member). ``STRICT`` refuses the member.
+
+    ``"crc32"``: the central directory stores CRC-32 0 and the local header a non-zero
+    value (``local_crc32``). The data is checked against the local value, as unzip
+    checks it, and ``hashes`` holds it. Every Adobe AIR package stores
+    ``META-INF/AIR/hash`` this way; ``STRICT`` reads it.
     """
 
     kind: Literal["local_header"] = "local_header"
@@ -1531,7 +1615,9 @@ DiagnosticContext = (
     | SalvageUnavailableContext
 )
 
-_CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
+#: The context kind each code takes. ``MEMBER_DATA_IGNORED`` is the one code with two:
+#: a directory's declared data and a link's have different fields.
+_CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str | tuple[str, ...]] = MappingProxyType(
     {
         DiagnosticCode.MEMBER_NAME_NORMALIZED: "name_normalization",
         DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING: "name_encoding",
@@ -1547,7 +1633,6 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.EMPTY_ARCHIVE: "empty_archive",
         DiagnosticCode.ENCODING_ARGUMENT_UNUSED: "unused_argument",
         DiagnosticCode.PASSWORD_ARGUMENT_UNUSED: "unused_argument",
-        DiagnosticCode.SCAN_DIRECTORY_VANISHED: "scan_race",
         DiagnosticCode.SCAN_ENTRY_VANISHED: "scan_race",
         DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: "archive_eof",
         DiagnosticCode.ARCHIVE_TRAILING_DATA: "archive_eof",
@@ -1559,8 +1644,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED: "member_header_record",
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: "symlink_target",
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",
-        DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED: "directory_data",
-        DiagnosticCode.MEMBER_LINK_DATA_IGNORED: "link_data",
+        DiagnosticCode.MEMBER_DATA_IGNORED: ("directory_data", "link_data"),
         DiagnosticCode.MEMBER_HEADER_AMBIGUOUS: "header_ambiguity",
         DiagnosticCode.ENCRYPTED_MEMBER_UNVERIFIED: "encrypted_verification",
         DiagnosticCode.SEEK_INDEX_DEGRADED: "seek_index",
@@ -1568,10 +1652,8 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.SOLID_OPEN_REDECOMPRESSES: "solid_reopen",
         DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: "selector_unmatched",
         DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA: "special_file_data",
-        DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS: "local_header",
-        DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS: "local_header",
+        DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS: "local_header",
         DiagnosticCode.MEMBER_LOCAL_CRC_USED: "local_header",
-        DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED: "local_header",
         DiagnosticCode.ARCHIVE_OFFSET_WRAPPED: "offset_wrap",
         DiagnosticCode.MEMBER_SIZE_WRAPPED: "size_wrap",
         DiagnosticCode.MEMBER_TYPE_UNKNOWN: "unknown_member_type",
@@ -1594,7 +1676,6 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.MEMBER_NAME_BIDI_CONTROL,
         DiagnosticCode.MEMBER_NAME_ZERO_WIDTH_CHARACTER,
         DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED,
-        DiagnosticCode.SCAN_DIRECTORY_VANISHED,
         DiagnosticCode.SCAN_ENTRY_VANISHED,
         DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
         DiagnosticCode.ARCHIVE_TRAILING_DATA,
@@ -1606,13 +1687,10 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
         DiagnosticCode.DIGEST_UNVERIFIABLE,
-        DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
-        DiagnosticCode.MEMBER_LINK_DATA_IGNORED,
+        DiagnosticCode.MEMBER_DATA_IGNORED,
         DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
         DiagnosticCode.SEEK_INDEX_DEGRADED,
-        DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
-        DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS,
-        DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED,
+        DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS,
         DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED,
     }
 )
@@ -1666,9 +1744,9 @@ The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-five codes are delib
   and ``STRICT`` would refuse a well-formed archive over it. The code is still recorded.
 - ``MEMBER_LOCAL_CRC_USED`` — a common packager (Adobe AIR) writes the shape, and the
   data is still checked, against the local header's CRC-32, so nothing is left
-  unverified. Its siblings ``MEMBER_LOCAL_NAME_DIFFERS`` and
-  ``MEMBER_LOCAL_METHOD_DIFFERS`` are **in** the set: there a tool that trusts the
-  other header shows the member under another name, or decodes other bytes.
+  unverified. Its sibling ``MEMBER_LOCAL_HEADER_DIFFERS`` is **in** the set: there a
+  tool that trusts the other header shows the member under another name, decodes
+  other bytes, or reads it from another place.
 - ``ARCHIVE_OFFSET_WRAPPED`` — macOS Archive Utility (Finder's Compress) writes a ZIP
   past 4 GiB this way by default and reads it back, and a correction is kept only when
   a local header with the member's name is there, with the CRC-32 still checked.
@@ -1757,11 +1835,6 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                 "category",
                 frozenset({"invisible"}),
             ),
-            DiagnosticCode.SCAN_DIRECTORY_VANISHED: (
-                "entry_kind",
-                frozenset({"directory"}),
-            ),
-            DiagnosticCode.SCAN_ENTRY_VANISHED: ("entry_kind", frozenset({"entry"})),
             DiagnosticCode.ENCODING_ARGUMENT_UNUSED: (
                 "argument",
                 frozenset({"encoding"}),
@@ -1800,7 +1873,10 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                 "expected_marker",
                 frozenset({"zeros_to_eof", "end_of_stream", "directory_padding"}),
             ),
-            DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS: ("field", frozenset({"name"})),
+            DiagnosticCode.MEMBER_LOCAL_HEADER_DIFFERS: (
+                "field",
+                frozenset({"name", "method", "offset"}),
+            ),
             DiagnosticCode.MEMBER_NAME_FALLBACK_ENCODING: (
                 "declared_encoding",
                 frozenset({""}),
@@ -1809,38 +1885,72 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                 "declared_encoding",
                 frozenset({"utf-8"}),
             ),
-            DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS: (
-                "field",
-                frozenset({"method"}),
-            ),
             DiagnosticCode.MEMBER_LOCAL_CRC_USED: ("field", frozenset({"crc32"})),
-            DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED: (
-                "field",
-                frozenset({"offset"}),
+        }
+    )
+)
+
+
+# Codes with a context kind of their own whose cases one context field tells apart, as
+# for the codes above. ``SCAN_ENTRY_VANISHED`` took over ``SCAN_DIRECTORY_VANISHED``
+# in 0.6.0, and ``entry_kind`` says which case it reports.
+_CASE_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]] = (
+    MappingProxyType(
+        {
+            DiagnosticCode.SCAN_ENTRY_VANISHED: (
+                "entry_kind",
+                frozenset({"directory", "entry"}),
             ),
         }
     )
 )
 
 
+#: What a replayed emit is matched by: see :func:`_diagnostic_case`.
+_DiagnosticCase = tuple[DiagnosticCode, str, object]
+
+
+def _discriminator(code: DiagnosticCode) -> tuple[str, frozenset[str]] | None:
+    found = _SHARED_KIND_DISCRIMINATORS.get(code)
+    return found if found is not None else _CASE_DISCRIMINATORS.get(code)
+
+
+def _diagnostic_case(
+    code: DiagnosticCode, context: DiagnosticContext
+) -> _DiagnosticCase:
+    """The case of ``code`` that ``context`` reports: the code, the context's kind and
+    the value of the field that tells the code's cases apart.
+
+    Work that repeats its emits (a listing's retry) matches each one by its case, so
+    two cases of one code, such as a directory and an entry that vanished, are not
+    taken for each other.
+    """
+    discriminator = _discriminator(code)
+    value = None if discriminator is None else getattr(context, discriminator[0], None)
+    return (code, context.kind, value)
+
+
 def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> None:
     """Reject unregistered or mismatched code→context pairings.
 
-    Most codes map 1:1 onto a context ``kind`` via ``_CODE_CONTEXT_KINDS``. Codes that
-    share a kind (``member_name_controls``, ``scan_race``, ``unused_argument``,
-    ``unconfirmed_format``, ``archive_eof``, ``local_header``, ``name_encoding``) are
-    told apart by one context field, and every one of them is checked against the value
-    its code requires.
+    Most codes map 1:1 onto a context ``kind`` via ``_CODE_CONTEXT_KINDS``;
+    ``MEMBER_DATA_IGNORED`` takes either of two. Codes that share a kind
+    (``member_name_controls``, ``unused_argument``, ``unconfirmed_format``,
+    ``archive_eof``, ``local_header``, ``name_encoding``) are told apart by one context
+    field, and every one of them is checked against the values its code allows, as is
+    ``SCAN_ENTRY_VANISHED``'s ``entry_kind``.
     """
     expected = _CODE_CONTEXT_KINDS.get(code)
     if expected is None:
         raise ValueError(f"Unknown diagnostic code: {code!r}")
-    if context.kind != expected:
+    kinds = expected if isinstance(expected, tuple) else (expected,)
+    if context.kind not in kinds:
+        required = " or ".join(repr(kind) for kind in kinds)
         raise ValueError(
-            f"Diagnostic code {code.value!r} requires context kind {expected!r}, "
+            f"Diagnostic code {code.value!r} requires context kind {required}, "
             f"got {context.kind!r}"
         )
-    discriminator = _SHARED_KIND_DISCRIMINATORS.get(code)
+    discriminator = _discriminator(code)
     if discriminator is not None:
         field_name, allowed = discriminator
         actual = getattr(context, field_name, None)
@@ -1911,7 +2021,8 @@ class DiagnosticSummary:
     counts: Mapping[DiagnosticCode, int] = field(
         default_factory=lambda: MappingProxyType({})
     )
-    """The exact count for each code, ignored ones included."""
+    """The exact count for each code, ignored ones included. They add up to
+    ``total_count``, and the constructor refuses counts that do not."""
 
     retained: tuple[Diagnostic, ...] = ()
     """The diagnostics kept in full, in the order they were emitted. Ignored codes are
@@ -1923,6 +2034,15 @@ class DiagnosticSummary:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "counts", _freeze_mapping(self.counts))
+        counted = sum(self.counts.values())
+        if counted != self.total_count:
+            # Also how a summary pickled before 0.6.0 that counted two codes since
+            # merged into one arrives: pickle builds its counts with one key for both.
+            raise _UsageValueError(
+                f"DiagnosticSummary counts add up to {counted}, not total_count="
+                f"{self.total_count}. A summary pickled before 0.6.0 that counted two "
+                "codes 0.6.0 merged cannot be restored."
+            )
 
     @override
     def __reduce__(self) -> tuple[object, ...]:

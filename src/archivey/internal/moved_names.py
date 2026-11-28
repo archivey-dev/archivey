@@ -10,8 +10,16 @@ checker, which does not run ``__getattr__``, types the old spelling as the real 
 
 from __future__ import annotations
 
+import enum
 import importlib
+import os
+import sys
 import warnings
+
+#: Frames in these files are archivey's own (or the ``enum`` machinery a conversion
+#: runs through), so a deprecation warning skips them to reach the caller.
+_INTERNAL_PREFIX = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep
+_ENUM_FILE = os.path.abspath(enum.__file__)
 
 
 def moved_name(module_name: str, table: dict[str, str], name: str) -> object:
@@ -36,3 +44,22 @@ def moved_name(module_name: str, table: dict[str, str], name: str) -> object:
         stacklevel=3,
     )
     return getattr(importlib.import_module(new_module), name)
+
+
+def caller_stacklevel() -> int:
+    """The ``stacklevel`` that points a warning at the first frame outside archivey.
+
+    For a warning raised deep inside a conversion, where the depth depends on the entry
+    point (``DiagnosticCode("old")`` runs through ``enum``, ``DiagnosticPolicy(raise_on=
+    {"old"})`` through the policy's coercion). Call it as the ``stacklevel=`` argument
+    of ``warnings.warn``, from the function that warns.
+    """
+    frame = sys._getframe(1)
+    level = 1
+    while frame.f_back is not None:
+        filename = os.path.abspath(frame.f_code.co_filename)
+        if not (filename.startswith(_INTERNAL_PREFIX) or filename == _ENUM_FILE):
+            break
+        frame = frame.f_back
+        level += 1
+    return level

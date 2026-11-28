@@ -24,6 +24,7 @@ import ast
 import contextlib
 import os
 import struct
+import warnings
 import zipfile
 from enum import Enum
 from pathlib import Path
@@ -47,7 +48,7 @@ from archivey.config import (
     RarDecompressorStr,
 )
 from archivey.detection_cost import DetectionBudgetPreset, DetectionBudgetPresetStr
-from archivey.diagnostics import DiagnosticCode, DiagnosticCodeStr
+from archivey.diagnostics import _MERGED_IN_0_6, DiagnosticCode, DiagnosticCodeStr
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.enum_args import (
     coerce_enum,
@@ -474,6 +475,10 @@ def _expected_literal_spellings(enum_cls: type[Enum]) -> set[str]:
         spellings.add(value)
         if "_" in value:
             spellings.add(value.replace("_", "-"))
+    if enum_cls is DiagnosticCode:
+        # The codes merged in 0.6.0 stay in the alias while they convert (DR-12a).
+        for old in _MERGED_IN_0_6:
+            spellings |= {old.lower(), old.lower().replace("_", "-")}
     return spellings
 
 
@@ -500,8 +505,13 @@ def test_every_literal_spelling_actually_coerces(
     enum_cls: type[Enum], alias: object
 ) -> None:
     """The alias promises a type checker what the runtime must then accept."""
-    for spelling in get_args(alias):
-        assert coerce_enum(spelling, enum_cls, call="t()", param="p=") in list(enum_cls)
+    with warnings.catch_warnings():
+        # A merged code's old spelling converts with a DeprecationWarning, which
+        # tests/test_diagnostic_code_merges.py checks.
+        warnings.simplefilter("ignore", DeprecationWarning)
+        for spelling in get_args(alias):
+            member = coerce_enum(spelling, enum_cls, call="t()", param="p=")
+            assert member in list(enum_cls)
 
 
 # --- the CLI speaks the same vocabulary -------------------------------------------

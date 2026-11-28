@@ -286,10 +286,10 @@ reverses their file order; and a directory entry with no local entry. `stream_me
 SHALL raise `CorruptionError` at the end of the pass for each but the reversed pair,
 which only updates the members. A local header that stores another name than the
 directory entry SHALL NOT fail the member: the member takes the directory's name, and a
-file or link reports `MEMBER_LOCAL_NAME_DIFFERS`, as a file read reports it (the
+file or link reports `MEMBER_LOCAL_HEADER_DIFFERS`, as a file read reports it (the
 requirement on headers that disagree). Nor SHALL one that names another compression
 method, unless one of the two is WinZip AES (99): the pass decoded by the local method,
-as a file read decodes, and a file or link reports `MEMBER_LOCAL_METHOD_DIFFERS`, as a
+as a file read decodes, and a file or link reports `MEMBER_LOCAL_HEADER_DIFFERS`, as a
 file read reports it once the member's local header passes its checks, before the data
 is decoded: so also when the data then fails on a CRC or size the directory contradicts
 (a size the overlap guard refuses aside, below). Method 99 in both headers SHALL fail
@@ -310,7 +310,7 @@ and an AE-1 local record over an AE-2 one fails on its CRC-32 and a missing loca
 with `UnsupportedFeatureError`, each during the pass, where a file read raises
 `CorruptionError` on the records; a member whose directory names another method and a
 compressed size the file read's overlap guard refuses reports
-`MEMBER_LOCAL_METHOD_DIFFERS` from the pass, which keeps no such bound, and nothing from
+`MEMBER_LOCAL_HEADER_DIFFERS` from the pass, which keeps no such bound, and nothing from
 a file (both raise `CorruptionError`; under `STRICT` the pass raises the report). It MAY
 also differ in these: a damaged bit-3 codec member can fail with another
 `CorruptionError` subclass, and ends the pass, losing the members after it, if its
@@ -323,11 +323,10 @@ pass (`UnsupportedFeatureError` when STORED) where a file read reads it; in
 (no password: `EncryptionError`, where the file read reports `LinkTargetNotFoundError`);
 and an archive-wide refusal the directory or end record makes is raised by a file read
 before anything is written and by the pass after every member is written. A policy that
-raises on `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS` or
-`MEMBER_LOCAL_CRC_USED` is the same: a file read raises when it lists or opens the
-member, the pass once it has read the directory. A run that stops before the end of the
-pass, for these or any other reason, places no member (`safe-extraction`), so no link is
-left on disk as a file holding its target.
+raises on `MEMBER_LOCAL_HEADER_DIFFERS` or `MEMBER_LOCAL_CRC_USED` is the same: a file
+read raises when it lists or opens the member, the pass once it has read the directory.
+A run that stops before the end of the pass, for these or any other reason, places no
+member (`safe-extraction`), so no link is left on disk as a file holding its target.
 
 The data the pass keeps of short members until the directory says which are links SHALL
 NOT be charged to the listing limits: an archive a file read lists within them SHALL
@@ -378,7 +377,7 @@ rules:
 | --- | --- |
 | `mode` | The permission bits of `external_attr >> 16`, only for Unix entries whose high word is non-zero; otherwise `None` (a Unix entry with DOS attribute bits only has no mode, as unzip 6.00 reads it) |
 | timestamps | DOS `date_time` base (naive local wall-clock, 2s granularity, 1980 sentinel → `None`); NTFS extra `0x000A` UTC FILETIMEs override present fields; the access and modification times of a PKWARE Unix `0x000d` or Info-ZIP old Unix `0x5855` field override those, unless the blob holds an Extended Timestamp with data or the field follows a `0x7855` or `0x7875` (as unzip 6.00 reads them), the last such field winning; Extended Timestamp `0x5455` UTC Unix times override present fields |
-| `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER` when the entry stores no data, `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` when it does, `extra["special_file_type"]` whatever the type, a directory-marked or reparse-flagged entry over such a mode included); otherwise directory marker and symlink hints. The directory marker is a trailing `/` on the decoded name that `name` comes from, or a trailing `\` when the entry is DOS/Windows-origin, so the type is the same on every host OS and Python version. A directory marker with `file_size > 0`, or with `file_size == 0` and a body larger than an empty one of its method (0 stored, 2 deflated, 14 bzip2, 19 LZMA; any body for another method), stays `DIRECTORY` and emits `MEMBER_DIRECTORY_DATA_IGNORED` with both sizes; one declaring data carries its stored CRC-32 in `hashes` (the central directory's, or the local header's on a listing from local headers) and `open()` on it, or the stream `stream_members()` yields for it (from a pipe too, unless the entry is bit 3: see "Two shapes read differently from a pipe"), decodes and verifies the data like a file's, unless the CRC field is 0, in which case it carries no digest: where that CRC was the entry's only check (unencrypted, ZipCrypto) `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`) is reported and the bytes are delivered unchecked, while a WinZip AES entry (AE-1 with a zeroed field, or AE-2, which stores 0 by design) is verified by its HMAC, with no digest and no report |
+| `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER` when the entry stores no data, `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` when it does, `extra["special_file_type"]` whatever the type, a directory-marked or reparse-flagged entry over such a mode included); otherwise directory marker and symlink hints. The directory marker is a trailing `/` on the decoded name that `name` comes from, or a trailing `\` when the entry is DOS/Windows-origin, so the type is the same on every host OS and Python version. A directory marker with `file_size > 0`, or with `file_size == 0` and a body larger than an empty one of its method (0 stored, 2 deflated, 14 bzip2, 19 LZMA; any body for another method), stays `DIRECTORY` and emits `MEMBER_DATA_IGNORED` with both sizes; one declaring data carries its stored CRC-32 in `hashes` (the central directory's, or the local header's on a listing from local headers) and `open()` on it, or the stream `stream_members()` yields for it (from a pipe too, unless the entry is bit 3: see "Two shapes read differently from a pipe"), decodes and verifies the data like a file's, unless the CRC field is 0, in which case it carries no digest: where that CRC was the entry's only check (unencrypted, ZipCrypto) `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`) is reported and the bytes are delivered unchecked, while a WinZip AES entry (AE-1 with a zeroed field, or AE-2, which stores 0 by design) is verified by its HMAC, with no digest and no report |
 | `uid`, `gid` | From the owner extra fields in blob order, as unzip 6.00 reads them: each `0x7875` (Info-ZIP new Unix, version 1, ids of 2, 4 or 8 bytes) or `0x7855` (Info-ZIP Unix type 2, exactly 4 bytes) decides afresh, readable or not, a `0x7855` after a `0x7875` being ignored; `0x000d` (PKWARE Unix) and `0x5855` (Info-ZIP old Unix) count only when neither came before, the last one holding ids winning. An empty `0x7855` or an 8-byte `0x000d` or `0x5855` holds no ids and is not damage. `stream_members()` yields `None` for both until the directory is read |
 | `uname`, `gname` | Always `None`: no ZIP extra field records them |
 | `compression` | `compress_type` mapped to `CompressionMethod` |
@@ -553,7 +552,7 @@ SHALL use the header found there only when it holds the member's name and method
 its CRC-32 and sizes (zeros allowed under bit 3, `0xFFFFFFFF` for a ZIP64 size), and
 when the member's data ends before the next stored offset above it or the directory;
 otherwise the member SHALL be read, or refused, as the directory's own offset gives. A
-member read from its stored offset SHALL report `MEMBER_LOCAL_OFFSET_SHIFTED` with
+member read from its stored offset SHALL report `MEMBER_LOCAL_HEADER_DIFFERS` with
 `LocalHeaderContext(field="offset")` on its first open, a file or link only, and
 `STRICT` SHALL refuse it (DR-3: the archive lost or gained bytes). The CRC-32 still
 checks the data. A read from a pipe SHALL place the local header it walked at the
@@ -607,10 +606,10 @@ ruling (PR 860).
 | 40 members, each with two signatures in its comment and one in its name, from a file and from a pipe | Every member listed with its mode and comment; no error and no diagnostic |
 | Second entry's ZIP64 local-header offset 2^41, 2^63 − 1 or 2^64 − 1 | Both members listed; `a.txt` reads, `b.txt` raises `CorruptionError` when it opens |
 | First 60 bytes of a three-member stored ZIP cut off | All three members listed; `a.txt` and `b.txt` raise `CorruptionError` saying the archive seems to be missing at least its first 60 bytes; `c.txt` reads |
-| Seven bytes cut from inside `b.txt`'s data | All three members listed; `a.txt` reads from its stored offset, `c.txt` where the directory puts it; `b.txt` is read from its stored offset and fails its CRC-32; `MEMBER_LOCAL_OFFSET_SHIFTED` for `a.txt` and `b.txt`, with `local_offset` the stored offset and `central_offset` 7 bytes less |
+| Seven bytes cut from inside `b.txt`'s data | All three members listed; `a.txt` reads from its stored offset, `c.txt` where the directory puts it; `b.txt` is read from its stored offset and fails its CRC-32; `MEMBER_LOCAL_HEADER_DIFFERS` for `a.txt` and `b.txt`, with `local_offset` the stored offset and `central_offset` 7 bytes less |
 | The same under `DiagnosticPolicy.STRICT` | `a.txt` raises `DiagnosticRaisedError`; `c.txt` reads |
 | `b.txt`'s local header and data cut out | `a.txt` reads from its stored offset and `c.txt` where the directory puts it; `b.txt` raises `CorruptionError` (its stored offset holds `c.txt`'s header) |
-| The end record's directory offset 7 or about 2³² too large, from a file and from a pipe | Every member written, the same bytes from both, each with `MEMBER_LOCAL_OFFSET_SHIFTED` |
+| The end record's directory offset 7 or about 2³² too large, from a file and from a pipe | Every member written, the same bytes from both, each with `MEMBER_LOCAL_HEADER_DIFFERS` |
 | Seven members, the sixth cut out whole and three members long, from a file and from a pipe | The first five read from their stored offsets, the seventh where the directory puts it; the same files written |
 | Four members, the third cut out whole and its entry's stored offset inside the second member's data, from a file and from a pipe | The first and the last written; the second refused, since its data runs past that stored offset |
 | Seven bytes cut from inside `b.txt`'s data, and `a.txt`'s local CRC-32 changed | `a.txt` raises `CorruptionError` saying the archive seems to be missing at least its first 7 bytes; `c.txt` reads |
@@ -634,7 +633,7 @@ The local header repeats most of a member's central directory entry. Three
 disagreements SHALL NOT refuse the member (maintainer rulings 2026-10-10 and 2026-10-21)
 and SHALL report a code with `LocalHeaderContext`:
 
-- **The name** (`MEMBER_LOCAL_NAME_DIFFERS`, which `STRICT` refuses: a tool that trusts
+- **The name** (`MEMBER_LOCAL_HEADER_DIFFERS`, which `STRICT` refuses: a tool that trusts
   the local header shows another name). The local header stores other name bytes than
   the directory: another code page, or `\` where the directory has `/`. Every field
   comes from the directory, so the member keeps the directory's name. A file read reads
@@ -644,7 +643,7 @@ and SHALL report a code with `LocalHeaderContext`:
   extraction reads no directory's data, so a directory reports nothing, even after a
   `read()` of data it declares, and nor does the pass from a pipe, which reads every
   local header.
-- **The compression method** (`MEMBER_LOCAL_METHOD_DIFFERS`, which `STRICT` refuses: a
+- **The compression method** (`MEMBER_LOCAL_HEADER_DIFFERS`, which `STRICT` refuses: a
   tool that trusts the other header decodes other bytes or fails). The member SHALL be
   decoded by the local header's method: it sits next to the data, and a read from a pipe
   has nothing else, so a file and a pipe read the same bytes, which the CRC-32 still
@@ -685,14 +684,14 @@ SHALL behave as a file read: the same members, data, reports and files on disk.
 
 | Archive | Expected |
 | --- | --- |
-| Local name `Patag\x93nia.mp3`, directory `Patag\xf4nia.mp3` | Reads; the member's name from the directory; `MEMBER_LOCAL_NAME_DIFFERS` (`field="name"`) when its data is read |
+| Local name `Patag\x93nia.mp3`, directory `Patag\xf4nia.mp3` | Reads; the member's name from the directory; `MEMBER_LOCAL_HEADER_DIFFERS` (`field="name"`) when its data is read |
 | Local name `crack\`, directory `crack/`, with or without declared data | A directory, `crack/`; no report |
-| Directory `crack/` declaring data, its CRC-32 0, the local CRC-32 right | `DIGEST_UNVERIFIABLE` and `MEMBER_DIRECTORY_DATA_IGNORED`, from a file and a pipe alike |
+| Directory `crack/` declaring data, its CRC-32 0, the local CRC-32 right | `DIGEST_UNVERIFIABLE` and `MEMBER_DATA_IGNORED`, from a file and a pipe alike |
 | Central CRC-32 0, local CRC-32 right | Listed with the local CRC-32 in `hashes`; reads; `MEMBER_LOCAL_CRC_USED` (`field="crc32"`) at listing, also under `DiagnosticPolicy.STRICT` |
 | Central CRC-32 0, local CRC-32 wrong, or 0 in both | `CorruptionError` when read |
 | The first under `DiagnosticPolicy.STRICT`, or the fourth under `DiagnosticPolicy.PEDANTIC` | `DiagnosticRaisedError` |
 | Both headers declare 3.5% less than the data decodes to | `CorruptionError` ("exceeds its declared size") |
-| Local method stored, directory method deflate, over stored data (or deflate against stored or bzip2), from a file and a pipe | Reads the data; `MEMBER_LOCAL_METHOD_DIFFERS` (`field="method"`); `DiagnosticRaisedError` under `DiagnosticPolicy.STRICT` |
+| Local method stored, directory method deflate, over stored data (or deflate against stored or bzip2), from a file and a pipe | Reads the data; `MEMBER_LOCAL_HEADER_DIFFERS` (`field="method"`); `DiagnosticRaisedError` under `DiagnosticPolicy.STRICT` |
 | Local method stored over a deflated body, directory deflate | `CorruptionError` from a file and a pipe |
 | Directory method 99 (WinZip AES), local method 8 | `CorruptionError` from a file; from a pipe the local header says ZipCrypto, so `EncryptionError` |
 | Local method 99 (WinZip AES), directory method 8 | `CorruptionError` from a file, and from a pipe at the end of the pass |
@@ -772,7 +771,7 @@ Two shapes read differently from a pipe, which decodes each member as it passes:
   bytes. Telling a bit-3 directory with data from an empty one would mean decoding its
   data before the pass yields it, which for an encrypted entry asks for a password the
   caller may never need; so the pass does not, and the data goes past unread.
-  `MEMBER_DIRECTORY_DATA_IGNORED`, reported when the central directory arrives (on any
+  `MEMBER_DATA_IGNORED`, reported when the central directory arrives (on any
   listing, not only a pass), says that a pass over a source that cannot seek yields no
   stream for it and that `open()` from a seekable source delivers the bytes. In a ZIP
   with no central directory, the file read lists the CRC32 the data descriptor states,

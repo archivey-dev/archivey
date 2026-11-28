@@ -335,7 +335,7 @@ the right weight.
   (PR 371).
 - A zero-filled file is a valid empty TAR (ADR 0015).
 - A directory entry that declares data keeps the directory on disk, reports
-  `MEMBER_DIRECTORY_DATA_IGNORED` (a warning; strict refuses) and keeps the bytes
+  `MEMBER_DATA_IGNORED` (a warning; strict refuses) and keeps the bytes
   readable through `open()` (2026-10-10, DR-25): nothing is misread, so this is the
   "outside a member" weight, and the ZIP spec forbids the shape (APPNOTE 4.3.8).
   Applied by PR 731 for ZIP and RAR and by PR 763 for TAR (an old-style `d/` file
@@ -344,7 +344,7 @@ the right weight.
   except a bit-3 ZIP directory read from a pipe, whose size comes after its data.
 - A TAR symlink or hard link header that declares data lists as a link, its declared
   blocks are skipped so the members after them stay listed, and
-  `MEMBER_LINK_DATA_IGNORED` reports it (a warning; strict refuses), with the weight
+  `MEMBER_DATA_IGNORED` reports it (a warning; strict refuses), with the weight
   of the directory case (2026-10-17, "skip and report"). A member header right after
   the link header means the size names no data: nothing is skipped, as for a `DIRTYPE`
   header with a size (PR 763), and both are reported with `MEMBER_HEADER_AMBIGUOUS`
@@ -588,7 +588,7 @@ fields that are often junk do not decide the type on their own.
    that owns a data stream is `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` (advisory); with
    no stream it is `OTHER`. `extra["special_file_type"]` is set on every member whose
    stored type is special, `FILE` and `OTHER` alike. A directory entry that declares data
-   stays a directory, reported with `MEMBER_DIRECTORY_DATA_IGNORED` (a warning; strict
+   stays a directory, reported with `MEMBER_DATA_IGNORED` (a warning; strict
    refuses). Where the reference tools split, the reading the format's spec supports wins
    and `MEMBER_READERS_DISAGREE` says which tools read it otherwise.
 3. Every access mode gives the same answer where the reader can know it. `open()` refuses

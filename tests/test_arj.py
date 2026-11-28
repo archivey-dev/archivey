@@ -635,7 +635,7 @@ def test_a_directory_that_declares_data_keeps_it_and_says_so() -> None:
     (members, codes, reads) = _one(header + body)
     assert members[0].type is MemberType.DIRECTORY
     assert members[0].size == len(body)
-    assert codes == [DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED]
+    assert codes == [DiagnosticCode.MEMBER_DATA_IGNORED]
     assert reads == [body]
 
 

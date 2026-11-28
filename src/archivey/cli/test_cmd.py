@@ -363,7 +363,7 @@ def _verify_links(
 
 def _has_data(member: ArchiveMember) -> bool:
     """Whether a pass is expected to yield a stream for ``member``: a file, or a
-    directory whose header declares data (``MEMBER_DIRECTORY_DATA_IGNORED``).
+    directory whose header declares data (``MEMBER_DATA_IGNORED``).
 
     A copy of ``archivey.internal.base_reader.pass_has_data``, which every backend
     pass calls; the CLI uses only the public API. Keep the two in step, or

@@ -136,7 +136,7 @@ exit nonzero (`1`). `-v` / `--verbose` SHALL surface diagnostics when present.
 
 `test` SHALL fully read selected file members and verify stored digests through
 the shared verification stage (including CRC32 and Blake2sp where supported). A
-directory member that declares data (`MEMBER_DIRECTORY_DATA_IGNORED`) and for which
+directory member that declares data (`MEMBER_DATA_IGNORED`) and for which
 `stream_members()` yields a stream SHALL be read and counted like a file member, so
 damage in its hidden bytes fails the test, except that when archivey cannot decode
 such a directory's data (`UnsupportedFeatureError` or `PackageNotInstalledError`),
