@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Literal, NoReturn, cast, overload
 
 from archivey.config import (
-    DEFAULT_ARCHIVEY_CONFIG,
+    DEFAULT_ARCHIVEY_CONFIG as _DEFAULT_CONFIG,
     ArchiveyConfig,
     PasswordInput,
 )
@@ -157,6 +157,7 @@ if TYPE_CHECKING:
     # ``X as X`` re-exports the names in ``_MOVED_IN_0_6`` below for type checkers,
     # which do not run ``__getattr__``.
     from archivey.config import (
+        DEFAULT_ARCHIVEY_CONFIG as DEFAULT_ARCHIVEY_CONFIG,  # noqa: PLC0414
         AcceleratorMode as AcceleratorMode,  # noqa: PLC0414
         DecoderLimits,
         ExtractionLimits as ExtractionLimits,  # noqa: PLC0414
@@ -178,13 +179,14 @@ if TYPE_CHECKING:
 #: The names this module's ``__all__`` listed until 0.6.0 that it does not define, and
 #: the module each is imported from now. ``__getattr__`` below still serves them, with
 #: a ``DeprecationWarning``, for the 0.6 series (DR-12a); 0.7.0 deletes this table.
-#: Three more left ``__all__`` and are not here: ``ArchiveyConfig``,
-#: ``DEFAULT_ARCHIVEY_CONFIG`` and ``FormatInfo``. This module's signatures name them,
-#: so they stay bound here (``typing.get_type_hints`` reads the module's globals) and
-#: ``__getattr__`` never sees them; they import with no warning through 0.6, and
-#: ``tests/test_root_tiers.py`` holds them there.
+#: Two more left ``__all__`` and are not here: ``ArchiveyConfig`` and ``FormatInfo``.
+#: This module's signatures name them, so they stay bound here
+#: (``typing.get_type_hints`` reads the module's globals) and ``__getattr__`` never sees
+#: them; they import with no warning through 0.6, and ``tests/test_root_tiers.py`` holds
+#: them there.
 _MOVED_IN_0_6: dict[str, str] = {
     "AcceleratorMode": "archivey.config",
+    "DEFAULT_ARCHIVEY_CONFIG": "archivey.config",
     "ExtractionLimits": "archivey.config",
     "ListingLimits": "archivey.config",
     "DetectionConfidence": "archivey.detection",
@@ -784,7 +786,7 @@ def open_archive(
     elif parent is not None:
         effective_config = cast("BaseArchiveReader", parent)._config
     else:
-        effective_config = DEFAULT_ARCHIVEY_CONFIG
+        effective_config = _DEFAULT_CONFIG
     # A ``parent=`` reader given a config of its own still reports to its parent's
     # callbacks unless this call names others; without one it uses the parent's config,
     # which already carries them.
@@ -1655,7 +1657,7 @@ def open_stream(
     check_callable(on_source_read, call="open_stream(on_source_read=…)")
 
     effective_config = config_with_callbacks(
-        config if config is not None else DEFAULT_ARCHIVEY_CONFIG,
+        config if config is not None else _DEFAULT_CONFIG,
         on_diagnostic=on_diagnostic,
         on_source_read=on_source_read,
     )

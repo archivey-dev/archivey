@@ -103,9 +103,9 @@ line. How to write the entry: see
   `sanitize_names`, `list_known_formats` or `list_supported_formats` pickled by 0.5 or
   earlier names `archivey`, so it loads in 0.6 with the warning and not in 0.7.0.
   `archivey.core.__all__` keeps only its six functions: `AcceleratorMode`,
-  `ExtractionLimits`, `ListingLimits`, `DetectionConfidence`, `FormatAvailability`,
-  `FormatSupport` and `MissingComponent` still work from it in 0.6 with the same
-  warning. `ArchiveyConfig`, `DEFAULT_ARCHIVEY_CONFIG` and `FormatInfo` still import from
+  `DEFAULT_ARCHIVEY_CONFIG`, `ExtractionLimits`, `ListingLimits`, `DetectionConfidence`,
+  `FormatAvailability`, `FormatSupport` and `MissingComponent` still work from it in 0.6
+  with the same warning. `ArchiveyConfig` and `FormatInfo` still import from
   `archivey.core` with no warning, because its signatures name them, and stay through
   0.6; import them from `archivey.config` and `archivey.detection`.
 - `extract_all(on_error=, on_blocked=, abort_on=)` and their enums `OnError`,
