@@ -30,11 +30,14 @@ def extract_all(
     filter: MemberFilter | None = None,
     policy: ExtractionPolicy = ExtractionPolicy.STRICT,
     overwrite: OverwritePolicy = OverwritePolicy.ERROR,
-    on_error: OnError = OnError.STOP,
-    on_blocked: OnBlocked = OnBlocked.RAISE,
-    abort_on: Collection[AbortOn] = (),
+    on_problem: OnProblem = OnProblem.FINISH,
     on_progress: Callable[[ExtractionProgress], None] | None = None,
     limits: ExtractionLimits | None = None,
+    dry_run: bool = False,
+    # Deprecated in 0.6.0, removed in 0.7.0: see "One problem setting".
+    on_error: OnError | None = None,
+    on_blocked: OnBlocked | None = None,
+    abort_on: Collection[AbortOn] | None = None,
 ) -> ExtractionReport: ...
 ```
 
@@ -66,7 +69,7 @@ extract (ADR 0019).
 library default. `ExtractionLimits.UNLIMITED` disables the byte and entry-count
 guards. The ratio guards (per-member, archive-wide and live) take their fields from
 the reader's `config.decoder_limits`, which no per-call argument changes. Policy, overwrite,
-`on_error`, progress, and member-selection/filter arguments remain operational
+`on_problem`, progress, and member-selection/filter arguments remain operational
 arguments outside config.
 
 `extract_all()` always returns `ExtractionReport` with an accumulated immutable result
@@ -1351,7 +1354,42 @@ are the per-result outcome.
 | Same pair under `TRUSTED` | No collision event; local OS behavior; no `OVERWRITTEN` |
 | Result ordering after a retroactive revision | Results stay in member-processing order; only the revised member's fields change |
 
+### Requirement: One problem setting (on_problem)
+
+`extract_all()` SHALL take one setting, `on_problem=` (`OnProblem`), for what a
+**problem** does: a member that failed (the `OnError` requirement below) or was refused
+(`BLOCKED`). Its values SHALL map onto the internal switches the requirements below
+describe:
+
+| `on_problem` | Same as | Call ends |
+| --- | --- | --- |
+| `"stop"` | `OnError.STOP`, `AbortOn.BLOCKED_MEMBER` | The first problem raises at once; no report |
+| `"finish"` (default) | `OnError.CONTINUE`, `OnBlocked.SKIP` | Every member is tried; when one had a problem, the first one in member order raises with the full report as its `report` attribute (a refusal raises the summary `FilterRejectionError` of "A refused member raises once the rest are extracted") |
+| `"continue"` | `OnError.CONTINUE`, `OnBlocked.SKIP` | Returns the report |
+| `"keep_partial"` | `OnError.KEEP_PARTIAL`, `OnBlocked.SKIP` | Returns the report |
+
+Always-stop errors (limits, a halting diagnostic, damage that ends the member list) stop
+the run under every value. `on_error=`, `on_blocked=` and `abort_on=` SHALL keep their
+0.5 meaning and defaults through 0.6, each with a `DeprecationWarning` naming
+`on_problem=`; passing one with `on_problem=` SHALL raise `ArchiveyUsageError`.
+
+#### Scenario: on_problem values
+
+| Case | Expected |
+| --- | --- |
+| Damaged member, then a good one, default | The good one is written; the damaged member's error raises with `report` set |
+| Refused member, then a good one, `"stop"` | `FilterRejectionError` at the refused member; the good one is not written |
+| Damaged member, `"continue"` | Report returned; the member is `FAILED` |
+| `on_error="continue"` alone | `DeprecationWarning`; behaves as in 0.5 |
+| `on_problem="continue"` with `on_blocked="skip"` | `ArchiveyUsageError` |
+
 ### Requirement: Error Policy (OnError) for extraction failures
+
+This requirement describes the three switches that `on_problem` sets (see "One problem
+setting"): `"stop"` is `OnError.STOP` with `AbortOn.BLOCKED_MEMBER`, `"finish"` and
+`"continue"` are `OnError.CONTINUE`, and `"keep_partial"` is `OnError.KEEP_PARTIAL`. A
+caller reaches `OnError`, `on_blocked` and `AbortOn` directly only through the
+deprecated `on_error=`, `on_blocked=` and `abort_on=` keywords.
 
 `OnError.STOP`, `OnError.CONTINUE` and `OnError.KEEP_PARTIAL` SHALL govern per-member
 **failures** only — a non-rejection member-scoped `ArchiveyError`, a permitted
@@ -1411,7 +1449,7 @@ unexpected programming exceptions are always-stop and are not swallowed.
 | Member blocked by policy/path-safety under `CONTINUE` | `BLOCKED` result; partial output removed; later members continue |
 | First member blocked, remaining members extractable, under `STOP` | Run completes; `BLOCKED` + later `EXTRACTED` recorded; no exception at the blocked member; the call ends as `on_blocked` says |
 | Corrupt member under `CONTINUE` | Partial output removed; `FAILED` result; later members continue |
-| Default `STOP` member failure (e.g. `CorruptionError`) | Original error propagates immediately; failing partial file removed; earlier outputs remain (from a ZIP read from a pipe, less the files that could still be links: `format-zip`) |
+| Member failure (e.g. `CorruptionError`) under `STOP` | Original error propagates immediately; failing partial file removed; earlier outputs remain (from a ZIP read from a pipe, less the files that could still be links: `format-zip`) |
 | Filesystem `OSError` while writing under `CONTINUE` | Partial output removed; `FAILED` result; extraction proceeds |
 | A member under a non-directory this run extracted (file `d`, then `d/f` or directory `d/y`) | Per-member `ExtractionError` naming `d`, not a raw `OSError`, under every `OverwritePolicy` |
 | A member under a non-directory already in `dest` before the run (`d/f` over the caller's file `d`) | `d` meets `OverwritePolicy` as an explicit `d/` entry would (see the overwrite requirement); under `ERROR` a per-member `ExtractionError`, not a raw `OSError` |
@@ -1892,7 +1930,9 @@ rewritten name then collides and is renamed).
 ### Requirement: Abort-on-event opt-in for extraction
 
 `extract_all()` SHALL accept `abort_on: Collection[AbortOn] = ()`,
-halting the whole extraction the first time a named event occurs.
+halting the whole extraction the first time a named event occurs. `abort_on=` is
+deprecated in 0.6.0 and removed in 0.7.0 ("One problem setting"); `on_problem="stop"`
+covers `BLOCKED_MEMBER`, and the two name events have no `on_problem` value.
 
 ```python
 class AbortOn(StrEnum):

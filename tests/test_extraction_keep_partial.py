@@ -27,7 +27,7 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.terminal import display_path
-from archivey.types import ExtractionStatus, OnError, OverwritePolicy
+from archivey.types import ExtractionStatus, OverwritePolicy
 from tests.conftest import case_sensitive
 from tests.extract_util import open_and_extract
 from tests.streams_util import NonSeekableBytesIO
@@ -93,7 +93,7 @@ def test_keep_partial_keeps_a_file_whose_check_fails(tmp_path: Path, mode: str) 
     dest = tmp_path / "out"
     source, streaming = _source(src, mode)
     report = open_and_extract(
-        source, dest, streaming=streaming, on_error=OnError.KEEP_PARTIAL
+        source, dest, streaming=streaming, on_problem="keep_partial"
     )
     by_name = {r.member.name: r for r in report.results}
     bad = by_name["bad.bin"]
@@ -117,7 +117,7 @@ def test_continue_still_removes_the_partial_file(tmp_path: Path, mode: str) -> N
     src = _zip_with_damaged_data(tmp_path / "a.zip")
     dest = tmp_path / "out"
     source, streaming = _source(src, mode)
-    report = open_and_extract(source, dest, streaming=streaming, on_error="continue")
+    report = open_and_extract(source, dest, streaming=streaming, on_problem="continue")
     bad = next(r for r in report.results if r.member.name == "bad.bin")
     assert bad.status is ExtractionStatus.FAILED
     assert bad.path is None
@@ -136,7 +136,7 @@ def test_keep_partial_keeps_the_bytes_before_a_cut(
         open_archive(src, streaming=streaming) as reader,
         pytest.raises(TruncatedError) as raised,
     ):
-        reader.extract_all(dest, on_error="keep_partial")
+        reader.extract_all(dest, on_problem="keep_partial")
     # No report is returned, so the error names the partial file.
     kept_at = repr(display_path(dest / "big.bin"))
     assert any(kept_at in note for note in raised.value.__notes__)
@@ -152,7 +152,7 @@ def test_keep_partial_on_a_cut_single_file_stream(tmp_path: Path) -> None:
     src = tmp_path / "data.bin.gz"
     src.write_bytes(packed[: len(packed) // 2])
     dest = tmp_path / "out"
-    report = open_and_extract(src, dest, on_error=OnError.KEEP_PARTIAL)
+    report = open_and_extract(src, dest, on_problem="keep_partial")
     (result,) = report.results
     assert result.status is ExtractionStatus.FAILED
     assert result.path is not None
@@ -171,7 +171,7 @@ def test_keep_partial_keeps_nothing_when_the_failure_comes_first(
     dest.mkdir()
     (dest / "bad.bin").write_bytes(b"mine")
     report = open_and_extract(
-        src, dest, on_error=OnError.KEEP_PARTIAL, overwrite=OverwritePolicy.ERROR
+        src, dest, on_problem="keep_partial", overwrite=OverwritePolicy.ERROR
     )
     bad = next(r for r in report.results if r.member.name == "bad.bin")
     assert bad.status is ExtractionStatus.FAILED
@@ -186,7 +186,7 @@ def test_keep_partial_under_replace_replaces_an_existing_file(tmp_path: Path) ->
     dest.mkdir()
     (dest / "bad.bin").write_bytes(b"mine")
     report = open_and_extract(
-        src, dest, on_error=OnError.KEEP_PARTIAL, overwrite=OverwritePolicy.REPLACE
+        src, dest, on_problem="keep_partial", overwrite=OverwritePolicy.REPLACE
     )
     bad = next(r for r in report.results if r.member.name == "bad.bin")
     assert bad.status is ExtractionStatus.FAILED
@@ -197,7 +197,7 @@ def test_keep_partial_under_replace_replaces_an_existing_file(tmp_path: Path) ->
 def test_keep_partial_dry_run_writes_nothing(tmp_path: Path) -> None:
     src = _zip_with_damaged_data(tmp_path / "a.zip")
     dest = tmp_path / "out"
-    report = open_and_extract(src, dest, on_error=OnError.KEEP_PARTIAL, dry_run=True)
+    report = open_and_extract(src, dest, on_problem="keep_partial", dry_run=True)
     bad = next(r for r in report.results if r.member.name == "bad.bin")
     assert bad.status is ExtractionStatus.FAILED
     assert bad.path is None
@@ -210,7 +210,7 @@ def test_keep_partial_keeps_nothing_for_a_limit(tmp_path: Path) -> None:
     src.write_bytes(gzip.compress(b"\0" * (8 * 2**20)))
     dest = tmp_path / "out"
     config = ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=10.0))
-    report = open_and_extract(src, dest, config=config, on_error=OnError.KEEP_PARTIAL)
+    report = open_and_extract(src, dest, config=config, on_problem="keep_partial")
     (result,) = report.results
     assert result.status is ExtractionStatus.FAILED
     assert isinstance(result.error, ResourceLimitError)
@@ -238,7 +238,7 @@ def test_a_later_copy_of_the_name_replaces_a_kept_partial_file(
     dest = tmp_path / "out"
     source, streaming = _source(src, mode)
     report = open_and_extract(
-        source, dest, streaming=streaming, on_error=OnError.KEEP_PARTIAL
+        source, dest, streaming=streaming, on_problem="keep_partial"
     )
     assert (dest / "x.bin").read_bytes() == b"second"
     statuses = [r.status for r in report.results]
@@ -265,7 +265,7 @@ def test_a_later_member_replaces_a_kept_partial_file(tmp_path: Path, mode: str) 
         source,
         dest,
         streaming=streaming,
-        on_error=OnError.KEEP_PARTIAL,
+        on_problem="keep_partial",
         overwrite=OverwritePolicy.REPLACE,
     )
     first, second = report.results
@@ -294,7 +294,7 @@ def test_a_check_failure_keeps_every_byte(tmp_path: Path, mode: str, size: int) 
     dest = tmp_path / "out"
     source, streaming = _source(src, mode)
     report = open_and_extract(
-        source, dest, streaming=streaming, on_error=OnError.KEEP_PARTIAL
+        source, dest, streaming=streaming, on_problem="keep_partial"
     )
     (result,) = report.results
     assert result.status is ExtractionStatus.FAILED
@@ -327,7 +327,7 @@ def test_a_member_longer_than_its_size_keeps_its_declared_bytes(
     dest = tmp_path / "out"
     source, streaming = _source(src, mode)
     report = open_and_extract(
-        source, dest, streaming=streaming, on_error=OnError.KEEP_PARTIAL
+        source, dest, streaming=streaming, on_problem="keep_partial"
     )
     by_name = {r.member.name: r for r in report.results}
     big = by_name["big.bin"]
@@ -347,7 +347,7 @@ def test_a_gzip_check_failure_keeps_what_the_decoder_gave(tmp_path: Path) -> Non
     src = tmp_path / "data.bin.gz"
     src.write_bytes(bytes(packed))
     dest = tmp_path / "out"
-    report = open_and_extract(src, dest, on_error=OnError.KEEP_PARTIAL)
+    report = open_and_extract(src, dest, on_problem="keep_partial")
     (result,) = report.results
     assert result.status is ExtractionStatus.FAILED
     assert result.path is not None
@@ -400,7 +400,7 @@ def test_a_kept_member_counts_once_toward_the_ratio(tmp_path: Path, mode: str) -
         dest,
         streaming=streaming,
         config=ArchiveyConfig(decoder_limits=limits),
-        on_error=OnError.KEEP_PARTIAL,
+        on_problem="keep_partial",
     )
     by_name = {r.member.name: r for r in report.results}
     assert by_name["bad.bin"].status is ExtractionStatus.FAILED
@@ -446,7 +446,7 @@ def test_a_progress_callback_error_keeps_nothing(
         source,
         dest,
         streaming=streaming,
-        on_error=OnError.KEEP_PARTIAL,
+        on_problem="keep_partial",
         overwrite=OverwritePolicy.REPLACE,
         on_progress=on_progress,
     )
@@ -479,7 +479,7 @@ def test_trusted_later_member_on_a_kept_partial_name_clears_its_path(
         source,
         dest,
         streaming=streaming,
-        on_error=OnError.KEEP_PARTIAL,
+        on_problem="keep_partial",
         overwrite=OverwritePolicy.REPLACE,
         policy=ExtractionPolicy.TRUSTED,
         filter=lambda m: m.replace(name="a.bin") if m.name == "b.bin" else m,
@@ -517,7 +517,7 @@ def test_trusted_later_member_through_an_alias_clears_the_kept_path(
         source,
         dest,
         streaming=streaming,
-        on_error=OnError.KEEP_PARTIAL,
+        on_problem="keep_partial",
         overwrite=OverwritePolicy.REPLACE,
         policy=ExtractionPolicy.TRUSTED,
     )
@@ -551,7 +551,7 @@ def test_trusted_case_variant_over_a_kept_partial(tmp_path: Path, mode: str) -> 
         source,
         dest,
         streaming=streaming,
-        on_error=OnError.KEEP_PARTIAL,
+        on_problem="keep_partial",
         overwrite=OverwritePolicy.REPLACE,
         policy=ExtractionPolicy.TRUSTED,
     )
@@ -595,7 +595,7 @@ def test_trusted_first_spelling_again_after_two_kept_partials(
         source,
         dest,
         streaming=streaming,
-        on_error=OnError.KEEP_PARTIAL,
+        on_problem="keep_partial",
         overwrite=OverwritePolicy.REPLACE,
         policy=ExtractionPolicy.TRUSTED,
         filter=lambda m: m.replace(name="A.bin") if m.name == "good.bin" else m,

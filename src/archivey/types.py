@@ -2056,9 +2056,9 @@ class ArchiveInfo:
 #
 # ``MemberSelectorArg`` — which members to extract: an iterable of names / ArchiveMembers
 # (read once, so a generator works), a predicate, or ``None`` (= all).
-# ``archivey.reader.MemberSelector`` is the same alias, under its public name; internal modules
-# annotate with this one. The iterable form is normalized to a predicate by the shared
-# ``normalize_member_selector`` helper (also used by ``stream_members``).
+# ``archivey.reader.MemberSelector`` is the same alias, under its public name; internal
+# modules annotate with this one. The iterable form is normalized to a predicate by the
+# shared ``normalize_member_selector`` helper (also used by ``stream_members``).
 MemberSelectorArg = (
     Iterable["str | ArchiveMember"] | Callable[[ArchiveMember], bool] | None
 )
@@ -2129,10 +2129,10 @@ class OverwritePolicy(Enum):
 
     ERROR = "error"
     """The default. The member fails with :class:`~archivey.exceptions.ExtractionError`, and
-    :class:`OnError` decides whether extraction goes on."""
+    :class:`OnProblem` decides whether extraction goes on."""
     SKIP = "skip"
     """The existing entry stays, and the member's result is ``NOT_OVERWRITTEN``. This is
-    not a failure, so :class:`OnError` does not apply."""
+    not a failure, so :class:`OnProblem` does not apply."""
     REPLACE = "replace"
     """The existing entry is deleted, then the member is written, so it is never written
     through a link that was there. A directory member merges into an existing directory.
@@ -2152,7 +2152,10 @@ OverwritePolicyStr = Literal["error", "skip", "replace", "rename"]
 
 
 class OnError(Enum):
-    """What to do when an individual member cannot be extracted.
+    """Deprecated since 0.6.0: pass ``on_problem=`` (:class:`OnProblem`) instead. archivey
+    0.7.0 removes it.
+
+    What to do when an individual member cannot be extracted.
 
     It covers failures only: damaged data, a write error, an existing entry under
     ``OverwritePolicy.ERROR``. A member refused by a safety check is recorded as
@@ -2197,7 +2200,10 @@ OnErrorStr = Literal["stop", "continue", "keep_partial", "keep-partial"]
 
 
 class OnBlocked(StrEnum):
-    """What ``extract_all()`` does when a safety check refused a member.
+    """Deprecated since 0.6.0: pass ``on_problem=`` (:class:`OnProblem`) instead. archivey
+    0.7.0 removes it.
+
+    What ``extract_all()`` does when a safety check refused a member.
 
     A refused member is never written, and the members after it are still extracted
     under either value. The difference is how the call ends. To stop at the first
@@ -2224,7 +2230,11 @@ OnBlockedStr = Literal["raise", "skip"]
 
 
 class AbortOn(StrEnum):
-    """Events that abort the whole extraction the first time they occur.
+    """Deprecated since 0.6.0: ``on_problem="stop"`` stops at the first refused member, and
+    ``ExtractionResult.rewrites`` in the report names every rewritten name. archivey
+    0.7.0 removes it.
+
+    Events that abort the whole extraction the first time they occur.
 
     Passed as ``abort_on=`` to ``extract_all()`` (a collection; empty by
     default). Independent of :class:`OnError` and of ``DiagnosticPolicy``: an event named
@@ -2276,6 +2286,66 @@ AbortOnStr = Literal[
 ]
 
 
+class OnProblem(StrEnum):
+    """What ``extract_all()`` does when a member fails or a safety check refuses it.
+
+    Passed as ``on_problem=``. A member fails when its data is damaged, when writing it
+    fails, or when an entry is already at its path under ``OverwritePolicy.ERROR``. A
+    member is refused (``BLOCKED``) when a safety check of the extraction policy will
+    not write it, such as a path that leaves the destination. Under every value, a
+    limit (:class:`~archivey.ResourceLimitError`) and damage that ends the archive's
+    list of members (a cut TAR) stop the call at once, and output already written stays
+    on disk: no value rolls a run back.
+    """
+
+    STOP = "stop"
+    """The first failed or refused member raises its error at once. No later member
+    is processed and no report is returned. The failed member's partial output is
+    removed."""
+    FINISH = "finish"
+    """The default. Every member is tried. When one failed or was refused, the call
+    then raises instead of returning the report, and the report is the error's
+    ``report`` attribute. When the first problem is a failure, the error is that
+    member's own (a :class:`~archivey.CorruptionError` for damaged data, for example);
+    when it is a refusal, it is a :class:`~archivey.exceptions.FilterRejectionError`
+    naming the first refused member, with the refusal as its ``__cause__``. As GNU tar,
+    ``unrar x`` and ``7z x`` do: they extract what they can, then exit with an
+    error."""
+    CONTINUE = "continue"
+    """Every member is tried and the call returns the report, with each failed member
+    as ``FAILED`` and each refused one as ``BLOCKED``. Check ``report.ok`` or call
+    ``report.raise_for_failure()``."""
+    KEEP_PARTIAL = "keep_partial"
+    """As ``CONTINUE``, except that a file whose data fails part way stays on disk,
+    holding the bytes its data gave before the failure, as ``unrar x -kb``, 7-Zip and
+    GNU tar leave it. A member whose only damage is a failed CRC or size check keeps
+    every byte, unless the decoder makes that check itself (gzip's trailer CRC), which
+    can lose the last bytes it decoded: the member is read as under
+    ``PartialDataRecovery.ALL``, whatever the config says. The result is ``FAILED``
+    with the error, and its ``path`` names the partial file. The file lands as a
+    complete one would, so under ``OverwritePolicy.REPLACE`` it replaces an entry
+    already at its name.
+
+    When the same damage also ends the archive's list of members (a cut TAR), the call
+    raises instead of returning a report, and a note on that error names each partial
+    file the run kept.
+
+    Nothing is kept when no byte was written, when the member failed before its data
+    was read (an existing entry under ``OverwritePolicy.ERROR``), when a limit refused
+    it, in a dry run, or for a hard link. The partial file gets none of the member's
+    metadata: its modification time is when it was written, and its mode is the one
+    archivey creates files with (``0o600``, or ``0o666`` less the umask for a member
+    with no stored mode under ``TRUSTED``)."""
+
+
+# The string spellings of ``OnProblem``, so a type checker flags a bad one at the
+# call rather than leaving it to the runtime. Deliberately narrower than what
+# ``internal.enum_args`` accepts (it also takes the member *name* and ignores case),
+# plus the dash form of the underscored value, which is what the CLI advertises.
+# Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
+OnProblemStr = Literal["stop", "finish", "continue", "keep_partial", "keep-partial"]
+
+
 class ExtractionStatus(StrEnum):
     """The outcome recorded for a single member in its :class:`ExtractionResult`."""
 
@@ -2295,10 +2365,10 @@ class ExtractionStatus(StrEnum):
     FAILED = "failed"
     """Extraction failed: damaged data, a limit such as the expansion ratio, or a write
     error. Nothing of the member is left at its destination, except the partial file
-    that ``OnError.KEEP_PARTIAL`` keeps, which ``path`` then names."""
+    that ``on_problem="keep_partial"`` keeps, which ``path`` then names."""
     LINK_TARGET_UNAVAILABLE = "link_target_unavailable"
     """A symlink whose target the archive never recorded, so it cannot be written. Not a
-    failure: extraction goes on whatever ``on_error`` says. The archive is reported with
+    failure: extraction goes on whatever ``on_problem`` says. The archive is reported with
     the ``SYMLINK_TARGET_UNAVAILABLE`` diagnostic, which ``DiagnosticPolicy.STRICT``
     raises."""
 
@@ -2441,9 +2511,8 @@ class ExtractionResult:
 
     path: Path | None
     """Where the member was written, or ``None`` if it was not. On a ``FAILED``
-    result it is ``None``, except under ``OnError.KEEP_PARTIAL``, where it names the
-    partial file kept for the
-    member."""
+    result it is ``None``, except under ``on_problem="keep_partial"``, where it names
+    the partial file kept for the member."""
 
     status: ExtractionStatus
     """What happened to the member."""
@@ -2563,6 +2632,7 @@ __all__ = [
     "NameRewrite",
     "OnBlocked",
     "OnError",
+    "OnProblem",
     "OnSourceRead",
     "OptionalLibrary",
     "OverwritePolicy",

@@ -669,7 +669,7 @@ The parameters covered:
 
 | Entry point | Parameters |
 | --- | --- |
-| `ArchiveReader.extract_all()` | `policy`, `overwrite`, `on_error`, `abort_on` |
+| `ArchiveReader.extract_all()` | `policy`, `overwrite`, `on_problem`, and the deprecated `on_error`, `on_blocked`, `abort_on` |
 | `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2`, `process_isolation`, `rar_decompressor`, `detection_budget` (a `DetectionBudget` passes through unconverted) |
 | `ArchiveFormat(...)` | `container`, `stream` (a plugin's member passes through unconverted) |
 | `DiagnosticPolicy(...)` | `ignore`, `raise_on` |
@@ -716,9 +716,11 @@ vocabulary rather than two that can drift.
 | Case | Expected |
 | --- | --- |
 | `extract_all(dest, overwrite="skip")` | Behaves exactly as `OverwritePolicy.SKIP`; an existing local file is kept and reported `NOT_OVERWRITTEN` |
-| `extract_all(dest, on_error="stop")` | Behaves exactly as `OnError.STOP`; a per-member failure raises |
+| `extract_all(dest, on_problem="keep-partial")` | Behaves exactly as `OnProblem.KEEP_PARTIAL` |
+| `extract_all(dest, on_problem="halt")` | `ArchiveyUsageError` naming `on_problem` and the valid spellings; nothing written to `dest` |
+| `extract_all(dest, on_error="stop")` (deprecated) | `DeprecationWarning`; behaves exactly as `OnError.STOP`; a per-member failure raises |
 | `extract_all(dest, policy="strict")` | Behaves as `ExtractionPolicy.STRICT`; never a bare `KeyError` |
-| `extract_all(dest, abort_on=["blocked-member"])` | Accepted; the dash spelling resolves to `AbortOn.BLOCKED_MEMBER` |
+| `extract_all(dest, abort_on=["blocked-member"])` (deprecated) | `DeprecationWarning`; accepted; the dash spelling resolves to `AbortOn.BLOCKED_MEMBER` |
 | `extract_all(dest, abort_on="blocked_member")` | `ArchiveyUsageError` naming the list spelling |
 | `extract_all(dest, overwrite="nonsense")` | `ArchiveyUsageError` naming `overwrite` and the valid spellings; nothing written to `dest` |
 | `ArchiveyConfig(use_rapidgzip="on")` | Field holds `AcceleratorMode.ON`, not the string |

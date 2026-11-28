@@ -31,6 +31,7 @@ from archivey.types import (
     HashAlgorithm,
     NameRewrite,
     OnBlocked,
+    OnProblem,
     OptionalLibrary,
 )
 
@@ -49,6 +50,7 @@ STR_VALUE_ENUMS: tuple[type[StrEnum], ...] = (
     LinkTargetNotFoundReason,
     OptionalLibrary,
     OnBlocked,
+    OnProblem,
 )
 
 

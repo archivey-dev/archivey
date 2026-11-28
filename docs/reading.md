@@ -236,7 +236,7 @@ says 100%. `bytes_read` counts every byte read, a part read twice included, so i
 
 The callback runs inside the read that called it, on your thread. To stop a slow read, raise an
 exception there: the call to archivey that read raises it unchanged, and so does every later read
-of the file, also in an `extract_all(on_error="continue")`. An archive opened from a member with
+of the file, also in an `extract_all(on_problem="continue")`. An archive opened from a member with
 `parent=` reports to the same callback with `nest_level` 1, so keep level 0 for the file you
 opened. To log each part of the file archivey reads, set `ArchiveyConfig(source_read_step=0)`:
 the callback then runs for every read, and `read_start` to `position` is the part of the file that

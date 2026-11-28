@@ -42,7 +42,6 @@ from archivey.types import (
     ArchiveMember,
     ExtractionStatus,
     MemberType,
-    OnError,
     OverwritePolicy,
 )
 from tests.extract_util import lock_directories_at_once, open_and_extract
@@ -134,7 +133,7 @@ def test_tar_backslash_meets_a_file_of_the_same_name_as_a_slash_does(
             io.BytesIO(_tar([("file", "a", b"1"), ("file", name, b"2")])),
             dest,
             policy=policy,
-            on_error=OnError.CONTINUE,
+            on_problem="continue",
         )
         return [
             (r.status, type(r.error).__name__ if r.error else None)
@@ -177,7 +176,7 @@ def test_hardlink_resolves_by_its_stored_target(
     """
     archive = _tar([("file", "d/f", b"data"), ("hard", "h", "d\\f")])
     report = open_and_extract(
-        io.BytesIO(archive), tmp_path / "out", policy=policy, on_error=OnError.CONTINUE
+        io.BytesIO(archive), tmp_path / "out", policy=policy, on_problem="continue"
     )
     assert [r.status for r in report.results] == [
         ExtractionStatus.EXTRACTED,
@@ -214,7 +213,7 @@ def test_symlink_target_backslash_cannot_climb_out(
         io.BytesIO(_tar([("sym", "l", "..\\x")])),
         dest,
         policy=policy,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     result = report.results[0]
     assert result.status is ExtractionStatus.BLOCKED
@@ -243,7 +242,7 @@ def test_rewritten_name_is_checked_where_it_is_written(
         io.BytesIO(_tar([("file", name, b"x")])),
         dest,
         policy=ExtractionPolicy.STRICT,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     result = report.results[0]
     assert result.status is ExtractionStatus.BLOCKED
@@ -344,7 +343,7 @@ def test_more_windows_device_names_are_rejected(
         io.BytesIO(_tar([("file", f"d/{name}", b"x")])),
         tmp_path / "out",
         policy=policy,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     result = report.results[0]
     assert result.status is ExtractionStatus.BLOCKED
@@ -404,9 +403,9 @@ def test_other_windows_errors_stay_raw() -> None:
         assert extraction._typed_os_error(exc, "m") is exc
 
 
-@pytest.mark.parametrize("on_error", [OnError.CONTINUE, OnError.STOP])
+@pytest.mark.parametrize("on_problem", ["continue", "stop"])
 def test_symlink_privilege_refusal_is_typed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, on_error: OnError
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, on_problem: str
 ) -> None:
     """Windows without Developer Mode or elevation refuses every symlink with 1314."""
 
@@ -415,12 +414,12 @@ def test_symlink_privilege_refusal_is_typed(
 
     monkeypatch.setattr(os, "symlink", refuse)
     archive = io.BytesIO(_tar([("file", "f", b"x"), ("sym", "l", "f")]))
-    if on_error is OnError.STOP:
+    if on_problem == "stop":
         with pytest.raises(ExtractionError, match="privilege") as info:
-            open_and_extract(archive, tmp_path / "out", on_error=on_error)
+            open_and_extract(archive, tmp_path / "out", on_problem=on_problem)
         assert info.value.member_name == "l"
         return
-    report = open_and_extract(archive, tmp_path / "out", on_error=on_error)
+    report = open_and_extract(archive, tmp_path / "out", on_problem=on_problem)
     result = report.results[1]
     assert result.status is ExtractionStatus.FAILED
     assert isinstance(result.error, ExtractionError)
@@ -611,7 +610,7 @@ def test_streaming_duplicate_that_is_refused_still_removes_the_read_only_copy(
         io.BytesIO(_tar([("ro", "f", b"old"), ("sym", "f", "../../outside")])),
         dest,
         streaming=True,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     assert [r.status for r in report.results] == [
         ExtractionStatus.SUPERSEDED,
@@ -706,7 +705,7 @@ def test_replace_over_a_read_only_directory_first_created_as_a_parent(
         dest,
         policy=ExtractionPolicy.STANDARD,
         streaming=True,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
         overwrite=OverwritePolicy.REPLACE,
     )
     assert [r.status for r in report.results] == [
@@ -787,7 +786,7 @@ def test_read_only_file_already_in_the_destination_is_left_alone(
         io.BytesIO(_tar([("file", "f", b"theirs")])),
         dest,
         overwrite=OverwritePolicy.REPLACE,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     assert report.results[0].status is ExtractionStatus.FAILED
     assert (dest / "f").read_bytes() == b"mine"
@@ -939,7 +938,7 @@ def test_other_link_errors_still_fail(
     report = open_and_extract(
         io.BytesIO(_tar([("file", "f", b"data"), ("hard", "h", "f")])),
         tmp_path / "out",
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     assert report.results[1].status is ExtractionStatus.FAILED
     assert not (tmp_path / "out" / "h").exists()
@@ -1174,7 +1173,7 @@ def test_long_path_errors_name_the_plain_path(
     report = open_and_extract(
         io.BytesIO(_tar([("file", "taken/f", b"x")])),
         dest,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     result = report.results[0]
     assert result.status is ExtractionStatus.FAILED
@@ -1209,7 +1208,7 @@ def test_path_past_max_path_is_written_on_windows(tmp_path: Path) -> None:
     report = open_and_extract(
         io.BytesIO(_tar([("file", deep, b"x"), ("sym", deep + ".lnk", "file.txt")])),
         dest,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     result = report.results[0]
     assert result.status is ExtractionStatus.EXTRACTED, result.error
@@ -1474,7 +1473,7 @@ def test_short_name_alias_collides_with_the_member_it_names(
             dest, "longfilename.txt", "LONGFI~1.TXT", monkeypatch
         ),
         overwrite=overwrite,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     one, two = report.results
     assert two.collided_with == first
@@ -1525,7 +1524,7 @@ def test_short_name_of_a_hard_linked_file_does_not_reach_its_other_link(
         ),
         policy=policy,
         overwrite=OverwritePolicy.REPLACE,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     _one, link, three = report.results
     assert link.status is ExtractionStatus.EXTRACTED
@@ -1552,7 +1551,7 @@ def test_short_name_alias_is_a_file_already_there_under_trusted(
         ),
         policy=ExtractionPolicy.TRUSTED,
         overwrite=overwrite,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     one, two = report.results
     assert one.status is ExtractionStatus.EXTRACTED
@@ -1576,7 +1575,7 @@ def test_hard_link_the_caller_already_had_is_not_a_collision(tmp_path: Path) -> 
     report = open_and_extract(
         io.BytesIO(_tar([("file", "other", b"1"), ("file", "alias", b"2")])),
         dest,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
     )
     assert report.results[1].status is ExtractionStatus.FAILED
     assert report.results[1].collided_with is None

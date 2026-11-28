@@ -870,7 +870,7 @@ def test_a_link_resolution_diagnostic_cannot_call_the_reader(
     with open_archive(io.BytesIO(blob), config=config) as reader:
         holder.append(reader)
         if outer == "extract_all":
-            reader.extract_all(tmp_path / "out", on_error="continue")
+            reader.extract_all(tmp_path / "out", on_problem="continue")
         else:
             reader.verify_all()
     for name, errors in seen.items():
@@ -904,7 +904,7 @@ def test_a_password_provider_during_a_link_data_read_cannot_call_the_reader(
     with open_archive(io.BytesIO(blob), password=provider) as reader:
         holder.append(reader)
         if outer == "extract_all":
-            reader.extract_all(tmp_path / "out", on_error="continue")
+            reader.extract_all(tmp_path / "out", on_problem="continue")
         else:
             reader.verify_all()
     assert seen
@@ -953,7 +953,7 @@ def test_a_log_handler_for_a_link_resolution_diagnostic_cannot_call_the_reader(
         with open_archive(io.BytesIO(blob)) as reader:
             holder.append(reader)
             if outer == "extract_all":
-                reader.extract_all(tmp_path / "out", on_error="continue")
+                reader.extract_all(tmp_path / "out", on_problem="continue")
             else:
                 reader.verify_all()
     finally:

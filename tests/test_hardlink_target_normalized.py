@@ -25,7 +25,7 @@ from archivey.internal.naming import (
     normalize_hardlink_target,
     resolve_link_target_name,
 )
-from archivey.types import ExtractionStatus, MemberType, OnError
+from archivey.types import ExtractionStatus, MemberType
 from tests.conftest import requires_binary
 from tests.test_audit_rar_iso_dir import (
     _fixture,
@@ -195,7 +195,7 @@ def test_a_hard_link_target_ending_in_slash_does_not_resolve_to_a_file(
         with pytest.raises(LinkTargetNotFoundError):
             reader.read("hl")
     with open_archive(io.BytesIO(data), streaming=streaming) as reader:
-        report = reader.extract_all(tmp_path / "out", on_error=OnError.CONTINUE)
+        report = reader.extract_all(tmp_path / "out", on_problem="continue")
     results = {r.member.name: r for r in report.results}
     assert results["b"].status is ExtractionStatus.EXTRACTED
     assert results["hl"].status is ExtractionStatus.FAILED
@@ -281,7 +281,7 @@ def test_a_dot_slash_link_before_its_source_still_fails(
 ) -> None:
     data = _tar([("hl", "./a"), ("a", None)])
     with open_archive(io.BytesIO(data), streaming=streaming) as reader:
-        report = reader.extract_all(tmp_path / "out", on_error=OnError.CONTINUE)
+        report = reader.extract_all(tmp_path / "out", on_problem="continue")
     results = {r.member.name: r for r in report.results}
     assert results["hl"].member.link_target == "a"
     assert results["hl"].status is ExtractionStatus.FAILED

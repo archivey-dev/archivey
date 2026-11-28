@@ -33,7 +33,7 @@ with archivey.open_archive("dataset.tar.gz") as archive:
     report = archive.extract_all(
         "data/",
         overwrite="replace",
-        abort_on=["blocked_member"],
+        on_problem="stop",
     )
 
 extracted = [r for r in report if r.status is archivey.types.ExtractionStatus.EXTRACTED]
@@ -43,10 +43,10 @@ print(len(extracted), "members extracted")
 The same code works for a ZIP, 7z or RAR download, because `open_archive` identifies the format
 from the file's contents. `overwrite="replace"` lets the script run again over an earlier run's
 files. Without it, the first file that's already there stops the extraction. With
-`abort_on=["blocked_member"]`, a member that would land outside `data/`, such as `../evil.txt`,
-stops the extraction with an exception. Without it, that member is skipped, the rest are
-extracted, and the call then raises `FilterRejectionError`, whose `report` lists the member as
-`ExtractionStatus.BLOCKED`. [Extracting](extracting.md#options) explains both options.
+`on_problem="stop"`, a member that would land outside `data/`, such as `../evil.txt`, or a damaged
+one, stops the extraction with an exception. Without it, that member is skipped, the rest are
+extracted, and the call then raises its error, whose `report` lists the member as
+`ExtractionStatus.BLOCKED` or `FAILED`. [Extracting](extracting.md#options) explains both options.
 
 By default, an extraction raises `ResourceLimitError` once it has written 2 GiB or 262,144 entries,
 or when data expands more than 800 times. A sparse TAR member, such as a disk image, can expand
@@ -392,8 +392,13 @@ shows it.
 
 ### Extract an upload
 
+Extract into a private staging folder next to the destination, and move it into place only when
+the whole extraction succeeded. Whatever goes wrong, the destination never holds part of an upload:
+
 ```python
+import shutil
 import tempfile
+from pathlib import Path
 
 import archivey
 
@@ -406,28 +411,36 @@ CONFIG = archivey.ArchiveyConfig(
     process_isolation=archivey.config.ProcessIsolation.NATIVE_DECODERS,
     diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
 )
+LIMITS = archivey.config.ExtractionLimits(
+    max_extracted_bytes=500 * 2**20,
+    max_entries=10_000,
+)
 
-with archivey.open_archive("upload.zip", config=CONFIG) as archive:
-    dest = tempfile.mkdtemp(prefix="upload-")
-    report = archive.extract_all(
-        dest,
-        abort_on=["blocked_member", "name_collision"],
-        limits=archivey.config.ExtractionLimits(
-            max_extracted_bytes=500 * 2**20,
-            max_entries=10_000,
-        ),
-    )
 
-print(dest, len(report))
+def extract_upload(upload, dest):
+    """Extract ``upload`` into ``dest``, a folder that must not hold anything yet."""
+    dest = Path(dest)
+    staging = Path(tempfile.mkdtemp(prefix=".upload-", dir=dest.parent))
+    try:
+        with archivey.open_archive(upload, config=CONFIG) as archive:
+            report = archive.extract_all(staging, on_problem="stop", limits=LIMITS)
+        staging.rename(dest)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return report
 ```
 
-`CONFIG` is the one from [List, hash and test an upload](#list-hash-and-test-an-upload). A new,
-empty folder for each upload means nothing else can be in the way, and you can check what
-came out before moving it anywhere else. The default `policy="strict"` refuses or rewrites every
-kind of unsafe member archivey knows of, and `abort_on` turns a refused member, or two members that
-would be written to the same path, into an exception that ends the extraction. Files written before
-then stay in `dest`. [What each policy does with unusual
-members](extracting.md#what-each-policy-does-with-unusual-members) lists the cases.
+`CONFIG` is the one from [List, hash and test an upload](#list-hash-and-test-an-upload). The
+default `policy="strict"` refuses or rewrites every kind of unsafe member archivey knows of, and
+`on_problem="stop"` turns the first refused or damaged member into an exception. So does a second
+member at a path already written, because `overwrite` stays `"error"`. On any exception, including
+a limit, the staging folder and everything in it are deleted. The staging folder is in the
+destination's parent, so the final `rename` doesn't copy anything. It fails if `dest` is a file or
+a folder with anything in it. An empty folder at `dest` is replaced on Linux and macOS, and refused
+on Windows. `dest` keeps the staging folder's permissions, readable by its owner only. [What each
+policy does with unusual members](extracting.md#what-each-policy-does-with-unusual-members) lists
+the cases.
 
 ### Archives inside the upload
 

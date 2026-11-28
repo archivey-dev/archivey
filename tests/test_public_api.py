@@ -516,6 +516,11 @@ _NOT_ON_API_PAGE = {
     "archivey.diagnostics.format_path_name",
     "archivey.diagnostics.raw_name_to_base64",
     "archivey.diagnostics.validate_code_context",
+    # Deprecated in 0.6 in favour of ``on_problem=``; 0.7.0 removes them. The
+    # page documents ``OnProblem`` only; CHANGELOG.md names the replacements.
+    "archivey.types.AbortOn",
+    "archivey.types.OnBlocked",
+    "archivey.types.OnError",
 }
 # Whole groups with no blocks of their own: the typed diagnostic contexts, which the
 # ``DiagnosticContext`` block and the diagnostics table describe, and the plugin API of

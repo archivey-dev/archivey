@@ -479,7 +479,7 @@ def test_hardlink_to_a_replaced_source_does_not_get_the_replacements_content(
 
     with archivey.open_archive(archive, streaming=streaming) as reader:
         report = reader.extract_all(
-            dest, policy="standard", overwrite="replace", on_error="continue"
+            dest, policy="standard", overwrite="replace", on_problem="continue"
         )
 
     link = {r.member.name: r for r in report.results}["h"]
@@ -504,7 +504,7 @@ def test_hardlink_never_links_a_file_the_run_did_not_write(tmp_path: Path) -> No
     (dest / "victim").write_bytes(b"caller's file")
 
     open_and_extract(
-        archive, dest, policy="standard", overwrite="replace", on_error="continue"
+        archive, dest, policy="standard", overwrite="replace", on_problem="continue"
     )
 
     if (dest / "h").exists():
@@ -525,7 +525,7 @@ def test_replacing_a_directory_revises_the_members_written_inside_it(
     dest = tmp_path / "out"
 
     with archivey.open_archive(archive, streaming=streaming) as reader:
-        report = reader.extract_all(dest, overwrite="replace", on_error="continue")
+        report = reader.extract_all(dest, overwrite="replace", on_problem="continue")
 
     for result in report.results:
         if result.status is ExtractionStatus.EXTRACTED:
@@ -595,7 +595,7 @@ def test_a_collision_through_a_repointed_symlink_lands_where_the_member_named(
 
     with archivey.open_archive(archive, streaming=streaming) as reader:
         report = reader.extract_all(
-            dest, policy="standard", overwrite="replace", on_error="continue"
+            dest, policy="standard", overwrite="replace", on_problem="continue"
         )
 
     assert (dest / "d1" / "f").read_bytes() == b"D"
@@ -644,7 +644,7 @@ def test_a_symlink_loop_in_the_destination_is_not_a_raw_runtime_error(
     dest.mkdir()
     os.symlink("x", dest / "x")  # x -> x
 
-    report = open_and_extract(archive, dest, on_error="continue")
+    report = open_and_extract(archive, dest, on_problem="continue")
 
     assert {r.member.name: r.status for r in report.results}["ok"] is (
         ExtractionStatus.EXTRACTED
@@ -690,7 +690,7 @@ def test_a_directory_source_is_not_extracted_into_itself(
     try:
         with archivey.open_archive(source, streaming=streaming) as reader:
             reader.extract_all(
-                source / "copy", on_error="continue", on_progress=on_progress
+                source / "copy", on_problem="continue", on_progress=on_progress
             )
     except archivey.ArchiveyError:
         return  # refusing the call is fine
@@ -738,7 +738,7 @@ def test_a_hardlink_to_a_symlink_is_a_second_symlink(
     dest = tmp_path / "out"
 
     with archivey.open_archive(archive, streaming=streaming) as reader:
-        report = reader.extract_all(dest, policy="standard", on_error="continue")
+        report = reader.extract_all(dest, policy="standard", on_problem="continue")
 
     assert {r.member.name: r.status for r in report.results}["h"] is (
         ExtractionStatus.EXTRACTED
@@ -835,7 +835,7 @@ def test_a_chain_with_forward_names_costs_linear_lookups(
         base_reader.BaseArchiveReader, "_hardlink_direct_target", counting_lookup
     )
     with archivey.open_archive(archive, streaming=streaming) as reader:
-        reader.extract_all(tmp_path / "out", policy="standard", on_error="continue")
+        reader.extract_all(tmp_path / "out", policy="standard", on_problem="continue")
 
     assert lookups <= 2 * n
 
@@ -864,7 +864,7 @@ def test_a_chain_through_a_later_symlink_extracts_the_same_in_every_mode(
 
     def outcome(dest: Path, streaming: bool) -> dict[str, tuple[str, str]]:
         with archivey.open_archive(archive, streaming=streaming) as reader:
-            report = reader.extract_all(dest, policy="standard", on_error="continue")
+            report = reader.extract_all(dest, policy="standard", on_problem="continue")
         kinds = {}
         for r in report.results:
             path = dest / r.member.name
@@ -1073,7 +1073,7 @@ def test_rar_hard_links_extract_as_unrar_does_in_both_modes(
     for streaming in (False, True):
         dest = tmp_path / f"out-{streaming}"
         with archivey.open_archive(archive, streaming=streaming) as reader:
-            reader.extract_all(dest, policy="standard", on_error="continue")
+            reader.extract_all(dest, policy="standard", on_problem="continue")
         assert _tree(dest) == expected, f"streaming={streaming}"
 
 

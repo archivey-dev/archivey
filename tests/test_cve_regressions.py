@@ -23,7 +23,7 @@ import pytest
 
 from archivey import ExtractionPolicy, ExtractionReport, MemberType
 from archivey.exceptions import FilterRejectionError, LinkTargetNotFoundError
-from archivey.types import ExtractionStatus, OnError, OverwritePolicy
+from archivey.types import ExtractionStatus, OverwritePolicy
 from tests.extract_util import open_and_extract
 
 _POSIX_LINKS = pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
@@ -193,7 +193,7 @@ def test_cve_2025_4517_link_chain_past_path_max(
         dest,
         streaming=streaming,
         policy=policy,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
         overwrite=OverwritePolicy.REPLACE,
     )
     _assert_outside_untouched(tmp_path, outside)
@@ -265,7 +265,7 @@ def _extract_and_check(
         dest,
         streaming=streaming,
         policy=policy,
-        on_error=OnError.CONTINUE,
+        on_problem="continue",
         overwrite=OverwritePolicy.REPLACE,
     )
     _assert_outside_untouched(tmp_path, outside)

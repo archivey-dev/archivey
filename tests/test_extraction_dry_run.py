@@ -31,7 +31,7 @@ from archivey.config import ExtractionLimits
 from archivey.exceptions import ExtractionError, NameCollisionError
 from archivey.internal import dry_run as dry_run_module
 from archivey.terminal import display_path
-from archivey.types import AbortOn, ExtractionStatus, OnError, OverwritePolicy
+from archivey.types import AbortOn, ExtractionStatus, OverwritePolicy
 from tests.conftest import CPYTHON
 from tests.create_adversarial import adversarial_archives
 from tests.extract_util import lock_directories_at_once, open_and_extract
@@ -40,6 +40,13 @@ from tests.sample_archives import CORPUS, corpus_archive_path, skip_unless_runna
 _POLICIES = list(ExtractionPolicy)
 _TMP_NAME = re.compile(r"\.archivey-tmp-[^'\"/]+")
 _SINGLE_FILE_KEYS = {"gz", "gz-meta", "bz2", "xz", "zst", "lz4", "lz", "zz", "br"}
+
+
+# abort_on= is deprecated (0.6.0); its name events, which on_problem= has no value
+# for, keep working until 0.7.0. These tests pin them until then.
+_ABORT_ON_DEPRECATED = (
+    r"ignore:extract_all\((on_error|on_blocked|abort_on)=:DeprecationWarning"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -141,7 +148,6 @@ def _both(
     ``populate``, given the absolute dest, fills it before each run; the dry run must
     then leave it exactly as it was.
     """
-    kwargs.setdefault("on_error", OnError.CONTINUE)
     open_kwargs = kwargs.pop("open_kwargs", {})
     outcomes = []
     before = None
@@ -159,7 +165,7 @@ def _both(
             with open_archive(source(), **open_kwargs) as reader:
                 try:
                     report = reader.extract_all(
-                        dest, dry_run=dry_run, **{"on_blocked": "skip", **kwargs}
+                        dest, dry_run=dry_run, **{"on_problem": "continue", **kwargs}
                     )
                 except (archivey.ArchiveyError, OSError) as exc:
                     outcomes.append(
@@ -525,7 +531,7 @@ def test_bodies_are_read_and_verified(tmp_path: Path) -> None:
     path.write_bytes(bytes(blob))
 
     dest = tmp_path / "out"
-    report = open_and_extract(path, dest, on_error=OnError.CONTINUE, dry_run=True)
+    report = open_and_extract(path, dest, on_problem="continue", dry_run=True)
     statuses = {r.member.name: r.status for r in report.results}
     assert statuses == {
         "good.txt": ExtractionStatus.EXTRACTED,
@@ -542,7 +548,7 @@ def test_limits_still_apply(tmp_path: Path) -> None:
             dest,
             limits=ExtractionLimits(max_extracted_bytes=1024),
             dry_run=True,
-            on_blocked="skip",
+            on_problem="continue",
         )
     _assert_nothing_left(tmp_path, dest)
 
@@ -553,9 +559,7 @@ def test_existing_destination_is_met_but_not_changed(tmp_path: Path) -> None:
     (dest / "a").write_bytes(b"mine")
     blob = _tar([("a", "file", b"theirs")])
     with open_archive(io.BytesIO(blob)) as reader:
-        report = reader.extract_all(
-            dest, on_error=OnError.CONTINUE, dry_run=True, on_blocked="skip"
-        )
+        report = reader.extract_all(dest, on_problem="continue", dry_run=True)
     # The run meets "a" as a real run would, under the default OverwritePolicy.ERROR.
     (result,) = report.results
     assert result.status is ExtractionStatus.FAILED
@@ -829,9 +833,7 @@ def test_symlink_loop_error_names_dest_in_its_cause(tmp_path: Path) -> None:
     _put(dest, {"a": ("sym", "a")})
     blob = _tar([("a/c", "file", b"x")])
     with open_archive(io.BytesIO(blob)) as reader:
-        report = reader.extract_all(
-            dest, on_error=OnError.CONTINUE, dry_run=True, on_blocked="skip"
-        )
+        report = reader.extract_all(dest, on_problem="continue", dry_run=True)
     (result,) = report.results
     assert result.status is ExtractionStatus.FAILED
     cause = result.error.__cause__
@@ -888,12 +890,12 @@ def test_record_leaves_out_what_dest_held(tmp_path: Path) -> None:
     )
     with open_archive(io.BytesIO(blob)) as reader:
         report = reader.extract_all(
-            dest, overwrite=OverwritePolicy.SKIP, dry_run=True, on_blocked="skip"
+            dest, overwrite=OverwritePolicy.SKIP, dry_run=True, on_problem="continue"
         )
     assert report._dry_run_top_level == (("keep2", False), ("sub", True))
     blob = _tar([("sub/new", "file", b"n")])
     with open_archive(io.BytesIO(blob)) as reader:
-        report = reader.extract_all(dest, dry_run=True, on_blocked="skip")
+        report = reader.extract_all(dest, dry_run=True, on_problem="continue")
     assert report._dry_run_top_level == (("sub", True),)
     assert report._dry_run_entries == (("sub", True), ("sub/new", False))
 
@@ -952,10 +954,10 @@ def test_hardlink_to_an_absolute_source_meets_dest_alike(tmp_path: Path) -> None
     assert dry[0][1] is ExtractionStatus.BLOCKED
 
 
-@pytest.mark.parametrize("on_error", [OnError.CONTINUE, OnError.STOP])
+@pytest.mark.parametrize("on_problem", ["continue", "keep_partial"])
 @pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
 def test_chained_hardlink_source_meets_dest_alike(
-    streaming: bool, on_error: OnError, tmp_path: Path
+    streaming: bool, on_problem: str, tmp_path: Path
 ) -> None:
     # "outer" names "mid", which names "escaped/f": the policy checks the end of
     # the chain, through the caller's "escaped", which leaves dest.
@@ -976,7 +978,7 @@ def test_chained_hardlink_source_meets_dest_alike(
             populate=lambda dest: _put(dest, {"escaped": ("sym", "../..")}),
             members=["outer"],
             policy=policy,
-            on_error=on_error,
+            on_problem=on_problem,
             open_kwargs={"streaming": streaming},
         )
         assert dry == real, policy
@@ -1058,7 +1060,7 @@ def test_record_keeps_the_top_when_the_tree_cannot_be_read(
         if held:
             _put(dest, held)
         with open_archive(io.BytesIO(blob)) as reader:
-            report = reader.extract_all(dest, dry_run=True, on_blocked="skip")
+            report = reader.extract_all(dest, dry_run=True, on_problem="continue")
         tops.append(report._dry_run_top_level)
         assert report._dry_run_entries is None
     assert tops == [(("r", True),), (("r", True),)]
@@ -1069,9 +1071,7 @@ def test_record_leaves_out_a_directory_member_that_failed(tmp_path: Path) -> Non
     _put(dest, {"d": b"mine"})
     blob = _tar([("d", "dir", None)])
     with open_archive(io.BytesIO(blob)) as reader:
-        report = reader.extract_all(
-            dest, on_error=OnError.CONTINUE, dry_run=True, on_blocked="skip"
-        )
+        report = reader.extract_all(dest, on_problem="continue", dry_run=True)
     assert [r.status for r in report.results] == [ExtractionStatus.FAILED]
     assert report._dry_run_top_level == ()
 
@@ -1096,7 +1096,7 @@ def test_dry_run_copies_only_what_the_pass_names(tmp_path: Path) -> None:
             overwrite=OverwritePolicy.REPLACE,
             filter=look,
             dry_run=True,
-            on_blocked="skip",
+            on_problem="continue",
         )
     # "sub" named as a directory brings one of its entries, so a REPLACE there
     # finds it not empty.
@@ -1245,7 +1245,7 @@ def test_destination_that_is_a_file_is_refused(tmp_path: Path) -> None:
         open_archive(io.BytesIO(_tar([("a", "file", 0)]))) as reader,
         pytest.raises(ExtractionError, match="not a directory"),
     ):
-        reader.extract_all(dest, dry_run=True, on_blocked="skip")
+        reader.extract_all(dest, dry_run=True, on_problem="continue")
     assert list((tmp_path / "tmp").iterdir()) == []
 
 
@@ -1256,7 +1256,7 @@ def test_destination_under_a_file_is_refused(tmp_path: Path) -> None:
     for dry_run in (False, True):
         dest = tmp_path / "afile" / ("dry" if dry_run else "real") / "out"
         with open_archive(io.BytesIO(blob)) as reader, pytest.raises(OSError) as caught:
-            reader.extract_all(dest, dry_run=dry_run, on_blocked="skip")
+            reader.extract_all(dest, dry_run=dry_run, on_problem="continue")
         raised.append(caught.value)
     real, dry = raised
     if os.name != "nt":
@@ -1343,9 +1343,8 @@ def test_errors_and_warnings_name_dest(
         report = reader.extract_all(
             dest,
             policy=ExtractionPolicy.TRUSTED,
-            on_error=OnError.CONTINUE,
+            on_problem="continue",
             dry_run=True,
-            on_blocked="skip",
         )
     failed = report.results[-1]
     assert failed.status is ExtractionStatus.FAILED
@@ -1362,9 +1361,8 @@ def test_errors_and_warnings_name_dest(
         reader.extract_all(
             dest,
             policy=ExtractionPolicy.TRUSTED,
-            on_error=OnError.STOP,
+            on_problem="stop",
             dry_run=True,
-            on_blocked="skip",
         )
     assert str(dest / "ro") in str(caught.value)
     assert "archivey-dry-run-" not in str(caught.value)
@@ -1386,7 +1384,7 @@ def test_scratch_is_removed_when_the_archive_locks_its_own_directories(
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(blob)) as reader:
         report = reader.extract_all(
-            dest, policy=ExtractionPolicy.TRUSTED, dry_run=True, on_blocked="skip"
+            dest, policy=ExtractionPolicy.TRUSTED, dry_run=True, on_problem="continue"
         )
     assert {r.status for r in report.results} == {ExtractionStatus.EXTRACTED}
     _assert_nothing_left(tmp_path, dest)
@@ -1426,6 +1424,7 @@ def test_scratch_is_removed_when_its_tree_is_deeper_than_path_max(
     assert not root.exists()
 
 
+@pytest.mark.filterwarnings(_ABORT_ON_DEPRECATED)
 def test_scratch_is_removed_on_abort_and_the_message_names_dest(
     tmp_path: Path,
 ) -> None:

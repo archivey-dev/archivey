@@ -86,9 +86,8 @@ def _extract(
     archive = tmp_path / "a.tar"
     _build_tar(archive, entries)
     dest = tmp_path / "out"
-    kwargs.setdefault("on_error", "continue")
     with archivey.open_archive(archive, streaming=streaming) as reader:
-        report = reader.extract_all(dest, **{"on_blocked": "skip", **kwargs})
+        report = reader.extract_all(dest, **{"on_problem": "continue", **kwargs})
     by_name: dict[str, archivey.types.ExtractionResult] = {}
     for result in report.results:
         by_name[result.member.name.rstrip("/")] = result
@@ -337,7 +336,7 @@ def test_abort_on_blocked_member_stops_on_a_revised_link(
             tmp_path,
             [("l", "sym", "a/../secret"), ("a", "sym", "."), ("f", "file", b"x")],
             streaming=streaming,
-            abort_on={"blocked_member"},
+            on_problem="stop",
         )
     dest = tmp_path / "out"
     assert _escaping_links(dest) == []
@@ -345,21 +344,18 @@ def test_abort_on_blocked_member_stops_on_a_revised_link(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-def test_a_revised_link_does_not_stop_the_run_under_on_error_stop(
+def test_a_revised_link_is_a_refusal_and_stops_the_run_under_stop(
     tmp_path: Path, streaming: bool
 ) -> None:
-    # The revision is a policy block, not a failure, so OnError.STOP goes on.
-    dest, results = _extract(
-        tmp_path,
-        [("l", "sym", "a/../secret"), ("a", "sym", "."), ("f", "file", b"x")],
-        streaming=streaming,
-        on_error="stop",
-    )
-
-    _assert_blocked_as_escape(results["l"])
-    assert results["a"].status is ExtractionStatus.EXTRACTED
-    assert results["f"].status is ExtractionStatus.EXTRACTED
-    assert (dest / "f").read_bytes() == b"x"
+    # The revision is a policy block, so on_problem="stop" raises it, as it raises
+    # any refusal; under "continue" (the other tests here) the run goes on.
+    with pytest.raises(FilterRejectionError, match="a later member changed"):
+        _extract(
+            tmp_path,
+            [("l", "sym", "a/../secret"), ("a", "sym", "."), ("f", "file", b"x")],
+            streaming=streaming,
+            on_problem="stop",
+        )
 
 
 @pytest.mark.parametrize("streaming", [False, True])

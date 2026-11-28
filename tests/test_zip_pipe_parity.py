@@ -33,7 +33,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.zip_reader import ZipReader
-from archivey.types import ExtractionStatus, HashAlgorithm, OnError
+from archivey.types import ExtractionStatus, HashAlgorithm
 from tests.create_adversarial import adversarial_archives
 from tests.sample_archives import CORPUS, build_archive, skip_unless_runnable
 from tests.streams_util import NonSeekableBytesIO, open_mode
@@ -154,7 +154,7 @@ def _extracted(
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
     try:
         with archivey.open_archive(source, pipe=piped, password=password) as reader:
-            report = reader.extract_all(dest, on_error=OnError.CONTINUE)
+            report = reader.extract_all(dest, on_problem="continue")
     except ArchiveyError as exc:
         return type(exc)
     return [

@@ -21,7 +21,8 @@ import archivey
 
 REPO = Path(__file__).resolve().parents[1]
 
-#: The root names the maintainer chose on 2026-11-27.
+#: The root names the maintainer chose on 2026-11-27, with ``OnProblem``, the
+#: extraction setting that replaces ``on_error``, ``on_blocked`` and ``abort_on``.
 ROOT_NAMES = frozenset(
     {
         "__version__",
@@ -40,6 +41,7 @@ ROOT_NAMES = frozenset(
         "StreamFormat",
         "ExtractionPolicy",
         "ExtractionReport",
+        "OnProblem",
         "ArchiveyConfig",
         "FormatPolicy",
         "Diagnostic",

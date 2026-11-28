@@ -36,7 +36,7 @@ from archivey.exceptions import (
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.streams import codecs as codecs_module, crypto as crypto_module
 from archivey.reader import ArchiveReader
-from archivey.types import ExtractionStatus, MemberType, OnError
+from archivey.types import ExtractionStatus, MemberType
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import (
     is_corruption_not_truncation,
@@ -234,7 +234,7 @@ def test_damaged_link_target_in_a_streaming_extraction_is_reported_once(
     tmp_path: Path,
 ) -> None:
     with open_archive(io.BytesIO(_damaged_zip_symlink()), streaming=True) as ar:
-        report = ar.extract_all(tmp_path / "out", on_error=OnError.CONTINUE)
+        report = ar.extract_all(tmp_path / "out", on_problem="continue")
         assert [c.reason for c in _link_diagnostics(ar)] == ["target_data_damaged"]
     by_name = {result.member.name: result for result in report.results}
     assert by_name["link"].status is ExtractionStatus.FAILED
@@ -245,7 +245,7 @@ def test_damaged_link_target_fails_only_that_link_at_extraction(
     tmp_path: Path,
 ) -> None:
     with open_archive(io.BytesIO(_damaged_zip_symlink())) as ar:
-        report = ar.extract_all(tmp_path / "out", on_error=OnError.CONTINUE)
+        report = ar.extract_all(tmp_path / "out", on_problem="continue")
     by_name = {result.member.name: result for result in report.results}
     assert by_name["target.txt"].status is ExtractionStatus.EXTRACTED
     assert by_name["link"].status is ExtractionStatus.FAILED
@@ -280,7 +280,7 @@ def test_damaged_rar4_link_target_fails_only_that_link_at_extraction(
     tmp_path: Path,
 ) -> None:
     with open_archive(io.BytesIO(_damaged_rar4_symlink())) as ar:
-        report = ar.extract_all(tmp_path / "out", on_error=OnError.CONTINUE)
+        report = ar.extract_all(tmp_path / "out", on_problem="continue")
     by_name = {result.member.name: result for result in report.results}
     assert by_name["file1.txt"].status is ExtractionStatus.EXTRACTED
     assert by_name[_RAR4_DAMAGED].status is ExtractionStatus.FAILED
@@ -344,7 +344,7 @@ def test_rar4_link_target_whose_sizes_disagree_is_refused(
         with raises_corruption_not_truncation():
             ar.open(ar.get("link"))
     with open_archive(io.BytesIO(blob)) as ar:
-        report = ar.extract_all(tmp_path / "out", on_error=OnError.CONTINUE)
+        report = ar.extract_all(tmp_path / "out", on_problem="continue")
     (result,) = report.results
     assert result.status is ExtractionStatus.FAILED
     assert is_corruption_not_truncation(result.error)
@@ -445,7 +445,7 @@ def test_undecodable_zip_link_target_fails_only_that_link_at_extraction(
         monkeypatch.setattr(codecs_module.deps, "zstd", None)
     blob = _undecodable_zip_symlink(method=method)
     with open_archive(io.BytesIO(blob), streaming=streaming) as ar:
-        report = ar.extract_all(tmp_path / "out", on_error=OnError.CONTINUE)
+        report = ar.extract_all(tmp_path / "out", on_problem="continue")
         assert _reasons(ar) == [reason]
     by_name = {result.member.name: result for result in report.results}
     assert by_name["target.txt"].status is ExtractionStatus.EXTRACTED

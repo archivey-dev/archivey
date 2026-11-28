@@ -268,13 +268,15 @@ in the cwd. `-d` remains the way to extract into an existing directory or throug
 deliberately: `-d backup --overwrite replace` re-extracts a multi-root archive into an
 existing `backup/`. Overwrite SHALL default to `rename` once `OverwritePolicy.RENAME`
 exists (`--overwrite` may select `error` / `skip` / `replace` / `rename`). `extract`
-SHALL pass `OnError.CONTINUE` by default so policy rejections and per-member read
+SHALL pass `on_problem="continue"` by default so policy rejections and per-member read
 failures are recorded (`blocked:` / `failed:` lines plus the closing summary) and
 remaining members are still extracted where the stream allows. `--stop-on-error` SHALL
-restore `OnError.STOP` for that invocation — stopping on member **failures** only.
-Policy `BLOCKED` outcomes are always reported-and-continued (library `OnError` does not
-halt on blocks; see `stop-on-failure-not-policy`). On an early stop (STOP-path failure
-or always-stop limit), the system SHALL still report how many members were **extracted**
+pass `on_problem="stop"` for that invocation, stopping at the first member that fails or
+is refused. `--abort-on` is deprecated in 0.6.0 and removed in 0.7.0: it SHALL print a
+deprecation line; `blocked-member` SHALL act as `--stop-on-error`, and `name-collision`
+/ `name-sanitized` SHALL keep their 0.5 meaning (blocks before them are reported and
+continued). On an early stop (a `--stop-on-error` stop, an `--abort-on` event or an
+always-stop limit), the system SHALL still report how many members were **extracted**
 and how many were **blocked** before the stop (separate counts; other processed statuses
 are omitted from that line).
 
@@ -314,7 +316,7 @@ are omitted from that line).
 | `archivey extract <archive> -d .` | Extracts into cwd verbatim (classic splatter, opt-in) |
 | `archivey extract <archive> --policy trusted` | Maps to `ExtractionPolicy.TRUSTED` |
 | `archivey extract <archive-with-traversal-and-safe-members>` | Safe members extracted; `blocked:` lines; exit `3` |
-| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at first **failure**; reports extracted/blocked counts before stop; policy blocks alone do not stop |
+| `archivey extract --stop-on-error <archive-with-bad-member>` | Stops at the first failed or refused member; reports the members extracted before the stop |
 | Subcommand includes glob pattern(s) after the archive | Operation limited to matching member names (positional = include) |
 | `archivey extract <archive> out` where `out/` exists and matches no member | stderr warning with `(did you mean -d out?)`; exit `1` |
 | `archivey extract <archive> docs` with members `docs/`, `docs/a.txt`, `docs.txt` | Extracts `docs/` and `docs/a.txt`, not `docs.txt`; no warning |
@@ -481,20 +483,17 @@ verb/flag or bad arguments — the argparse default), unless the output or messa
 could not be delivered (see the codes `128` and above below). Operational failures
 (unreadable, unsupported, or corrupt archive; read/integrity failure; member
 extraction `FAILED`; incomplete listing whose `MemberListReport.error` is set;
-an early abort under `--stop-on-error` on a member **failure**, or any
-always-stop / hoist failure) SHALL exit `1`. When `extract` **completes**
-(under CONTINUE or STOP) with one or more members `BLOCKED` by safety policy
-and no member `FAILED`, the system SHALL exit `3` (refused by safety policy —
-safe members are on disk). Because `OnError.STOP` / `--stop-on-error` never
-halts on a policy block, a STOP+policy abort cannot occur; exit `3` MUST NOT
-be used for an aborted STOP-path failure. Exit codes `4` to `127` SHALL remain
-reserved.
-Codes `128` and above follow the shell's `128 + N` convention for signal `N`
-and are not in the reserved range: a command interrupted by Ctrl-C (SIGINT)
-SHALL print `interrupted` and exit `130`. A command whose stdout or stderr pipe
-is closed by its reader SHALL stop without a message or traceback and exit `141`
-(128 + SIGPIPE), on every platform, Windows included. That holds for help and
-usage text and for error messages as well as for a verb's output: a usage error
+an early abort under `--stop-on-error` on a failed or refused member, or any always-stop
+/ hoist failure) SHALL exit `1`. When `extract` **completes** (under CONTINUE or STOP)
+with one or more members `BLOCKED` by safety policy and no member `FAILED`, the system
+SHALL exit `3` (refused by safety policy — safe members are on disk). Exit `3` MUST NOT
+be used for a run that stopped early, including a `--stop-on-error` stop at a refused
+member. Exit codes `4` to `127` SHALL remain reserved. Codes `128` and above follow the
+shell's `128 + N` convention for signal `N` and are not in the reserved range: a command
+interrupted by Ctrl-C (SIGINT) SHALL print `interrupted` and exit `130`. A command whose
+stdout or stderr pipe is closed by its reader SHALL stop without a message or traceback
+and exit `141` (128 + SIGPIPE), on every platform, Windows included. That holds for help
+and usage text and for error messages as well as for a verb's output: a usage error
 whose message cannot be delivered SHALL exit `141`, not `2`, because the output
 was lost.
 Documentation SHALL direct callers to treat any nonzero code other than `2` as
@@ -514,12 +513,12 @@ a failure and MUST NOT assume `1` is the only failure code.
 | `archivey test <truncated-tar>` (plain or compressed) whose stream ends on the error a member read already reported | One `FAIL <member>:` line, then `test stopped; remaining members were not tested`; the summary counts that member once; exit `1` |
 | `archivey test <archive>` when a digest goes unchecked (`DIGEST_UNVERIFIABLE` / `ENCRYPTED_MEMBER_UNVERIFIED`) | Summary includes `V not verified`; exit `1` |
 | `archivey extract <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` |
-| `archivey extract --stop-on-error <archive-with-traversal-and-safe-members>` | Extracts safe members; prints `blocked:`; exit `3` (blocks always continue) |
+| `archivey extract --stop-on-error <archive-with-traversal-and-safe-members>` | Stops at the refused member; nothing after it is written; prints the stop line; exit `1` |
 | `archivey extract <archive-with-corrupt-member>` | Extracts recoverable members; prints `failed:`; exit `1` |
 | `archivey extract --stop-on-error <archive-with-corrupt-member>` | Stops at first failure; exit `1` |
 | `archivey extract <archive>` with a blocked or failed member | One line for each `BLOCKED` / `FAILED` result in the report (`blocked:` / `failed:`); the library's `Skipping …` warning is not printed too |
 | `archivey extract <streamed archive>` where a later copy of a name supersedes an earlier copy that failed | The earlier copy's error is dropped with it, as the library's report drops it and as a random-access run never meets it; only the later copy's outcome is reported |
-| `archivey extract --stop-on-error <archive>` that blocks a member, then stops on a failure | No report is returned, so the `WARNING: Skipping …` line for the blocked member is printed before the stop line |
+| `archivey extract --abort-on name-sanitized <archive>` that blocks a member, then stops on a rewritten name | No report is returned, so the `WARNING: Skipping …` line for the blocked member is printed before the stop line, and the stop counts it as blocked |
 | Ctrl-C during `archivey test` or `archivey extract`, including between members of the read pass | Prints `interrupted`; exit `130` |
 | Any verb whose stdout or stderr pipe closes while it writes (`archivey t big.zip 2>&1 \| head -1`) | Stops without a message or traceback; exit `141`, so a `test` that had not finished verifying does not report success |
 | `archivey --help \| true`, or a usage error whose stderr pipe is closed | No message or traceback; exit `141` (not `0` or `2`) |

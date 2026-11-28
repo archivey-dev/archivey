@@ -26,7 +26,6 @@ from archivey.diagnostics import (
     DiagnosticPolicy,
 )
 from archivey.exceptions import CorruptionError, ResourceLimitError
-from archivey.types import OnError
 from tests.conftest import requires_binary
 from tests.test_audit2_cross_format import _rar4_blocks, _rar5_blocks
 
@@ -116,7 +115,7 @@ def _files_on_disk(dest: Path) -> dict[str, bytes]:
     return found
 
 
-@pytest.mark.parametrize("on_error", [OnError.STOP, OnError.CONTINUE])
+@pytest.mark.parametrize("on_problem", ["stop", "finish", "continue"])
 @pytest.mark.parametrize("listed_first", [False, True], ids=["fresh", "listed"])
 @pytest.mark.parametrize(("data", "prefix"), _CASES)
 def test_extract_writes_the_listed_prefix_then_raises(
@@ -124,7 +123,7 @@ def test_extract_writes_the_listed_prefix_then_raises(
     data: bytes,
     prefix: set[str],
     listed_first: bool,
-    on_error: OnError,
+    on_problem: str,
 ) -> None:
     contents, error_type, message = _listing(data)
     assert set(contents) == prefix  # precondition
@@ -133,7 +132,7 @@ def test_extract_writes_the_listed_prefix_then_raises(
         if listed_first:
             reader.members_report()
         with pytest.raises(error_type) as excinfo:
-            reader.extract_all(dest, on_error=on_error)
+            reader.extract_all(dest, on_problem=on_problem)  # type: ignore[arg-type]
     assert str(excinfo.value) == message
     assert _files_on_disk(dest) == contents
 

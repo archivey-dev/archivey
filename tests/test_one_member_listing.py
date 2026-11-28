@@ -191,7 +191,7 @@ def test_extract_all_walks_once(
 ) -> None:
     with open_archive(_archive(kind, tmp_path), streaming=streaming) as reader:
         walks = _count_walks(monkeypatch, reader)
-        reader.extract_all(tmp_path / "out", on_error="continue")
+        reader.extract_all(tmp_path / "out", on_problem="continue")
         assert walks() == 1
 
 
@@ -372,7 +372,7 @@ def test_typing_time_diagnostics_name_the_member_id(
     """
     _normalizing(monkeypatch, module)
     with open_archive(_archive(kind, tmp_path)) as reader:
-        reader.extract_all(tmp_path / "out", on_error="continue")
+        reader.extract_all(tmp_path / "out", on_problem="continue")
         members = reader.members()
         reports = [
             d

@@ -39,7 +39,7 @@ from archivey.internal.backends import rar_parser
 from archivey.internal.backends.rar_parser import RarArchive
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.reader import ArchiveReader
-from archivey.types import ArchiveMember, ExtractionStatus, MemberType, OnError
+from archivey.types import ArchiveMember, ExtractionStatus, MemberType
 from tests.conftest import complete_listing, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.memory_util import traced_peak
@@ -349,7 +349,7 @@ def test_extraction_fails_only_the_over_long_link(tmp_path: Path) -> None:
     )
     dest = tmp_path / "out"
     with open_archive(archive) as reader:
-        report = reader.extract_all(dest, on_error=OnError.CONTINUE)
+        report = reader.extract_all(dest, on_problem="continue")
     by_name = {r.member.name: r for r in report.results}
     assert by_name["target.txt"].status is ExtractionStatus.EXTRACTED
     assert by_name["link0"].status is ExtractionStatus.EXTRACTED

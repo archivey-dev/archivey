@@ -25,7 +25,7 @@ import pytest
 
 import archivey
 from archivey.config import ArchiveyConfig, RarDecompressor
-from archivey.types import ExtractionPolicy, ExtractionStatus, OnError
+from archivey.types import ExtractionPolicy, ExtractionStatus
 from tests.conftest import requires, requires_binary, sevenzip_reads_rar
 from tests.extract_util import open_and_extract
 from tests.test_audit_rar_iso_dir import _fixture, _rar3_build, _rar3_parse
@@ -292,10 +292,10 @@ def test_extraction_writes_what_the_7z_gives(
     seven.write_bytes(_surrogate_7z(_FILES))
     expected_dest = tmp_path / "from7z"
     expected = open_and_extract(
-        seven, expected_dest, policy=policy, on_error=OnError.CONTINUE
+        seven, expected_dest, policy=policy, on_problem="continue"
     )
     dest = tmp_path / "out"
-    results = open_and_extract(archive, dest, policy=policy, on_error=OnError.CONTINUE)
+    results = open_and_extract(archive, dest, policy=policy, on_problem="continue")
     files = [r for r in results if r.member.is_file]
     written = (
         {"ok.txt", "pair\U0001f600.txt"}

@@ -203,7 +203,7 @@ def test_adversarial_extract_has_exact_outcome(
                 dest,
                 members=[target],
                 policy=ExtractionPolicy.TRUSTED,
-                on_blocked="skip",
+                on_problem="continue",
             ).results
             assert len(results) == 1
             assert results[0].status is ExtractionStatus.BLOCKED
@@ -233,7 +233,7 @@ def test_adversarial_extract_has_exact_outcome(
                 dest,
                 members=[target],
                 policy=ExtractionPolicy.TRUSTED,
-                on_blocked="skip",
+                on_problem="continue",
             ).results
             assert len(trusted) == 1
             assert trusted[0].status is ExtractionStatus.EXTRACTED
@@ -246,7 +246,7 @@ def test_adversarial_extract_has_exact_outcome(
                     dest / policy.value,
                     members=[target],
                     policy=policy,
-                    on_blocked="skip",
+                    on_problem="continue",
                 ).results
                 assert len(blocked) == 1
                 assert blocked[0].status is ExtractionStatus.BLOCKED
@@ -262,7 +262,7 @@ def test_adversarial_extract_has_exact_outcome(
                     dest,
                     members=[target],
                     policy=ExtractionPolicy.TRUSTED,
-                    on_blocked="skip",
+                    on_problem="continue",
                 ).results
             except ExtractionError as exc:
                 cause = exc.__cause__
@@ -280,7 +280,7 @@ def test_adversarial_extract_has_exact_outcome(
                 dest,
                 members=[target],
                 policy=ExtractionPolicy.TRUSTED,
-                on_blocked="skip",
+                on_problem="continue",
             ).results
             assert len(results) == 1
             assert results[0].status is ExtractionStatus.EXTRACTED

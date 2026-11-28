@@ -63,6 +63,7 @@ import logging
 import sys
 import threading
 import uuid
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import (
     Callable,
@@ -87,6 +88,7 @@ from typing import (
     NamedTuple,
     NoReturn,
     Self,
+    assert_never,
     cast,
 )
 from weakref import WeakMethod, ref
@@ -281,6 +283,8 @@ from archivey.types import (
     OnBlockedStr,
     OnError,
     OnErrorStr,
+    OnProblem,
+    OnProblemStr,
     OptionalLibrary,
     OverwritePolicy,
     OverwritePolicyStr,
@@ -398,6 +402,100 @@ def _settle_listing(
             member._link_target_unread = False
         if links_too or sizes_too:
             member._size_unread = False
+
+
+def _problem_handling(
+    on_problem: object,
+    on_error: object,
+    on_blocked: object,
+    abort_on: object,
+) -> tuple[OnError, OnBlocked, frozenset[AbortOn], bool]:
+    """The coordinator's three switches for ``extract_all()``'s problem arguments.
+
+    Returns ``on_error``, ``on_blocked``, ``abort_on`` and whether the call raises its
+    first problem at the end (``OnProblem.FINISH``). The three old keywords are the
+    deprecated spellings (0.6.0): they keep their exact behaviour, with the old
+    defaults for the ones left out, and warn at the caller's line. 0.7.0 removes them,
+    and the two ``abort_on`` events that have no ``on_problem`` value with them.
+    """
+    old = [
+        name
+        for name, value in (
+            ("on_error", on_error),
+            ("on_blocked", on_blocked),
+            ("abort_on", abort_on),
+        )
+        if value is not None
+    ]
+    if old:
+        if on_problem is not None:
+            raise _UsageTypeError(
+                f"extract_all(): pass on_problem= alone; {old[0]}= is its deprecated "
+                "spelling and cannot be combined with it"
+            )
+        warnings.warn(
+            f"extract_all({old[0]}=…) is deprecated; use on_problem= ('stop', "
+            "'finish', 'continue' or 'keep_partial'). archivey 0.7.0 removes "
+            "on_error=, on_blocked= and abort_on=.",
+            DeprecationWarning,
+            # The caller's extract_all() line: this function, then extract_all().
+            stacklevel=3,
+        )
+        return (
+            coerce_enum(
+                OnError.STOP if on_error is None else on_error,
+                OnError,
+                call="extract_all()",
+                param="on_error=",
+            ),
+            coerce_enum(
+                OnBlocked.RAISE if on_blocked is None else on_blocked,
+                OnBlocked,
+                call="extract_all()",
+                param="on_blocked=",
+            ),
+            frozenset(
+                coerce_enum_collection(
+                    () if abort_on is None else abort_on,
+                    AbortOn,
+                    call="extract_all()",
+                    param="abort_on=",
+                )
+            ),
+            False,
+        )
+    mode = coerce_enum(
+        OnProblem.FINISH if on_problem is None else on_problem,
+        OnProblem,
+        call="extract_all()",
+        param="on_problem=",
+    )
+    if mode is OnProblem.STOP:
+        return OnError.STOP, OnBlocked.RAISE, frozenset({AbortOn.BLOCKED_MEMBER}), False
+    if mode is OnProblem.FINISH:
+        return OnError.CONTINUE, OnBlocked.SKIP, frozenset(), True
+    if mode is OnProblem.CONTINUE:
+        return OnError.CONTINUE, OnBlocked.SKIP, frozenset(), False
+    if mode is OnProblem.KEEP_PARTIAL:
+        return OnError.KEEP_PARTIAL, OnBlocked.SKIP, frozenset(), False
+    assert_never(mode)
+
+
+def _raise_first_problem(report: ExtractionReport, archive_name: str | None) -> None:
+    """Raise once an ``OnProblem.FINISH`` extraction ended with a problem.
+
+    The first problem in member order decides the error: a refusal raises the same
+    :class:`FilterRejectionError` as ``_raise_if_blocked``, and a failure raises that
+    member's own error. Either way the error's ``report`` is the whole report.
+    """
+    for result in report.results:
+        if result.status is ExtractionStatus.BLOCKED:
+            _raise_if_blocked(report, archive_name)
+        if result.status is ExtractionStatus.FAILED and result.error is not None:
+            # An OSError has no declared ``report``; it takes the attribute as an
+            # ArchiveyError does, so one ``except`` clause reads both the same way.
+            setattr(result.error, "report", report)  # noqa: B010
+            raise result.error
 
 
 def _raise_if_blocked(report: ExtractionReport, archive_name: str | None) -> None:
@@ -5723,12 +5821,13 @@ class BaseArchiveReader(ArchiveReader):
         filter: MemberFilter | None = None,
         policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT,
         overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR,
-        on_error: OnError | OnErrorStr = OnError.STOP,
-        on_blocked: OnBlocked | OnBlockedStr = OnBlocked.RAISE,
-        abort_on: Collection[AbortOn | AbortOnStr] = (),
+        on_problem: OnProblem | OnProblemStr | None = None,
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         limits: ExtractionLimits | None = None,
         dry_run: bool = False,
+        on_error: OnError | OnErrorStr | None = None,
+        on_blocked: OnBlocked | OnBlockedStr | None = None,
+        abort_on: Collection[AbortOn | AbortOnStr] | None = None,
     ) -> ExtractionReport:
         """Extract members to dest via the shared ``ExtractionCoordinator``."""
         # At the boundary, not on use: the coordinator tests these with ``is``, so an
@@ -5739,14 +5838,8 @@ class BaseArchiveReader(ArchiveReader):
         overwrite = coerce_enum(
             overwrite, OverwritePolicy, call="extract_all()", param="overwrite="
         )
-        on_error = coerce_enum(
-            on_error, OnError, call="extract_all()", param="on_error="
-        )
-        on_blocked = coerce_enum(
-            on_blocked, OnBlocked, call="extract_all()", param="on_blocked="
-        )
-        abort_on = coerce_enum_collection(
-            abort_on, AbortOn, call="extract_all()", param="abort_on="
+        on_error, on_blocked, abort_on, raise_at_end = _problem_handling(
+            on_problem, on_error, on_blocked, abort_on
         )
         check_bool(dry_run, call="extract_all(dry_run=…)")
         self._state.require_open("extract_all()")
@@ -5816,7 +5909,9 @@ class BaseArchiveReader(ArchiveReader):
             _dry_run_entries=coordinator.dry_run_entries,
             _resource_usage=self._resource_usage(),
         )
-        if on_blocked is OnBlocked.RAISE:
+        if raise_at_end:
+            _raise_first_problem(report, self._archive_name)
+        elif on_blocked is OnBlocked.RAISE:
             _raise_if_blocked(report, self._archive_name)
         return report
 

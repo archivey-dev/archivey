@@ -25,6 +25,7 @@ import os
 import re
 import stat
 import sys
+import warnings
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath
@@ -64,9 +65,48 @@ from archivey.types import (
     ExtractionStatus,
     MemberType,
     NameRewrite,
+    OnBlockedStr,
     OnError,
+    OnProblemStr,
     OverwritePolicy,
 )
+
+
+def _problem_handling(
+    stop_on_error: bool, abort_on: list[str] | None, *, err: TextIO
+) -> tuple[
+    OnProblemStr | None, OnError | None, OnBlockedStr | None, frozenset[AbortOn] | None
+]:
+    """The ``extract_all()`` problem keywords for ``--stop-on-error`` and ``--abort-on``.
+
+    Returns ``(on_problem, on_error, on_blocked, abort_on)``, with either the first or
+    the other three set. Without a flag the command tries every member and reports the
+    rest itself (exit 3 for refusals, 1 for failures), so it asks for
+    ``on_problem="continue"`` and gets the report back. ``--stop-on-error`` is
+    ``on_problem="stop"``. ``--abort-on`` is deprecated: ``blocked-member`` acts as
+    ``--stop-on-error``, and the name events keep their old meaning through the
+    deprecated keywords until 0.7.0.
+    """
+    events = frozenset(from_cli_choice(AbortOn, item) for item in abort_on or ())
+    if events:
+        print(
+            "archivey: --abort-on is deprecated; use --stop-on-error, which now stops "
+            "at the first failed or refused member. archivey 0.7.0 removes --abort-on.",
+            file=err,
+        )
+    if AbortOn.BLOCKED_MEMBER in events:
+        stop_on_error = True
+    name_events = events - {AbortOn.BLOCKED_MEMBER}
+    if not name_events:
+        return ("stop" if stop_on_error else "continue"), None, None, None
+    if stop_on_error:
+        name_events |= {AbortOn.BLOCKED_MEMBER}
+    return (
+        None,
+        (OnError.STOP if stop_on_error else OnError.CONTINUE),
+        "skip",
+        name_events,
+    )
 
 
 @dataclass(frozen=True)
@@ -1627,8 +1667,9 @@ def run_extract(
     pred = selection.predicate
     policy_enum = from_cli_choice(ExtractionPolicy, policy)
     overwrite_enum = from_cli_choice(OverwritePolicy, overwrite)
-    on_error = OnError.STOP if stop_on_error else OnError.CONTINUE
-    abort_on_enum = frozenset(from_cli_choice(AbortOn, item) for item in abort_on or ())
+    on_problem, on_error, on_blocked, abort_on_events = _problem_handling(
+        stop_on_error, abort_on, err=err
+    )
     # --outer opens the compression layer as a one-file archive: its member is the
     # tar of a .tar.gz, so the extraction writes that file, as gunzip -k would.
     fmt = (
@@ -1698,19 +1739,27 @@ def run_extract(
 
         try:
             try:
-                with member_skips_reported_elsewhere():
+                with member_skips_reported_elsewhere(), warnings.catch_warnings():
+                    # --abort-on name-* still passes the deprecated keywords until
+                    # 0.7.0; the command printed its own deprecation line for it.
+                    # Only that warning is hidden, and only on that path.
+                    if on_problem is None:
+                        warnings.filterwarnings(
+                            "ignore",
+                            message=r"extract_all\((on_error|on_blocked|abort_on)=",
+                            category=DeprecationWarning,
+                        )
                     report = reader.extract_all(
                         target,
                         members=pred,
                         policy=policy_enum,
                         overwrite=overwrite_enum,
-                        on_error=on_error,
-                        # The command reports refused members from the report and
-                        # exits 3 itself, so it takes the report back, not an error.
-                        on_blocked="skip",
-                        abort_on=abort_on_enum,
                         on_progress=on_progress,
                         dry_run=dry_run,
+                        on_problem=on_problem,
+                        on_error=on_error,
+                        on_blocked=on_blocked,
+                        abort_on=abort_on_events,
                     )
             except BrokenPipeError:
                 # The progress bar's stream lost its reader. That must reach
@@ -1718,10 +1767,10 @@ def run_extract(
                 # report it as a failed extraction and exit 1.
                 raise
             except (ArchiveyError, OSError, http_error_type()) as exc:
-                # STOP-path member failure / always-stop (bomb guards,
-                # DiagnosticRaisedError). Exit 1 always on abort (Q8 Option A):
-                # exit 3 is reserved for a *completed* run with policy blocks and
-                # safe members on disk (blocks never abort under STOP).
+                # A --stop-on-error stop (a failed or refused member) or an
+                # always-stop (limits, DiagnosticRaisedError). Exit 1 always on a
+                # stop (Q8 Option A): exit 3 is reserved for a *completed* run with
+                # policy blocks and safe members on disk.
                 if base_progress is not None:
                     # The pass is over: the bar goes before the report lines.
                     base_progress.close()

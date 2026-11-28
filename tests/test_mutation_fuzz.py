@@ -73,7 +73,7 @@ from archivey import (
     open_archive,
 )
 from archivey.config import AcceleratorMode, ExtractionLimits
-from archivey.types import FormatSupport, OnError, OverwritePolicy
+from archivey.types import FormatSupport, OverwritePolicy
 from tests.conftest import binary_refusal
 from tests.sample_archives import (
     CORPUS,
@@ -505,7 +505,7 @@ def _exercise(
                     pass  # per-member decode failure: exactly the contract
             ar.extract_all(
                 out_dir,
-                on_error=OnError.CONTINUE,
+                on_problem="continue",
                 overwrite=OverwritePolicy.REPLACE,
                 limits=_FUZZ_LIMITS,
             )

@@ -91,9 +91,7 @@ See [Extracting](extracting.md).
 ::: archivey.types.ExtractionProgress
 ::: archivey.ExtractionPolicy
 ::: archivey.types.OverwritePolicy
-::: archivey.types.OnError
-::: archivey.types.AbortOn
-::: archivey.types.OnBlocked
+::: archivey.OnProblem
 ::: archivey.types.MemberFilter
 ::: archivey.paths.sanitize_names
 

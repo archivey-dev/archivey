@@ -55,7 +55,7 @@ except ImportError:  # pragma: no cover - [core-only] leg
     pytest.skip("hypothesis not installed (dev group)", allow_module_level=True)
 
 from archivey import ExtractionPolicy, open_archive
-from archivey.types import OnBlocked, OnError, OverwritePolicy
+from archivey.types import OverwritePolicy
 
 pytestmark = pytest.mark.skipif(
     not hasattr(os, "symlink") or os.name == "nt", reason="POSIX symlinks"
@@ -148,8 +148,7 @@ def _extract(
             dest,
             overwrite=overwrite,
             policy=policy,
-            on_error=OnError.CONTINUE,
-            on_blocked=OnBlocked.SKIP,
+            on_problem="continue",
             members=(lambda m: m.name not in _SOURCES) if held else None,
             dry_run=dry,
         )

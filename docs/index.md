@@ -104,8 +104,8 @@ with archivey.open_archive("download.zip") as archive:
 outside that folder, such as `../` paths, absolute paths or links pointing out of it, and it
 stops archives that expand to far more data than they hold. A refused member isn't written, and
 the rest still extracts. Then the call raises `FilterRejectionError`, whose `report` lists what
-was refused. Pass `on_blocked="skip"` to get the report back without raising, or
-`abort_on=["blocked_member"]` to raise at the first one instead. [Extracting](extracting.md)
+was refused. Pass `on_problem="continue"` to get the report back without raising, or
+`on_problem="stop"` to raise at the first one instead. [Extracting](extracting.md)
 lists every protection and how to relax them for archives you trust, and also shows how to
 extract only some files. [Security](security.md) covers what archivey relies on and where its
 guarantees stop.

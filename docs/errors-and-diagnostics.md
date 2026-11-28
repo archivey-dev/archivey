@@ -186,7 +186,7 @@ byte of such a member and still hear that it failed, set
 `ArchiveyConfig(recover_partial_data=PartialDataRecovery.ALL)`. The read whose check fails then
 returns its bytes, and the next read raises the same error. Keep reading until a read returns `b""`
 or raises: a single `read()` of the whole member returns its bytes without raising, and
-`member.verified` stays below `CHECKSUM`. Extraction with `on_error=OnError.KEEP_PARTIAL` reads this
+`member.verified` stays below `CHECKSUM`. Extraction with `on_problem="keep_partial"` reads this
 way whatever the config says.
 
 No option makes archivey check a member before handing you its bytes. If you must never use

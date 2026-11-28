@@ -62,6 +62,7 @@ from archivey.types import (
     ContainerFormat,
     ExtractionPolicy,
     MemberType,
+    OnProblem,
     StreamFormat,
 )
 
@@ -86,6 +87,7 @@ __all__ = [
     "FormatPolicy",
     "ForwardArchiveReader",
     "MemberType",
+    "OnProblem",
     "PackageNotInstalledError",
     "ResourceLimitError",
     "StreamFormat",
